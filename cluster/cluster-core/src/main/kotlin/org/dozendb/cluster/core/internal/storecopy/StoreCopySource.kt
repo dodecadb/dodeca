@@ -30,9 +30,11 @@ import org.neo4j.logging.InternalLog
  *
  * The copy states the Raft snapshot it holds, read before the store snapshot is taken: every
  * transaction up to it is closed by then, so the copied transaction logs reach it. A request may
- * name the lowest index the snapshot must reach; a member that has not applied that far waits for a
- * while, then refuses. Without one, as for a member's first copy, the copy states a snapshot only
- * if the member has applied entries.
+ * name the lowest index the snapshot must reach. Without one, as for a member's first copy, the
+ * copy states a snapshot only if the member has applied entries.
+ *
+ * A member that has no such database yet, as a creator that is still creating it, or that has not
+ * applied up to the requested index waits up to [maximumWait], then refuses.
  *
  * @property replicating whether a database's transactions go through Raft here.
  * @property snapshots the current snapshot of a database replicating here, by name.
@@ -43,30 +45,19 @@ internal class StoreCopySource(
     private val replicating: (NamedDatabaseId) -> Boolean,
     private val snapshots: (String) -> Snapshot?,
     private val log: InternalLog,
-    private val minimumWait: Duration = Duration.ofSeconds(10),
+    private val maximumWait: Duration = Duration.ofSeconds(10),
 ) : BulkSource {
     override fun serve(request: ByteArray, out: OutputStream) {
         val (name, id, minimumIndex) = decodeRequest(request)
-        val database =
-            databases()
-                .getDatabaseContext(name)
-                .orElseThrow { IllegalStateException("no database $name") }
-                .database() as? Database
-                ?: throw IllegalStateException("database $name cannot be copied")
-        val namedDatabaseId = database.namedDatabaseId
-        check(id == null || namedDatabaseId.databaseId().uuid() == id) {
-            "database $name is $namedDatabaseId here, not the requested $id"
-        }
-        check(database.isStarted && replicating(namedDatabaseId)) {
-            "database $name is not replicating here"
-        }
+        val deadline = System.nanoTime() + maximumWait.toNanos()
+        val database = awaitReplicating(name, id, deadline)
         val snapshot =
             if (minimumIndex < 0) {
                 // A member's first copy starts from the beginning of the log; a new group may not
                 // have applied anything yet.
                 snapshots(name)
             } else {
-                awaitSnapshot(name, minimumIndex)
+                awaitSnapshot(name, minimumIndex, deadline)
             }
         val storeSnapshot =
             DefaultStoreSnapshotFactory(database, fs).createStoreSnapshot().orElseThrow {
@@ -111,9 +102,28 @@ internal class StoreCopySource(
         log.info("Sent a copy of database %s", name)
     }
 
+    /** The database [name], with the id [id] if one is given, once it replicates here. */
+    private fun awaitReplicating(name: String, id: UUID?, deadline: Long): Database {
+        while (true) {
+            val database =
+                databases().getDatabaseContext(name).orElse(null)?.database() as? Database
+            val namedDatabaseId = database?.namedDatabaseId
+            val refusal =
+                when {
+                    database == null -> "no database $name"
+                    id != null && namedDatabaseId?.databaseId()?.uuid() != id ->
+                        "database $name is $namedDatabaseId here, not the requested $id"
+                    !database.isStarted || !replicating(database.namedDatabaseId) ->
+                        "database $name is not replicating here"
+                    else -> return database
+                }
+            if (System.nanoTime() > deadline) throw IllegalStateException(refusal)
+            Thread.sleep(POLL_MILLIS)
+        }
+    }
+
     /** This member's snapshot of [name] once it reaches [minimumIndex]. */
-    private fun awaitSnapshot(name: String, minimumIndex: Long): Snapshot {
-        val deadline = System.nanoTime() + minimumWait.toNanos()
+    private fun awaitSnapshot(name: String, minimumIndex: Long, deadline: Long): Snapshot {
         while (true) {
             val snapshot =
                 snapshots(name) ?: throw IllegalStateException("database $name is not replicating")
@@ -124,7 +134,7 @@ internal class StoreCopySource(
                         "not yet up to the requested index $minimumIndex"
                 )
             }
-            Thread.sleep(MINIMUM_POLL_MILLIS)
+            Thread.sleep(POLL_MILLIS)
         }
     }
 
@@ -134,7 +144,7 @@ internal class StoreCopySource(
     companion object {
         const val NAME = "dozendb.storeCopy"
         private const val REQUEST_VERSION = 2
-        private const val MINIMUM_POLL_MILLIS = 50L
+        private const val POLL_MILLIS = 50L
 
         /**
          * A request for a copy of the database [name] holding every Raft entry up to

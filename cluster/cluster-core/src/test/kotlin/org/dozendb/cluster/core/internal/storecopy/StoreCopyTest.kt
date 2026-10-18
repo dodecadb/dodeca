@@ -118,15 +118,16 @@ class StoreCopyTest {
     private fun copySource(
         database: GraphDatabaseAPI,
         snapshot: Snapshot? = null,
-        replicating: Boolean = true,
+        replicating: () -> Boolean = { true },
+        maximumWait: Duration = Duration.ofMillis(100),
     ): StoreCopySource =
         StoreCopySource(
             { database.dependencyResolver.resolveDependency(DatabaseContextProvider::class.java) },
             fs,
-            replicating = { replicating },
+            replicating = { replicating() },
             snapshots = { snapshot },
             log = NullLog.getInstance(),
-            minimumWait = Duration.ofMillis(100),
+            maximumWait = maximumWait,
         )
 
     private fun GraphDatabaseAPI.ref(): DatabaseRef =
@@ -182,12 +183,30 @@ class StoreCopyTest {
         assertThatThrownBy {
                 stores(
                         root.resolve("target"),
-                        InProcessTransfer(copySource(database, snapshot, replicating = false)),
+                        InProcessTransfer(copySource(database, snapshot, replicating = { false })),
                     )
                     .copyReplicated(SOURCE, database.ref(), 7)
             }
             .hasMessageContaining("is not replicating here")
         assertThat(stores(root.resolve("target")).missing()).isEqualTo(names)
+    }
+
+    @Test
+    fun `a source waits for a new database to replicate before it sends a copy`() {
+        val database = dbms(root.resolve("source")).neo4j()
+        val replicatingFrom = System.nanoTime() + Duration.ofMillis(300).toNanos()
+        val source =
+            copySource(
+                database,
+                Snapshot(LogPosition(7, 2), 5),
+                replicating = { System.nanoTime() > replicatingFrom },
+                maximumWait = Duration.ofSeconds(10),
+            )
+        val target = stores(root.resolve("target"), InProcessTransfer(source))
+
+        target.copyReplicated(SOURCE, database.ref(), 7)
+
+        assertThat(target.missing()).containsExactly(GraphDatabaseSettings.SYSTEM_DATABASE_NAME)
     }
 
     @Test
