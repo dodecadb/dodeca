@@ -9,6 +9,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.file.Path
+import java.util.Arrays
 import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.Snapshot
 import org.neo4j.io.fs.FileSystemAbstraction
@@ -17,13 +18,22 @@ import org.neo4j.io.fs.FileSystemAbstraction
  * The stream format of a database copy: a header with the database name, a description and the Raft
  * snapshot the copy holds, if the database is replicated; then each file with its root directory,
  * relative path and length; then a trailer with the totals so a truncated stream is detected.
+ *
+ * A file's bytes follow in chunks of [CHUNK_SIZE], the last one shorter. A chunk of zeros is sent
+ * as its tag alone: Neo4j preallocates transaction log files with zeros, 256 MiB each on Linux,
+ * which would otherwise make up most of a small database's copy. The receiver writes the zeros, so
+ * every file keeps its length and its allocated space.
  */
 internal object StoreArchive {
     private const val MAGIC = 0x445A5343 // "DZSC"
-    private const val VERSION: Byte = 2
+    private const val VERSION: Byte = 3
     private const val TAG_END: Byte = 0
     private const val TAG_FILE: Byte = 1
+    private const val CHUNK_DATA: Byte = 0
+    private const val CHUNK_ZEROS: Byte = 1
+    private const val CHUNK_SIZE = 1 shl 16
     private const val BUFFER_SIZE = 1 shl 20
+    private val ZEROS = ByteArray(CHUNK_SIZE)
 
     enum class Root(val code: Byte) {
         DATABASE(0),
@@ -46,7 +56,7 @@ internal object StoreArchive {
 
     class Writer(out: OutputStream, private val fs: FileSystemAbstraction) {
         private val data = DataOutputStream(out)
-        private val buffer = ByteBuffer.allocate(BUFFER_SIZE)
+        private val buffer = ByteBuffer.allocate(CHUNK_SIZE)
         private var files = 0
         private var bytes = 0L
 
@@ -73,12 +83,23 @@ internal object StoreArchive {
             fs.read(path).use { channel ->
                 var remaining = length
                 while (remaining > 0) {
-                    buffer.clear().limit(minOf(remaining, BUFFER_SIZE.toLong()).toInt())
-                    val read = channel.read(buffer)
-                    if (read < 0)
-                        throw EOFException("$path ended $remaining bytes before its length $length")
-                    data.write(buffer.array(), 0, read)
-                    remaining -= read
+                    val count = minOf(remaining, CHUNK_SIZE.toLong()).toInt()
+                    buffer.clear().limit(count)
+                    while (buffer.hasRemaining()) {
+                        if (channel.read(buffer) < 0) {
+                            throw EOFException(
+                                "$path ended ${remaining - buffer.position()} bytes before its " +
+                                    "length $length"
+                            )
+                        }
+                    }
+                    if (Arrays.mismatch(buffer.array(), 0, count, ZEROS, 0, count) < 0) {
+                        data.writeByte(CHUNK_ZEROS.toInt())
+                    } else {
+                        data.writeByte(CHUNK_DATA.toInt())
+                        data.write(buffer.array(), 0, count)
+                    }
+                    remaining -= count
                 }
             }
             files++
@@ -117,7 +138,7 @@ internal object StoreArchive {
             } else {
                 null
             }
-        val buffer = ByteBuffer.allocate(BUFFER_SIZE)
+        val buffer = ByteBuffer.allocate(CHUNK_SIZE)
         var files = 0
         var bytes = 0L
         while (true) {
@@ -134,9 +155,15 @@ internal object StoreArchive {
                     fs.write(target).use { channel ->
                         var remaining = length
                         while (remaining > 0) {
-                            val count = minOf(remaining, BUFFER_SIZE.toLong()).toInt()
-                            data.readFully(buffer.array(), 0, count)
-                            channel.writeAll(buffer.clear().limit(count))
+                            val count = minOf(remaining, CHUNK_SIZE.toLong()).toInt()
+                            when (val chunk = data.readByte()) {
+                                CHUNK_DATA -> {
+                                    data.readFully(buffer.array(), 0, count)
+                                    channel.writeAll(buffer.clear().limit(count))
+                                }
+                                CHUNK_ZEROS -> channel.writeAll(ByteBuffer.wrap(ZEROS, 0, count))
+                                else -> throw IOException("unknown database copy chunk $chunk")
+                            }
                             remaining -= count
                         }
                         channel.force(false)

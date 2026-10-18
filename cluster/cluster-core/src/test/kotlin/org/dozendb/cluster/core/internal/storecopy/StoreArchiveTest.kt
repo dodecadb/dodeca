@@ -82,6 +82,27 @@ class StoreArchiveTest {
     }
 
     @Test
+    fun `runs of zeros, as in preallocated transaction logs, are sent compactly`() {
+        val log = root.resolve("source").resolve("neostore.transaction.db.0")
+        Files.createDirectories(log.parent)
+        val content = ByteArray(8_000_000)
+        Random(7).nextBytes(100_000).copyInto(content, destinationOffset = 0)
+        Random(8).nextBytes(10).copyInto(content, destinationOffset = 5_000_000)
+        Files.write(log, content)
+
+        val bytes = archive {
+            file(StoreArchive.Root.TRANSACTION_LOGS, Path.of("neostore.transaction.db.0"), log)
+            end()
+        }
+        val summary = extract(bytes)
+
+        assertThat(bytes.size).isLessThan(300_000)
+        assertThat(summary.bytes).isEqualTo(8_000_000)
+        assertThat(root.resolve("target/logs/neostore.transaction.db.0"))
+            .hasSameBinaryContentAs(log)
+    }
+
+    @Test
     fun `a stream that ends early is rejected`() {
         val store = sourceFile("neostore", 100_000)
         val bytes = archive {
