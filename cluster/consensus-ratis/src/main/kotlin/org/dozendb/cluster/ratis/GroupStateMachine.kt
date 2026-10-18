@@ -118,6 +118,10 @@ internal class GroupStateMachine(
     var database: DatabaseRef = DatabaseRef("unbound", groupId)
         private set
 
+    /** Whether the state machine was detached and not attached again since. */
+    val isDetached: Boolean
+        get() = stateLock.withLock { detached }
+
     /** Attaches [stateMachine]; it starts applying once the group's snapshot record is loaded. */
     fun attach(database: DatabaseRef, stateMachine: ReplicatedStateMachine) {
         require(database.id == groupId) { "database $database does not belong to group $groupId" }

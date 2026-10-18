@@ -369,9 +369,13 @@ class RatisConsensusLogTest {
             val other = cluster.nodes.first { it != follower && it != leader }
             other.start()
             other.consensus.startGroup(cluster.database, other.machine, emptyList())
-            val newLeader = cluster.awaitLeader()
-            assertThat(newLeader).isEqualTo(other)
-            assertThat(newLeader.write("two")).isInstanceOf(CommitResult.Committed::class.java)
+            // The detached member may win the election; it then hands leadership over.
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(cluster.awaitLeader()).isEqualTo(other)
+                }
+            assertThat(other.write("two")).isInstanceOf(CommitResult.Committed::class.java)
             assertThat(follower.machine.payloads()).containsExactly("one")
 
             follower.consensus.startGroup(cluster.database, follower.machine, emptyList())

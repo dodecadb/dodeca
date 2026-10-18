@@ -245,41 +245,61 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         publishStatus(database.id)
     }
 
-    /** Transfers leadership of [groupId] to another member; a detached member cannot lead. */
-    private fun handOverLeadership(groupId: UUID) {
+    /**
+     * Transfers leadership of [groupId] to another member: a detached member cannot apply what the
+     * group commits. Tries again every [HANDOVER_RETRY] while this member leads the group detached,
+     * for example while no other member is reachable yet.
+     */
+    private fun handOverLeadership(
+        groupId: UUID,
+        delay: java.time.Duration = java.time.Duration.ZERO,
+        attempt: Int = 1,
+    ) {
         try {
-            maintenance.execute {
-                val raftServer = server ?: return@execute
-                val raftGroupId = RaftGroupId.valueOf(groupId)
-                val division =
-                    runCatching { raftServer.getDivision(raftGroupId) }.getOrNull()
-                        ?: return@execute
-                if (!division.info.isLeader) return@execute
-                val database = stateMachines[groupId]?.database ?: DatabaseRef("unbound", groupId)
-                for (candidate in division.group.peers.map { it.id }.filter { it != peerId }) {
-                    val reply = runCatching {
-                        raftServer.transferLeadership(
-                            TransferLeadershipRequest(
-                                clientId,
-                                peerId,
-                                raftGroupId,
-                                callIds.incrementAndGet(),
-                                candidate,
-                                config.requestTimeout.toMillis(),
-                            )
-                        )
-                    }
-                        .getOrNull()
-                    if (reply?.isSuccess == true) {
-                        log.info("Handed leadership of {} over to {}", database, candidate)
-                        return@execute
-                    }
-                }
-                log.warn("Could not hand leadership of {} over to another member", database)
-            }
+            maintenance.schedule(
+                { tryHandOver(groupId, attempt) },
+                delay.toMillis(),
+                TimeUnit.MILLISECONDS,
+            )
         } catch (_: RejectedExecutionException) {
             // Closing: leadership ends with the server.
         }
+    }
+
+    private fun tryHandOver(groupId: UUID, attempt: Int) {
+        val raftServer = server ?: return
+        val raftGroupId = RaftGroupId.valueOf(groupId)
+        val division = runCatching { raftServer.getDivision(raftGroupId) }.getOrNull() ?: return
+        val stateMachine = stateMachines[groupId] ?: return
+        if (!division.info.isLeader || !stateMachine.isDetached) return
+        val database = stateMachine.database
+        for (candidate in division.group.peers.map { it.id }.filter { it != peerId }) {
+            val reply = runCatching {
+                raftServer.transferLeadership(
+                    TransferLeadershipRequest(
+                        clientId,
+                        peerId,
+                        raftGroupId,
+                        callIds.incrementAndGet(),
+                        candidate,
+                        config.requestTimeout.toMillis(),
+                    )
+                )
+            }
+                .getOrNull()
+            if (reply?.isSuccess == true) {
+                log.info("Handed leadership of {} over to {}", database, candidate)
+                return
+            }
+        }
+        if (attempt == 1) {
+            log.warn(
+                "Could not hand leadership of {} over to another member; trying again every {}",
+                database,
+                HANDOVER_RETRY,
+            )
+        }
+        handOverLeadership(groupId, HANDOVER_RETRY, attempt + 1)
     }
 
     override fun currentSnapshot(database: DatabaseRef): Snapshot? {
@@ -645,6 +665,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     private companion object {
         const val RETRY_SLEEP_MS = 200L
+        val HANDOVER_RETRY: java.time.Duration = java.time.Duration.ofSeconds(1)
         /** Room for the Ratis entry header around a payload, generously rounded. */
         const val ENTRY_OVERHEAD = 64L shl 10
         const val DEFAULT_MESSAGE_SIZE = 64L shl 20
