@@ -143,6 +143,7 @@ class PowerLossTest {
             acknowledged += writers.acknowledged
             cluster.awaitSameData(acknowledged, "round $round, seed $seed")
         }
+        cluster.assertConsistentStores()
     }
 
     @Test
@@ -161,6 +162,7 @@ class PowerLossTest {
         Thread.sleep(500)
         writers.close()
         cluster.awaitSameData(writers.acknowledged, "after the hole")
+        cluster.assertConsistentStores()
     }
 
     @Test
@@ -196,6 +198,7 @@ class PowerLossTest {
         Thread.sleep(500)
         writers.close()
         cluster.awaitSameData(writers.acknowledged, "after the write-back")
+        cluster.assertConsistentStores()
     }
 
     private fun ClusterHarness.Member.checkpoint() {
@@ -243,6 +246,21 @@ class PowerLossTest {
                         .isEqualTo(leader.lastTransaction())
                 }
             }
+    }
+
+    /** Stops every member and runs Neo4j's consistency check on each of its stores. */
+    private fun ClusterHarness.assertConsistentStores() {
+        members.forEach { it.stop() }
+        for (member in members) {
+            for (database in listOf(ClusterHarness.DEFAULT_DATABASE, "system")) {
+                val result = member.checkConsistency(database)
+                assertThat(result.isSuccessful)
+                    .describedAs(
+                        "$member $database: ${result.summary()}, see ${result.reportFile()}"
+                    )
+                    .isTrue
+            }
+        }
     }
 
     private companion object {

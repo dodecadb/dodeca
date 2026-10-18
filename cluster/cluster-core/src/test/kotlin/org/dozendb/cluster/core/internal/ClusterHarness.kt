@@ -21,11 +21,13 @@ import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.HttpConnector
 import org.neo4j.configuration.connectors.HttpsConnector
 import org.neo4j.configuration.helpers.SocketAddress
+import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 
@@ -89,6 +91,15 @@ internal class ClusterHarness(
             } finally {
                 dbms = null
             }
+        }
+
+        /** Neo4j's full consistency check of [database], on this member while it is stopped. */
+        fun checkConsistency(database: String = DEFAULT_DATABASE): ConsistencyCheckService.Result {
+            check(dbms == null) { "member $index is running" }
+            val config = config()
+            return ConsistencyCheckService(Neo4jLayout.of(config).databaseLayout(database))
+                .with(config)
+                .runFullConsistencyCheck()
         }
 
         fun database(name: String = DEFAULT_DATABASE): GraphDatabaseAPI =
