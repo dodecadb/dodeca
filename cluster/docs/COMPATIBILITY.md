@@ -55,8 +55,12 @@ What clustering does not do yet.
   replicated. `system` and databases created with `CREATE DATABASE` are local
   to each member, so administration commands apply to one member only.
 - **Writes go to the leader.** A follower rejects writes with
-  `Neo.ClientError.Cluster.NotALeader`; drivers do not yet get routing tables
-  that point at the leader.
+  `Neo.ClientError.Cluster.NotALeader`. Drivers that route (`neo4j://`) get
+  routing tables with the leader as writer and retry managed transactions on
+  the new leader after a failover. Server-side routing
+  (`dbms.routing.default_router=SERVER`) does not forward writes: a `bolt://`
+  write sent to a follower is rejected. Local databases (`system`, and
+  databases created with `CREATE DATABASE`) are routed to the member asked.
 - **Transaction size.** A transaction can replicate at most 16 MiB of changes
   in Neo4j's command encoding. A larger one fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is

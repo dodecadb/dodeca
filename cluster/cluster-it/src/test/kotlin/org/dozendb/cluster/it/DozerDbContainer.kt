@@ -50,6 +50,15 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
                 initialMembers.joinToString(","),
             )
 
+    /**
+     * Publishes Bolt on [hostPort] of this machine and advertises it there, so routing tables lead
+     * drivers outside the Docker network to this member.
+     */
+    fun boltOnHostPort(hostPort: Int): DozerDbContainer {
+        setPortBindings(listOf("$hostPort:$BOLT_PORT"))
+        return withEnv("NEO4J_server_bolt_advertised__address", "127.0.0.1:$hostPort")
+    }
+
     private fun driver(): Driver =
         driver
             ?: GraphDatabase.driver(

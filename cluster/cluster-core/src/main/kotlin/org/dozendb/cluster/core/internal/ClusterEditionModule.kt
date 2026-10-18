@@ -1,5 +1,6 @@
 package org.dozendb.cluster.core.internal
 
+import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.MemberId
@@ -8,6 +9,7 @@ import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
 import org.dozendb.cluster.core.internal.replication.ReplicationService
+import org.dozendb.cluster.core.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.core.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.ratis.RatisConsensusConfig
@@ -27,6 +29,14 @@ import org.neo4j.dbms.database.MultiDatabaseLifecycleService
 import org.neo4j.dbms.database.MultiDatabaseManager
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.SystemGraphComponents
+import org.neo4j.dbms.routing.ClientRoutingDomainChecker
+import org.neo4j.dbms.routing.DefaultDatabaseAvailabilityChecker
+import org.neo4j.dbms.routing.DefaultRoutingService
+import org.neo4j.dbms.routing.LocalRoutingTableServiceValidator
+import org.neo4j.dbms.routing.RoutingOption
+import org.neo4j.dbms.routing.RoutingService
+import org.neo4j.dbms.routing.RoutingTableTTLProvider
+import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.DozerDbEditionModule
@@ -56,6 +66,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
     private val cluster: ClusterService
     private val replication: ReplicationService
     private val directory: MemberDirectory
+    private val consensus: ConsensusLog
 
     private var clusterDefaultDatabaseInitializer: Lifecycle = LifecycleAdapter()
 
@@ -75,7 +86,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
             )
         lateinit var stores: Neo4jLocalStores
         lateinit var replicationService: ReplicationService
-        val consensus =
+        consensus =
             RatisConsensusLog(
                 RatisConsensusConfig(
                     memberId = MemberId(identityModule.serverId().uuid()),
@@ -257,6 +268,53 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         val bound =
             globalModule.connectorPortRegister.getLocalAddress(ConnectorType.BOLT) ?: return null
         return HostPort(advertised.hostname, bound.port)
+    }
+
+    /**
+     * DozerDB's routing service, port of its wiring, with routing tables of replicated databases
+     * taken from their Raft groups. The member is alone, and drivers get DozerDB's single-address
+     * tables, only in a one-member cluster.
+     */
+    override fun createRoutingService(
+        databaseContextProvider: DatabaseContextProvider<*>,
+        clientRoutingDomainChecker: ClientRoutingDomainChecker,
+    ): RoutingService {
+        val config = globalModule.globalConfig
+        val logProvider = globalModule.logService.internalLogProvider
+        val ttl = RoutingTableTTLProvider.ttlFromConfig(config)
+        val singleAddress =
+            SingleAddressRoutingTableProvider(
+                globalModule.connectorPortRegister,
+                RoutingOption.ROUTE_WRITE_AND_READ,
+                config,
+                logProvider,
+                ttl,
+            )
+        val routing =
+            ClusterRoutingTableProvider(
+                replication,
+                consensus,
+                directory,
+                config.get(DozenDbSettings.readsOnLeader),
+                ttl,
+                singleAddress,
+                singleAddress,
+            )
+        return DefaultRoutingService(
+            logProvider,
+            LocalRoutingTableServiceValidator(
+                DefaultDatabaseAvailabilityChecker(databaseContextProvider)
+            ),
+            routing,
+            routing,
+            clientRoutingDomainChecker,
+            config,
+            { cluster.members().size <= 1 },
+            defaultDatabaseResolver,
+            databaseReferenceRepo,
+            true,
+            globalModule.globalClock,
+        )
     }
 
     override fun registerEditionSpecificProcedures(

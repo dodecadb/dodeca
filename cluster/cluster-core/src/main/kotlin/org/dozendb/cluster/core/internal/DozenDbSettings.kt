@@ -108,5 +108,13 @@ class DozenDbSettings : SettingsDeclaration {
                 .addConstraint(min(Duration.ofMillis(200)))
                 .immutable()
                 .build()
+
+        @JvmField
+        @field:Description(
+            "Whether routing tables list the leader as a reader too. Without it the leader takes " +
+                "only writes, unless it is the only member."
+        )
+        val readsOnLeader: Setting<Boolean> =
+            newBuilder("dbms.dozendb.routing.reads_on_leader", BOOL, true).immutable().build()
     }
 }
