@@ -13,7 +13,7 @@ public sealed interface Role {
     /** Votes and replicates, rejects writes. */
     public data object Follower : Role
 
-    /** Is running an election. */
+    /** Is running an election, or has won one and is not yet ready to accept writes. */
     public data object Candidate : Role
 
     /** Does not take part in the group: not started, stopped or shutting down. */

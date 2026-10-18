@@ -20,6 +20,7 @@
 
   <modules>
     <module>cluster-api</module>
+    <module>consensus-ratis</module>
   </modules>
 
   <properties>
@@ -193,6 +194,9 @@
   </dependencies>
 
   <build>
+    <!-- Kotlin only. A module that needs Java adds src/main/java with build-helper. -->
+    <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
+    <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
     <pluginManagement>
       <plugins>
         <plugin>
@@ -271,11 +275,6 @@
             <goals>
               <goal>compile</goal>
             </goals>
-            <configuration>
-              <sourceDirs>
-                <sourceDir>${project.basedir}/src/main/kotlin</sourceDir>
-              </sourceDirs>
-            </configuration>
           </execution>
           <execution>
             <id>test-compile</id>
@@ -283,11 +282,6 @@
             <goals>
               <goal>test-compile</goal>
             </goals>
-            <configuration>
-              <sourceDirs>
-                <sourceDir>${project.basedir}/src/test/kotlin</sourceDir>
-              </sourceDirs>
-            </configuration>
           </execution>
         </executions>
       </plugin>
