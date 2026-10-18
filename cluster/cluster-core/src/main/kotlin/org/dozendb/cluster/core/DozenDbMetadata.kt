@@ -12,6 +12,9 @@ object DozenDbMetadata {
 
     /** "true" while the member's replicated databases run, so other members can copy them. */
     const val STORES_READY = "dozendb.storesReady"
+
+    /** The member's advertised Bolt address, for routing tables. */
+    const val BOLT_ADDRESS = "dozendb.boltAddress"
     const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
 
     private val properties: Properties by lazy {

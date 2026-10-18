@@ -44,6 +44,7 @@ class ClusterProcedures {
             MemberRow(
                 memberId = it.member.id.toString(),
                 raftAddress = it.member.raftAddress.toString(),
+                boltAddress = it.boltAddress?.toString(),
                 role = if (it.isLeader) "LEADER" else "FOLLOWER",
                 self = it.isSelf,
             )
@@ -68,6 +69,7 @@ class ClusterProcedures {
     data class MemberRow(
         val memberId: String,
         val raftAddress: String,
+        val boltAddress: String?,
         val role: String,
         val self: Boolean,
     )

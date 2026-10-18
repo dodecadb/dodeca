@@ -4,12 +4,18 @@ import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
+import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.Role
 import org.neo4j.logging.Log
 
-/** A voting member as seen from this member. */
-data class MemberView(val member: Member, val isLeader: Boolean, val isSelf: Boolean)
+/** A voting member as seen from this member; [boltAddress] is null while it is not known. */
+data class MemberView(
+    val member: Member,
+    val isLeader: Boolean,
+    val isSelf: Boolean,
+    val boltAddress: HostPort? = null,
+)
 
 /**
  * Runs this member's part of the cluster: starts consensus, forms or rejoins the `system` group,
@@ -17,6 +23,7 @@ data class MemberView(val member: Member, val isLeader: Boolean, val isSelf: Boo
  * about Neo4j internals.
  *
  * @property replicatedDatabases the replicated databases running on this member.
+ * @property directory the members' Bolt addresses, if this member serves Bolt.
  */
 class ClusterService(
     private val consensus: ConsensusLog,
@@ -25,6 +32,7 @@ class ClusterService(
     private val stores: LocalStores,
     private val userLog: Log,
     private val replicatedDatabases: () -> List<DatabaseRef> = { emptyList() },
+    val directory: MemberDirectory? = null,
 ) {
     private var statusListener: AutoCloseable? = null
 
@@ -52,6 +60,7 @@ class ClusterService(
         val listener = RoleChangeLogger(userLog)
         statusListener = consensus.addStatusListener(systemDatabase, listener)
         consensus.startGroup(systemDatabase, NoOpStateMachine(), joined?.members ?: emptyList())
+        directory?.start()
     }
 
     private fun copyStores(source: Member?) {
@@ -79,6 +88,7 @@ class ClusterService(
     }
 
     fun stop() {
+        directory?.stop()
         statusListener?.close()
         statusListener = null
         consensus.close()
@@ -95,7 +105,12 @@ class ClusterService(
     fun members(): List<MemberView> {
         val leader = consensus.status(systemDatabase).leader
         return consensus.members(systemDatabase).map {
-            MemberView(it, isLeader = it.id == leader, isSelf = it.id == consensus.self.id)
+            MemberView(
+                it,
+                isLeader = it.id == leader,
+                isSelf = it.id == consensus.self.id,
+                boltAddress = directory?.boltAddress(it.id),
+            )
         }
     }
 

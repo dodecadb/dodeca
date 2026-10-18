@@ -153,9 +153,8 @@ class ClusterServiceTest {
                 ClusterFormation(logs[0], addresses, "5.26.27", log, sleep = {}),
                 FakeStores(existed = true),
                 log,
-            ) {
-                listOf(neo4j)
-            }
+                replicatedDatabases = { listOf(neo4j) },
+            )
 
         assertThat(service.status().map { it.database }).containsExactly(system, neo4j)
     }

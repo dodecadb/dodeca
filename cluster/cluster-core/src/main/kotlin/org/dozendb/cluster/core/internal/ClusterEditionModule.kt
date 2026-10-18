@@ -6,6 +6,7 @@ import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
+import org.dozendb.cluster.core.MemberDirectory
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.core.internal.storecopy.StoreCopySource
@@ -13,6 +14,8 @@ import org.dozendb.cluster.ratis.RatisConsensusConfig
 import org.dozendb.cluster.ratis.RatisConsensusLog
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.CommunityDatabaseStateService
 import org.neo4j.dbms.CommunityKernelPanicListener
@@ -52,6 +55,8 @@ import org.neo4j.kernel.lifecycle.LifecycleAdapter
 class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(globalModule) {
     private val cluster: ClusterService
     private val replication: ReplicationService
+    private val directory: MemberDirectory
+
     private var clusterDefaultDatabaseInitializer: Lifecycle = LifecycleAdapter()
 
     init {
@@ -87,7 +92,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                             DozenDbMetadata.HAS_STORES to stores.existed.toString(),
                             DozenDbMetadata.STORES_READY to
                                 replicationService.defaultDatabaseStarted.toString(),
-                        )
+                        ) +
+                            listOfNotNull(
+                                boltAddress()?.let { DozenDbMetadata.BOLT_ADDRESS to it.toString() }
+                            )
                     },
                 )
             )
@@ -121,10 +129,23 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         )
         globalModule.databaseEventListeners.registerDatabaseEventListener(replication)
         val formation = ClusterFormation(consensus, initialMembers(config), neo4jVersion, userLog)
+        directory =
+            MemberDirectory(
+                consensus,
+                systemDatabase,
+                ::boltAddress,
+                logService.getInternalLog(MemberDirectory::class.java),
+            )
         cluster =
-            ClusterService(consensus, systemDatabase, formation, stores, userLog) {
-                replication.running().map { it.ref }
-            }
+            ClusterService(
+                consensus,
+                systemDatabase,
+                formation,
+                stores,
+                userLog,
+                { replication.running().map { it.ref } },
+                directory,
+            )
         globalModule.globalDependencies.satisfyDependency(cluster)
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
@@ -226,6 +247,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
 
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
         globalModule.globalLife.add(clusterDefaultDatabaseInitializer)
+    }
+
+    /** This member's advertised Bolt address, with the bound port if the configured one is 0. */
+    private fun boltAddress(): HostPort? {
+        if (!globalModule.globalConfig.get(BoltConnector.enabled)) return null
+        val advertised = globalModule.globalConfig.get(BoltConnector.advertised_address)
+        if (advertised.port > 0) return advertised.toHostPort()
+        val bound =
+            globalModule.connectorPortRegister.getLocalAddress(ConnectorType.BOLT) ?: return null
+        return HostPort(advertised.hostname, bound.port)
     }
 
     override fun registerEditionSpecificProcedures(
