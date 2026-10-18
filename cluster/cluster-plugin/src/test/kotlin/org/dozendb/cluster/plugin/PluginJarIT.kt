@@ -48,7 +48,7 @@ class PluginJarIT {
     }
 
     @Test
-    fun `registers the DozenDB entry point next to DozerDB's`() {
+    fun `registers the DozenDB services next to DozerDB's`() {
         assertThat(services("org.neo4j.server.startup.EntryPoint"))
             .containsExactlyInAnyOrder(
                 "org.dozendb.cluster.core.internal.ClusterEntryPoint",
@@ -59,8 +59,12 @@ class PluginJarIT {
                 "org.dozendb.cluster.core.internal.DozenDbSettings",
                 "org.neo4j.configuration.DozerDbSettings",
             )
+        // DozenDB's outranks DozerDB's only when clustering is enabled.
         assertThat(services("org.neo4j.kernel.impl.constraints.ConstraintSemantics"))
-            .containsExactly("org.neo4j.kernel.impl.constraints.DozerDbConstraintSemantics")
+            .containsExactlyInAnyOrder(
+                "org.dozendb.cluster.core.internal.DozenDbConstraintSemantics",
+                "org.neo4j.kernel.impl.constraints.DozerDbConstraintSemantics",
+            )
     }
 
     @Test

@@ -21,15 +21,27 @@ Its bootstrap, edition module and Cypher classes match the public
 `neo4j-5.26.8` source, but its constraint enforcement was rewritten. DozenDB
 builds the public source, so it differs from the release in these ways:
 
-- **Constraints (serious).** Creating a property existence constraint
-  (`REQUIRE x.p IS NOT NULL`) fails the database: the transaction does not
-  commit and the database must be restarted. The public source inherits Neo4j
-  Community's `readConstraint`, which rejects existence, key and property type
-  constraints when they are applied or loaded; the release overrides it to
-  accept them. The release also enforces property type, key, label existence
-  and relationship endpoint label constraints, which the public source does
-  not. `DisabledParityIT` asserts this difference so that it is noticed when
-  it changes.
+- **Constraints (serious, with clustering disabled).** Creating a property
+  existence constraint (`REQUIRE x.p IS NOT NULL`) fails the database: the
+  transaction does not commit and the database must be restarted. The public
+  source inherits Neo4j Community's `readConstraint`, which rejects existence,
+  key and property type constraints when they are applied or loaded; the
+  release overrides it to accept them. `DisabledParityIT` asserts this
+  difference so that it is noticed when it changes.
+- **Constraints with clustering enabled.** DozenDB's own constraint semantics
+  fix three defects of the public source, without changing it: stores with
+  existence, key and type constraints can be read; commit-time enforcement
+  builds its checker from each constraint's schema (the public source casts the
+  constraint itself, which fails every write once an existence constraint
+  exists); and a relationship missing a required property fails with
+  `Neo.ClientError.Schema.ConstraintValidationFailed`, also when the property
+  is removed later (the public source reports an unknown error and checks only
+  new relationships). Property existence constraints therefore work and are
+  enforced.
+  Still as in the public source: creating an existence constraint does not
+  verify existing data, and property type, key, label existence and
+  relationship endpoint label constraints are not enforced. The release
+  enforces those.
 - **Multi-database housekeeping.** The release contains small refactors of
   `MultiDatabaseManager`, `MultiDatabaseLifecycleService` and
   `SystemGraphTransactionEventListenerAdapter`. One of them changes behaviour:
