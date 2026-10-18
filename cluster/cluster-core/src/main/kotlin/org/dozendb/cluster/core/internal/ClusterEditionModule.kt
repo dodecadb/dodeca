@@ -6,7 +6,6 @@ import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
-import org.dozendb.cluster.core.procedures.ClusterProcedures
 import org.dozendb.cluster.ratis.RatisConsensusConfig
 import org.dozendb.cluster.ratis.RatisConsensusLog
 import org.neo4j.configuration.Config

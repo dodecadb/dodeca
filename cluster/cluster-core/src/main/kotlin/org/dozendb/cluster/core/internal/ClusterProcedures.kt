@@ -1,17 +1,22 @@
-package org.dozendb.cluster.core.procedures
+package org.dozendb.cluster.core.internal
 
 import java.util.stream.Stream
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.displayName
+import org.neo4j.kernel.api.procedure.SystemProcedure
 import org.neo4j.procedure.Context
 import org.neo4j.procedure.Description
 import org.neo4j.procedure.Mode
 import org.neo4j.procedure.Procedure
 
-/** Read-only cluster procedures. Neo4j requires every instance field to be a `@Context` field. */
+/**
+ * Read-only cluster procedures, callable on any database including `system`. Neo4j requires every
+ * instance field to be a `@Context` field.
+ */
 class ClusterProcedures {
     @JvmField @Context var cluster: ClusterService? = null
 
+    @SystemProcedure
     @Procedure(name = "dozendb.cluster.status", mode = Mode.DBMS)
     @Description("The Raft status of every database group on this member.")
     fun status(): Stream<StatusRow> {
@@ -31,6 +36,7 @@ class ClusterProcedures {
         }
     }
 
+    @SystemProcedure
     @Procedure(name = "dozendb.cluster.members", mode = Mode.DBMS)
     @Description("The voting members of the cluster, as seen from this member.")
     fun members(): Stream<MemberRow> =
