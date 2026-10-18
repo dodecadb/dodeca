@@ -19,7 +19,7 @@ internal interface DatabaseControl {
 
 /** Replaces a stopped replicated database with a copy and returns the Raft snapshot it holds. */
 internal fun interface DatabaseCopier {
-    fun copy(source: HostPort, name: String, minimumIndex: Long): Snapshot
+    fun copy(source: HostPort, database: DatabaseRef, minimumIndex: Long): Snapshot
 }
 
 /**
@@ -68,7 +68,7 @@ internal class CatchUp(
         while (true) {
             // Never install behind the group's own snapshot.
             val required = maxOf(minimumIndex, consensus.latestSnapshot(ref)?.position?.index ?: -1)
-            val snapshot = copyFromAnyMember(ref.name, leader, required)
+            val snapshot = copyFromAnyMember(ref, leader, required)
             if (snapshot != null) {
                 val skipped = consensus.installSnapshot(ref, snapshot)
                 log.info(
@@ -85,20 +85,24 @@ internal class CatchUp(
     }
 
     /** Copies from the leader first, then from the other members; null if all of them failed. */
-    private fun copyFromAnyMember(name: String, leader: Member?, minimumIndex: Long): Snapshot? {
+    private fun copyFromAnyMember(
+        database: DatabaseRef,
+        leader: Member?,
+        minimumIndex: Long,
+    ): Snapshot? {
         val candidates =
             (listOfNotNull(leader) + consensus.members(systemDatabase))
                 .filter { it.id != consensus.self.id }
                 .distinctBy { it.id }
         for (member in candidates) {
             try {
-                return copier.copy(member.raftAddress, name, minimumIndex)
+                return copier.copy(member.raftAddress, database, minimumIndex)
             } catch (e: InterruptedException) {
                 throw e
             } catch (e: Exception) {
                 log.warn(
                     "Copying database %s from %s failed: %s",
-                    name,
+                    database.name,
                     member.raftAddress,
                     e.message,
                 )

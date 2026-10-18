@@ -3,7 +3,9 @@ package org.dozendb.cluster.core.internal.storecopy
 import java.io.IOException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.UUID
 import org.dozendb.cluster.api.BulkTransfer
+import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Snapshot
 import org.dozendb.cluster.core.LocalStores
@@ -37,17 +39,17 @@ internal class Neo4jLocalStores(
 
     override fun copyFrom(source: HostPort, databases: List<String>) {
         require(databases.all { it in databaseNames }) { "unknown databases in $databases" }
-        val staged = databases.map { fetch(source, it, NO_MINIMUM) }
+        val staged = databases.map { fetch(source, it, null, NO_MINIMUM) }
         staged.forEach(::moveIntoPlace)
     }
 
     /**
-     * Replaces [name], which must be stopped, with a copy from [source] holding every Raft entry up
-     * to [minimumIndex], and returns the Raft snapshot the copy holds.
+     * Replaces [database], which must be stopped, with a copy from [source] holding every Raft
+     * entry up to [minimumIndex], and returns the Raft snapshot the copy holds.
      */
-    fun copyReplicated(source: HostPort, name: String, minimumIndex: Long): Snapshot {
-        require(name in databaseNames) { "unknown database $name" }
-        val staged = fetch(source, name, minimumIndex)
+    fun copyReplicated(source: HostPort, database: DatabaseRef, minimumIndex: Long): Snapshot {
+        val name = database.name
+        val staged = fetch(source, name, database.id, minimumIndex)
         val snapshot =
             staged.summary.snapshot
                 ?: throw IOException("$source sent a copy of $name without a Raft snapshot")
@@ -76,7 +78,7 @@ internal class Neo4jLocalStores(
         val source: HostPort,
     )
 
-    private fun fetch(source: HostPort, name: String, minimumIndex: Long): Staged {
+    private fun fetch(source: HostPort, name: String, id: UUID?, minimumIndex: Long): Staged {
         val database = layout.databasesDirectory().resolve(STAGING_PREFIX + name)
         val transactionLogs = layout.transactionLogsRootDirectory().resolve(STAGING_PREFIX + name)
         for (staging in listOf(database, transactionLogs)) {
@@ -87,7 +89,7 @@ internal class Neo4jLocalStores(
             transfer.fetchBulk(
                 source,
                 StoreCopySource.NAME,
-                StoreCopySource.encodeRequest(name, minimumIndex),
+                StoreCopySource.encodeRequest(name, id, minimumIndex),
             ) { input ->
                 StoreArchive.read(input, fs, database, transactionLogs)
             }

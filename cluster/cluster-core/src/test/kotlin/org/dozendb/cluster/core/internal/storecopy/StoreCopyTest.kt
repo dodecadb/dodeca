@@ -6,12 +6,14 @@ import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.cluster.api.BulkSource
 import org.dozendb.cluster.api.BulkTransfer
+import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.Snapshot
@@ -95,7 +97,7 @@ class StoreCopyTest {
         val target = root.resolve("target")
         Thread.sleep(300)
 
-        stores(target, InProcessTransfer(copySource)).copyFrom(HostPort("source", 7700), names)
+        stores(target, InProcessTransfer(copySource)).copyFrom(SOURCE, names)
         writing.set(false)
         writer.join()
 
@@ -116,15 +118,19 @@ class StoreCopyTest {
     private fun copySource(
         database: GraphDatabaseAPI,
         snapshot: Snapshot? = null,
+        replicating: Boolean = true,
     ): StoreCopySource =
         StoreCopySource(
             { database.dependencyResolver.resolveDependency(DatabaseContextProvider::class.java) },
             fs,
-            replicated = { snapshot != null && it == GraphDatabaseSettings.DEFAULT_DATABASE_NAME },
+            replicating = { replicating },
             snapshots = { snapshot },
             log = NullLog.getInstance(),
             minimumWait = Duration.ofMillis(100),
         )
+
+    private fun GraphDatabaseAPI.ref(): DatabaseRef =
+        DatabaseRef(databaseName(), databaseId().databaseId().uuid())
 
     @Test
     fun `a half-moved database is missing and the member counts as having none`() {
@@ -155,11 +161,46 @@ class StoreCopyTest {
         val snapshot = Snapshot(LogPosition(7, 2), 5)
         val transfer = InProcessTransfer(copySource(database, snapshot))
         val target = stores(root.resolve("target"), transfer)
-        val neo4j = GraphDatabaseSettings.DEFAULT_DATABASE_NAME
 
-        assertThat(target.copyReplicated(HostPort("source", 7700), neo4j, 7)).isEqualTo(snapshot)
-        assertThatThrownBy { target.copyReplicated(HostPort("source", 7700), neo4j, 8) }
+        assertThat(target.copyReplicated(SOURCE, database.ref(), 7)).isEqualTo(snapshot)
+        assertThatThrownBy { target.copyReplicated(SOURCE, database.ref(), 8) }
             .hasMessageContaining("not yet up to the requested index 8")
         assertThat(target.missing()).containsExactly(GraphDatabaseSettings.SYSTEM_DATABASE_NAME)
+    }
+
+    @Test
+    fun `only the requested database is copied, and only while it replicates`() {
+        val database = dbms(root.resolve("source")).neo4j()
+        val snapshot = Snapshot(LogPosition(7, 2), 5)
+        val namesake = DatabaseRef(database.databaseName(), UUID.randomUUID())
+
+        assertThatThrownBy {
+                stores(root.resolve("target"), InProcessTransfer(copySource(database, snapshot)))
+                    .copyReplicated(SOURCE, namesake, 7)
+            }
+            .hasMessageContaining("not the requested ${namesake.id}")
+        assertThatThrownBy {
+                stores(
+                        root.resolve("target"),
+                        InProcessTransfer(copySource(database, snapshot, replicating = false)),
+                    )
+                    .copyReplicated(SOURCE, database.ref(), 7)
+            }
+            .hasMessageContaining("is not replicating here")
+        assertThat(stores(root.resolve("target")).missing()).isEqualTo(names)
+    }
+
+    @Test
+    fun `copy requests round-trip with and without a database id`() {
+        val id = UUID.randomUUID()
+
+        assertThat(StoreCopySource.decodeRequest(StoreCopySource.encodeRequest("films", id, 9)))
+            .isEqualTo(StoreCopySource.Request("films", id, 9))
+        assertThat(StoreCopySource.decodeRequest(StoreCopySource.encodeRequest("films", null, -1)))
+            .isEqualTo(StoreCopySource.Request("films", null, -1))
+    }
+
+    private companion object {
+        val SOURCE = HostPort("source", 7700)
     }
 }

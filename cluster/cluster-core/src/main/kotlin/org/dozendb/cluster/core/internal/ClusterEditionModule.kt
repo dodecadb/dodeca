@@ -177,7 +177,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                     )
                 },
                 globalModule.fileSystem,
-                replicated = replicationService::replicates,
+                replicating = { id ->
+                    replicationService.running().any { it.namedDatabaseId == id }
+                },
                 snapshots = { name ->
                     replicationService
                         .running()
