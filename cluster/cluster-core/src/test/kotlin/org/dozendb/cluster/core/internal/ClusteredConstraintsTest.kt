@@ -34,7 +34,7 @@ class ClusteredConstraintsTest {
         val cluster = ClusterHarness(root, 1).also { harness = it }
         cluster.start()
         val member = cluster.members.single()
-        fun write(cypher: String) = member.database().executeTransactionally(cypher)
+        fun write(cypher: String) = cluster.awaitLeader().database().executeTransactionally(cypher)
         fun people(): Long =
             member.database().executeTransactionally(
                 "MATCH (p:Person) RETURN count(p) AS c",

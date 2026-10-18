@@ -46,3 +46,28 @@ builds the public source, so it differs from the release in these ways:
   `MultiDatabaseManager`, `MultiDatabaseLifecycleService` and
   `SystemGraphTransactionEventListenerAdapter`. One of them changes behaviour:
   on shutdown the release no longer stops the default database twice.
+
+## Clustering limitations
+
+What clustering does not do yet.
+
+- **Replicated databases.** Only the default database (`neo4j`) is
+  replicated. `system` and databases created with `CREATE DATABASE` are local
+  to each member, so administration commands apply to one member only.
+- **Writes go to the leader.** A follower rejects writes with
+  `Neo.ClientError.Cluster.NotALeader`; drivers do not yet get routing tables
+  that point at the leader.
+- **Transaction size.** A transaction can replicate at most 16 MiB of changes
+  in Neo4j's command encoding. A larger one fails with
+  `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is
+  committed; split it, for example with `CALL { ... } IN TRANSACTIONS`.
+- **Outcome unknown.** If the leader loses leadership or the majority while a
+  commit is in flight, the transaction fails with
+  `Neo.DatabaseError.Transaction.TransactionCommitFailed` and a message saying
+  that it may or may not have committed. This is inherent to replication.
+- **Starting databases.** All members must start from identical databases. A
+  new cluster starts from the databases of at most one member, or of the member
+  with the lowest id if none has any; the others copy them during formation.
+  Members with databases of their own refuse to form a cluster together.
+- **ID reuse.** IDs freed while a member is a follower are reused only after a
+  restart, as in Neo4j's own clustering.

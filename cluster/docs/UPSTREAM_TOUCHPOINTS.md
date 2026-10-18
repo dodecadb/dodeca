@@ -41,6 +41,19 @@ Re-apply: set all six lines to the Neo4j version recorded in
 `COMPATIBILITY.md`, and set `neo4j.version` and `dozerdb-core.version` in
 `cluster/pom.xml` to match.
 
+## DozerDB code that DozenDB builds on (no upstream edits)
+
+DozenDB subclasses or ports these DozerDB classes. After every upstream pull,
+diff them and carry relevant changes over.
+
+| DozerDB class | DozenDB code | How |
+|---|---|---|
+| `DozerDbBootstrapper` | `ClusterBootstrapper` | Subclass; clustering disabled calls DozerDB's code unchanged. |
+| `DozerDbEditionModule` | `ClusterEditionModule` | Subclass. `createDatabaseContextProvider` is a port of DozerDB's that swaps the database context factory; `registerDefaultDatabaseInitializer` is overridden because DozerDB keeps that starter in a private field. |
+| `DozerDbDatabaseContextFactory` | `ClusterDatabaseContextFactory` | Port. Differs only for replicated databases (hosting mode, leases, commit process, ID allocation) and in the constraint semantics. |
+| `MultiDatabaseManager`, `MultiDatabaseLifecycleService` | `ClusterEditionModule` | Used unchanged. |
+| `DozerDbConstraintSemantics`, `ConstraintChecker`, `ConstraintDelegator` | `DozenDbConstraintSemantics` | Subclass and use. Fixes `readConstraint` and the checker construction, see `COMPATIBILITY.md`. Only used with clustering enabled. |
+
 ## Build integration (no upstream edits)
 
 - The root `pom.xml` is a plain aggregator over `dozerdb-core` and `cluster`.

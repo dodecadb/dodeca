@@ -1,12 +1,12 @@
 package org.dozendb.cluster.core.internal
 
-import java.util.concurrent.atomic.AtomicBoolean
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
+import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.core.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.ratis.RatisConsensusConfig
@@ -24,8 +24,6 @@ import org.neo4j.dbms.database.MultiDatabaseLifecycleService
 import org.neo4j.dbms.database.MultiDatabaseManager
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.SystemGraphComponents
-import org.neo4j.graphdb.event.DatabaseEventContext
-import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.DozerDbEditionModule
@@ -53,6 +51,7 @@ import org.neo4j.kernel.lifecycle.LifecycleAdapter
  */
 class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(globalModule) {
     private val cluster: ClusterService
+    private val replication: ReplicationService
     private var clusterDefaultDatabaseInitializer: Lifecycle = LifecycleAdapter()
 
     init {
@@ -69,8 +68,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.name(),
                 NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid(),
             )
-        val defaultDatabaseRunning = AtomicBoolean()
         lateinit var stores: Neo4jLocalStores
+        lateinit var replicationService: ReplicationService
         val consensus =
             RatisConsensusLog(
                 RatisConsensusConfig(
@@ -86,7 +85,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                             DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
                             DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
                             DozenDbMetadata.HAS_STORES to stores.existed.toString(),
-                            DozenDbMetadata.STORES_READY to defaultDatabaseRunning.get().toString(),
+                            DozenDbMetadata.STORES_READY to
+                                replicationService.defaultDatabaseStarted.toString(),
                         )
                     },
                 )
@@ -99,6 +99,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 consensus,
                 logService.getInternalLog(Neo4jLocalStores::class.java),
             )
+        replicationService =
+            ReplicationService(
+                consensus,
+                systemDatabase,
+                defaultDatabase,
+                logService.internalLogProvider,
+            )
+        replication = replicationService
         consensus.registerBulkSource(
             StoreCopySource.NAME,
             StoreCopySource(
@@ -111,35 +119,32 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 logService.getInternalLog(StoreCopySource::class.java),
             ),
         )
-        globalModule.databaseEventListeners.registerDatabaseEventListener(
-            object : DatabaseEventListenerAdapter() {
-                override fun databaseStart(eventContext: DatabaseEventContext) {
-                    if (eventContext.databaseName == defaultDatabase)
-                        defaultDatabaseRunning.set(true)
-                }
-
-                override fun databaseShutdown(eventContext: DatabaseEventContext) {
-                    if (eventContext.databaseName == defaultDatabase)
-                        defaultDatabaseRunning.set(false)
-                }
-            }
-        )
+        globalModule.databaseEventListeners.registerDatabaseEventListener(replication)
         val formation = ClusterFormation(consensus, initialMembers(config), neo4jVersion, userLog)
-        cluster = ClusterService(consensus, systemDatabase, formation, stores, userLog)
+        cluster =
+            ClusterService(consensus, systemDatabase, formation, stores, userLog) {
+                replication.running().map { it.ref }
+            }
         globalModule.globalDependencies.satisfyDependency(cluster)
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
                 override fun start() = cluster.start()
 
-                override fun stop() = cluster.stop()
+                override fun stop() {
+                    try {
+                        cluster.stop()
+                    } finally {
+                        replication.close()
+                    }
+                }
             }
         )
     }
 
     /**
-     * A port of DozerDB's wiring that differs only in the database context factory, which gives
-     * every database DozenDB's constraint semantics. DozerDB keeps the default database starter in
-     * a private field, hence [registerDefaultDatabaseInitializer].
+     * A port of DozerDB's wiring that differs only in the database context factory, which hosts
+     * replicated databases on Raft. DozerDB keeps the default database starter in a private field,
+     * hence [registerDefaultDatabaseInitializer].
      */
     override fun createDatabaseContextProvider(
         globalModule: GlobalModule
@@ -155,6 +160,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 CommunityIOControllerService(),
                 createCommitProcessFactory(),
                 this,
+                replication,
             )
         val databaseIdRepository = MapCachingDatabaseIdRepository()
         val databaseRepository = DatabaseRepository<StandaloneDatabaseContext>(databaseIdRepository)

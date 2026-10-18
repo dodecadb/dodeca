@@ -1,6 +1,7 @@
 package org.dozendb.cluster.core.internal
 
 import java.util.Optional
+import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.neo4j.configuration.DatabaseConfig
 import org.neo4j.cypher.internal.javacompat.DozerDbCypherEngineProvider
 import org.neo4j.dbms.database.AbstractDatabaseContextFactory
@@ -27,9 +28,14 @@ import org.neo4j.kernel.impl.index.DatabaseIndexStats
 import org.neo4j.kernel.impl.pagecache.CommunityVersionStorageFactory
 import org.neo4j.kernel.impl.pagecache.IOControllerService
 import org.neo4j.kernel.impl.transaction.stats.DatabaseTransactionStats
+import org.neo4j.storageengine.api.StorageEngineFactory
 
 /**
- * A port of `DozerDbDatabaseContextFactory` that gives every database [DozenDbConstraintSemantics].
+ * A port of `DozerDbDatabaseContextFactory` that hosts replicated databases on Raft.
+ *
+ * Every database gets [DozenDbConstraintSemantics]. A database that [replication] replicates also
+ * gets the Raft hosting mode, the cluster's lease service and commit process, and ID generators
+ * that start with free-ID reuse disabled. Every other value is DozerDB's.
  */
 internal class ClusterDatabaseContextFactory(
     globalModule: GlobalModule,
@@ -41,6 +47,7 @@ internal class ClusterDatabaseContextFactory(
     private val controllerService: IOControllerService,
     private val commitProcessFactory: TransactionalProcessFactory,
     private val components: DefaultDatabaseContextFactoryComponents,
+    private val replication: ReplicationService,
 ) :
     AbstractDatabaseContextFactory<StandaloneDatabaseContext, Optional<*>>(
         globalModule,
@@ -53,10 +60,32 @@ internal class ClusterDatabaseContextFactory(
     ): StandaloneDatabaseContext {
         val databaseConfig = DatabaseConfig(globalModule.globalConfig)
         val contextFactory = createContextFactory(databaseConfig, namedDatabaseId)
+        val replicated = replication.replicates(namedDatabaseId)
+        val idContext =
+            idContextFactory.createIdContext(
+                namedDatabaseId,
+                contextFactory,
+                databaseConfig,
+                !replicated,
+            )
+        val replica =
+            if (replicated) {
+                val storeExists =
+                    StorageEngineFactory.allAvailableStorageEngines().any {
+                        it.storageExists(
+                            globalModule.fileSystem,
+                            globalModule.neo4jLayout,
+                            namedDatabaseId.name(),
+                        )
+                    }
+                replication.prepare(namedDatabaseId, idContext.idGeneratorFactory, storeExists)
+            } else {
+                null
+            }
         lateinit var database: Database
         val creationContext =
             ModularDatabaseCreationContext(
-                HostedOnMode.SINGLE,
+                if (replica != null) HostedOnMode.RAFT else HostedOnMode.SINGLE,
                 serverIdentity,
                 namedDatabaseId,
                 globalModule,
@@ -66,7 +95,7 @@ internal class ClusterDatabaseContextFactory(
                 CommunityVersionStorageFactory(),
                 databaseConfig,
                 globalModule.globalMonitors,
-                LeaseService.NO_LEASES,
+                replica?.leaseService ?: LeaseService.NO_LEASES,
                 {
                     DatabaseCreationContext.selectStorageEngine(
                         globalModule.fileSystem,
@@ -82,13 +111,8 @@ internal class ClusterDatabaseContextFactory(
                 ModularDatabaseCreationContext.defaultFileWatcherFilter(),
                 AccessCapabilityFactory.configDependent(),
                 ExternalIdReuseConditionProvider.NONE,
-                idContextFactory.createIdContext(
-                    namedDatabaseId,
-                    contextFactory,
-                    databaseConfig,
-                    true,
-                ),
-                commitProcessFactory,
+                idContext,
+                replica?.commitProcessFactory(commitProcessFactory) ?: commitProcessFactory,
                 createTokenHolderProvider {
                     database.dependencyResolver.resolveDependency(Kernel::class.java)
                 },
@@ -100,6 +124,7 @@ internal class ClusterDatabaseContextFactory(
                 TransactionsFactory.DEFAULT,
             )
         database = Database(creationContext)
+        replica?.attach(database)
         return StandaloneDatabaseContext(database)
     }
 }
