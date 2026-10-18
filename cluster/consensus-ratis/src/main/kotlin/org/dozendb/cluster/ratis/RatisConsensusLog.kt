@@ -70,6 +70,10 @@ import org.slf4j.LoggerFactory
  * reported as [CommitResult.OutcomeUnknown].
  */
 class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog {
+    init {
+        RatisJvmSafety.ensure()
+    }
+
     private val log = LoggerFactory.getLogger(RatisConsensusLog::class.java)
     private val peerId = RaftPeerId.valueOf(config.memberId.toString())
     private val clientId = ClientId.randomId()

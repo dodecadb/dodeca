@@ -1,5 +1,7 @@
 package org.dozendb.cluster.ratis
 
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
@@ -16,6 +18,7 @@ import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.LogEntry
+import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.ReplicatedStateMachine
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.fake.RecordingStateMachine
@@ -368,6 +371,31 @@ class RatisConsensusLogTest {
             assertThat(node.write("two")).isInstanceOf(CommitResult.Committed::class.java)
             assertThat(node.machine.payloads()).containsExactly("one", "two")
         }
+
+    @Test
+    fun `a port in use fails the start instead of ending the JVM`() {
+        ServerSocket(0, 1, InetAddress.getLoopbackAddress()).use { taken ->
+            val log =
+                RatisConsensusLog(
+                    RatisConsensusConfig(
+                        memberId = MemberId(UUID.randomUUID()),
+                        listenHost = "127.0.0.1",
+                        listenPort = taken.localPort,
+                        advertisedAddress = null,
+                        storageDirectory = root.resolve("taken"),
+                    )
+                )
+            try {
+                assertThatThrownBy { log.start() }
+                    .hasMessageContaining("Failed to start Grpc server")
+            } finally {
+                log.close()
+            }
+        }
+        // Ratis' handler would end the JVM on any uncaught exception.
+        assertThat(Thread.getDefaultUncaughtExceptionHandler()?.javaClass?.name.orEmpty())
+            .doesNotContain("ratis")
+    }
 
     @Test
     fun `starting a group without local state needs bootstrap members`() {
