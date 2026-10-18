@@ -8,6 +8,8 @@ import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
+import org.dozendb.cluster.core.internal.durability.FsyncPolicy
+import org.dozendb.cluster.core.internal.durability.SingleFsyncFileSystem
 import org.dozendb.cluster.core.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.core.internal.replication.CatchUp
 import org.dozendb.cluster.core.internal.replication.DatabaseControl
@@ -155,6 +157,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 logService.internalLogProvider,
             )
         replication = replicationService
+        val fileSystem = globalModule.fileSystem
+        if (fileSystem is SingleFsyncFileSystem) {
+            fileSystem.policy = FsyncPolicy(replicationService::singleFsync)
+            userLog.info("Commits to replicated databases force only the Raft log (single fsync)")
+        } else {
+            userLog.info("Commits to replicated databases force the Raft log and Neo4j's log")
+        }
         consensus.registerBulkSource(
             StoreCopySource.NAME,
             StoreCopySource(

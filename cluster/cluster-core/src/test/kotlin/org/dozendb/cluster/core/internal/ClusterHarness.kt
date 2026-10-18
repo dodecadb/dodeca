@@ -13,6 +13,7 @@ import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.testing.TestPorts
 import org.dozendb.cluster.core.ClusterService
+import org.dozendb.cluster.core.internal.durability.withSingleFsync
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -24,16 +25,19 @@ import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies
 import org.neo4j.io.ByteUnit
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 
 /**
  * Clustered DBMSes in this JVM, on loopback, for tests. [tuning] adjusts every member's consensus
- * configuration.
+ * configuration; [fileSystem] supplies the file system a member's DBMS runs on, below DozenDB's
+ * single-fsync file system, each time it starts.
  */
 internal class ClusterHarness(
     private val root: Path,
     size: Int,
+    private val fileSystem: ((Member) -> FileSystemAbstraction)? = null,
     private val tuning: ConsensusTuning? = null,
 ) : AutoCloseable {
     inner class Member(val index: Int) {
@@ -50,13 +54,20 @@ internal class ClusterHarness(
         /** Starts the DBMS; blocks until its databases run, which may wait for other members. */
         fun start() {
             check(dbms == null) { "member $index is running" }
-            val dependencies = GraphDatabaseDependencies.newDependencies()
-            tuning?.let {
-                dependencies.dependencies(Dependencies().apply { satisfyDependency(it) })
-            }
+            val given = Dependencies()
+            tuning?.let { given.satisfyDependency(it) }
+            fileSystem?.let { given.satisfyDependency(it(this)) }
+            val config = config()
             dbms =
                 DatabaseManagementServiceFactory(DbmsInfo.ENTERPRISE, ::ClusterEditionModule)
-                    .build(config(), false, dependencies)
+                    .build(
+                        config,
+                        false,
+                        withSingleFsync(
+                            config,
+                            GraphDatabaseDependencies.newDependencies().dependencies(given),
+                        ),
+                    )
         }
 
         /** The first index in this member's Raft log of [database], or null if it has none. */

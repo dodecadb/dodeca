@@ -79,6 +79,18 @@ What clustering does not do yet.
   Members with databases of their own refuse to form a cluster together.
 - **ID reuse.** IDs freed while a member is a follower are reused only after a
   restart, as in Neo4j's own clustering.
+- **Durability (single fsync).** A commit to a replicated database is
+  durable once a majority of members has forced it to their Raft log; Neo4j's
+  transaction log is not forced at every commit. Before a member writes store
+  pages or a checkpoint, it forces the transaction log they depend on, so the
+  store never gets ahead of the log. After a power loss, recovery truncates a
+  damaged log tail and the member replays the rest from the Raft log. For this,
+  a clustered member sets `internal.dbms.tx_log.fail_on_corrupted_log_files`
+  to `false` unless it is configured explicitly. The setting applies to every
+  database, so damage to log bytes that were already forced (a failing disk)
+  is truncated and logged instead of stopping the start. Set
+  `server.dozendb.cluster.single_fsync=false` to force both logs at every
+  commit, as Neo4j does on its own.
 - **Raft log retention and catch-up.** Raft snapshots follow Neo4j
   checkpoints (`db.checkpoint.interval.*`): each member keeps its Raft log from
   its second-to-last checkpoint on. A member that was down for less than about

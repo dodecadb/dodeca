@@ -84,6 +84,7 @@ class DisabledParityIT {
                 "server.dozendb.cluster.listen_address",
                 "server.dozendb.cluster.advertised_address",
                 "server.dozendb.cluster.raft_directory",
+                "server.dozendb.cluster.single_fsync",
             )
     }
 

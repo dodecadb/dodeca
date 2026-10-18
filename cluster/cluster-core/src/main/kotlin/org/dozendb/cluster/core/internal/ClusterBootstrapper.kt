@@ -1,6 +1,7 @@
 package org.dozendb.cluster.core.internal
 
 import org.dozendb.cluster.core.DozenDbMetadata
+import org.dozendb.cluster.core.internal.durability.withSingleFsync
 import org.neo4j.configuration.Config
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
@@ -31,6 +32,6 @@ class ClusterBootstrapper : DozerDbBootstrapper() {
         )
         Slf4jLogRouting.install(dependencies.userLogProvider(), log)
         return DatabaseManagementServiceFactory(DbmsInfo.ENTERPRISE, ::ClusterEditionModule)
-            .build(config, daemonMode, dependencies)
+            .build(config, daemonMode, withSingleFsync(config, dependencies))
     }
 }

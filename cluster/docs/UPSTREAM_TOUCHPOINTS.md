@@ -54,6 +54,30 @@ diff them and carry relevant changes over.
 | `MultiDatabaseManager`, `MultiDatabaseLifecycleService` | `ClusterEditionModule` | Used unchanged. `MultiDatabaseManager.stopDatabase` and `startDatabase` stop a replicated database while its copy is replaced (`CatchUp`). |
 | `DozerDbConstraintSemantics`, `ConstraintChecker`, `ConstraintDelegator` | `DozenDbConstraintSemantics` | Subclass and use. Fixes `readConstraint` and the checker construction, see `COMPATIBILITY.md`. Only used with clustering enabled. |
 
+## Neo4j behaviour that single fsync relies on (no upstream edits)
+
+`SingleFsyncFileSystem` wraps Neo4j's file system instead of changing Neo4j
+code. It depends on the following, verified against Neo4j 5.26. Recheck them
+after every Neo4j upgrade; the unit and power-loss tests in `cluster-core`
+catch most such changes.
+
+- Transaction log and checkpoint files are opened for writing through the DBMS
+  `FileSystemAbstraction` (`TransactionLogChannelAllocator`), which an external
+  dependency may replace (`GlobalModule`), and are forced only through
+  `StoreChannel.flush()` (`TransactionLogFile`, `DetachedCheckpointAppender`).
+- They are named `neostore.transaction.db.<n>` and `checkpoint.<n>` in
+  `<transactions root>/<database>/` (`TransactionLogFilesHelper`).
+- The page cache writes store pages through `StoreChannel` write methods of
+  channels from the same file system, while it holds the page's flush lock
+  (`SingleFilePageSwapper`, `MuninnPageCache`).
+- The checkpointer fixes the checkpointed position before it flushes the store,
+  and writes the checkpoint record after (`CheckPointerImpl`).
+- Recovery reads `internal.dbms.tx_log.fail_on_corrupted_log_files` from the
+  DBMS configuration: `Config.Builder.fromConfig` drops per-database settings
+  (`Recovery.recoveryOptimizedConfig`).
+- `DetachedCheckpointAppender.shutdown` closes its channel twice; the wrapper's
+  `close` is idempotent.
+
 ## Build integration (no upstream edits)
 
 - The root `pom.xml` is a plain aggregator over `dozerdb-core` and `cluster`.

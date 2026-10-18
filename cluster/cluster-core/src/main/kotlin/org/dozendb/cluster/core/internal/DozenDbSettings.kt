@@ -90,6 +90,16 @@ class DozenDbSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "Whether commits to replicated databases force only the Raft log to disk. Neo4j's " +
+                "transaction log is then forced before each checkpoint instead of at every " +
+                "commit; after a crash, the Raft log restores the transactions it lost. When " +
+                "false, every commit forces both logs."
+        )
+        val singleFsync: Setting<Boolean> =
+            newBuilder("server.dozendb.cluster.single_fsync", BOOL, true).immutable().build()
+
+        @JvmField
+        @field:Description(
             "A follower that hears nothing from the leader for a random time between this " +
                 "and dbms.dozendb.cluster.election_timeout_max starts an election."
         )

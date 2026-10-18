@@ -59,6 +59,14 @@ internal class ReplicatedDatabase(
 
     val leaseService = ClusterLeaseService { bootstrapping }
 
+    /**
+     * True while the database's transactions go through Raft and its committed entries are applied,
+     * from [start] to [stop]. Only then does the Raft log make its commits durable.
+     */
+    @Volatile
+    var replicating: Boolean = false
+        private set
+
     /** The local commit process that applies committed entries, set when the database starts. */
     @Volatile var applyProcess: TransactionCommitProcess? = null
 
@@ -96,9 +104,11 @@ internal class ReplicatedDatabase(
             bootstrapping = false
             val listener = consensus.addStatusListener(ref, ::onStatus)
             statusListener = listener
+            replicating = true
             try {
                 consensus.startGroup(ref, stateMachine, bootstrap)
             } catch (e: Exception) {
+                replicating = false
                 listener.close()
                 statusListener = null
                 throw e
@@ -131,6 +141,7 @@ internal class ReplicatedDatabase(
     fun stop() {
         synchronized(lock) {
             val listener = statusListener ?: return
+            replicating = false
             listener.close()
             statusListener = null
             leaveWritableTerm()

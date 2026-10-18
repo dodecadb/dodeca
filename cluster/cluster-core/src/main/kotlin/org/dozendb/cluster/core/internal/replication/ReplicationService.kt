@@ -47,6 +47,9 @@ internal class ReplicationService(
     fun replicates(name: String): Boolean =
         name != systemDatabase.name && name == defaultDatabaseName
 
+    /** Whether commits to the database [name] are durable through the Raft log alone. */
+    fun singleFsync(name: String): Boolean = databases[name]?.replicating == true
+
     /**
      * Creates the replication of a database that is being created. [storeExists] tells whether the
      * database's files exist or Neo4j is about to create them.
