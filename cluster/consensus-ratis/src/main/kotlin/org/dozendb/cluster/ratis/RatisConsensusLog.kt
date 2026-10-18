@@ -246,7 +246,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val groupId = RaftGroupId.valueOf(database.id)
         // Closing the division waits for every committed entry to be applied.
         stateMachines[database.id]?.let {
-            it.detach()
+            it.detach(handOverLeadership = false)
             it.release()
         }
         if (groupId in raftServer.groupIds) {
@@ -277,16 +277,16 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     private fun groupDirectory(groupId: UUID) = config.storageDirectory.resolve(groupId.toString())
 
-    override fun detachGroup(database: DatabaseRef) {
+    override fun detachGroup(database: DatabaseRef, handOverLeadership: Boolean) {
         val stateMachine = stateMachines[database.id] ?: return
-        stateMachine.detach()
+        stateMachine.detach(handOverLeadership)
         log.info("Raft group {} detached from its state machine", database)
         val leading =
             server?.let {
                 runCatching { it.getDivision(RaftGroupId.valueOf(database.id)).info.isLeader }
                     .getOrDefault(false)
             } == true
-        if (leading) handOverLeadership(database.id)
+        if (leading && handOverLeadership) handOverLeadership(database.id)
         publishStatus(database.id)
     }
 
@@ -316,7 +316,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val raftGroupId = RaftGroupId.valueOf(groupId)
         val division = runCatching { raftServer.getDivision(raftGroupId) }.getOrNull() ?: return
         val stateMachine = stateMachines[groupId] ?: return
-        if (!division.info.isLeader || !stateMachine.isDetached) return
+        if (!division.info.isLeader || !stateMachine.handsOverLeadership) return
         val database = stateMachine.database
         for (candidate in division.group.peers.map { it.id }.filter { it != peerId }) {
             val reply = runCatching {

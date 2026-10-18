@@ -74,10 +74,14 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
     /**
      * Detaches the state machine of [database], for example while its database is stopped. The
      * group keeps running on this member, which keeps voting and storing entries; they are applied
-     * once a state machine is attached again with [startGroup]. A leader hands leadership to
-     * another member. Returns once no entry is being applied.
+     * once a state machine is attached again with [startGroup]. Returns once no entry is being
+     * applied.
+     *
+     * With [handOverLeadership], this member hands leadership to another member whenever it leads
+     * meanwhile, so that the group keeps committing. Without it, it keeps leading, as when the
+     * database stops on every member.
      */
-    public fun detachGroup(database: DatabaseRef)
+    public fun detachGroup(database: DatabaseRef, handOverLeadership: Boolean = true)
 
     /**
      * The state of the local state machine of [database] as a snapshot: the last entry applied and

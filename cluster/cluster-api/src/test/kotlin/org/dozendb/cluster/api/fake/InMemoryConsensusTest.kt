@@ -78,6 +78,19 @@ class InMemoryConsensusTest {
         }
 
     @Test
+    fun `a detached leader keeps leading only without handover`() {
+        startAll()
+        consensus.electLeader(database, a.self.id)
+
+        a.detachGroup(database, handOverLeadership = false)
+        assertThat(b.status(database).leader).isEqualTo(a.self.id)
+
+        a.startGroup(database, machines.getValue(a.self.id), emptyList())
+        a.detachGroup(database)
+        assertThat(b.status(database).leader).isNull()
+    }
+
+    @Test
     fun `followers reject writes and name the leader`() =
         runBlocking<Unit> {
             startAll()

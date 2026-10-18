@@ -91,6 +91,7 @@ internal class GroupStateMachine(
     private var candidate: ReplicatedStateMachine? = null
     private var target: ReplicatedStateMachine? = null
     private var detached = false
+    private var handOverWhileDetached = false
     private var released = false
     private var snapshotRequested = false
     private var pendingInstall: PendingInstall? = null
@@ -118,9 +119,12 @@ internal class GroupStateMachine(
     var database: DatabaseRef = DatabaseRef("unbound", groupId)
         private set
 
-    /** Whether the state machine was detached and not attached again since. */
-    val isDetached: Boolean
-        get() = stateLock.withLock { detached }
+    /**
+     * Whether this member hands leadership over while it leads: its state machine was detached with
+     * leadership handover and not attached again since.
+     */
+    val handsOverLeadership: Boolean
+        get() = stateLock.withLock { detached && handOverWhileDetached }
 
     /** Names the group's database before a state machine is attached. */
     fun bind(database: DatabaseRef) {
@@ -148,13 +152,15 @@ internal class GroupStateMachine(
 
     /**
      * Detaches the state machine, after the entry being applied, if any. Applying waits until a
-     * state machine is attached again.
+     * state machine is attached again. [handOverLeadership] tells whether this member hands
+     * leadership over whenever it leads meanwhile.
      */
-    fun detach() {
+    fun detach(handOverLeadership: Boolean) {
         stateLock.withLock {
             candidate = null
             target = null
             detached = true
+            handOverWhileDetached = handOverLeadership
             snapshotRequested = false
         }
         // Wait for the entry being applied to the previous state machine.
@@ -462,8 +468,9 @@ internal class GroupStateMachine(
 
     override fun notifyLeaderChanged(groupMemberId: RaftGroupMemberId, newLeaderId: RaftPeerId?) {
         listener.onGroupChanged(groupId)
-        val leadingDetached = newLeaderId == groupMemberId.peerId && stateLock.withLock { detached }
-        if (leadingDetached) listener.onLeadingDetached(groupId)
+        if (newLeaderId == groupMemberId.peerId && handsOverLeadership) {
+            listener.onLeadingDetached(groupId)
+        }
     }
 
     override fun notifyLeaderReady() {

@@ -12,6 +12,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
+import org.awaitility.kotlin.during
 import org.awaitility.kotlin.untilAsserted
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusUnavailableException
@@ -448,6 +449,30 @@ class RatisConsensusLogTest {
                 {
                     assertThat(leader.machine.payloads()).containsExactly("one", "two")
                 }
+        }
+
+    @Test
+    fun `a leader detached without handover keeps leading`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            leader.write("one")
+
+            leader.consensus.detachGroup(cluster.database, handOverLeadership = false)
+
+            // Longer than the handover retry interval: a handover would have happened by then.
+            await during
+                Duration.ofSeconds(3) atMost
+                Duration.ofSeconds(10) untilAsserted
+                {
+                    for (node in cluster.running()) {
+                        assertThat(node.consensus.leader(cluster.database))
+                            .describedAs("$node")
+                            .isEqualTo(leader.id)
+                    }
+                }
+            leader.consensus.startGroup(cluster.database, leader.machine, emptyList())
+            assertThat(leader.write("two")).isInstanceOf(CommitResult.Committed::class.java)
         }
 
     @Test

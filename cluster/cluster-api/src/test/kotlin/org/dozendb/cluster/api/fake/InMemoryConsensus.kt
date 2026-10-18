@@ -287,13 +287,13 @@ class InMemoryConsensus {
             notifications.forEach { it() }
         }
 
-        override fun detachGroup(database: DatabaseRef) {
+        override fun detachGroup(database: DatabaseRef, handOverLeadership: Boolean) {
             val notifications =
                 synchronized(lock) {
                     running.remove(database.id) ?: return
                     delivered.remove(database.id)
                     val group = group(database)
-                    if (group.leader == self.id) group.leader = null
+                    if (handOverLeadership && group.leader == self.id) group.leader = null
                     statusNotifications(database)
                 }
             notifications.forEach { it() }
