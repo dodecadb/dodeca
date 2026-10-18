@@ -63,14 +63,36 @@ internal class GroupStateMachine(
         val entry = trx.logEntry
         // get() rather than join(): Ratis interrupts this thread on shutdown.
         val target = binding.get()
-        if (entry.index > target.lastAppliedIndex()) {
-            target.apply(
-                LogEntry(entry.index, entry.term, entry.stateMachineLogEntry.logData.toByteArray())
-            )
-        }
-        updateLastAppliedTermIndex(entry.term, entry.index)
-        return CompletableFuture.completedFuture(longMessage(entry.term))
+        val response =
+            if (entry.index > target.lastAppliedIndex()) {
+                target.apply(
+                    LogEntry(
+                        entry.index,
+                        entry.term,
+                        entry.stateMachineLogEntry.logData.toByteArray(),
+                    )
+                )
+            } else {
+                ByteArray(0)
+            }
+        advance(entry.term, entry.index)
+        return CompletableFuture.completedFuture(replyMessage(entry.term, response))
     }
+
+    /** Ratis applied an entry that does not reach the state machine, such as a configuration. */
+    override fun notifyTermIndexUpdated(term: Long, index: Long) {
+        advance(term, index)
+    }
+
+    private fun advance(term: Long, index: Long) {
+        val previousTerm = lastAppliedTermIndex.term
+        updateLastAppliedTermIndex(term, index)
+        // Applying the first entry of a term can make the leader writable.
+        if (term != previousTerm) listener.onGroupChanged(groupId)
+    }
+
+    /** The term of the last entry applied by this member. */
+    fun appliedTerm(): Long = lastAppliedTermIndex.term
 
     /** Answers read-index requests with the applied index, after Ratis confirmed leadership. */
     override fun query(request: Message): CompletableFuture<Message> =
@@ -108,5 +130,24 @@ internal class GroupStateMachine(
             )
 
         fun decodeLong(message: Message): Long = message.content.asReadOnlyByteBuffer().getLong()
+
+        /** A write reply: the entry's term followed by the state machine's response. */
+        fun replyMessage(term: Long, response: ByteArray): Message =
+            Message.valueOf(
+                UnsafeByteOperations.unsafeWrap(
+                    ByteBuffer.allocate(Long.SIZE_BYTES + response.size)
+                        .putLong(term)
+                        .put(response)
+                        .flip()
+                )
+            )
+
+        /** Splits a write reply into the entry's term and the state machine's response. */
+        fun decodeReply(message: Message): Pair<Long, ByteArray> {
+            val buffer = message.content.asReadOnlyByteBuffer()
+            val term = buffer.getLong()
+            val response = ByteArray(buffer.remaining()).also { buffer.get(it) }
+            return term to response
+        }
     }
 }

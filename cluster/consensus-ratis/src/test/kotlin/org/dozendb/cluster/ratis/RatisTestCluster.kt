@@ -45,7 +45,7 @@ class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
                             storageDirectory = directory,
                             electionTimeoutMin = ELECTION_TIMEOUT_MIN,
                             electionTimeoutMax = ELECTION_TIMEOUT_MAX,
-                            metadata = mapOf("neo4j.version" to "5.26.27"),
+                            metadata = { mapOf("neo4j.version" to "5.26.27") },
                         )
                     )
                     .also {

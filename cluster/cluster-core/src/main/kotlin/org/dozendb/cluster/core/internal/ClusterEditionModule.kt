@@ -44,11 +44,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                     storageDirectory = config.get(DozenDbSettings.raftDirectory),
                     electionTimeoutMin = config.get(DozenDbSettings.electionTimeoutMin),
                     electionTimeoutMax = config.get(DozenDbSettings.electionTimeoutMax),
-                    metadata =
+                    metadata = {
                         mapOf(
                             DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
                             DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
-                        ),
+                        )
+                    },
                 )
             )
         val systemDatabase =

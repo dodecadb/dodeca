@@ -34,9 +34,9 @@ class InMemoryConsensusTest {
             consensus.electLeader(database, a.self.id)
 
             assertThat(a.submit(database, "one".encodeToByteArray()))
-                .isEqualTo(CommitResult.Committed(1, 1))
+                .isEqualTo(CommitResult.Committed(1, 1, "applied 1".encodeToByteArray()))
             assertThat(a.submit(database, "two".encodeToByteArray()))
-                .isEqualTo(CommitResult.Committed(2, 1))
+                .isEqualTo(CommitResult.Committed(2, 1, "applied 2".encodeToByteArray()))
 
             machines.values.forEach { assertThat(it.payloads()).containsExactly("one", "two") }
             assertThat(b.status(database))
@@ -136,7 +136,8 @@ class InMemoryConsensusTest {
             consensus.failNextSubmit(database, failure)
 
             assertThat(a.submit(database, byteArrayOf(1))).isSameAs(failure)
-            assertThat(a.submit(database, byteArrayOf(2))).isEqualTo(CommitResult.Committed(1, 1))
+            assertThat(a.submit(database, byteArrayOf(2)))
+                .isEqualTo(CommitResult.Committed(1, 1, "applied 1".encodeToByteArray()))
         }
 
     @Test
@@ -152,5 +153,32 @@ class InMemoryConsensusTest {
             a.removeMember(database, c.self.id)
 
             assertThat(a.members(database)).containsExactly(a.self, b.self, d.self)
+        }
+
+    @Test
+    fun `bulk transfers stream a source's output and report missing sources`() {
+        all.forEach { it.start() }
+        a.registerBulkSource("echo") { request, out -> out.write(request + request) }
+
+        val answer =
+            b.fetchBulk(a.self.raftAddress, "echo", "ab".encodeToByteArray()) {
+                it.readAllBytes().decodeToString()
+            }
+
+        assertThat(answer).isEqualTo("abab")
+        assertThatThrownBy {
+                b.fetchBulk(a.self.raftAddress, "missing", ByteArray(0)) { it.read() }
+            }
+            .isInstanceOf(ConsensusUnavailableException::class.java)
+    }
+
+    @Test
+    fun `probes report the metadata current at the time of the probe`() =
+        runBlocking<Unit> {
+            all.forEach { it.start() }
+            a.metadata = mapOf("dozendb.storesReady" to "true")
+
+            assertThat(b.probe(a.self.raftAddress).metadata)
+                .containsEntry("dozendb.storesReady", "true")
         }
 }

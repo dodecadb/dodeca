@@ -3,6 +3,7 @@ package org.dozendb.cluster.ratis
 import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.assertj.core.api.Assertions.assertThat
@@ -17,6 +18,7 @@ import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.LogEntry
 import org.dozendb.cluster.api.ReplicatedStateMachine
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.api.fake.RecordingStateMachine
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -78,6 +80,87 @@ class RatisConsensusLogTest {
             assertThat(leader.consensus.status(cluster.database).term).isEqualTo(term)
             assertThat(leader.consensus.status(cluster.database).commitIndex)
                 .isGreaterThanOrEqualTo(indexes.last())
+        }
+
+    @Test
+    fun `the submitter receives the response of the leader's apply`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+
+            val result = leader.write("entry") as CommitResult.Committed
+
+            assertThat(result.response.decodeToString()).isEqualTo("applied ${result.index}")
+        }
+
+    @Test
+    fun `a new leader is writable only after applying the entries before its term`() =
+        runBlocking<Unit> {
+            val cluster = formCluster(size = 1)
+            val node = cluster.nodes.single()
+            cluster.awaitLeader()
+            node.write("one")
+            val last = node.write("two") as CommitResult.Committed
+            node.stop()
+
+            val replayed = RecordingStateMachine()
+            val gate = CountDownLatch(1)
+            val gated =
+                object : ReplicatedStateMachine {
+                    override fun apply(entry: LogEntry): ByteArray {
+                        gate.await()
+                        return replayed.apply(entry)
+                    }
+
+                    override fun lastAppliedIndex(): Long = replayed.lastAppliedIndex()
+                }
+            try {
+                node.start()
+                node.consensus.startGroup(cluster.database, gated, emptyList())
+
+                // Elected, and its term's first entry is committed, but the old entries wait.
+                await atMost
+                    RatisTestCluster.AWAIT untilAsserted
+                    {
+                        val status = node.consensus.status(cluster.database)
+                        assertThat(status.term).isGreaterThan(last.term)
+                        assertThat(status.commitIndex).isGreaterThan(last.index)
+                        assertThat(status.role).isEqualTo(Role.Candidate)
+                        assertThat(status.leader).isNull()
+                    }
+            } finally {
+                gate.countDown()
+            }
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(node.consensus.role(cluster.database)).isEqualTo(Role.Leader)
+                }
+            assertThat(replayed.payloads()).containsExactly("one", "two")
+        }
+
+    @Test
+    fun `entries up to the maximum size commit and larger ones are refused`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val max = leader.consensus.maxEntrySize
+
+            val result = leader.consensus.submit(cluster.database, ByteArray(max))
+
+            assertThat(result).isInstanceOf(CommitResult.Committed::class.java)
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    cluster.nodes.forEach {
+                        assertThat(it.machine.entries().single().payload).hasSize(max)
+                    }
+                }
+            assertThatThrownBy {
+                    runBlocking { leader.consensus.submit(cluster.database, ByteArray(max + 1)) }
+                }
+                .isInstanceOf(IllegalArgumentException::class.java)
         }
 
     @Test
@@ -236,9 +319,9 @@ class RatisConsensusLogTest {
             val broken = cluster.nodes.first()
             val poisoned =
                 object : ReplicatedStateMachine {
-                    override fun apply(entry: LogEntry) {
+                    override fun apply(entry: LogEntry): ByteArray {
                         check(entry.payload.decodeToString() != "poison") { "disk on fire" }
-                        broken.machine.apply(entry)
+                        return broken.machine.apply(entry)
                     }
 
                     override fun lastAppliedIndex(): Long = broken.machine.lastAppliedIndex()

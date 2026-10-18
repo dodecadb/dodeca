@@ -7,13 +7,16 @@ package org.dozendb.cluster.api
  * to handle it.
  */
 public sealed interface Role {
-    /** Accepts writes for the group. */
+    /**
+     * Accepts writes for the group: it leads the current term and has applied every entry committed
+     * before that term.
+     */
     public data object Leader : Role
 
     /** Votes and replicates, rejects writes. */
     public data object Follower : Role
 
-    /** Is running an election, or has won one and is not yet ready to accept writes. */
+    /** Is running an election, or has won one and cannot accept writes yet. */
     public data object Candidate : Role
 
     /** Does not take part in the group: not started, stopped or shutting down. */

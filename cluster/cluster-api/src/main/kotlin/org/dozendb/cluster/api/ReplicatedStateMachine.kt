@@ -17,8 +17,12 @@ public class LogEntry(
  * applied, so [apply] must ignore entries at or below [lastAppliedIndex].
  */
 public interface ReplicatedStateMachine {
-    /** Applies [entry]. May block. An exception is treated as a fatal error for the group. */
-    public fun apply(entry: LogEntry)
+    /**
+     * Applies [entry] and returns a response, which reaches the member that submitted the entry if
+     * that member applies it while it waits. May block. An exception is treated as a fatal error
+     * for the group.
+     */
+    public fun apply(entry: LogEntry): ByteArray
 
     /** The index of the last entry this state machine has applied durably, or -1 if none. */
     public fun lastAppliedIndex(): Long

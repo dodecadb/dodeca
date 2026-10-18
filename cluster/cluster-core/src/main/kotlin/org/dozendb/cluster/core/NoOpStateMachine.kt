@@ -10,8 +10,9 @@ import org.dozendb.cluster.api.ReplicatedStateMachine
 class NoOpStateMachine : ReplicatedStateMachine {
     @Volatile private var applied = -1L
 
-    override fun apply(entry: LogEntry) {
+    override fun apply(entry: LogEntry): ByteArray {
         applied = entry.index
+        return ByteArray(0)
     }
 
     override fun lastAppliedIndex(): Long = applied

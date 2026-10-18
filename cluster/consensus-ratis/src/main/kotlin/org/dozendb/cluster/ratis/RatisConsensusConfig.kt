@@ -16,7 +16,10 @@ import org.dozendb.cluster.api.MemberId
  * @property electionTimeoutMin a follower that hears nothing from a leader for a random time
  *   between [electionTimeoutMin] and [electionTimeoutMax] starts an election.
  * @property requestTimeout the deadline for probes and membership changes.
- * @property metadata facts reported to probing members, such as the Neo4j version.
+ * @property metadata facts reported to probing members, such as the Neo4j version. Read at every
+ *   probe, so it may change.
+ * @property maxEntrySize the largest payload a group accepts. Ratis sizes per-group buffers from
+ *   it, and members must agree on it, so production code keeps the default.
  */
 data class RatisConsensusConfig(
     val memberId: MemberId,
@@ -27,7 +30,8 @@ data class RatisConsensusConfig(
     val electionTimeoutMin: Duration = Duration.ofSeconds(1),
     val electionTimeoutMax: Duration = Duration.ofSeconds(2),
     val requestTimeout: Duration = Duration.ofSeconds(5),
-    val metadata: Map<String, String> = emptyMap(),
+    val metadata: () -> Map<String, String> = { emptyMap() },
+    val maxEntrySize: Int = DEFAULT_MAX_ENTRY_SIZE,
 ) {
     init {
         require(listenPort in 0..65535) { "listen port must be in 0..65535, was $listenPort" }
@@ -40,5 +44,14 @@ data class RatisConsensusConfig(
         require(!requestTimeout.isNegative && !requestTimeout.isZero) {
             "request timeout must be positive, was $requestTimeout"
         }
+        require(maxEntrySize in MIN_MAX_ENTRY_SIZE..MAX_MAX_ENTRY_SIZE) {
+            "max entry size must be in $MIN_MAX_ENTRY_SIZE..$MAX_MAX_ENTRY_SIZE, was $maxEntrySize"
+        }
+    }
+
+    companion object {
+        const val DEFAULT_MAX_ENTRY_SIZE: Int = 16 shl 20
+        private const val MIN_MAX_ENTRY_SIZE = 1 shl 20
+        private const val MAX_MAX_ENTRY_SIZE = 256 shl 20
     }
 }

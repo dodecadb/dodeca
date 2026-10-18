@@ -5,7 +5,8 @@ import java.util.UUID
 /**
  * What a member reports about itself when probed.
  *
- * @property metadata facts used to decide compatibility, such as the Neo4j version.
+ * @property metadata facts used to decide compatibility and formation, such as the Neo4j version,
+ *   as they are at the time of the probe.
  * @property groups the consensus groups this member already hosts, with their current members.
  */
 public data class PeerInfo(
@@ -25,7 +26,7 @@ public class ConsensusUnavailableException(message: String, cause: Throwable? = 
  * Methods that wait on the network are `suspend` functions. Callers on Neo4j kernel threads bridge
  * with `runBlocking`, and coroutines never call into Neo4j.
  */
-public interface ConsensusLog : AutoCloseable {
+public interface ConsensusLog : BulkTransfer, AutoCloseable {
     /** This member. */
     public val self: Member
 
@@ -58,9 +59,15 @@ public interface ConsensusLog : AutoCloseable {
     /** Stops taking part in the group of [database]. Its local state is kept. */
     public fun stopGroup(database: DatabaseRef)
 
+    /** The largest payload, in bytes, that [submit] accepts. The same on every member. */
+    public val maxEntrySize: Int
+
     /**
      * Appends [payload] to the log of [database] and suspends until it is committed by a majority
-     * and applied by the local state machine. Only the leader accepts entries.
+     * and applied by the local state machine. Only the leader accepts entries. The caller must not
+     * modify [payload] afterwards.
+     *
+     * @throws IllegalArgumentException if [payload] is larger than [maxEntrySize].
      */
     public suspend fun submit(database: DatabaseRef, payload: ByteArray): CommitResult
 

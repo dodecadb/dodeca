@@ -1,7 +1,12 @@
 package org.dozendb.cluster.api.fake
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import org.dozendb.cluster.api.BulkSource
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.ConsensusUnavailableException
@@ -22,7 +27,8 @@ import org.dozendb.cluster.api.Role
  * leader commits immediately when a majority of the group's members are running, and is applied
  * synchronously, in order, by every running member. Starting a group replays the whole log, so
  * state machines must skip entries they have already applied, as with a real implementation. Faults
- * are injected with [crash] and [failNextSubmit].
+ * are injected with [crash] and [failNextSubmit]. Bulk transfers run synchronously on the calling
+ * thread.
  *
  * All operations are serialised on one lock. State machines must not call back into the fake from
  * [ReplicatedStateMachine.apply].
@@ -32,6 +38,9 @@ class InMemoryConsensus {
     private val members = mutableMapOf<MemberId, InMemoryConsensusLog>()
     private val groups = mutableMapOf<UUID, GroupState>()
     private var nextPort = 7700
+
+    /** The [ConsensusLog.maxEntrySize] of every member. */
+    @Volatile var maxEntrySize: Int = 16 shl 20
 
     private class GroupState(val database: DatabaseRef, var members: List<Member>) {
         var term = 0L
@@ -99,10 +108,16 @@ class InMemoryConsensus {
         return running > group.members.size / 2
     }
 
-    private fun deliverAll(group: GroupState) {
+    /** Delivers the log to every running member; returns [responder]'s response to the tail. */
+    private fun deliverAll(group: GroupState, responder: MemberId): ByteArray {
+        var response = ByteArray(0)
         group.members
             .mapNotNull { members[it.id] }
-            .forEach { it.deliver(group.database, group.log) }
+            .forEach { member ->
+                val answer = member.deliver(group.database, group.log)
+                if (answer != null && member.self.id == responder) response = answer
+            }
+        return response
     }
 
     private fun statusNotifications(database: DatabaseRef): List<() -> Unit> =
@@ -111,8 +126,9 @@ class InMemoryConsensus {
     /** One member of an [InMemoryConsensus]. */
     inner class InMemoryConsensusLog(
         override val self: Member,
-        private val metadata: Map<String, String>,
+        @Volatile var metadata: Map<String, String>,
     ) : ConsensusLog {
+        private val bulkSources = ConcurrentHashMap<String, BulkSource>()
         private var transportUp = false
         private val localState = mutableSetOf<UUID>()
         private val running = mutableMapOf<UUID, ReplicatedStateMachine>()
@@ -130,15 +146,20 @@ class InMemoryConsensus {
             delivered.clear()
         }
 
-        internal fun deliver(database: DatabaseRef, log: List<LogEntry>) {
-            val stateMachine = running[database.id] ?: return
+        /** Applies undelivered entries; returns the response to the last one applied, if any. */
+        internal fun deliver(database: DatabaseRef, log: List<LogEntry>): ByteArray? {
+            val stateMachine = running[database.id] ?: return null
             var index = delivered.getOrDefault(database.id, 0L)
+            var response: ByteArray? = null
             while (index < log.size) {
                 val entry = log[index.toInt()]
-                if (entry.index > stateMachine.lastAppliedIndex()) stateMachine.apply(entry)
+                if (entry.index > stateMachine.lastAppliedIndex()) {
+                    response = stateMachine.apply(entry)
+                }
                 index++
             }
             delivered[database.id] = index
+            return response
         }
 
         internal fun statusNotifications(database: DatabaseRef): List<() -> Unit> {
@@ -203,8 +224,14 @@ class InMemoryConsensus {
             notifications.forEach { it() }
         }
 
-        override suspend fun submit(database: DatabaseRef, payload: ByteArray): CommitResult =
-            synchronized(lock) {
+        override val maxEntrySize: Int
+            get() = this@InMemoryConsensus.maxEntrySize
+
+        override suspend fun submit(database: DatabaseRef, payload: ByteArray): CommitResult {
+            require(payload.size <= maxEntrySize) {
+                "entry of ${payload.size} bytes exceeds the maximum of $maxEntrySize"
+            }
+            return synchronized(lock) {
                 val group = group(database)
                 if (!isRunning(database) || group.leader != self.id) {
                     return CommitResult.NotLeader(group.leader)
@@ -220,9 +247,10 @@ class InMemoryConsensus {
                 }
                 val entry = LogEntry(group.log.size + 1L, group.term, payload.copyOf())
                 group.log += entry
-                deliverAll(group)
-                CommitResult.Committed(entry.index, entry.term)
+                val response = deliverAll(group, self.id)
+                CommitResult.Committed(entry.index, entry.term, response)
             }
+        }
 
         override suspend fun readIndex(database: DatabaseRef): Long =
             synchronized(lock) {
@@ -288,6 +316,32 @@ class InMemoryConsensus {
                 }
                 group.members = change(group.members)
             }
+        }
+
+        override fun registerBulkSource(name: String, source: BulkSource) {
+            bulkSources[name] = source
+        }
+
+        override fun <T> fetchBulk(
+            address: HostPort,
+            name: String,
+            request: ByteArray,
+            consume: (InputStream) -> T,
+        ): T {
+            val target =
+                synchronized(lock) {
+                    members.values.firstOrNull { it.self.raftAddress == address && it.transportUp }
+                } ?: throw ConsensusUnavailableException("no member reachable at $address")
+            val source =
+                target.bulkSources[name]
+                    ?: throw ConsensusUnavailableException("$address does not serve $name")
+            val buffer = ByteArrayOutputStream()
+            try {
+                source.serve(request, buffer)
+            } catch (e: Exception) {
+                throw ConsensusUnavailableException("$address failed to serve $name", e)
+            }
+            return ByteArrayInputStream(buffer.toByteArray()).use(consume)
         }
 
         override fun close() {

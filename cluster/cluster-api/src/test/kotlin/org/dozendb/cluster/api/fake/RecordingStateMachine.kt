@@ -10,12 +10,14 @@ import org.dozendb.cluster.api.ReplicatedStateMachine
 class RecordingStateMachine : ReplicatedStateMachine {
     private val applied = mutableListOf<LogEntry>()
 
+    /** Answers `applied <index>`, so that tests can check that responses reach the submitter. */
     @Synchronized
-    override fun apply(entry: LogEntry) {
+    override fun apply(entry: LogEntry): ByteArray {
         check(entry.index > lastAppliedIndex()) {
             "entry ${entry.index} applied twice or out of order, last applied ${lastAppliedIndex()}"
         }
         applied += entry
+        return "applied ${entry.index}".encodeToByteArray()
     }
 
     @Synchronized override fun lastAppliedIndex(): Long = applied.lastOrNull()?.index ?: -1

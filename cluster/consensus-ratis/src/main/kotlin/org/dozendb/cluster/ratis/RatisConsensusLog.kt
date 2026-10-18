@@ -2,6 +2,7 @@ package org.dozendb.cluster.ratis
 
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 import java.net.InetSocketAddress
 import java.util.EnumSet
 import java.util.UUID
@@ -43,7 +44,9 @@ import org.apache.ratis.server.RaftServerConfigKeys
 import org.apache.ratis.server.storage.RaftStorage
 import org.apache.ratis.thirdparty.com.google.protobuf.UnsafeByteOperations
 import org.apache.ratis.thirdparty.io.grpc.netty.NettyServerBuilder
+import org.apache.ratis.util.SizeInBytes
 import org.apache.ratis.util.TimeDuration
+import org.dozendb.cluster.api.BulkSource
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.ConsensusUnavailableException
@@ -78,6 +81,10 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         Thread(runnable, "dozendb-consensus-events").apply { isDaemon = true }
     }
     private val properties = raftProperties()
+    private val bulkSources = ConcurrentHashMap<String, BulkSource>()
+    private val bulkExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "dozendb-bulk-source").apply { isDaemon = true }
+    }
 
     @Volatile private var server: RaftServer? = null
     @Volatile private var boundAddress: InetSocketAddress? = null
@@ -115,7 +122,11 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                     types: EnumSet<GrpcServices.Type>,
                 ): NettyServerBuilder =
                     if (GrpcServices.Type.SERVER in types) {
-                        builder.addService(ProbeService.definition(::describeSelf))
+                        builder
+                            .addService(ProbeService.definition(::describeSelf))
+                            .addService(BulkService.definition(bulkSources::get, bulkExecutor))
+                            // Bulk clients send keep-alive pings to detect dead peers.
+                            .permitKeepAliveTime(BulkService.KEEP_ALIVE_SECONDS, TimeUnit.SECONDS)
                     } else {
                         builder
                     }
@@ -221,7 +232,13 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         publishStatus(database.id)
     }
 
+    override val maxEntrySize: Int
+        get() = config.maxEntrySize
+
     override suspend fun submit(database: DatabaseRef, payload: ByteArray): CommitResult {
+        require(payload.size <= maxEntrySize) {
+            "entry of ${payload.size} bytes exceeds the maximum of $maxEntrySize"
+        }
         val raftServer = server ?: return CommitResult.NotLeader(null)
         val callId = callIds.incrementAndGet()
         val request =
@@ -241,10 +258,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                     return classifyFailure(unwrap(e), appended = callId in appending)
                 }
             if (reply.isSuccess) {
-                return CommitResult.Committed(
-                    reply.logIndex,
-                    GroupStateMachine.decodeLong(reply.message),
-                )
+                val (term, response) = GroupStateMachine.decodeReply(reply.message)
+                return CommitResult.Committed(reply.logIndex, term, response)
             }
             return classifyFailure(reply.exception, appended = callId in appending)
         } finally {
@@ -300,9 +315,14 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         }
         val role =
             when (info.currentRole) {
-                // A leader accepts writes only once an entry of its term is committed. Until then
-                // it is still establishing leadership.
-                RaftPeerRole.LEADER -> if (info.isLeaderReady) Role.Leader else Role.Candidate
+                // A leader accepts writes once an entry of its term is committed and applied here,
+                // so that everything committed before its term is applied first.
+                RaftPeerRole.LEADER ->
+                    if (info.isLeaderReady && appliedTerm(database) == info.currentTerm) {
+                        Role.Leader
+                    } else {
+                        Role.Candidate
+                    }
                 RaftPeerRole.FOLLOWER -> Role.Follower
                 RaftPeerRole.CANDIDATE -> Role.Candidate
                 // Non-voting members are not supported yet.
@@ -400,12 +420,27 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         }
     }
 
+    override fun registerBulkSource(name: String, source: BulkSource) {
+        bulkSources[name] = source
+    }
+
+    override fun <T> fetchBulk(
+        address: HostPort,
+        name: String,
+        request: ByteArray,
+        consume: (InputStream) -> T,
+    ): T = BulkService.fetch(address, name, request, consume)
+
+    private fun appliedTerm(database: DatabaseRef): Long =
+        stateMachines[database.id]?.appliedTerm() ?: -1
+
     override fun close() {
         val raftServer = server
         server = null
         try {
             raftServer?.close()
         } finally {
+            bulkExecutor.shutdownNow()
             events.shutdown()
             if (!events.awaitTermination(EVENTS_SHUTDOWN_SECONDS, TimeUnit.SECONDS)) {
                 log.warn(
@@ -425,7 +460,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                         Member(memberId(it), HostPort.parse(it.address))
                     }
             }
-        return PeerInfo(self, config.metadata, groups)
+        return PeerInfo(self, config.metadata(), groups)
     }
 
     private fun publishStatus(groupId: UUID) {
@@ -468,11 +503,39 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         RaftServerConfigKeys.Log.setAsyncFlushEnabled(properties, false)
         // Snapshots are Neo4j checkpoints, taken by the database integration.
         RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, false)
+        // A log entry must fit the appender buffer, which must fit the write buffer. Both are per
+        // group; the write buffer is direct memory.
+        val entryLimit = config.maxEntrySize.toLong() + ENTRY_OVERHEAD
+        RaftServerConfigKeys.Log.Appender.setBufferByteLimit(
+            properties,
+            SizeInBytes.valueOf(entryLimit),
+        )
+        RaftServerConfigKeys.Log.setWriteBufferSize(
+            properties,
+            SizeInBytes.valueOf(entryLimit + ENTRY_OVERHEAD),
+        )
+        RaftServerConfigKeys.Log.setSegmentSizeMax(
+            properties,
+            SizeInBytes.valueOf(maxOf(2 * entryLimit, DEFAULT_SEGMENT_SIZE)),
+        )
+        GrpcConfigKeys.setMessageSizeMax(
+            properties,
+            SizeInBytes.valueOf(maxOf(2 * entryLimit, DEFAULT_MESSAGE_SIZE)),
+        )
+        // Pending writes and the log worker queue are bounded in bytes; one entry must fit.
+        val queueLimit = SizeInBytes.valueOf(maxOf(4 * entryLimit, DEFAULT_QUEUE_BYTES))
+        RaftServerConfigKeys.Write.setByteLimit(properties, queueLimit)
+        RaftServerConfigKeys.Log.setQueueByteLimit(properties, queueLimit)
         return properties
     }
 
     private companion object {
         const val RETRY_SLEEP_MS = 200L
+        /** Room for the Ratis entry header around a payload, generously rounded. */
+        const val ENTRY_OVERHEAD = 64L shl 10
+        const val DEFAULT_SEGMENT_SIZE = 32L shl 20
+        const val DEFAULT_MESSAGE_SIZE = 64L shl 20
+        const val DEFAULT_QUEUE_BYTES = 64L shl 20
         const val EVENTS_SHUTDOWN_SECONDS = 5L
 
         fun timeDuration(duration: java.time.Duration): TimeDuration =
