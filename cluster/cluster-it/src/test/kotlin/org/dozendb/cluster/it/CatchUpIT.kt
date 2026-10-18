@@ -58,18 +58,21 @@ class CatchUpIT {
         network.close()
     }
 
-    private fun status(member: DozerDbContainer): Map<String, Any?>? =
+    private fun status(member: DozerDbContainer, database: String = "neo4j"): Map<String, Any?>? =
         when (val outcome = member.run("CALL dozendb.cluster.status()", "system")) {
-            is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == "neo4j" }
+            is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == database }
             is Outcome.Failed -> null
         }
 
-    private fun awaitLeader(running: List<DozerDbContainer>): DozerDbContainer =
+    private fun awaitLeader(
+        running: List<DozerDbContainer>,
+        database: String = "neo4j",
+    ): DozerDbContainer =
         await withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
             {
-                running.singleOrNull { status(it)?.get("role") == "LEADER" }
+                running.singleOrNull { status(it, database)?.get("role") == "LEADER" }
             }
 
     private fun count(member: DozerDbContainer, label: String): Long =
@@ -129,7 +132,8 @@ class CatchUpIT {
     fun `a member whose database was deleted copies it at startup`() {
         val leader = awaitLeader(members)
         val wiped = members.first { it != leader }
-        wiped.rows("CREATE USER local SET PASSWORD 'local-secret' CHANGE NOT REQUIRED", "system")
+        awaitLeader(members, "system")
+            .rows("CREATE USER local SET PASSWORD 'local-secret' CHANGE NOT REQUIRED", "system")
         wiped.shutDown()
         leader.rows("CREATE (:Marker {at: 'while wiped'})")
 
@@ -137,8 +141,13 @@ class CatchUpIT {
         wiped.restart()
 
         awaitSameData(wiped, leader)
-        val users = wiped.rows("SHOW USERS YIELD user", "system").map { it["user"] }
-        assertThat(users).describedAs("the local system database is kept").contains("local")
+        await withPollInterval
+            Duration.ofSeconds(1) atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                val users = wiped.rows("SHOW USERS YIELD user", "system").map { it["user"] }
+                assertThat(users).describedAs("the replicated user").contains("local")
+            }
         leader.rows("CREATE (:Marker {at: 'after'})")
         awaitSameData(wiped, leader)
     }

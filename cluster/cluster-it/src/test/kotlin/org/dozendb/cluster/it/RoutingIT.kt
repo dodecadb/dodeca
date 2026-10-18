@@ -77,18 +77,18 @@ class RoutingIT {
     private fun boltAddress(member: DozerDbContainer) =
         "127.0.0.1:${boltPorts[members.indexOf(member)]}"
 
-    private fun role(member: DozerDbContainer): Any? =
+    private fun role(member: DozerDbContainer, database: String = "neo4j"): Any? =
         when (val outcome = member.run("CALL dozendb.cluster.status()", "system")) {
-            is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == "neo4j" }?.get("role")
+            is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == database }?.get("role")
             is Outcome.Failed -> null
         }
 
-    private fun awaitLeader(): DozerDbContainer =
+    private fun awaitLeader(database: String = "neo4j"): DozerDbContainer =
         await withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
             {
-                running.singleOrNull { role(it) == "LEADER" }
+                running.singleOrNull { role(it, database) == "LEADER" }
             }
 
     @Suppress("UNCHECKED_CAST")
@@ -129,9 +129,11 @@ class RoutingIT {
         val members = members.first().rows("CALL dozendb.cluster.members()", "system")
         assertThat(members.map { it["boltAddress"] })
             .containsExactlyInAnyOrderElementsOf(this.members.map(::boltAddress))
-        // system stays local until it is replicated: each member routes it to itself.
+        // Administration commands go to the system leader.
+        val systemLeader = awaitLeader("system")
         this.members.forEach { member ->
-            assertThat(routingTable(member, "system")["WRITE"]).containsExactly(boltAddress(member))
+            assertThat(routingTable(member, "system")["WRITE"])
+                .containsExactly(boltAddress(systemLeader))
         }
     }
 

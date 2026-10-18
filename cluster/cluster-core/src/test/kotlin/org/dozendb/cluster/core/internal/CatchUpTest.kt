@@ -16,6 +16,8 @@ import org.junit.jupiter.api.io.TempDir
 import org.neo4j.io.fs.FileUtils
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
+import org.neo4j.storageengine.api.StorageEngine
+import org.neo4j.storageengine.api.StoreId
 import org.neo4j.storageengine.api.TransactionIdStore
 
 /** Members that missed entries the log no longer holds, or lost their database, catch up. */
@@ -129,11 +131,7 @@ class CatchUpTest {
         val leader = cluster.awaitLeader()
         val wiped = cluster.members.first { it != leader }
         cluster.write("CREATE (:Marker {at: 'before'})")
-        wiped
-            .database("system")
-            .executeTransactionally(
-                "CREATE USER local SET PASSWORD 'local-secret' CHANGE NOT REQUIRED"
-            )
+        val systemStore = wiped.storeId("system")
         wiped.stop()
         cluster.write("CREATE (:Marker {at: 'while stopped'})")
 
@@ -143,12 +141,16 @@ class CatchUpTest {
 
         cluster.awaitSameAsLeader(wiped)
         assertThat(wiped.count("Marker")).isEqualTo(2)
-        val users =
-            wiped.database("system").executeTransactionally("SHOW USERS YIELD user", emptyMap()) {
-                it.stream().map { row -> row["user"] }.toList()
-            }
-        assertThat(users).describedAs("the local system database is kept").contains("local")
+        assertThat(wiped.storeId("system"))
+            .describedAs("the system database is kept, not copied")
+            .isEqualTo(systemStore)
     }
+
+    private fun ClusterHarness.Member.storeId(name: String): StoreId =
+        database(name)
+            .dependencyResolver
+            .resolveDependency(StorageEngine::class.java)
+            .retrieveStoreId()
 
     @Test
     fun `a member that missed no discarded entries catches up from the log`() {

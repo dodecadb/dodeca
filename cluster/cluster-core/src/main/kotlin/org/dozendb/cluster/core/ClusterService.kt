@@ -61,7 +61,8 @@ class ClusterService(
         }
         val listener = RoleChangeLogger(userLog)
         statusListener = consensus.addStatusListener(systemDatabase, listener)
-        consensus.startGroup(systemDatabase, NoOpStateMachine(), joined?.members ?: emptyList())
+        // The system database attaches its state machine when it starts.
+        consensus.joinGroup(systemDatabase, joined?.members ?: emptyList())
         directory?.start()
     }
 
@@ -101,7 +102,7 @@ class ClusterService(
 
     /** The local status of every group this member runs. */
     fun status(): List<GroupStatus> =
-        (listOf(systemDatabase) + replicatedDatabases()).map(consensus::status)
+        (listOf(systemDatabase) + replicatedDatabases()).distinct().map(consensus::status)
 
     /** The latest snapshot of [database] on this member: its log may lack entries up to it. */
     fun latestSnapshot(database: DatabaseRef): Snapshot? = consensus.latestSnapshot(database)

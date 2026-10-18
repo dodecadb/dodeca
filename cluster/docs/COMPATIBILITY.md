@@ -51,16 +51,19 @@ builds the public source, so it differs from the release in these ways:
 
 What clustering does not do yet.
 
-- **Replicated databases.** Only the default database (`neo4j`) is
-  replicated. `system` and databases created with `CREATE DATABASE` are local
-  to each member, so administration commands apply to one member only.
+- **Replicated databases.** `system` and the default database (`neo4j`) are
+  replicated. Administration commands (users, `CREATE DATABASE` and the like)
+  run on the leader of `system` and reach every member; a follower rejects them
+  with `Neo.ClientError.Cluster.NotALeader`. Databases created with
+  `CREATE DATABASE` are still created and started on the system leader only
+ .
 - **Writes go to the leader.** A follower rejects writes with
   `Neo.ClientError.Cluster.NotALeader`. Drivers that route (`neo4j://`) get
   routing tables with the leader as writer and retry managed transactions on
   the new leader after a failover. Server-side routing
   (`dbms.routing.default_router=SERVER`) does not forward writes: a `bolt://`
-  write sent to a follower is rejected. Local databases (`system`, and
-  databases created with `CREATE DATABASE`) are routed to the member asked.
+  write sent to a follower is rejected. Local databases (created with
+  `CREATE DATABASE`) are routed to the member asked.
 - **Linearizable reads** are requested per transaction with the metadata key
   `dozendb.consistency` set to `linearizable`, or for every transaction with
   `dbms.dozendb.reads.default_consistency`. They apply to Bolt clients

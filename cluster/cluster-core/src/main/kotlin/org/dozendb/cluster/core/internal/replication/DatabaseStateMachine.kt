@@ -24,17 +24,21 @@ import org.neo4j.storageengine.api.TransactionIdStore
  * transaction, which makes it the state machine's applied index across restarts.
  *
  * Neo4j's latest checkpoint makes the entries up to its transaction durable: recovery restores them
- * without the Raft log.
+ * without the Raft log. Unless [compacted], the state machine reports nothing durable, so the group
+ * keeps its whole log and no member ever needs a copy to catch up.
  *
  * Any exception propagates: Neo4j has then already panicked the database, and Ratis stops the group
  * on this member instead of skipping the entry.
  *
+ * @property afterApply runs on the apply thread after each applied transaction.
  * @property onSnapshotNeeded replaces the database with a copy; see
  *   [ReplicatedStateMachine.onSnapshotNeeded].
  */
 internal class DatabaseStateMachine(
     database: Database,
     private val applyProcess: TransactionCommitProcess,
+    private val compacted: Boolean,
+    private val afterApply: () -> Unit,
     private val onSnapshotNeeded: (leader: Member?, minimumIndex: Long) -> Unit,
 ) : ReplicatedStateMachine {
     private val resolver = database.dependencyResolver
@@ -50,13 +54,15 @@ internal class DatabaseStateMachine(
         transactionIdStore.lastCommittedTransaction.consensusIndex()
 
     override fun durableIndex(): Long =
-        minOf(
-            checkPointer
-                .latestCheckPointInfo()
-                .highestObservedClosedTransactionId()
-                .consensusIndex(),
-            lastAppliedIndex(),
-        )
+        if (!compacted) -1
+        else
+            minOf(
+                checkPointer
+                    .latestCheckPointInfo()
+                    .highestObservedClosedTransactionId()
+                    .consensusIndex(),
+                lastAppliedIndex(),
+            )
 
     override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {
         onSnapshotNeeded.invoke(leader, minimumIndex)
@@ -85,6 +91,7 @@ internal class DatabaseStateMachine(
                         TransactionWriteEvent.NULL,
                         TransactionApplicationMode.EXTERNAL,
                     )
+                afterApply()
                 return ApplyOutcome.encode(
                     ApplyOutcome.Applied(appendIndex, transaction.transactionId())
                 )

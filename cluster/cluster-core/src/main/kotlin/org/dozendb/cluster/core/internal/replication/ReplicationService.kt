@@ -17,7 +17,7 @@ import org.neo4j.logging.InternalLogProvider
 /**
  * Decides which databases are replicated and runs their Raft groups alongside them.
  *
- * Only the default database is replicated; `system` and other databases stay local.
+ * `system` and the default database are replicated; other databases stay local.
  */
 internal class ReplicationService(
     private val consensus: ConsensusLog,
@@ -41,11 +41,17 @@ internal class ReplicationService(
     val defaultDatabaseStarted: Boolean
         get() = databases[defaultDatabaseName]?.isRunning() == true
 
-    fun replicates(namedDatabaseId: NamedDatabaseId): Boolean =
-        !namedDatabaseId.isSystemDatabase && replicates(namedDatabaseId.name())
+    fun replicates(namedDatabaseId: NamedDatabaseId): Boolean = replicates(namedDatabaseId.name())
 
     fun replicates(name: String): Boolean =
-        name != systemDatabase.name && name == defaultDatabaseName
+        name == systemDatabase.name || name == defaultDatabaseName
+
+    /** Whether this member founds the cluster and has not initialised its system graph yet. */
+    val systemBootstrapping: Boolean
+        get() = databases[systemDatabase.name]?.bootstrapping == true
+
+    /** Runs after every transaction applied to the system database, on its apply thread. */
+    @Volatile var afterSystemApply: () -> Unit = {}
 
     /** Whether commits to the database [name] are durable through the Raft log alone. */
     fun singleFsync(name: String): Boolean = databases[name]?.replicating == true
@@ -68,7 +74,15 @@ internal class ReplicationService(
                 storeExists,
                 scheduler,
                 logProvider.getLog(ReplicatedDatabase::class.java),
-                ::catchUp,
+                // The system database is small and must keep running: its log is kept whole.
+                compacted = !namedDatabaseId.isSystemDatabase,
+                afterApply =
+                    if (namedDatabaseId.isSystemDatabase) {
+                        { afterSystemApply() }
+                    } else {
+                        {}
+                    },
+                onSnapshotNeeded = ::catchUp,
             )
         databases[namedDatabaseId.name()] = replica
         return replica
@@ -79,6 +93,11 @@ internal class ReplicationService(
 
     override fun databaseStart(eventContext: DatabaseEventContext) {
         val replica = databases[eventContext.databaseName] ?: return
+        if (replica.bootstrapping && replica.ref.name == systemDatabase.name) {
+            // Neo4j initialises the system graph later, in its own transactions; see
+            // [systemGraphInitialized].
+            return
+        }
         if (replica.bootstrapping) {
             // Neo4j initialises the new store after this event returns; replicate after that.
             inBackground("Starting the replication of ${replica.ref.name}") {
@@ -100,6 +119,15 @@ internal class ReplicationService(
         inBackground("Stopping the replication of panicked database ${replica.ref.name}") {
             replica.stop()
         }
+    }
+
+    /**
+     * Starts replicating the system database of the member that founds the cluster, once Neo4j
+     * initialised its system graph with local transactions. Every other member copies the result.
+     */
+    fun systemGraphInitialized() {
+        val replica = databases[systemDatabase.name] ?: return
+        if (replica.bootstrapping) replica.start()
     }
 
     /** Replaces [replica] with a copy, unless that is already under way. */

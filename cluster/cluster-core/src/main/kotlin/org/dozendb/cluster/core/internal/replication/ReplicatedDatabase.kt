@@ -45,6 +45,8 @@ internal class ReplicatedDatabase(
     storeExists: Boolean,
     private val scheduler: ScheduledExecutorService,
     private val log: InternalLog,
+    private val compacted: Boolean,
+    private val afterApply: () -> Unit,
     private val onSnapshotNeeded: (ReplicatedDatabase, Member?, Long) -> Unit,
 ) {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
@@ -94,6 +96,8 @@ internal class ReplicatedDatabase(
                 DatabaseStateMachine(
                     database,
                     checkNotNull(applyProcess) { "no commit process" },
+                    compacted,
+                    afterApply,
                 ) { leader, minimumIndex ->
                     onSnapshotNeeded(this, leader, minimumIndex)
                 }

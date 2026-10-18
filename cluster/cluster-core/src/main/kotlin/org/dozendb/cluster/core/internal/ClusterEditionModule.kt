@@ -31,10 +31,12 @@ import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DatabaseContextProviderDelegate
 import org.neo4j.dbms.database.DatabaseReferenceCacheClearingListener
 import org.neo4j.dbms.database.DatabaseRepository
+import org.neo4j.dbms.database.DefaultSystemGraphInitializer
 import org.neo4j.dbms.database.MultiDatabaseLifecycleService
 import org.neo4j.dbms.database.MultiDatabaseManager
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.SystemGraphComponents
+import org.neo4j.dbms.database.SystemGraphInitializer
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
 import org.neo4j.dbms.routing.DefaultDatabaseAvailabilityChecker
 import org.neo4j.dbms.routing.DefaultRoutingService
@@ -43,6 +45,7 @@ import org.neo4j.dbms.routing.RoutingOption
 import org.neo4j.dbms.routing.RoutingService
 import org.neo4j.dbms.routing.RoutingTableTTLProvider
 import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
+import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.DozerDbEditionModule
@@ -60,6 +63,7 @@ import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
 import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
 
 /**
  * DozerDB's edition module with clustering added. Only used when clustering is enabled.
@@ -300,7 +304,39 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         globalModule.globalDependencies.satisfyDependency<SystemGraphComponents.UpgradeChecker>(
             SystemGraphComponents.UpgradeChecker.UPGRADE_ALWAYS_ALLOWED
         )
+        // Transactions applied from Raft fire no transaction event listeners: refresh what the
+        // listeners refresh after local commits.
+        replication.afterSystemApply = {
+            databaseIdRepository.invalidateAll()
+            databaseReferenceRepository.invalidateAll()
+            (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
+            globalReadOnlyChecker?.refresh()
+        }
         return databaseRepository
+    }
+
+    /**
+     * Neo4j's system graph initialiser, run only by the member that founds the cluster: it writes
+     * the first system graph with local transactions, after which the system database is
+     * replicated. Every other member copies that system graph, and changes to it come through Raft.
+     */
+    override fun registerDatabaseInitializers(
+        globalModule: GlobalModule,
+        systemDatabaseProvider: SystemDatabaseProvider,
+    ) {
+        val initializer =
+            DefaultSystemGraphInitializer(systemDatabaseProvider::database, systemGraphComponents)
+        val clusterInitializer =
+            object : SystemGraphInitializer() {
+                override fun initializeSystemGraph() {
+                    if (!replication.systemBootstrapping) return
+                    initializer.start()
+                    replication.systemGraphInitialized()
+                }
+            }
+        globalModule.globalDependencies.satisfyDependency(clusterInitializer)
+        globalModule.globalLife.add(clusterInitializer)
+        registerDefaultDatabaseInitializer(globalModule)
     }
 
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
