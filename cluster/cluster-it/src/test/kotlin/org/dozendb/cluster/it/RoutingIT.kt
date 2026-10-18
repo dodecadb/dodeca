@@ -1,6 +1,5 @@
 package org.dozendb.cluster.it
 
-import java.net.ServerSocket
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
@@ -9,6 +8,7 @@ import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.cluster.api.testing.TestPorts
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.MethodOrderer
@@ -34,7 +34,7 @@ import org.testcontainers.lifecycle.Startables
 class RoutingIT {
     private val network = Network.newNetwork()
     private val aliases = listOf("core1", "core2", "core3")
-    private val boltPorts = aliases.map { ServerSocket(0).use { socket -> socket.localPort } }
+    private val boltPorts = aliases.map { TestPorts.free() }
     private val members = aliases.mapIndexed { index, alias ->
         DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
             .inNetwork(network)

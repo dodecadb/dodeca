@@ -13,6 +13,7 @@ import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.ReplicatedStateMachine
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.fake.RecordingStateMachine
+import org.dozendb.cluster.api.testing.TestPorts
 
 /** Real Ratis members in one JVM, on loopback ports, for tests. */
 class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
@@ -21,8 +22,7 @@ class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
     inner class Node(val id: MemberId) {
         val directory: Path = Files.createDirectories(root.resolve(id.toString()))
         val machine = RecordingStateMachine()
-        var port = 0
-            private set
+        val port = TestPorts.free()
 
         var log: RatisConsensusLog? = null
             private set
@@ -48,10 +48,7 @@ class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
                             metadata = { mapOf("neo4j.version" to "5.26.27") },
                         )
                     )
-                    .also {
-                        it.start()
-                        port = it.self.raftAddress.port
-                    }
+                    .also { it.start() }
         }
 
         fun stop() {

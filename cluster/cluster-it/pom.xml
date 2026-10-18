@@ -21,6 +21,14 @@
       <scope>test</scope>
     </dependency>
 
+    <!-- Test utilities, such as ports for test servers. -->
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>cluster-api</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+
     <dependency>
       <groupId>org.testcontainers</groupId>
       <artifactId>testcontainers</artifactId>

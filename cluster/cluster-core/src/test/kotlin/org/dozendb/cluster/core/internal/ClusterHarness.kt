@@ -1,6 +1,5 @@
 package org.dozendb.cluster.core.internal
 
-import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
@@ -11,6 +10,7 @@ import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.api.testing.TestPorts
 import org.dozendb.cluster.core.ClusterService
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -29,7 +29,7 @@ import org.neo4j.kernel.internal.GraphDatabaseAPI
 class ClusterHarness(private val root: Path, size: Int) : AutoCloseable {
     inner class Member(val index: Int) {
         val home: Path = Files.createDirectories(root.resolve("member-$index"))
-        val raftPort: Int = freePort()
+        val raftPort: Int = TestPorts.free()
 
         @Volatile
         var dbms: DatabaseManagementService? = null
@@ -133,7 +133,5 @@ class ClusterHarness(private val root: Path, size: Int) : AutoCloseable {
         const val DEFAULT_DATABASE = "neo4j"
         val AWAIT: Duration = Duration.ofSeconds(60)
         val START_TIMEOUT: Duration = Duration.ofMinutes(2)
-
-        private fun freePort(): Int = ServerSocket(0).use { it.localPort }
     }
 }
