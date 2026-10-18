@@ -1,0 +1,24 @@
+package org.dozendb.cluster.core
+
+import java.util.Properties
+
+/** Facts about this build, and the keys members use to report them to each other. */
+object DozenDbMetadata {
+    const val NEO4J_VERSION = "neo4j.version"
+    const val DOZENDB_VERSION = "dozendb.version"
+    const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
+
+    private val properties: Properties by lazy {
+        Properties().apply {
+            DozenDbMetadata::class.java.getResourceAsStream("dozendb.properties")?.use(::load)
+        }
+    }
+
+    /** The DozenDB version of this build. */
+    val version: String
+        get() = properties.getProperty("version", "unknown")
+
+    /** The Neo4j version this build was compiled and tested against. */
+    val builtForNeo4j: String
+        get() = properties.getProperty("neo4j.version", "unknown")
+}
