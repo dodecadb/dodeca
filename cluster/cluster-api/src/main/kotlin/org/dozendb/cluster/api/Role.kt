@@ -1,0 +1,31 @@
+package org.dozendb.cluster.api
+
+/**
+ * The role of the local member in one consensus group.
+ *
+ * Sealed so that adding a role, such as a non-voting read replica, forces every `when` over roles
+ * to handle it.
+ */
+public sealed interface Role {
+    /** Accepts writes for the group. */
+    public data object Leader : Role
+
+    /** Votes and replicates, rejects writes. */
+    public data object Follower : Role
+
+    /** Is running an election. */
+    public data object Candidate : Role
+
+    /** Does not take part in the group: not started, stopped or shutting down. */
+    public data object Inactive : Role
+}
+
+/** A snapshot of the local member's view of one consensus group. */
+public data class GroupStatus(
+    val database: DatabaseRef,
+    val role: Role,
+    val leader: MemberId?,
+    val term: Long,
+    val commitIndex: Long,
+    val appliedIndex: Long,
+)

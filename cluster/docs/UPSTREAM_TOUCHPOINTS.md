@@ -51,6 +51,11 @@ Re-apply: set all six lines to the Neo4j version recorded in
   different version, and the config path only resolves from inside
   `dozerdb-core/`). Our modules opt back in through `dozendb.spotless.skip` in
   `cluster/pom.xml`.
+- A root build prints Maven warnings from the upstream POMs: duplicate
+  dependency and plugin declarations, and a `parent.relativePath` warning
+  because `dozerdb-core/pom.xml` does not set `<relativePath/>` for its
+  `org.neo4j:parent` parent. They are harmless and are left as they are,
+  because silencing them would mean editing upstream.
 
 ## Pulling upstream
 

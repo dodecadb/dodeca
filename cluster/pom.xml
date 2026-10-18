@@ -20,10 +20,6 @@
 
   <modules>
     <module>cluster-api</module>
-    <module>consensus-ratis</module>
-    <module>cluster-core</module>
-    <module>cluster-plugin</module>
-    <module>cluster-it</module>
   </modules>
 
   <properties>
@@ -300,6 +296,12 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
           <trimStackTrace>false</trimStackTrace>
+          <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
+          <properties>
+            <configurationParameters>
+              junit.platform.discovery.issue.severity.critical=WARNING
+            </configurationParameters>
+          </properties>
         </configuration>
       </plugin>
       <plugin>
