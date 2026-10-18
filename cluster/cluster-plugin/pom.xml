@@ -1,0 +1,155 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.dozendb</groupId>
+    <artifactId>cluster-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>cluster-plugin</artifactId>
+  <name>DozenDB plugin</name>
+  <description>
+    The single jar installed into Neo4j's lib/ in place of the DozerDB jar: dozerdb-core built from
+    source, the DozenDB modules, Apache Ratis, and Kotlin relocated under org.dozendb.shaded.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.dozerdb</groupId>
+      <artifactId>dozerdb-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>cluster-core</artifactId>
+    </dependency>
+  </dependencies>
+
+  <properties>
+    <!--
+      The installable jar. Written next to the (empty) module jar instead of replacing it: when shade
+      replaces the module jar, the next build shades the previous output again and stale classes win.
+    -->
+    <dozendb.plugin.jar>${project.build.directory}/dozendb-${project.version}.jar</dozendb.plugin.jar>
+  </properties>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <outputFile>${dozendb.plugin.jar}</outputFile>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <!-- Everything else (Neo4j, Scala, slf4j) is already in Neo4j's lib/. -->
+              <artifactSet>
+                <includes>
+                  <include>org.dozerdb:dozerdb-core</include>
+                  <include>org.dozendb:*</include>
+                  <include>org.apache.ratis:*</include>
+                  <include>org.jetbrains.kotlin:kotlin-stdlib</include>
+                  <include>org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm</include>
+                </includes>
+              </artifactSet>
+              <relocations>
+                <relocation>
+                  <pattern>kotlin</pattern>
+                  <shadedPattern>org.dozendb.shaded.kotlin</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>kotlinx</pattern>
+                  <shadedPattern>org.dozendb.shaded.kotlinx</shadedPattern>
+                </relocation>
+              </relocations>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>module-info.class</exclude>
+                    <exclude>META-INF/versions/*/module-info.class</exclude>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>META-INF/*.kotlin_module</exclude>
+                    <exclude>META-INF/com.android.tools/**</exclude>
+                    <exclude>META-INF/proguard/**</exclude>
+                    <exclude>META-INF/maven/**</exclude>
+                    <exclude>META-INF/DEPENDENCIES</exclude>
+                    <!-- Rebuilt by the ManifestResourceTransformer below. -->
+                    <exclude>META-INF/MANIFEST.MF</exclude>
+                  </excludes>
+                </filter>
+                <!-- Every Ratis module ships ratis-version.properties; Ratis reads ratis-common's. -->
+                <filter>
+                  <artifact>org.apache.ratis:ratis-client</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-grpc</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-proto</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-server*</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-metrics-*</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
+                  <addHeader>false</addHeader>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <manifestEntries>
+                    <Implementation-Title>DozenDB</Implementation-Title>
+                    <Implementation-Version>${project.version}</Implementation-Version>
+                    <DozenDB-Neo4j-Version>${neo4j.version}</DozenDB-Neo4j-Version>
+                    <DozenDB-DozerDB-Version>${dozerdb-core.version}</DozenDB-DozerDB-Version>
+                  </manifestEntries>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Checks the shaded jar, so it runs after package. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <dozendb.plugin.jar>${dozendb.plugin.jar}</dozendb.plugin.jar>
+          </systemPropertyVariables>
+          <classpathDependencyExcludes>
+            <classpathDependencyExclude>org.dozerdb:dozerdb-core</classpathDependencyExclude>
+            <classpathDependencyExclude>org.dozendb:cluster-core</classpathDependencyExclude>
+          </classpathDependencyExcludes>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

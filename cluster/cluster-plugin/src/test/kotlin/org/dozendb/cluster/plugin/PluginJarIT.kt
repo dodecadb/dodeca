@@ -1,0 +1,86 @@
+package org.dozendb.cluster.plugin
+
+import java.nio.file.Path
+import java.util.jar.JarFile
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.TestInstance
+
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+class PluginJarIT {
+    private val jar = JarFile(Path.of(System.getProperty("dozendb.plugin.jar")).toFile())
+    private val entries = jar.entries().toList().map { it.name }
+
+    @AfterAll fun close() = jar.close()
+
+    private fun text(name: String): String =
+        jar.getInputStream(requireNotNull(jar.getJarEntry(name)) { "$name is missing" }).use {
+            it.readAllBytes().decodeToString()
+        }
+
+    private fun services(name: String): List<String> =
+        text("META-INF/services/$name")
+            .lines()
+            .map { it.trim() }
+            .filter {
+                it.isNotEmpty() && !it.startsWith("#")
+            }
+
+    @Test
+    fun `Kotlin is relocated and nothing from Neo4j's classpath is bundled`() {
+        val classes = entries.filter { it.endsWith(".class") }
+        val packages = classes.map { it.substringBeforeLast('/') }.toSet()
+
+        assertThat(packages.filter { it.startsWith("kotlin") }).isEmpty()
+        assertThat(packages)
+            .contains("org/dozendb/shaded/kotlin", "org/dozendb/shaded/kotlinx/coroutines")
+        assertThat(packages.filter { it.startsWith("org/slf4j") || it.startsWith("scala") })
+            .isEmpty()
+        // The only org.neo4j classes are DozerDB's own.
+        val neo4jClasses = classes.filter { it.startsWith("org/neo4j/") }
+        assertThat(neo4jClasses).isNotEmpty.allMatch {
+            "DozerDb" in it ||
+                "Constraint" in it ||
+                "MultiDatabase" in it ||
+                "SystemGraphTransactionEventListenerAdapter" in it
+        }
+    }
+
+    @Test
+    fun `registers the DozenDB entry point next to DozerDB's`() {
+        assertThat(services("org.neo4j.server.startup.EntryPoint"))
+            .containsExactlyInAnyOrder(
+                "org.dozendb.cluster.core.internal.ClusterEntryPoint",
+                "org.neo4j.server.DozerDbEntryPoint",
+            )
+        assertThat(services("org.neo4j.configuration.SettingsDeclaration"))
+            .containsExactlyInAnyOrder(
+                "org.dozendb.cluster.core.internal.DozenDbSettings",
+                "org.neo4j.configuration.DozerDbSettings",
+            )
+        assertThat(services("org.neo4j.kernel.impl.constraints.ConstraintSemantics"))
+            .containsExactly("org.neo4j.kernel.impl.constraints.DozerDbConstraintSemantics")
+    }
+
+    @Test
+    fun `every registered service implementation is in the jar`() {
+        val registrations =
+            entries
+                .filter { it.startsWith("META-INF/services/") && !it.endsWith("/") }
+                .flatMap { file -> services(file.removePrefix("META-INF/services/")) }
+
+        assertThat(registrations).isNotEmpty
+        assertThat(registrations.filterNot { "${it.replace('.', '/')}.class" in entries }).isEmpty()
+        assertThat(registrations.filter { it.startsWith("kotlin") }).isEmpty()
+    }
+
+    @Test
+    fun `records the versions in the manifest`() {
+        val attributes = jar.manifest.mainAttributes
+
+        assertThat(attributes.getValue("Implementation-Title")).isEqualTo("DozenDB")
+        assertThat(attributes.getValue("DozenDB-Neo4j-Version")).isEqualTo("5.26.27")
+        assertThat(attributes.getValue("DozenDB-DozerDB-Version")).isEqualTo("5.26.27-1.1.0")
+    }
+}
