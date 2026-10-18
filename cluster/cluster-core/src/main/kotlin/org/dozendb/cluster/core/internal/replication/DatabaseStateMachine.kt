@@ -8,6 +8,7 @@ import org.neo4j.kernel.impl.api.CompleteTransaction
 import org.neo4j.kernel.impl.api.TransactionCommitProcess
 import org.neo4j.kernel.impl.api.txid.IdStoreTransactionIdGenerator
 import org.neo4j.kernel.impl.transaction.log.TransactionCommitmentFactory
+import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.kernel.impl.transaction.tracing.TransactionWriteEvent
 import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.TransactionApplicationMode
@@ -22,16 +23,24 @@ import org.neo4j.storageengine.api.TransactionIdStore
  * from the same store. The consensus index of the last applied entry is stored with the
  * transaction, which makes it the state machine's applied index across restarts.
  *
+ * Neo4j's latest checkpoint makes the entries up to its transaction durable: recovery restores them
+ * without the Raft log.
+ *
  * Any exception propagates: Neo4j has then already panicked the database, and Ratis stops the group
  * on this member instead of skipping the entry.
+ *
+ * @property onSnapshotNeeded replaces the database with a copy; see
+ *   [ReplicatedStateMachine.onSnapshotNeeded].
  */
 internal class DatabaseStateMachine(
     database: Database,
     private val applyProcess: TransactionCommitProcess,
+    private val onSnapshotNeeded: (leader: Member?, minimumIndex: Long) -> Unit,
 ) : ReplicatedStateMachine {
     private val resolver = database.dependencyResolver
     private val transactionIdStore = resolver.resolveDependency(TransactionIdStore::class.java)
     private val storageEngine = resolver.resolveDependency(StorageEngine::class.java)
+    private val checkPointer = resolver.resolveDependency(CheckPointer::class.java)
     private val commandReaders = database.storageEngineFactory.commandReaderFactory()
     private val contexts = database.cursorContextFactory
     private val commitments = TransactionCommitmentFactory(transactionIdStore)
@@ -40,10 +49,18 @@ internal class DatabaseStateMachine(
     override fun lastAppliedIndex(): Long =
         transactionIdStore.lastCommittedTransaction.consensusIndex()
 
-    /** None yet: the log is kept whole, so no member ever needs a copy. */
-    override fun durableIndex(): Long = -1
+    override fun durableIndex(): Long =
+        minOf(
+            checkPointer
+                .latestCheckPointInfo()
+                .highestObservedClosedTransactionId()
+                .consensusIndex(),
+            lastAppliedIndex(),
+        )
 
-    override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {}
+    override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {
+        onSnapshotNeeded.invoke(leader, minimumIndex)
+    }
 
     override fun apply(entry: LogEntry): ByteArray {
         val batch = TransactionEnvelope.decode(entry.payload, entry.index, commandReaders)

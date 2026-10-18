@@ -9,6 +9,8 @@ import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
 import org.dozendb.cluster.core.internal.reads.ConsistentBoltDatabases
+import org.dozendb.cluster.core.internal.replication.CatchUp
+import org.dozendb.cluster.core.internal.replication.DatabaseControl
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
@@ -72,6 +74,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
 
     private var clusterDefaultDatabaseInitializer: Lifecycle = LifecycleAdapter()
 
+    /** DozerDB's database manager and databases, created with the database context provider. */
+    private lateinit var databaseManager: MultiDatabaseManager
+    private lateinit var databaseContexts: DatabaseRepository<StandaloneDatabaseContext>
+
     init {
         val config = globalModule.globalConfig
         val logService = globalModule.logService
@@ -88,28 +94,40 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
             )
         lateinit var stores: Neo4jLocalStores
         lateinit var replicationService: ReplicationService
+        val tuning =
+            AbstractEditionModule.tryResolveOrCreate(
+                ConsensusTuning::class.java,
+                globalModule.externalDependencyResolver,
+            ) {
+                ConsensusTuning { it }
+            }
         consensus =
             RatisConsensusLog(
-                RatisConsensusConfig(
-                    memberId = MemberId(identityModule.serverId().uuid()),
-                    listenHost = config.get(DozenDbSettings.listenAddress).hostname,
-                    listenPort = config.get(DozenDbSettings.listenAddress).port,
-                    advertisedAddress = config.get(DozenDbSettings.advertisedAddress).toHostPort(),
-                    storageDirectory = config.get(DozenDbSettings.raftDirectory),
-                    electionTimeoutMin = config.get(DozenDbSettings.electionTimeoutMin),
-                    electionTimeoutMax = config.get(DozenDbSettings.electionTimeoutMax),
-                    metadata = {
-                        mapOf(
-                            DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
-                            DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
-                            DozenDbMetadata.HAS_STORES to stores.existed.toString(),
-                            DozenDbMetadata.STORES_READY to
-                                replicationService.defaultDatabaseStarted.toString(),
-                        ) +
-                            listOfNotNull(
-                                boltAddress()?.let { DozenDbMetadata.BOLT_ADDRESS to it.toString() }
-                            )
-                    },
+                tuning.adjust(
+                    RatisConsensusConfig(
+                        memberId = MemberId(identityModule.serverId().uuid()),
+                        listenHost = config.get(DozenDbSettings.listenAddress).hostname,
+                        listenPort = config.get(DozenDbSettings.listenAddress).port,
+                        advertisedAddress =
+                            config.get(DozenDbSettings.advertisedAddress).toHostPort(),
+                        storageDirectory = config.get(DozenDbSettings.raftDirectory),
+                        electionTimeoutMin = config.get(DozenDbSettings.electionTimeoutMin),
+                        electionTimeoutMax = config.get(DozenDbSettings.electionTimeoutMax),
+                        metadata = {
+                            mapOf(
+                                DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
+                                DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
+                                DozenDbMetadata.HAS_STORES to stores.existed.toString(),
+                                DozenDbMetadata.STORES_READY to
+                                    replicationService.defaultDatabaseStarted.toString(),
+                            ) +
+                                listOfNotNull(
+                                    boltAddress()?.let {
+                                        DozenDbMetadata.BOLT_ADDRESS to it.toString()
+                                    }
+                                )
+                        },
+                    )
                 )
             )
         stores =
@@ -120,11 +138,20 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 consensus,
                 logService.getInternalLog(Neo4jLocalStores::class.java),
             )
+        val catchUp =
+            CatchUp(
+                consensus,
+                systemDatabase,
+                { databaseControl() },
+                stores::copyReplicated,
+                logService.getInternalLog(CatchUp::class.java),
+            )
         replicationService =
             ReplicationService(
                 consensus,
                 systemDatabase,
                 defaultDatabase,
+                catchUp,
                 logService.internalLogProvider,
             )
         replication = replicationService
@@ -137,7 +164,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                     )
                 },
                 globalModule.fileSystem,
-                logService.getInternalLog(StoreCopySource::class.java),
+                replicated = replicationService::replicates,
+                snapshots = { name ->
+                    replicationService
+                        .running()
+                        .firstOrNull { it.ref.name == name }
+                        ?.let { consensus.currentSnapshot(it.ref) }
+                },
+                log = logService.getInternalLog(StoreCopySource::class.java),
             ),
         )
         globalModule.databaseEventListeners.registerDatabaseEventListener(replication)
@@ -230,6 +264,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         )
         val multiDatabaseManager =
             MultiDatabaseManager(globalModule, databaseRepository, databaseContextFactory)
+        databaseManager = multiDatabaseManager
+        databaseContexts = databaseRepository
         setupMultiDbSystemGraphAdapter(multiDatabaseManager)
         val databaseLifecycles =
             MultiDatabaseLifecycleService(
@@ -261,6 +297,20 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
         globalModule.globalLife.add(clusterDefaultDatabaseInitializer)
     }
+
+    /** Stops and starts databases through DozerDB's database manager. */
+    private fun databaseControl(): DatabaseControl =
+        object : DatabaseControl {
+            override fun stop(id: NamedDatabaseId) = databaseManager.stopDatabase(id)
+
+            override fun start(id: NamedDatabaseId): Boolean {
+                databaseManager.startDatabase(id)
+                return databaseContexts
+                    .getDatabaseContext(id)
+                    .map { it.database().isStarted }
+                    .orElse(false)
+            }
+        }
 
     /** This member's advertised Bolt address, with the bound port if the configured one is 0. */
     private fun boltAddress(): HostPort? {

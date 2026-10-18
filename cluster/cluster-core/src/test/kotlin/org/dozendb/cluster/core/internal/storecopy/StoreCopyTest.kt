@@ -5,12 +5,16 @@ import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.cluster.api.BulkSource
 import org.dozendb.cluster.api.BulkTransfer
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.LogPosition
+import org.dozendb.cluster.api.Snapshot
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -87,20 +91,11 @@ class StoreCopyTest {
                 )
             }
         }
-        val copySource =
-            StoreCopySource(
-                {
-                    database.dependencyResolver.resolveDependency(
-                        DatabaseContextProvider::class.java
-                    )
-                },
-                fs,
-                NullLog.getInstance(),
-            )
+        val copySource = copySource(database)
         val target = root.resolve("target")
         Thread.sleep(300)
 
-        stores(target, InProcessTransfer(copySource)).copyFrom(HostPort("source", 7700))
+        stores(target, InProcessTransfer(copySource)).copyFrom(HostPort("source", 7700), names)
         writing.set(false)
         writer.join()
 
@@ -118,17 +113,53 @@ class StoreCopyTest {
         assertThat(batches.map { it.first }.sorted()).isEqualTo((0L until batches.size).toList())
     }
 
+    private fun copySource(
+        database: GraphDatabaseAPI,
+        snapshot: Snapshot? = null,
+    ): StoreCopySource =
+        StoreCopySource(
+            { database.dependencyResolver.resolveDependency(DatabaseContextProvider::class.java) },
+            fs,
+            replicated = { snapshot != null && it == GraphDatabaseSettings.DEFAULT_DATABASE_NAME },
+            snapshots = { snapshot },
+            log = NullLog.getInstance(),
+            minimumWait = Duration.ofMillis(100),
+        )
+
     @Test
-    fun `an interrupted copy counts as no databases`() {
+    fun `a half-moved database is missing and the member counts as having none`() {
         val home = root.resolve("member")
         dbms(home).also { it.shutdown() }
         services.clear()
         assertThat(stores(home).existed).isTrue()
+        assertThat(stores(home).missing()).isEmpty()
 
         Files.createFile(
-            Neo4jLayout.of(home).databasesDirectory().resolve(".dozendb-copy-incomplete")
+            Neo4jLayout.of(home).databasesDirectory().resolve(".dozendb-incomplete-neo4j")
         )
 
         assertThat(stores(home).existed).isFalse()
+        assertThat(stores(home).missing())
+            .containsExactly(GraphDatabaseSettings.DEFAULT_DATABASE_NAME)
+    }
+
+    @Test
+    fun `a member without databases misses them all`() {
+        assertThat(stores(root.resolve("empty")).missing()).isEqualTo(names)
+    }
+
+    @Test
+    fun `a copy of a replicated database holds the snapshot read first, at least the minimum`() {
+        val database = dbms(root.resolve("source")).neo4j()
+        database.executeTransactionally("CREATE (:Copied)")
+        val snapshot = Snapshot(LogPosition(7, 2), 5)
+        val transfer = InProcessTransfer(copySource(database, snapshot))
+        val target = stores(root.resolve("target"), transfer)
+        val neo4j = GraphDatabaseSettings.DEFAULT_DATABASE_NAME
+
+        assertThat(target.copyReplicated(HostPort("source", 7700), neo4j, 7)).isEqualTo(snapshot)
+        assertThatThrownBy { target.copyReplicated(HostPort("source", 7700), neo4j, 8) }
+            .hasMessageContaining("not yet up to the requested index 8")
+        assertThat(target.missing()).containsExactly(GraphDatabaseSettings.SYSTEM_DATABASE_NAME)
     }
 }

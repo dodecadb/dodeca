@@ -32,6 +32,7 @@ class ClusterProcedures {
                 term = it.term,
                 commitIndex = it.commitIndex,
                 appliedIndex = it.appliedIndex,
+                snapshotIndex = service.latestSnapshot(it.database)?.position?.index,
             )
         }
     }
@@ -63,6 +64,8 @@ class ClusterProcedures {
         val term: Long,
         val commitIndex: Long,
         val appliedIndex: Long,
+        /** The latest snapshot: the log no longer needs entries up to it. */
+        val snapshotIndex: Long?,
     )
 
     @JvmRecord

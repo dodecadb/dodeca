@@ -1,9 +1,11 @@
 package org.dozendb.cluster.core.internal.storecopy
 
+import java.io.IOException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import org.dozendb.cluster.api.BulkTransfer
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.Snapshot
 import org.dozendb.cluster.core.LocalStores
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
@@ -11,13 +13,13 @@ import org.neo4j.logging.InternalLog
 import org.neo4j.storageengine.api.StorageEngineFactory
 
 /**
- * The `system` and replicated databases of this member, which it copies from another member when it
- * has none.
+ * The `system` and replicated databases of this member, which it copies from another member when
+ * they are missing or behind.
  *
- * All databases are first copied to staging directories next to their final places and synced. Only
- * then are they moved into place, with a marker file present while moving. A start that finds the
- * marker knows a previous copy was interrupted and treats the member as having no databases, so it
- * copies them again instead of starting from a mix.
+ * Databases are first copied to staging directories next to their final places and synced. Only
+ * then are they moved into place, each with a marker file present while it is moved. A database
+ * with a marker was left half-moved by an interrupted copy: it counts as missing and is copied
+ * again, and a member with any marker counts as having no databases during formation.
  */
 internal class Neo4jLocalStores(
     private val fs: FileSystemAbstraction,
@@ -26,44 +28,55 @@ internal class Neo4jLocalStores(
     private val transfer: BulkTransfer,
     private val log: InternalLog,
 ) : LocalStores {
-    private val incompleteMarker = layout.databasesDirectory().resolve(INCOMPLETE_MARKER)
-
     override val existed: Boolean =
-        !fs.fileExists(incompleteMarker) && databaseNames.any(::storageExists)
+        databaseNames.none(::incomplete) && databaseNames.any(::storageExists)
 
-    override fun copyFrom(source: HostPort) {
-        val staged = databaseNames.map { fetch(source, it) }
-        fs.mkdirs(incompleteMarker.parent)
-        fs.write(incompleteMarker).close()
-        for (copy in staged) {
-            val target = layout.databaseLayout(copy.name)
-            replace(copy.transactionLogs, target.transactionLogsDirectory)
-            replace(copy.database, target.databaseDirectory())
-        }
-        fs.deleteFile(incompleteMarker)
-        staged.forEach {
-            log.info(
-                "Copied database %s from %s: %d files, %d bytes, %s",
-                it.name,
-                source,
-                it.summary.files,
-                it.summary.bytes,
-                it.summary.description,
+    override fun missing(): List<String> = databaseNames.filter {
+        incomplete(it) || !storageExists(it)
+    }
+
+    override fun copyFrom(source: HostPort, databases: List<String>) {
+        require(databases.all { it in databaseNames }) { "unknown databases in $databases" }
+        val staged = databases.map { fetch(source, it, NO_MINIMUM) }
+        staged.forEach(::moveIntoPlace)
+    }
+
+    /**
+     * Replaces [name], which must be stopped, with a copy from [source] holding every Raft entry up
+     * to [minimumIndex], and returns the Raft snapshot the copy holds.
+     */
+    fun copyReplicated(source: HostPort, name: String, minimumIndex: Long): Snapshot {
+        require(name in databaseNames) { "unknown database $name" }
+        val staged = fetch(source, name, minimumIndex)
+        val snapshot =
+            staged.summary.snapshot
+                ?: throw IOException("$source sent a copy of $name without a Raft snapshot")
+        if (snapshot.position.index < minimumIndex) {
+            throw IOException(
+                "$source sent a copy of $name holding $snapshot, short of index $minimumIndex"
             )
         }
+        moveIntoPlace(staged)
+        return snapshot
     }
 
     private fun storageExists(name: String): Boolean =
         StorageEngineFactory.allAvailableStorageEngines().any { it.storageExists(fs, layout, name) }
+
+    private fun marker(name: String): Path =
+        layout.databasesDirectory().resolve(INCOMPLETE_MARKER_PREFIX + name)
+
+    private fun incomplete(name: String): Boolean = fs.fileExists(marker(name))
 
     private class Staged(
         val name: String,
         val database: Path,
         val transactionLogs: Path,
         val summary: StoreArchive.Summary,
+        val source: HostPort,
     )
 
-    private fun fetch(source: HostPort, name: String): Staged {
+    private fun fetch(source: HostPort, name: String, minimumIndex: Long): Staged {
         val database = layout.databasesDirectory().resolve(STAGING_PREFIX + name)
         val transactionLogs = layout.transactionLogsRootDirectory().resolve(STAGING_PREFIX + name)
         for (staging in listOf(database, transactionLogs)) {
@@ -71,13 +84,36 @@ internal class Neo4jLocalStores(
             fs.mkdirs(staging)
         }
         val summary =
-            transfer.fetchBulk(source, StoreCopySource.NAME, name.encodeToByteArray()) { input ->
+            transfer.fetchBulk(
+                source,
+                StoreCopySource.NAME,
+                StoreCopySource.encodeRequest(name, minimumIndex),
+            ) { input ->
                 StoreArchive.read(input, fs, database, transactionLogs)
             }
         check(summary.database == name) {
             "asked for database $name but received ${summary.database}"
         }
-        return Staged(name, database, transactionLogs, summary)
+        return Staged(name, database, transactionLogs, summary, source)
+    }
+
+    private fun moveIntoPlace(copy: Staged) {
+        val marker = marker(copy.name)
+        fs.mkdirs(marker.parent)
+        fs.write(marker).close()
+        val target = layout.databaseLayout(copy.name)
+        replace(copy.transactionLogs, target.transactionLogsDirectory)
+        replace(copy.database, target.databaseDirectory())
+        fs.deleteFile(marker)
+        log.info(
+            "Copied database %s from %s: %d files, %d bytes, %s, Raft snapshot %s",
+            copy.name,
+            copy.source,
+            copy.summary.files,
+            copy.summary.bytes,
+            copy.summary.description,
+            copy.summary.snapshot,
+        )
     }
 
     private fun replace(staging: Path, target: Path) {
@@ -88,6 +124,7 @@ internal class Neo4jLocalStores(
 
     private companion object {
         const val STAGING_PREFIX = ".dozendb-copy-"
-        const val INCOMPLETE_MARKER = ".dozendb-copy-incomplete"
+        const val INCOMPLETE_MARKER_PREFIX = ".dozendb-incomplete-"
+        const val NO_MINIMUM = -1L
     }
 }

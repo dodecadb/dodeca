@@ -7,6 +7,7 @@ import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.api.Snapshot
 import org.neo4j.logging.Log
 
 /** A voting member as seen from this member; [boltAddress] is null while it is not known. */
@@ -37,8 +38,8 @@ class ClusterService(
     private var statusListener: AutoCloseable? = null
 
     /**
-     * Starts consensus and blocks until this member takes part in the `system` group, with
-     * databases copied from another member if it has none. Runs before any database starts.
+     * Starts consensus and blocks until this member takes part in the `system` group, with the
+     * databases it lacks copied from another member. Runs before any database starts.
      */
     fun start() {
         consensus.start()
@@ -49,12 +50,13 @@ class ClusterService(
             } else {
                 formation.awaitFormation(systemDatabase.id)
             }
-        if (!stores.existed) {
+        val missing = stores.missing()
+        if (missing.isNotEmpty()) {
             val source = joined?.storeSource
             if (source != null && source.id == consensus.self.id) {
                 userLog.info("This member creates the databases of the new cluster")
             } else {
-                copyStores(source)
+                copyStores(source, missing)
             }
         }
         val listener = RoleChangeLogger(userLog)
@@ -63,12 +65,12 @@ class ClusterService(
         directory?.start()
     }
 
-    private fun copyStores(source: Member?) {
+    private fun copyStores(source: Member?, databases: List<String>) {
         while (true) {
             val address = formation.awaitStoreSource(source)
-            userLog.info("Copying the databases from %s", address)
+            userLog.info("Copying databases %s from %s", databases.joinToString(), address)
             try {
-                stores.copyFrom(address)
+                stores.copyFrom(address, databases)
                 return
             } catch (e: ConsensusUnavailableException) {
                 userLog.warn(
@@ -100,6 +102,9 @@ class ClusterService(
     /** The local status of every group this member runs. */
     fun status(): List<GroupStatus> =
         (listOf(systemDatabase) + replicatedDatabases()).map(consensus::status)
+
+    /** The latest snapshot of [database] on this member: its log may lack entries up to it. */
+    fun latestSnapshot(database: DatabaseRef): Snapshot? = consensus.latestSnapshot(database)
 
     /** The voting members of the `system` group. */
     fun members(): List<MemberView> {

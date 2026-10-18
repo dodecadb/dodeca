@@ -3,6 +3,7 @@ package org.dozendb.cluster.core.internal
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.UUID
 import kotlin.concurrent.thread
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
@@ -12,6 +13,7 @@ import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.testing.TestPorts
 import org.dozendb.cluster.core.ClusterService
+import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
@@ -25,8 +27,15 @@ import org.neo4j.io.ByteUnit
 import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 
-/** Clustered DBMSes in this JVM, on loopback, for tests. */
-class ClusterHarness(private val root: Path, size: Int) : AutoCloseable {
+/**
+ * Clustered DBMSes in this JVM, on loopback, for tests. [tuning] adjusts every member's consensus
+ * configuration.
+ */
+internal class ClusterHarness(
+    private val root: Path,
+    size: Int,
+    private val tuning: ConsensusTuning? = null,
+) : AutoCloseable {
     inner class Member(val index: Int) {
         val home: Path = Files.createDirectories(root.resolve("member-$index"))
         val raftPort: Int = TestPorts.free()
@@ -41,9 +50,26 @@ class ClusterHarness(private val root: Path, size: Int) : AutoCloseable {
         /** Starts the DBMS; blocks until its databases run, which may wait for other members. */
         fun start() {
             check(dbms == null) { "member $index is running" }
+            val dependencies = GraphDatabaseDependencies.newDependencies()
+            tuning?.let {
+                dependencies.dependencies(Dependencies().apply { satisfyDependency(it) })
+            }
             dbms =
                 DatabaseManagementServiceFactory(DbmsInfo.ENTERPRISE, ::ClusterEditionModule)
-                    .build(config(), false, GraphDatabaseDependencies.newDependencies())
+                    .build(config(), false, dependencies)
+        }
+
+        /** The first index in this member's Raft log of [database], or null if it has none. */
+        fun firstLogIndex(database: UUID): Long? {
+            val log = home.resolve("data/raft").resolve(database.toString()).resolve("current")
+            if (!Files.isDirectory(log)) return null
+            return Files.list(log).use { files ->
+                files
+                    .map { SEGMENT.matchEntire(it.fileName.toString())?.groupValues?.get(1) }
+                    .toList()
+                    .filterNotNull()
+                    .minOfOrNull { it.toLong() }
+            }
         }
 
         fun stop() {
@@ -133,5 +159,7 @@ class ClusterHarness(private val root: Path, size: Int) : AutoCloseable {
         const val DEFAULT_DATABASE = "neo4j"
         val AWAIT: Duration = Duration.ofSeconds(60)
         val START_TIMEOUT: Duration = Duration.ofMinutes(2)
+
+        private val SEGMENT = Regex("""log_(?:inprogress_)?(\d+)(?:-\d+)?""")
     }
 }

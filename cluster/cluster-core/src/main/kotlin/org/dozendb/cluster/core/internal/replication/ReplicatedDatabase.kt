@@ -9,6 +9,7 @@ import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
+import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.core.internal.reads.ReadConsistencyException
@@ -33,6 +34,8 @@ import org.neo4j.storageengine.api.CommandBatch
  * a lease at once, but reuses free IDs only after every transaction that was open at that moment
  * has closed: such a transaction may hold IDs from an earlier term, and its rollback can mark free
  * an ID that another leader used since. Until then IDs come from the high ID, which is always safe.
+ *
+ * @property onSnapshotNeeded called when the group's log no longer holds entries this member needs.
  */
 internal class ReplicatedDatabase(
     val namedDatabaseId: NamedDatabaseId,
@@ -42,6 +45,7 @@ internal class ReplicatedDatabase(
     storeExists: Boolean,
     private val scheduler: ScheduledExecutorService,
     private val log: InternalLog,
+    private val onSnapshotNeeded: (ReplicatedDatabase, Member?, Long) -> Unit,
 ) {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
 
@@ -79,7 +83,12 @@ internal class ReplicatedDatabase(
             kernelTransactions =
                 database.dependencyResolver.resolveDependency(KernelTransactions::class.java)
             val stateMachine =
-                DatabaseStateMachine(database, checkNotNull(applyProcess) { "no commit process" })
+                DatabaseStateMachine(
+                    database,
+                    checkNotNull(applyProcess) { "no commit process" },
+                ) { leader, minimumIndex ->
+                    onSnapshotNeeded(this, leader, minimumIndex)
+                }
             val bootstrap =
                 if (ref.id in consensus.localGroups()) emptyList()
                 else consensus.members(systemDatabase)

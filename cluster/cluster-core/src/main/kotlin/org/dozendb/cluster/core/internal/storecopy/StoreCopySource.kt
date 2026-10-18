@@ -1,7 +1,13 @@
 package org.dozendb.cluster.core.internal.storecopy
 
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.io.IOException
 import java.io.OutputStream
+import java.time.Duration
 import org.dozendb.cluster.api.BulkSource
+import org.dozendb.cluster.api.Snapshot
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
@@ -9,20 +15,33 @@ import org.neo4j.kernel.impl.store.DefaultStoreSnapshotFactory
 import org.neo4j.logging.InternalLog
 
 /**
- * Serves copies of running databases to members that have none.
+ * Serves copies of running databases to members that have none or fell behind.
  *
  * A copy is a crash image that Neo4j recovery completes: Neo4j's own store snapshot checkpoints the
  * database and holds off further checkpoints, then the files that recovery cannot rebuild are sent,
  * then the store files, and last the transaction logs, which contain every transaction since the
  * checkpoint up to at least the moment the store files were read.
+ *
+ * For a replicated database the copy states the Raft snapshot it holds, read before the store
+ * snapshot is taken: every transaction up to it is closed by then, so the copied transaction logs
+ * reach it. A request may name the lowest index the snapshot must reach; a member that has not
+ * applied that far waits for a while, then refuses. Without one, as for a member's first copy, the
+ * copy states a snapshot only if the member has applied entries.
+ *
+ * @property snapshots the current snapshot of a database replicated here, by name; null for a
+ *   database that is not replicated.
+ * @property replicated whether a database is replicated, by name.
  */
 internal class StoreCopySource(
     private val databases: () -> DatabaseContextProvider<*>,
     private val fs: FileSystemAbstraction,
+    private val replicated: (String) -> Boolean,
+    private val snapshots: (String) -> Snapshot?,
     private val log: InternalLog,
+    private val minimumWait: Duration = Duration.ofSeconds(10),
 ) : BulkSource {
     override fun serve(request: ByteArray, out: OutputStream) {
-        val name = request.decodeToString()
+        val (name, minimumIndex) = decodeRequest(request)
         val database =
             databases()
                 .getDatabaseContext(name)
@@ -31,6 +50,14 @@ internal class StoreCopySource(
                 ?: throw IllegalStateException("database $name cannot be copied")
         check(database.isStarted) { "database $name is not running" }
         val snapshot =
+            when {
+                !replicated(name) -> null
+                // A member's first copy starts from the beginning of the log; a new group may not
+                // have applied anything yet.
+                minimumIndex < 0 -> snapshots(name)
+                else -> awaitSnapshot(name, minimumIndex)
+            }
+        val storeSnapshot =
             DefaultStoreSnapshotFactory(database, fs).createStoreSnapshot().orElseThrow {
                 IllegalStateException("database $name is unavailable")
             }
@@ -38,24 +65,27 @@ internal class StoreCopySource(
         val databaseDirectory = layout.databaseDirectory()
         val transactionLogs = layout.transactionLogsDirectory
         log.info(
-            "Sending a copy of database %s, checkpoint at %s",
+            "Sending a copy of database %s, checkpoint at %s, holding Raft snapshot %s",
             name,
-            snapshot.lastAppliedTransactionId(),
+            storeSnapshot.lastAppliedTransactionId(),
+            snapshot,
         )
-        snapshot.use {
+        storeSnapshot.use {
             val archive = StoreArchive.Writer(out, fs)
             archive.header(
                 name,
-                "store ${snapshot.storeId()}, checkpoint ${snapshot.lastAppliedTransactionId()}",
+                "store ${storeSnapshot.storeId()}, " +
+                    "checkpoint ${storeSnapshot.lastAppliedTransactionId()}",
+                snapshot,
             )
-            snapshot.unrecoverableFiles().forEach { resource ->
+            storeSnapshot.unrecoverableFiles().forEach { resource ->
                 archive.file(
                     StoreArchive.Root.DATABASE,
                     databaseDirectory.relativize(resource.path()),
                     resource.path(),
                 )
             }
-            for (path in snapshot.recoverableFiles()) {
+            for (path in storeSnapshot.recoverableFiles()) {
                 archive.file(StoreArchive.Root.DATABASE, databaseDirectory.relativize(path), path)
             }
             for (path in fs.listFiles(transactionLogs).filterNot(fs::isDirectory).sorted()) {
@@ -70,7 +100,46 @@ internal class StoreCopySource(
         log.info("Sent a copy of database %s", name)
     }
 
+    /** This member's snapshot of [name] once it reaches [minimumIndex]. */
+    private fun awaitSnapshot(name: String, minimumIndex: Long): Snapshot {
+        val deadline = System.nanoTime() + minimumWait.toNanos()
+        while (true) {
+            val snapshot =
+                snapshots(name) ?: throw IllegalStateException("database $name is not replicating")
+            if (snapshot.position.index >= minimumIndex) return snapshot
+            if (System.nanoTime() > deadline) {
+                throw IllegalStateException(
+                    "database $name has applied up to ${snapshot.position}, " +
+                        "not yet up to the requested index $minimumIndex"
+                )
+            }
+            Thread.sleep(MINIMUM_POLL_MILLIS)
+        }
+    }
+
     companion object {
         const val NAME = "dozendb.storeCopy"
+        private const val REQUEST_VERSION = 1
+        private const val MINIMUM_POLL_MILLIS = 50L
+
+        /** A request for a copy of [database] holding every Raft entry up to [minimumIndex]. */
+        fun encodeRequest(database: String, minimumIndex: Long): ByteArray =
+            ByteArrayOutputStream().use { buffer ->
+                DataOutputStream(buffer).use {
+                    it.writeByte(REQUEST_VERSION)
+                    it.writeUTF(database)
+                    it.writeLong(minimumIndex)
+                }
+                buffer.toByteArray()
+            }
+
+        fun decodeRequest(request: ByteArray): Pair<String, Long> =
+            DataInputStream(request.inputStream()).use {
+                val version = it.readByte().toInt()
+                if (version != REQUEST_VERSION) {
+                    throw IOException("unsupported copy request version $version")
+                }
+                it.readUTF() to it.readLong()
+            }
     }
 }

@@ -24,16 +24,27 @@ class ClusterServiceTest {
     /** The member every other one copies from when no member has databases. */
     private val source = logs.indices.minBy { logs[it].self.id }
 
-    private class FakeStores(override val existed: Boolean = false, var failures: Int = 0) :
-        LocalStores {
+    private class FakeStores(
+        override val existed: Boolean = false,
+        var failures: Int = 0,
+        private val missing: List<String> = if (existed) emptyList() else ALL_DATABASES,
+    ) : LocalStores {
         val copies = mutableListOf<HostPort>()
+        val copied = mutableListOf<String>()
 
-        override fun copyFrom(source: HostPort) {
+        override fun missing(): List<String> = missing - copied.toSet()
+
+        override fun copyFrom(source: HostPort, databases: List<String>) {
             if (failures > 0) {
                 failures--
                 throw IOException("connection reset")
             }
             copies += source
+            copied += databases
+        }
+
+        companion object {
+            val ALL_DATABASES = listOf("system", "neo4j")
         }
     }
 
@@ -141,6 +152,21 @@ class ClusterServiceTest {
         service(2, wiped).start()
 
         assertThat(wiped.copies).containsExactly(addresses[1])
+        assertThat(wiped.copied).containsExactlyElementsOf(FakeStores.ALL_DATABASES)
+    }
+
+    @Test
+    fun `a rejoining member copies only the databases it lacks`() {
+        val services = logs.indices.map { service(it, FakeStores(existed = true)) }
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+        services[2].stop()
+        val partly = FakeStores(existed = true, missing = listOf("neo4j"))
+
+        service(2, partly).start()
+
+        assertThat(partly.copied).containsExactly("neo4j")
+        assertThat(logs[2].status(system).role).isEqualTo(Role.Follower)
     }
 
     @Test

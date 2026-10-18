@@ -6,18 +6,29 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.fake.InMemoryConsensus
 import org.dozendb.cluster.core.internal.ReadConsistency
+import org.dozendb.cluster.core.internal.replication.CatchUp
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.junit.jupiter.api.Test
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.kernel.api.exceptions.Status
+import org.neo4j.logging.NullLog
 import org.neo4j.logging.NullLogProvider
 
 class ConsistentBoltDatabasesTest {
+    private val consensus = InMemoryConsensus().newMember()
+    private val system = DatabaseRef("system", UUID(0, 1))
     private val replication =
         ReplicationService(
-            InMemoryConsensus().newMember(),
-            DatabaseRef("system", UUID(0, 1)),
+            consensus,
+            system,
             "neo4j",
+            CatchUp(
+                consensus,
+                system,
+                { error("not used") },
+                { _, _, _ -> error("not used") },
+                NullLog.getInstance(),
+            ),
             NullLogProvider.getInstance(),
         )
     private val unused = BoltGraphDatabaseManagementServiceSPI { _, _ -> error("not used") }

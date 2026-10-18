@@ -51,7 +51,7 @@ diff them and carry relevant changes over.
 | `DozerDbBootstrapper` | `ClusterBootstrapper` | Subclass; clustering disabled calls DozerDB's code unchanged. |
 | `DozerDbEditionModule` | `ClusterEditionModule` | Subclass. `createDatabaseContextProvider` is a port of DozerDB's that swaps the database context factory; `registerDefaultDatabaseInitializer` is overridden because DozerDB keeps that starter in a private field. |
 | `DozerDbDatabaseContextFactory` | `ClusterDatabaseContextFactory` | Port. Differs only for replicated databases (hosting mode, leases, commit process, ID allocation) and in the constraint semantics. |
-| `MultiDatabaseManager`, `MultiDatabaseLifecycleService` | `ClusterEditionModule` | Used unchanged. |
+| `MultiDatabaseManager`, `MultiDatabaseLifecycleService` | `ClusterEditionModule` | Used unchanged. `MultiDatabaseManager.stopDatabase` and `startDatabase` stop a replicated database while its copy is replaced (`CatchUp`). |
 | `DozerDbConstraintSemantics`, `ConstraintChecker`, `ConstraintDelegator` | `DozenDbConstraintSemantics` | Subclass and use. Fixes `readConstraint` and the checker construction, see `COMPATIBILITY.md`. Only used with clustering enabled. |
 
 ## Build integration (no upstream edits)

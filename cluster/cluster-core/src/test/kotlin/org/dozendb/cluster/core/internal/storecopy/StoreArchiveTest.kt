@@ -9,6 +9,8 @@ import java.nio.file.Path
 import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.dozendb.cluster.api.LogPosition
+import org.dozendb.cluster.api.Snapshot
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
@@ -23,10 +25,15 @@ class StoreArchiveTest {
             Files.write(it, Random(relative.hashCode()).nextBytes(size))
         }
 
-    private fun archive(build: StoreArchive.Writer.() -> Unit): ByteArray {
+    private val snapshot = Snapshot(LogPosition(42, 3), 40)
+
+    private fun archive(
+        snapshot: Snapshot? = this.snapshot,
+        build: StoreArchive.Writer.() -> Unit,
+    ): ByteArray {
         val bytes = ByteArrayOutputStream()
         StoreArchive.Writer(bytes, fs).apply {
-            header("neo4j", "test copy")
+            header("neo4j", "test copy", snapshot)
             build()
         }
         return bytes.toByteArray()
@@ -64,7 +71,8 @@ class StoreArchiveTest {
                 }
             )
 
-        assertThat(summary).isEqualTo(StoreArchive.Summary("neo4j", "test copy", 4, 3_080_000))
+        assertThat(summary)
+            .isEqualTo(StoreArchive.Summary("neo4j", "test copy", snapshot, 4, 3_080_000))
         assertThat(root.resolve("target/database/neostore")).hasSameBinaryContentAs(store)
         assertThat(root.resolve("target/database/schema/index/1/index-1"))
             .hasSameBinaryContentAs(index)
@@ -120,5 +128,10 @@ class StoreArchiveTest {
                 .isInstanceOf(IOException::class.java)
                 .hasMessageContaining("invalid path")
         }
+    }
+
+    @Test
+    fun `a copy of a database that is not replicated has no snapshot`() {
+        assertThat(extract(archive(snapshot = null) { end() }).snapshot).isNull()
     }
 }

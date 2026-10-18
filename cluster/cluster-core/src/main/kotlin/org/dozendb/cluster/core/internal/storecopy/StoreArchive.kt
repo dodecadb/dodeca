@@ -9,15 +9,18 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.file.Path
+import org.dozendb.cluster.api.LogPosition
+import org.dozendb.cluster.api.Snapshot
 import org.neo4j.io.fs.FileSystemAbstraction
 
 /**
- * The stream format of a database copy: a header, then each file with its root directory, relative
- * path and length, then a trailer with the totals so a truncated stream is detected.
+ * The stream format of a database copy: a header with the database name, a description and the Raft
+ * snapshot the copy holds, if the database is replicated; then each file with its root directory,
+ * relative path and length; then a trailer with the totals so a truncated stream is detected.
  */
 internal object StoreArchive {
     private const val MAGIC = 0x445A5343 // "DZSC"
-    private const val VERSION: Byte = 1
+    private const val VERSION: Byte = 2
     private const val TAG_END: Byte = 0
     private const val TAG_FILE: Byte = 1
     private const val BUFFER_SIZE = 1 shl 20
@@ -32,9 +35,11 @@ internal object StoreArchive {
         }
     }
 
+    /** @property snapshot the Raft snapshot the copy holds, null if it is not replicated. */
     data class Summary(
         val database: String,
         val description: String,
+        val snapshot: Snapshot?,
         val files: Int,
         val bytes: Long,
     )
@@ -45,11 +50,17 @@ internal object StoreArchive {
         private var files = 0
         private var bytes = 0L
 
-        fun header(database: String, description: String) {
+        fun header(database: String, description: String, snapshot: Snapshot?) {
             data.writeInt(MAGIC)
             data.writeByte(VERSION.toInt())
             data.writeUTF(database)
             data.writeUTF(description)
+            data.writeBoolean(snapshot != null)
+            if (snapshot != null) {
+                data.writeLong(snapshot.position.index)
+                data.writeLong(snapshot.position.term)
+                data.writeLong(snapshot.appliedIndex)
+            }
         }
 
         /** Streams the bytes [path] has now; a live file may grow while it is copied. */
@@ -95,6 +106,17 @@ internal object StoreArchive {
         if (version != VERSION) throw IOException("unsupported database copy version $version")
         val database = data.readUTF()
         val description = data.readUTF()
+        val snapshot =
+            if (data.readBoolean()) {
+                val position = LogPosition(index = data.readLong(), term = data.readLong())
+                val appliedIndex = data.readLong()
+                if (appliedIndex > position.index) {
+                    throw IOException("invalid snapshot $position with applied index $appliedIndex")
+                }
+                Snapshot(position, appliedIndex)
+            } else {
+                null
+            }
         val buffer = ByteBuffer.allocate(BUFFER_SIZE)
         var files = 0
         var bytes = 0L
@@ -131,7 +153,7 @@ internal object StoreArchive {
                                 "expected $expectedFiles and $expectedBytes"
                         )
                     }
-                    return Summary(database, description, files, bytes)
+                    return Summary(database, description, snapshot, files, bytes)
                 }
                 else -> throw IOException("unknown database copy entry $tag")
             }

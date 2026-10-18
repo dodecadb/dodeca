@@ -79,3 +79,19 @@ What clustering does not do yet.
   Members with databases of their own refuse to form a cluster together.
 - **ID reuse.** IDs freed while a member is a follower are reused only after a
   restart, as in Neo4j's own clustering.
+- **Raft log retention and catch-up.** Raft snapshots follow Neo4j
+  checkpoints (`db.checkpoint.interval.*`): each member keeps its Raft log from
+  its second-to-last checkpoint on. A member that was down for less than about
+  one checkpoint interval catches up from the log. A member that was down
+  longer stops its copy of the database, replaces it with a copy from the
+  leader, and starts it again; the database is unavailable on that member
+  meanwhile. `dozendb.cluster.status()` reports each group's latest snapshot
+  as `snapshotIndex`.
+- **Lost databases.** A member whose replicated database is missing at startup
+  (for example after deleting `data/databases/neo4j` and
+  `data/transactions/neo4j`) copies it from another member and keeps its own
+  `system` database. Never delete the Raft directory (`data/raft`) of a member
+  that keeps its identity (`data/server_id`): Raft would forget its votes.
+- **Stopped databases.** A member whose replicated database stops, for example
+  after a panic, keeps taking part in the database's Raft group but no longer
+  applies entries, and hands leadership to another member.

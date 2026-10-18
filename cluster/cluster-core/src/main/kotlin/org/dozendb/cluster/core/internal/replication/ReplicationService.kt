@@ -1,10 +1,13 @@
 package org.dozendb.cluster.core.internal.replication
 
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.DatabaseRef
+import org.dozendb.cluster.api.Member
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.internal.id.IdGeneratorFactory
@@ -20,6 +23,7 @@ internal class ReplicationService(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
     private val defaultDatabaseName: String,
+    private val catchUp: CatchUp,
     private val logProvider: InternalLogProvider,
 ) : DatabaseEventListenerAdapter() {
     private val log = logProvider.getLog(ReplicationService::class.java)
@@ -28,13 +32,20 @@ internal class ReplicationService(
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "dozendb-replication").apply { isDaemon = true }
         }
+    private val catchUpExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
+        Thread(runnable, "dozendb-catch-up").apply { isDaemon = true }
+    }
+    private val catchingUp: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /** Whether the default database is replicating here, so other members can copy it. */
     val defaultDatabaseStarted: Boolean
         get() = databases[defaultDatabaseName]?.isRunning() == true
 
     fun replicates(namedDatabaseId: NamedDatabaseId): Boolean =
-        !namedDatabaseId.isSystemDatabase && namedDatabaseId.name() == defaultDatabaseName
+        !namedDatabaseId.isSystemDatabase && replicates(namedDatabaseId.name())
+
+    fun replicates(name: String): Boolean =
+        name != systemDatabase.name && name == defaultDatabaseName
 
     /**
      * Creates the replication of a database that is being created. [storeExists] tells whether the
@@ -54,6 +65,7 @@ internal class ReplicationService(
                 storeExists,
                 scheduler,
                 logProvider.getLog(ReplicatedDatabase::class.java),
+                ::catchUp,
             )
         databases[namedDatabaseId.name()] = replica
         return replica
@@ -87,6 +99,26 @@ internal class ReplicationService(
         }
     }
 
+    /** Replaces [replica] with a copy, unless that is already under way. */
+    private fun catchUp(replica: ReplicatedDatabase, leader: Member?, minimumIndex: Long) {
+        val name = replica.ref.name
+        if (!catchingUp.add(name)) return
+        try {
+            catchUpExecutor.execute {
+                try {
+                    catchUp.run(replica, leader, minimumIndex)
+                } catch (e: Exception) {
+                    log.error("Catching up database $name failed", e)
+                } finally {
+                    catchingUp.remove(name)
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Shutting down.
+            catchingUp.remove(name)
+        }
+    }
+
     private fun inBackground(description: String, task: () -> Unit) {
         scheduler.execute {
             try {
@@ -98,6 +130,7 @@ internal class ReplicationService(
     }
 
     fun close() {
+        catchUpExecutor.shutdownNow()
         scheduler.shutdownNow()
     }
 }
