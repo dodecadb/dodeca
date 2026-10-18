@@ -6,6 +6,12 @@ import java.util.Properties
 object DozenDbMetadata {
     const val NEO4J_VERSION = "neo4j.version"
     const val DOZENDB_VERSION = "dozendb.version"
+
+    /** "true" if the member had databases before it started; used to pick the store source. */
+    const val HAS_STORES = "dozendb.hasStores"
+
+    /** "true" while the member's replicated databases run, so other members can copy them. */
+    const val STORES_READY = "dozendb.storesReady"
     const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
 
     private val properties: Properties by lazy {

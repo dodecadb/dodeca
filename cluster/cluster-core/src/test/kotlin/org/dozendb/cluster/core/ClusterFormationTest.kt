@@ -28,10 +28,91 @@ class ClusterFormationTest {
     fun `every initial member computes the same ordered member list`() {
         members.forEach { it.start() }
 
-        val decisions = members.map { formation(it).awaitInitialMembers(system.id) }
+        val decisions = members.map { formation(it).awaitFormation(system.id).members }
 
         assertThat(decisions.distinct()).hasSize(1)
         assertThat(decisions[0]).isEqualTo(members.map { it.self }.sortedBy { it.id })
+    }
+
+    @Test
+    fun `without existing databases the member with the lowest id is the store source`() {
+        members.forEach { it.start() }
+
+        val formations = members.map { formation(it).awaitFormation(system.id) }
+
+        assertThat(formations.map { it.storeSource }.distinct())
+            .containsExactly(members.map { it.self }.minBy { it.id })
+    }
+
+    @Test
+    fun `the only member with existing databases is the store source`() {
+        members[2].metadata = version + (DozenDbMetadata.HAS_STORES to "true")
+        members.forEach { it.start() }
+
+        val formations = members.map { formation(it).awaitFormation(system.id) }
+
+        assertThat(formations.map { it.storeSource }.distinct()).containsExactly(members[2].self)
+    }
+
+    @Test
+    fun `refuses to form when several members have existing databases`() {
+        members.drop(1).forEach { it.metadata = version + (DozenDbMetadata.HAS_STORES to "true") }
+        members.forEach { it.start() }
+
+        assertThatThrownBy { formation(members[0]).awaitFormation(system.id) }
+            .isInstanceOf(ClusterFormationException::class.java)
+            .hasMessageContaining("existing databases")
+    }
+
+    @Test
+    fun `joining a formed cluster has no store source`() {
+        members.forEach { it.start() }
+        val formed = members.map { it.self }.sortedBy { it.id }
+        members.take(2).forEach { it.startGroup(system, RecordingStateMachine(), formed) }
+
+        assertThat(formation(members[2]).awaitFormation(system.id).storeSource).isNull()
+    }
+
+    @Test
+    fun `waits for the store source to serve its databases`() {
+        members.forEach { it.start() }
+        var waits = 0
+
+        val address =
+            formation(members[0]) {
+                    waits++
+                    if (waits == 2)
+                        members[1].metadata = version + (DozenDbMetadata.STORES_READY to "true")
+                }
+                .awaitStoreSource(members[1].self)
+
+        assertThat(address).isEqualTo(members[1].self.raftAddress)
+        assertThat(waits).isEqualTo(2)
+    }
+
+    @Test
+    fun `without a store source any other member that serves its databases qualifies`() {
+        members.forEach { it.metadata = version + (DozenDbMetadata.STORES_READY to "true") }
+        members.forEach { it.start() }
+        members[1].close()
+
+        // Itself and the stopped member do not qualify.
+        assertThat(formation(members[0]).awaitStoreSource(null))
+            .isEqualTo(members[2].self.raftAddress)
+    }
+
+    @Test
+    fun `refuses a store source that runs another Neo4j version`() {
+        members.forEach { it.start() }
+        members[1].metadata =
+            mapOf(
+                DozenDbMetadata.NEO4J_VERSION to "5.26.32",
+                DozenDbMetadata.STORES_READY to "true",
+            )
+
+        assertThatThrownBy { formation(members[0]).awaitStoreSource(members[1].self) }
+            .isInstanceOf(ClusterFormationException::class.java)
+            .hasMessageContaining("5.26.32")
     }
 
     @Test
@@ -44,7 +125,8 @@ class ClusterFormationTest {
                     waits++
                     if (waits == 3) members[2].start()
                 }
-                .awaitInitialMembers(system.id)
+                .awaitFormation(system.id)
+                .members
 
         assertThat(waits).isEqualTo(3)
         assertThat(decided).hasSize(3)
@@ -57,7 +139,7 @@ class ClusterFormationTest {
         members.take(2).forEach { it.startGroup(system, RecordingStateMachine(), formed) }
         members[1].close()
 
-        assertThat(formation(members[2]).awaitInitialMembers(system.id)).isEqualTo(formed)
+        assertThat(formation(members[2]).awaitFormation(system.id).members).isEqualTo(formed)
     }
 
     @Test
@@ -69,7 +151,8 @@ class ClusterFormationTest {
 
         assertThatThrownBy {
                 formation(wiped, initial = addresses.take(1) + wiped.self.raftAddress)
-                    .awaitInitialMembers(system.id)
+                    .awaitFormation(system.id)
+                    .members
             }
             .isInstanceOf(ClusterFormationException::class.java)
             .hasMessageContaining("already formed")
@@ -83,7 +166,8 @@ class ClusterFormationTest {
 
         assertThatThrownBy {
                 formation(members[0], initial = addresses + other.self.raftAddress)
-                    .awaitInitialMembers(system.id)
+                    .awaitFormation(system.id)
+                    .members
             }
             .isInstanceOf(ClusterFormationException::class.java)
             .hasMessageContaining("5.26.32")
@@ -94,7 +178,7 @@ class ClusterFormationTest {
         val outsider = consensus.newMember(metadata = version)
         (members + outsider).forEach { it.start() }
 
-        assertThatThrownBy { formation(outsider).awaitInitialMembers(system.id) }
+        assertThatThrownBy { formation(outsider).awaitFormation(system.id).members }
             .isInstanceOf(ClusterFormationException::class.java)
             .hasMessageContaining("is not one of")
     }
@@ -105,7 +189,8 @@ class ClusterFormationTest {
 
         assertThatThrownBy {
                 formation(members[0], initial = addresses + addresses[1])
-                    .awaitInitialMembers(system.id)
+                    .awaitFormation(system.id)
+                    .members
             }
             .isInstanceOf(ClusterFormationException::class.java)
             .hasMessageContaining("several addresses")

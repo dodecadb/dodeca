@@ -1,16 +1,22 @@
 package org.dozendb.cluster.core.internal
 
+import java.util.concurrent.atomic.AtomicBoolean
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
+import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
+import org.dozendb.cluster.core.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.ratis.RatisConsensusConfig
 import org.dozendb.cluster.ratis.RatisConsensusLog
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.graphdb.event.DatabaseEventContext
+import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.DozerDbEditionModule
 import org.neo4j.kernel.api.procedure.GlobalProcedures
@@ -22,7 +28,8 @@ import org.neo4j.kernel.lifecycle.LifecycleAdapter
  * DozerDB's edition module with clustering added. Only used when clustering is enabled.
  *
  * The cluster service is registered in the global lifecycle from the constructor, before DozerDB
- * registers its database starters, so consensus starts before and stops after every database.
+ * registers its database starters, so consensus starts (and the databases are copied from another
+ * member if needed) before any database starts, and stops after every database.
  */
 class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(globalModule) {
     private val cluster: ClusterService
@@ -34,6 +41,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         Slf4jLogRouting.useDebugLogProvider(logService.internalLogProvider)
         val userLog = logService.getUserLog(ClusterService::class.java)
         val neo4jVersion = Version.getNeo4jVersion()
+        val defaultDatabase = config.get(GraphDatabaseSettings.initial_default_database)
+        val systemDatabase =
+            DatabaseRef(
+                NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.name(),
+                NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid(),
+            )
+        val defaultDatabaseRunning = AtomicBoolean()
+        lateinit var stores: Neo4jLocalStores
         val consensus =
             RatisConsensusLog(
                 RatisConsensusConfig(
@@ -48,17 +63,41 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                         mapOf(
                             DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
                             DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
+                            DozenDbMetadata.HAS_STORES to stores.existed.toString(),
+                            DozenDbMetadata.STORES_READY to defaultDatabaseRunning.get().toString(),
                         )
                     },
                 )
             )
-        val systemDatabase =
-            DatabaseRef(
-                NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.name(),
-                NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid(),
+        stores =
+            Neo4jLocalStores(
+                globalModule.fileSystem,
+                globalModule.neo4jLayout,
+                listOf(systemDatabase.name, defaultDatabase),
+                consensus,
+                logService.getInternalLog(Neo4jLocalStores::class.java),
             )
+        consensus.registerBulkSource(
+            StoreCopySource.NAME,
+            StoreCopySource(
+                { globalModule.globalDependencies.resolveDependency(DatabaseContextProvider::class.java) },
+                globalModule.fileSystem,
+                logService.getInternalLog(StoreCopySource::class.java),
+            ),
+        )
+        globalModule.databaseEventListeners.registerDatabaseEventListener(
+            object : DatabaseEventListenerAdapter() {
+                override fun databaseStart(eventContext: DatabaseEventContext) {
+                    if (eventContext.databaseName == defaultDatabase) defaultDatabaseRunning.set(true)
+                }
+
+                override fun databaseShutdown(eventContext: DatabaseEventContext) {
+                    if (eventContext.databaseName == defaultDatabase) defaultDatabaseRunning.set(false)
+                }
+            }
+        )
         val formation = ClusterFormation(consensus, initialMembers(config), neo4jVersion, userLog)
-        cluster = ClusterService(consensus, systemDatabase, formation, userLog)
+        cluster = ClusterService(consensus, systemDatabase, formation, stores, userLog)
         globalModule.globalDependencies.satisfyDependency(cluster)
         globalModule.globalLife.add(
             object : LifecycleAdapter() {

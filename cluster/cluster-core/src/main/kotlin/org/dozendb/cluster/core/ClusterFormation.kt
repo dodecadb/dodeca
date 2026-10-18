@@ -15,13 +15,27 @@ import org.neo4j.logging.Log
 class ClusterFormationException(message: String) : RuntimeException(message)
 
 /**
- * Decides the initial voting members of a consensus group that has no local state yet.
+ * The outcome of forming or joining a group.
+ *
+ * @property members the initial voting members, ordered by member id.
+ * @property storeSource for a newly formed cluster, the one member whose databases every other
+ *   member copies; null when joining a cluster that was formed before.
+ */
+data class Formation(val members: List<Member>, val storeSource: Member?)
+
+/**
+ * Decides the initial voting members of a consensus group that has no local state yet, and which
+ * member's databases the cluster starts from.
  *
  * Every initial member probes every address in `dbms.dozendb.cluster.initial_members`, including
  * its own. When all of them answer, each member computes the same list, ordered by member id. If
  * one of them already hosts the group, its member list is adopted instead, which covers members
  * that start after the others already formed the group. Members that run a different Neo4j version
  * are refused.
+ *
+ * Members must start from identical databases. The store source of a new cluster is the only member
+ * that had databases before startup, or the member with the lowest id if none had. More than one
+ * member with databases is refused, since their contents cannot be merged.
  */
 class ClusterFormation(
     private val consensus: ConsensusLog,
@@ -38,13 +52,13 @@ class ClusterFormation(
         }
     }
 
-    /** Blocks until the initial members of [group] are known and returns them. */
-    fun awaitInitialMembers(group: UUID): List<Member> {
+    /** Blocks until the initial members of [group] are known. */
+    fun awaitFormation(group: UUID): Formation {
         val self = consensus.self
         var waited = Duration.ZERO
         var nextProgress = progressInterval
         while (true) {
-            val outcomes = probeAll()
+            val outcomes = probeAll(initialMembers)
             val reached = outcomes.mapNotNull { (_, outcome) -> outcome.getOrNull() }
 
             reached
@@ -58,7 +72,7 @@ class ClusterFormation(
                         )
                     }
                     userLog.info("Joining the already formed cluster of %s", formed)
-                    return formed
+                    return Formation(formed, storeSource = null)
                 }
 
             reached.forEach(::checkCompatible)
@@ -68,17 +82,11 @@ class ClusterFormation(
             }
 
             if (waited >= nextProgress) {
-                val missing =
-                    outcomes
-                        .filter { it.second.isFailure }
-                        .map { (address, outcome) ->
-                            "$address (${outcome.exceptionOrNull()?.message})"
-                        }
                 userLog.info(
                     "Waiting for initial cluster members, %d of %d reachable. Unreachable: %s",
                     reached.size,
                     initialMembers.size,
-                    missing.joinToString(),
+                    describeFailures(outcomes),
                 )
                 nextProgress = waited + progressInterval
             }
@@ -87,11 +95,55 @@ class ClusterFormation(
         }
     }
 
-    private fun probeAll(): List<Pair<HostPort, Result<PeerInfo>>> = runBlocking {
-        initialMembers
-            .map { address -> async { address to runCatching { consensus.probe(address) } } }
-            .awaitAll()
+    /**
+     * Blocks until another member whose databases can be copied answers, and returns its address.
+     * Only [preferred] qualifies if given, otherwise any initial member other than this one.
+     */
+    fun awaitStoreSource(preferred: Member?): HostPort {
+        val candidates = preferred?.let { listOf(it.raftAddress) } ?: initialMembers
+        var waited = Duration.ZERO
+        var nextProgress = progressInterval
+        while (true) {
+            val outcomes = probeAll(candidates)
+            val ready = outcomes.firstOrNull { (_, outcome) ->
+                val peer = outcome.getOrNull()
+                peer != null &&
+                    peer.member.id != consensus.self.id &&
+                    peer.metadata[DozenDbMetadata.STORES_READY] == "true"
+            }
+            if (ready != null) {
+                checkCompatible(ready.second.getOrThrow())
+                return ready.first
+            }
+            if (waited >= nextProgress) {
+                userLog.info(
+                    "Waiting for %s to serve its databases. Unreachable: %s",
+                    preferred ?: "another member",
+                    describeFailures(outcomes).ifEmpty { "none" },
+                )
+                nextProgress = waited + progressInterval
+            }
+            sleep(retryInterval)
+            waited += retryInterval
+        }
     }
+
+    /** Waits [retryInterval] before the caller tries again. */
+    fun pause() = sleep(retryInterval)
+
+    private fun probeAll(addresses: List<HostPort>): List<Pair<HostPort, Result<PeerInfo>>> =
+        runBlocking {
+            addresses
+                .map { address -> async { address to runCatching { consensus.probe(address) } } }
+                .awaitAll()
+        }
+
+    private fun describeFailures(outcomes: List<Pair<HostPort, Result<PeerInfo>>>): String =
+        outcomes
+            .filter { it.second.isFailure }
+            .joinToString { (address, outcome) ->
+                "$address (${outcome.exceptionOrNull()?.message})"
+            }
 
     private fun checkCompatible(peer: PeerInfo) {
         val version = peer.metadata[DozenDbMetadata.NEO4J_VERSION]
@@ -103,7 +155,7 @@ class ClusterFormation(
         }
     }
 
-    private fun decide(self: Member, reached: List<PeerInfo>): List<Member> {
+    private fun decide(self: Member, reached: List<PeerInfo>): Formation {
         val members = reached.map { it.member }
         val duplicates = members.groupBy { it.id }.filterValues { it.size > 1 }
         if (duplicates.isNotEmpty()) {
@@ -118,8 +170,23 @@ class ClusterFormation(
                     "$initialMembers. Add its advertised Raft address to the list."
             )
         }
+        val withStores =
+            reached.filter { it.metadata[DozenDbMetadata.HAS_STORES] == "true" }.map { it.member }
+        if (withStores.size > 1) {
+            throw ClusterFormationException(
+                "Members ${withStores.sortedBy { it.id }} all have existing databases. A new cluster " +
+                    "starts from the databases of at most one member; remove the databases of the others."
+            )
+        }
         val ordered = members.sortedBy { it.id }
-        userLog.info("All %d initial cluster members are reachable: %s", ordered.size, ordered)
-        return ordered
+        val source = withStores.singleOrNull() ?: ordered.first()
+        userLog.info(
+            "All %d initial cluster members are reachable: %s. Databases come from %s%s.",
+            ordered.size,
+            ordered,
+            source,
+            if (withStores.isEmpty()) ", which creates them" else ", which has existing databases",
+        )
+        return Formation(ordered, source)
     }
 }

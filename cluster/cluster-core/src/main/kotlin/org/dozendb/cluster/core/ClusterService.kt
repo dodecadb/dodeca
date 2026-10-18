@@ -1,6 +1,7 @@
 package org.dozendb.cluster.core
 
 import org.dozendb.cluster.api.ConsensusLog
+import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.Member
@@ -12,28 +13,69 @@ data class MemberView(val member: Member, val isLeader: Boolean, val isSelf: Boo
 
 /**
  * Runs this member's part of the cluster: starts consensus, forms or rejoins the `system` group,
- * and reports status. It knows nothing about Neo4j internals.
+ * makes sure this member starts from the cluster's databases, and reports status. It knows nothing
+ * about Neo4j internals.
+ *
+ * @property replicatedDatabases the replicated databases running on this member.
  */
 class ClusterService(
     private val consensus: ConsensusLog,
     val systemDatabase: DatabaseRef,
     private val formation: ClusterFormation,
+    private val stores: LocalStores,
     private val userLog: Log,
+    private val replicatedDatabases: () -> List<DatabaseRef> = { emptyList() },
 ) {
     private var statusListener: AutoCloseable? = null
 
-    /** Starts consensus and blocks until this member takes part in the `system` group. */
+    /**
+     * Starts consensus and blocks until this member takes part in the `system` group, with
+     * databases copied from another member if it has none. Runs before any database starts.
+     */
     fun start() {
         consensus.start()
-        val bootstrap =
+        val joined =
             if (systemDatabase.id in consensus.localGroups()) {
                 userLog.info("Rejoining the cluster from local Raft state")
-                emptyList()
+                null
             } else {
-                formation.awaitInitialMembers(systemDatabase.id)
+                formation.awaitFormation(systemDatabase.id)
             }
-        statusListener = consensus.addStatusListener(systemDatabase, RoleChangeLogger(userLog))
-        consensus.startGroup(systemDatabase, NoOpStateMachine(), bootstrap)
+        if (!stores.existed) {
+            val source = joined?.storeSource
+            if (source != null && source.id == consensus.self.id) {
+                userLog.info("This member creates the databases of the new cluster")
+            } else {
+                copyStores(source)
+            }
+        }
+        val listener = RoleChangeLogger(userLog)
+        statusListener = consensus.addStatusListener(systemDatabase, listener)
+        consensus.startGroup(systemDatabase, NoOpStateMachine(), joined?.members ?: emptyList())
+    }
+
+    private fun copyStores(source: Member?) {
+        while (true) {
+            val address = formation.awaitStoreSource(source)
+            userLog.info("Copying the databases from %s", address)
+            try {
+                stores.copyFrom(address)
+                return
+            } catch (e: ConsensusUnavailableException) {
+                userLog.warn(
+                    "Copying the databases from %s failed, retrying: %s",
+                    address,
+                    e.message,
+                )
+            } catch (e: java.io.IOException) {
+                userLog.warn(
+                    "Copying the databases from %s failed, retrying: %s",
+                    address,
+                    e.message,
+                )
+            }
+            formation.pause()
+        }
     }
 
     fun stop() {
@@ -46,7 +88,8 @@ class ClusterService(
         get() = consensus.self
 
     /** The local status of every group this member runs. */
-    fun status(): List<GroupStatus> = listOf(consensus.status(systemDatabase))
+    fun status(): List<GroupStatus> =
+        (listOf(systemDatabase) + replicatedDatabases()).map(consensus::status)
 
     /** The voting members of the `system` group. */
     fun members(): List<MemberView> {

@@ -1,8 +1,11 @@
 package org.dozendb.cluster.core
 
+import java.io.IOException
 import java.util.UUID
+import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.cluster.api.DatabaseRef
+import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.fake.InMemoryConsensus
 import org.junit.jupiter.api.Test
@@ -11,16 +14,35 @@ import org.neo4j.logging.NullLog
 class ClusterServiceTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
-    private val version = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27")
-    private val logs = List(3) { consensus.newMember(metadata = version) }
+    private val metadata =
+        mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27", DozenDbMetadata.STORES_READY to "true")
+    private val logs = List(3) { consensus.newMember(metadata = metadata) }
     private val addresses = logs.map { it.self.raftAddress }
+    private val stores = List(3) { FakeStores() }
     private val log = NullLog.getInstance()
 
-    private fun service(index: Int) =
+    /** The member every other one copies from when no member has databases. */
+    private val source = logs.indices.minBy { logs[it].self.id }
+
+    private class FakeStores(override val existed: Boolean = false, var failures: Int = 0) :
+        LocalStores {
+        val copies = mutableListOf<HostPort>()
+
+        override fun copyFrom(source: HostPort) {
+            if (failures > 0) {
+                failures--
+                throw IOException("connection reset")
+            }
+            copies += source
+        }
+    }
+
+    private fun service(index: Int, localStores: LocalStores = stores[index]) =
         ClusterService(
             logs[index],
             system,
             ClusterFormation(logs[index], addresses, "5.26.27", log, sleep = {}),
+            localStores,
             log,
         )
 
@@ -43,15 +65,98 @@ class ClusterServiceTest {
     }
 
     @Test
+    fun `members without databases copy them from the store source`() {
+        val version = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27")
+        logs.forEach {
+            it.metadata = version
+            it.start()
+        }
+        val services =
+            logs.indices.map { index ->
+                ClusterService(
+                    logs[index],
+                    system,
+                    ClusterFormation(
+                        logs[index],
+                        addresses,
+                        "5.26.27",
+                        log,
+                        sleep = { Thread.sleep(1) },
+                    ),
+                    stores[index],
+                    log,
+                )
+            }
+
+        // As in a real cluster, members start concurrently and serve their databases once started.
+        val threads =
+            logs.indices.map { index ->
+                thread {
+                    services[index].start()
+                    logs[index].metadata = version + (DozenDbMetadata.STORES_READY to "true")
+                }
+            }
+        threads.forEach { it.join(10_000) }
+
+        assertThat(threads).noneMatch { it.isAlive }
+        logs.indices.forEach {
+            val expected = if (it == source) emptyList() else listOf(addresses[source])
+            assertThat(stores[it].copies).isEqualTo(expected)
+        }
+    }
+
+    @Test
+    fun `a failed copy is retried`() {
+        logs.forEach { it.start() }
+        val other = logs.indices.first { it != source }
+        val flaky = FakeStores(failures = 2)
+
+        service(other, flaky).start()
+
+        assertThat(flaky.copies).containsExactly(addresses[source])
+    }
+
+    @Test
     fun `a member with local Raft state rejoins without probing`() {
-        val services = logs.indices.map(::service)
+        val services = logs.indices.map { service(it, FakeStores(existed = true)) }
         logs.forEach { it.start() }
         services.forEach { it.start() }
         services[2].stop()
         logs.take(2).forEach { it.close() }
 
-        service(2).start()
+        service(2, FakeStores(existed = true)).start()
 
         assertThat(logs[2].status(system).role).isEqualTo(Role.Follower)
+    }
+
+    @Test
+    fun `a rejoining member without databases copies them from a member that serves them`() {
+        val services = logs.indices.map { service(it, FakeStores(existed = true)) }
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+        services[2].stop()
+        logs[0].close()
+        val wiped = FakeStores()
+
+        service(2, wiped).start()
+
+        assertThat(wiped.copies).containsExactly(addresses[1])
+    }
+
+    @Test
+    fun `the status covers the replicated databases`() {
+        val neo4j = DatabaseRef("neo4j", UUID(0, 2))
+        val service =
+            ClusterService(
+                logs[0],
+                system,
+                ClusterFormation(logs[0], addresses, "5.26.27", log, sleep = {}),
+                FakeStores(existed = true),
+                log,
+            ) {
+                listOf(neo4j)
+            }
+
+        assertThat(service.status().map { it.database }).containsExactly(system, neo4j)
     }
 }
