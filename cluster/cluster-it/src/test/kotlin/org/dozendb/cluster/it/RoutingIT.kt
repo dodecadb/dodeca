@@ -3,6 +3,7 @@ package org.dozendb.cluster.it
 import java.net.ServerSocket
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -21,6 +22,8 @@ import org.neo4j.driver.Config
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
+import org.neo4j.driver.TransactionConfig
+import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.driver.net.ServerAddress
 import org.testcontainers.containers.Network
 import org.testcontainers.lifecycle.Startables
@@ -158,6 +161,51 @@ class RoutingIT {
 
     @Test
     @Order(3)
+    fun `linearizable reads see every acknowledged write without bookmarks`() {
+        val linearizable =
+            TransactionConfig.builder()
+                .withMetadata(mapOf("dozendb.consistency" to "linearizable"))
+                .build()
+        val readConfig = SessionConfig.builder().withDefaultAccessMode(AccessMode.READ).build()
+
+        repeat(100) { i ->
+            write("CREATE (:Linear {i: $i})")
+            driver.session(readConfig).use { session ->
+                val count =
+                    session.executeRead(
+                        { tx ->
+                            tx.run("MATCH (n:Linear {i: $i}) RETURN count(n) AS c")
+                                .single()["c"]
+                                .asLong()
+                        },
+                        linearizable,
+                    )
+                assertThat(count).describedAs("read $i").isEqualTo(1)
+            }
+        }
+    }
+
+    @Test
+    @Order(4)
+    fun `an unknown read consistency is refused`() {
+        val unknown =
+            TransactionConfig.builder()
+                .withMetadata(mapOf("dozendb.consistency" to "strong"))
+                .build()
+
+        val error = catchThrowable {
+            driver.session().use { session ->
+                session.executeRead({ tx -> tx.run("RETURN 1").consume() }, unknown)
+            }
+        }
+
+        assertThat(error).isInstanceOfSatisfying(ClientException::class.java) {
+            assertThat(it.code()).isEqualTo("Neo.ClientError.Request.Invalid")
+        }
+    }
+
+    @Test
+    @Order(5)
     fun `writes continue on a new leader soon after the leader dies`() {
         val leader = awaitLeader()
         val acknowledged = mutableListOf<Int>()

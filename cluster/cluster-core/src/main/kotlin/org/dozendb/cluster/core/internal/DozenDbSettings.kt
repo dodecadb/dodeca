@@ -12,6 +12,7 @@ import org.neo4j.configuration.SettingValueParsers.DURATION
 import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
 import org.neo4j.configuration.SettingValueParsers.listOf
+import org.neo4j.configuration.SettingValueParsers.ofEnum
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.graphdb.config.Setting
@@ -116,5 +117,21 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val readsOnLeader: Setting<Boolean> =
             newBuilder("dbms.dozendb.routing.reads_on_leader", BOOL, true).immutable().build()
+
+        @JvmField
+        @field:Description(
+            "Read consistency of transactions that do not set the dozendb.consistency metadata " +
+                "key. CAUSAL reads wait for the transaction's bookmarks; LINEARIZABLE reads also " +
+                "see every write acknowledged before they started, at the cost of a round trip to " +
+                "the leader."
+        )
+        val defaultReadConsistency: Setting<ReadConsistency> =
+            newBuilder(
+                    "dbms.dozendb.reads.default_consistency",
+                    ofEnum(ReadConsistency::class.java),
+                    ReadConsistency.CAUSAL,
+                )
+                .immutable()
+                .build()
     }
 }

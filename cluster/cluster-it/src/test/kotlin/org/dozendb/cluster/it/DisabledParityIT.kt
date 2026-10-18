@@ -80,6 +80,7 @@ class DisabledParityIT {
                 "dbms.dozendb.cluster.election_timeout_min",
                 "dbms.dozendb.cluster.election_timeout_max",
                 "dbms.dozendb.routing.reads_on_leader",
+                "dbms.dozendb.reads.default_consistency",
                 "server.dozendb.cluster.listen_address",
                 "server.dozendb.cluster.advertised_address",
                 "server.dozendb.cluster.raft_directory",

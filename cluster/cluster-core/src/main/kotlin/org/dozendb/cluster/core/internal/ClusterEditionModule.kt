@@ -8,12 +8,14 @@ import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
+import org.dozendb.cluster.core.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.core.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.ratis.RatisConsensusConfig
 import org.dozendb.cluster.ratis.RatisConsensusLog
+import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
@@ -316,6 +318,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
             globalModule.globalClock,
         )
     }
+
+    override fun createBoltDatabaseManagementServiceProvider():
+        BoltGraphDatabaseManagementServiceSPI =
+        ConsistentBoltDatabases(
+            super.createBoltDatabaseManagementServiceProvider(),
+            replication,
+            globalModule.globalConfig.get(DozenDbSettings.defaultReadConsistency),
+        )
 
     override fun registerEditionSpecificProcedures(
         globalProcedures: GlobalProcedures,

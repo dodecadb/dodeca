@@ -6,13 +6,16 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusLog
+import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.core.internal.reads.ReadConsistencyException
 import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.internal.kernel.api.exceptions.TransactionFailureException
 import org.neo4j.kernel.api.KernelTransactionHandle
+import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.impl.api.KernelTransactions
@@ -126,6 +129,29 @@ internal class ReplicatedDatabase(
     }
 
     fun isRunning(): Boolean = synchronized(lock) { statusListener != null }
+
+    /**
+     * Returns once this member has applied every entry the group had committed when it was called,
+     * as confirmed by the leader (a Raft ReadIndex).
+     */
+    fun awaitLinearizable() {
+        try {
+            runBlocking { consensus.readIndex(ref) }
+        } catch (e: ConsensusUnavailableException) {
+            throw ReadConsistencyException(
+                Status.Cluster.ReplicationFailure,
+                "A linearizable read of ${ref.name} could not be confirmed with the leader; retry later.",
+                e,
+            )
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw ReadConsistencyException(
+                Status.Cluster.ReplicationFailure,
+                "Interrupted while confirming a linearizable read of ${ref.name}",
+                e,
+            )
+        }
+    }
 
     /** Replicates a kernel transaction and returns the append index of its local apply. */
     fun replicate(batch: CommandBatch): Long {

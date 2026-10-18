@@ -61,6 +61,10 @@ What clustering does not do yet.
   (`dbms.routing.default_router=SERVER`) does not forward writes: a `bolt://`
   write sent to a follower is rejected. Local databases (`system`, and
   databases created with `CREATE DATABASE`) are routed to the member asked.
+- **Linearizable reads** are requested per transaction with the metadata key
+  `dozendb.consistency` set to `linearizable`, or for every transaction with
+  `dbms.dozendb.reads.default_consistency`. They apply to Bolt clients
+  (drivers, Cypher Shell) on replicated databases.
 - **Transaction size.** A transaction can replicate at most 16 MiB of changes
   in Neo4j's command encoding. A larger one fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is
