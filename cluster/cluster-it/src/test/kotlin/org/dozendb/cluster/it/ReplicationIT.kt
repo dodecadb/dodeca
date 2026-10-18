@@ -7,6 +7,7 @@ import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.cluster.api.testing.TestPorts
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.MethodOrderer
@@ -23,12 +24,15 @@ import org.testcontainers.lifecycle.Startables
 class ReplicationIT {
     private val network = Network.newNetwork()
     private val aliases = listOf("core1", "core2", "core3")
+    // Fixed host ports: Docker may publish a restarted container on other ports.
     private val members = aliases.map { alias ->
         DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
+            .boltOnHostPort(TestPorts.free())
     }
     private val running = members.toMutableList()
+    private val acknowledged = mutableListOf<Int>()
 
     @BeforeAll
     fun start() {
@@ -132,7 +136,6 @@ class ReplicationIT {
     @Test
     @Order(4)
     fun `every acknowledged write survives killing the leader during writes`() {
-        val acknowledged = mutableListOf<Int>()
         var killedAt = -1
         var next = 0
         val deadline = System.nanoTime() + Duration.ofMinutes(2).toNanos()
@@ -151,6 +154,25 @@ class ReplicationIT {
         }
 
         awaitIdentical()
+        assertAcknowledgedOnEveryMember()
+    }
+
+    @Test
+    @Order(5)
+    fun `the killed leader restarts and catches up with what it missed`() {
+        val killed = members.single { it !in running }
+        val n = acknowledged.max() + 1
+        awaitLeader().rows("CREATE (:Ack {n: $n})")
+        acknowledged += n
+
+        killed.restart()
+        running += killed
+
+        awaitIdentical()
+        assertAcknowledgedOnEveryMember()
+    }
+
+    private fun assertAcknowledgedOnEveryMember() {
         running.forEach { member ->
             val stored =
                 member.rows("MATCH (a:Ack) RETURN a.n AS n").map { (it["n"] as Long).toInt() }
