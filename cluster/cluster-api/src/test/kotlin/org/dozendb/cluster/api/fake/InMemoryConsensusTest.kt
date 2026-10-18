@@ -8,7 +8,9 @@ import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
+import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.api.Snapshot
 import org.junit.jupiter.api.Test
 
 class InMemoryConsensusTest {
@@ -180,5 +182,77 @@ class InMemoryConsensusTest {
 
             assertThat(b.probe(a.self.raftAddress).metadata)
                 .containsEntry("dozendb.storesReady", "true")
+        }
+
+    @Test
+    fun `the current snapshot is the last entry delivered and the applied index`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+            a.submit(database, "one".encodeToByteArray())
+            a.submit(database, "two".encodeToByteArray())
+
+            assertThat(b.currentSnapshot(database)).isEqualTo(Snapshot(LogPosition(2, 1), 2))
+            b.detachGroup(database)
+            assertThat(b.currentSnapshot(database)).isNull()
+        }
+
+    @Test
+    fun `a member behind a compacted log is asked for a snapshot and catches up with one`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+            consensus.crash(c.self.id)
+            repeat(5) { a.submit(database, "e$it".encodeToByteArray()) }
+            consensus.compact(database, 5)
+            a.submit(database, "e5".encodeToByteArray())
+
+            c.start()
+            val behind = machines.getValue(c.self.id)
+            c.startGroup(database, behind, emptyList())
+
+            assertThat(behind.snapshotRequests).containsExactly(a.self to 5L)
+            assertThat(behind.payloads()).isEmpty()
+
+            c.detachGroup(database)
+            behind.replaceWith(machines.getValue(a.self.id))
+            assertThat(c.installSnapshot(database, checkNotNull(a.currentSnapshot(database))))
+                .isTrue()
+            c.startGroup(database, behind, emptyList())
+            a.submit(database, "e6".encodeToByteArray())
+
+            assertThat(behind.payloads()).containsExactly("e0", "e1", "e2", "e3", "e4", "e5", "e6")
+            assertThat(c.latestSnapshot(database)).isEqualTo(Snapshot(LogPosition(6, 1), 6))
+        }
+
+    @Test
+    fun `a restarted member that applied the discarded entries needs no snapshot`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+            repeat(3) { a.submit(database, "e$it".encodeToByteArray()) }
+            consensus.compact(database, 3)
+            b.detachGroup(database)
+            a.submit(database, "e3".encodeToByteArray())
+
+            val machine = machines.getValue(b.self.id)
+            b.startGroup(database, machine, emptyList())
+
+            assertThat(machine.snapshotRequests).isEmpty()
+            assertThat(machine.payloads()).containsExactly("e0", "e1", "e2", "e3")
+        }
+
+    @Test
+    fun `snapshots are installed only into detached members that need one`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+            val snapshot = Snapshot(LogPosition(4, 1), 3)
+
+            assertThatThrownBy { b.installSnapshot(database, snapshot) }
+                .isInstanceOf(IllegalStateException::class.java)
+            b.detachGroup(database)
+            assertThat(b.installSnapshot(database, snapshot)).isFalse()
+            assertThat(b.latestSnapshot(database)).isNull()
         }
 }

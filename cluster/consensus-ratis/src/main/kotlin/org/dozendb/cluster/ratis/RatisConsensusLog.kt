@@ -12,6 +12,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +34,8 @@ import org.apache.ratis.protocol.RaftGroupId
 import org.apache.ratis.protocol.RaftPeer
 import org.apache.ratis.protocol.RaftPeerId
 import org.apache.ratis.protocol.SetConfigurationRequest
+import org.apache.ratis.protocol.SnapshotManagementRequest
+import org.apache.ratis.protocol.TransferLeadershipRequest
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException
 import org.apache.ratis.protocol.exceptions.GroupMismatchException
 import org.apache.ratis.protocol.exceptions.LeaderNotReadyException
@@ -42,6 +45,7 @@ import org.apache.ratis.retry.RetryPolicies
 import org.apache.ratis.server.RaftServer
 import org.apache.ratis.server.RaftServerConfigKeys
 import org.apache.ratis.server.storage.RaftStorage
+import org.apache.ratis.server.storage.RaftStorageDirectory
 import org.apache.ratis.thirdparty.com.google.protobuf.UnsafeByteOperations
 import org.apache.ratis.thirdparty.io.grpc.netty.NettyServerBuilder
 import org.apache.ratis.util.SizeInBytes
@@ -58,6 +62,7 @@ import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.PeerInfo
 import org.dozendb.cluster.api.ReplicatedStateMachine
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.api.Snapshot
 import org.slf4j.LoggerFactory
 
 /**
@@ -89,6 +94,11 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     private val bulkExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "dozendb-bulk-source").apply { isDaemon = true }
     }
+    /** Takes snapshots and hands leadership over; both may wait for Ratis. */
+    private val maintenance: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "dozendb-consensus-maintenance").apply { isDaemon = true }
+        }
 
     @Volatile private var server: RaftServer? = null
     @Volatile private var boundAddress: InetSocketAddress? = null
@@ -100,6 +110,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             override fun onAppending(callId: Long) {
                 appending += callId
             }
+
+            override fun onLeadingDetached(groupId: UUID) = handOverLeadership(groupId)
         }
 
     override val self: Member
@@ -147,6 +159,13 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         started.start()
         server = started
         boundAddress = started.serverRpc.inetSocketAddress
+        val interval = config.snapshotInterval.toMillis()
+        maintenance.scheduleWithFixedDelay(
+            ::takeDueSnapshots,
+            interval,
+            interval,
+            TimeUnit.MILLISECONDS,
+        )
         log.info(
             "Raft member {} listening on {}, advertised as {}, recovered groups {}",
             config.memberId,
@@ -175,9 +194,9 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     ) {
         val raftServer = requireServer()
         val groupId = RaftGroupId.valueOf(database.id)
-        groupStateMachine(database.id).bind(database, stateMachine)
+        groupStateMachine(database.id).attach(database, stateMachine)
         if (groupId in raftServer.groupIds) {
-            log.info("Raft group {} recovered from local storage", database)
+            log.info("Raft group {} attached to its state machine", database)
             publishStatus(database.id)
             return
         }
@@ -213,27 +232,109 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         publishStatus(database.id)
     }
 
-    override fun stopGroup(database: DatabaseRef) {
-        val raftServer = server ?: return
-        val groupId = RaftGroupId.valueOf(database.id)
-        if (groupId in raftServer.groupIds) {
-            val reply =
-                raftServer.groupManagement(
-                    GroupManagementRequest.newRemove(
-                        clientId,
-                        peerId,
-                        callIds.incrementAndGet(),
-                        groupId,
-                        false,
-                        false,
-                    )
+    override fun detachGroup(database: DatabaseRef) {
+        val stateMachine = stateMachines[database.id] ?: return
+        stateMachine.detach()
+        log.info("Raft group {} detached from its state machine", database)
+        val leading =
+            server?.let {
+                runCatching { it.getDivision(RaftGroupId.valueOf(database.id)).info.isLeader }
+                    .getOrDefault(false)
+            } == true
+        if (leading) handOverLeadership(database.id)
+        publishStatus(database.id)
+    }
+
+    /** Transfers leadership of [groupId] to another member; a detached member cannot lead. */
+    private fun handOverLeadership(groupId: UUID) {
+        try {
+            maintenance.execute {
+                val raftServer = server ?: return@execute
+                val raftGroupId = RaftGroupId.valueOf(groupId)
+                val division =
+                    runCatching { raftServer.getDivision(raftGroupId) }.getOrNull()
+                        ?: return@execute
+                if (!division.info.isLeader) return@execute
+                val database = stateMachines[groupId]?.database ?: DatabaseRef("unbound", groupId)
+                for (candidate in division.group.peers.map { it.id }.filter { it != peerId }) {
+                    val reply = runCatching {
+                        raftServer.transferLeadership(
+                            TransferLeadershipRequest(
+                                clientId,
+                                peerId,
+                                raftGroupId,
+                                callIds.incrementAndGet(),
+                                candidate,
+                                config.requestTimeout.toMillis(),
+                            )
+                        )
+                    }
+                        .getOrNull()
+                    if (reply?.isSuccess == true) {
+                        log.info("Handed leadership of {} over to {}", database, candidate)
+                        return@execute
+                    }
+                }
+                log.warn("Could not hand leadership of {} over to another member", database)
+            }
+        } catch (_: RejectedExecutionException) {
+            // Closing: leadership ends with the server.
+        }
+    }
+
+    override fun currentSnapshot(database: DatabaseRef): Snapshot? {
+        val raftServer = server ?: return null
+        if (RaftGroupId.valueOf(database.id) !in raftServer.groupIds) return null
+        return stateMachines[database.id]?.currentSnapshot()
+    }
+
+    override fun latestSnapshot(database: DatabaseRef): Snapshot? {
+        val running = server?.let { RaftGroupId.valueOf(database.id) in it.groupIds } == true
+        val stateMachine = stateMachines[database.id]
+        return if (running && stateMachine != null) {
+            stateMachine.latestSnapshot()
+        } else {
+            SnapshotRecord.read(
+                    config.storageDirectory
+                        .resolve(database.id.toString())
+                        .resolve(RaftStorageDirectory.STATE_MACHINE_DIR_NAME)
                 )
-            if (!reply.isSuccess) {
-                throw IllegalStateException("could not stop Raft group $database", reply.exception)
+                ?.snapshot
+        }
+    }
+
+    override fun installSnapshot(database: DatabaseRef, snapshot: Snapshot): Boolean {
+        val running = server?.let { RaftGroupId.valueOf(database.id) in it.groupIds } == true
+        val stateMachine = stateMachines[database.id]
+        check(running && stateMachine != null) { "group $database is not running" }
+        return stateMachine.install(snapshot)
+    }
+
+    /** Asks Ratis for a snapshot of every group whose state machine made new state durable. */
+    private fun takeDueSnapshots() {
+        val raftServer = server ?: return
+        for ((id, stateMachine) in stateMachines) {
+            try {
+                val groupId = RaftGroupId.valueOf(id)
+                if (groupId !in raftServer.groupIds || !stateMachine.snapshotDue()) continue
+                val reply =
+                    raftServer.snapshotManagement(
+                        SnapshotManagementRequest.newCreate(
+                            clientId,
+                            peerId,
+                            groupId,
+                            callIds.incrementAndGet(),
+                            config.requestTimeout.toMillis(),
+                            1,
+                        )
+                    )
+                if (!reply.isSuccess) {
+                    log.warn("Snapshot of {} failed", stateMachine.database, reply.exception)
+                }
+            } catch (e: Exception) {
+                log.warn("Snapshot of {} failed", stateMachine.database, e)
             }
         }
-        stateMachines.remove(database.id)
-        publishStatus(database.id)
     }
 
     override val maxEntrySize: Int
@@ -441,6 +542,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     override fun close() {
         val raftServer = server
         server = null
+        maintenance.shutdownNow()
+        stateMachines.values.forEach(GroupStateMachine::release)
         try {
             raftServer?.close()
         } finally {
@@ -505,8 +608,15 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         // Durability: an entry is acknowledged only after it is flushed on a majority.
         RaftServerConfigKeys.Log.setUnsafeFlushEnabled(properties, false)
         RaftServerConfigKeys.Log.setAsyncFlushEnabled(properties, false)
-        // Snapshots are Neo4j checkpoints, taken by the database integration.
+        // Snapshots follow the state machines' durable indexes; see takeDueSnapshots.
         RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, false)
+        // A member that is down must not keep the others from discarding their logs. Snapshots
+        // are rare (one per database checkpoint), so each discards what it covers.
+        RaftServerConfigKeys.Log.setPurgeUptoSnapshotIndex(properties, true)
+        RaftServerConfigKeys.Log.setPurgeGap(properties, 1)
+        // A member behind the leader's log installs a copy of the database: the leader only
+        // notifies it.
+        RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, false)
         // A log entry must fit the appender buffer, which must fit the write buffer. Both are per
         // group; the write buffer is direct memory.
         val entryLimit = config.maxEntrySize.toLong() + ENTRY_OVERHEAD
@@ -520,7 +630,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         )
         RaftServerConfigKeys.Log.setSegmentSizeMax(
             properties,
-            SizeInBytes.valueOf(maxOf(2 * entryLimit, DEFAULT_SEGMENT_SIZE)),
+            SizeInBytes.valueOf(maxOf(2 * entryLimit, config.logSegmentSize)),
         )
         GrpcConfigKeys.setMessageSizeMax(
             properties,
@@ -537,7 +647,6 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         const val RETRY_SLEEP_MS = 200L
         /** Room for the Ratis entry header around a payload, generously rounded. */
         const val ENTRY_OVERHEAD = 64L shl 10
-        const val DEFAULT_SEGMENT_SIZE = 32L shl 20
         const val DEFAULT_MESSAGE_SIZE = 64L shl 20
         const val DEFAULT_QUEUE_BYTES = 64L shl 20
         const val EVENTS_SHUTDOWN_SECONDS = 5L

@@ -15,8 +15,15 @@ import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.fake.RecordingStateMachine
 import org.dozendb.cluster.api.testing.TestPorts
 
-/** Real Ratis members in one JVM, on loopback ports, for tests. */
-class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
+/**
+ * Real Ratis members in one JVM, on loopback ports, for tests. [configure] adjusts each member's
+ * configuration.
+ */
+class RatisTestCluster(
+    private val root: Path,
+    size: Int,
+    private val configure: (RatisConsensusConfig) -> RatisConsensusConfig = { it },
+) : AutoCloseable {
     val database = DatabaseRef("neo4j", UUID.randomUUID())
 
     inner class Node(val id: MemberId) {
@@ -37,15 +44,18 @@ class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
             check(log == null) { "node $id is running" }
             log =
                 RatisConsensusLog(
-                        RatisConsensusConfig(
-                            memberId = id,
-                            listenHost = "127.0.0.1",
-                            listenPort = port,
-                            advertisedAddress = null,
-                            storageDirectory = directory,
-                            electionTimeoutMin = ELECTION_TIMEOUT_MIN,
-                            electionTimeoutMax = ELECTION_TIMEOUT_MAX,
-                            metadata = { mapOf("neo4j.version" to "5.26.27") },
+                        configure(
+                            RatisConsensusConfig(
+                                memberId = id,
+                                listenHost = "127.0.0.1",
+                                listenPort = port,
+                                advertisedAddress = null,
+                                storageDirectory = directory,
+                                electionTimeoutMin = ELECTION_TIMEOUT_MIN,
+                                electionTimeoutMax = ELECTION_TIMEOUT_MAX,
+                                metadata = { mapOf("neo4j.version" to "5.26.27") },
+                                snapshotInterval = SNAPSHOT_INTERVAL,
+                            )
                         )
                     )
                     .also { it.start() }
@@ -58,6 +68,10 @@ class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
     }
 
     val nodes: List<Node> = List(size) { Node(MemberId(UUID.randomUUID())) }
+
+    /** The directory of [node]'s Raft log for the group. */
+    fun logDirectory(node: Node): Path =
+        node.directory.resolve(database.id.toString()).resolve("current")
 
     /** Starts every node and creates the group with all of them as voting members. */
     fun form(stateMachine: (Node) -> ReplicatedStateMachine = { it.machine }) {
@@ -99,5 +113,6 @@ class RatisTestCluster(private val root: Path, size: Int) : AutoCloseable {
         val ELECTION_TIMEOUT_MIN: Duration = Duration.ofMillis(300)
         val ELECTION_TIMEOUT_MAX: Duration = Duration.ofMillis(600)
         val AWAIT: Duration = Duration.ofSeconds(20)
+        val SNAPSHOT_INTERVAL: Duration = Duration.ofMillis(200)
     }
 }

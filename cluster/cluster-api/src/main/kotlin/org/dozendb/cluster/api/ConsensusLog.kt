@@ -44,7 +44,8 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
     public fun localGroups(): Set<UUID>
 
     /**
-     * Starts the group of [database] and attaches [stateMachine] to it.
+     * Starts the group of [database] if it is not running here, and attaches [stateMachine] to it,
+     * which then receives every entry it has not applied yet.
      *
      * If the group has local state it is recovered and [bootstrapMembers] is ignored. Otherwise the
      * group is created with exactly [bootstrapMembers] as its voting members, which must be the
@@ -56,8 +57,39 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
         bootstrapMembers: List<Member>,
     )
 
-    /** Stops taking part in the group of [database]. Its local state is kept. */
-    public fun stopGroup(database: DatabaseRef)
+    /**
+     * Detaches the state machine of [database], for example while its database is stopped. The
+     * group keeps running on this member, which keeps voting and storing entries; they are applied
+     * once a state machine is attached again with [startGroup]. A leader hands leadership to
+     * another member. Returns once no entry is being applied.
+     */
+    public fun detachGroup(database: DatabaseRef)
+
+    /**
+     * The state of the local state machine of [database] as a snapshot: the last entry applied and
+     * the state machine's applied index, read together. Null if the group is not running here. A
+     * copy of the state machine taken after this call holds every entry up to the snapshot.
+     */
+    public fun currentSnapshot(database: DatabaseRef): Snapshot?
+
+    /**
+     * The latest snapshot of the group of [database] on this member: the local log may lack entries
+     * up to it. Null if there is none. Also available while the group is stopped.
+     */
+    public fun latestSnapshot(database: DatabaseRef): Snapshot?
+
+    /**
+     * Records that the detached state machine of [database] was replaced by a copy holding
+     * [snapshot], as [ReplicatedStateMachine.onSnapshotNeeded] asks. If this member fell behind the
+     * start of the leader's log and [snapshot] reaches it, the group continues after the snapshot;
+     * otherwise the local log holds the entries after the copy's and nothing changes.
+     *
+     * @return whether the group continues after [snapshot].
+     * @throws IllegalArgumentException if [snapshot] is behind [latestSnapshot].
+     * @throws IllegalStateException if the group is not running here or a state machine is
+     *   attached.
+     */
+    public fun installSnapshot(database: DatabaseRef, snapshot: Snapshot): Boolean
 
     /** The largest payload, in bytes, that [submit] accepts. The same on every member. */
     public val maxEntrySize: Int

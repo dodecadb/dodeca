@@ -14,11 +14,13 @@ import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.LogEntry
+import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.PeerInfo
 import org.dozendb.cluster.api.ReplicatedStateMachine
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.api.Snapshot
 
 /**
  * A deterministic, single-JVM stand-in for a cluster of [ConsensusLog] members.
@@ -30,8 +32,11 @@ import org.dozendb.cluster.api.Role
  * are injected with [crash] and [failNextSubmit]. Bulk transfers run synchronously on the calling
  * thread.
  *
+ * Logs are compacted only by [compact]. A member that then needs discarded entries, beyond its
+ * installed snapshot, gets [ReplicatedStateMachine.onSnapshotNeeded] instead of entries.
+ *
  * All operations are serialised on one lock. State machines must not call back into the fake from
- * [ReplicatedStateMachine.apply].
+ * [ReplicatedStateMachine.apply] or [ReplicatedStateMachine.onSnapshotNeeded].
  */
 class InMemoryConsensus {
     private val lock = Any()
@@ -42,10 +47,12 @@ class InMemoryConsensus {
     /** The [ConsensusLog.maxEntrySize] of every member. */
     @Volatile var maxEntrySize: Int = 16 shl 20
 
-    private class GroupState(val database: DatabaseRef, var members: List<Member>) {
+    internal class GroupState(val database: DatabaseRef, var members: List<Member>) {
         var term = 0L
         var leader: MemberId? = null
         val log = mutableListOf<LogEntry>()
+        /** Entries up to this index are discarded: no member can receive them any more. */
+        var compactedUpTo = 0L
         var injectedFailure: CommitResult? = null
     }
 
@@ -96,9 +103,18 @@ class InMemoryConsensus {
         synchronized(lock) { group(database).injectedFailure = result }
     }
 
-    /** The committed entries of [database]. */
+    /** The committed entries of [database], including discarded ones. */
     fun committedEntries(database: DatabaseRef): List<LogEntry> =
         synchronized(lock) { group(database).log.toList() }
+
+    /** Discards the entries of [database] up to [index], as a snapshot on every member would. */
+    fun compact(database: DatabaseRef, index: Long) {
+        synchronized(lock) {
+            val group = group(database)
+            require(index <= group.log.size) { "only ${group.log.size} entries are committed" }
+            group.compactedUpTo = maxOf(group.compactedUpTo, index)
+        }
+    }
 
     private fun group(database: DatabaseRef): GroupState =
         groups[database.id] ?: throw IllegalStateException("group $database does not exist")
@@ -114,7 +130,7 @@ class InMemoryConsensus {
         group.members
             .mapNotNull { members[it.id] }
             .forEach { member ->
-                val answer = member.deliver(group.database, group.log)
+                val answer = member.deliver(group)
                 if (answer != null && member.self.id == responder) response = answer
             }
         return response
@@ -132,7 +148,10 @@ class InMemoryConsensus {
         private var transportUp = false
         private val localState = mutableSetOf<UUID>()
         private val running = mutableMapOf<UUID, ReplicatedStateMachine>()
+        /** The index of the last entry delivered (or skipped) since the group started. */
         private val delivered = mutableMapOf<UUID, Long>()
+        private val snapshots = mutableMapOf<UUID, Snapshot>()
+        private val snapshotRequested = mutableSetOf<UUID>()
         private val listeners = mutableMapOf<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
 
         internal fun isRunning(database: DatabaseRef): Boolean = database.id in running
@@ -147,18 +166,30 @@ class InMemoryConsensus {
         }
 
         /** Applies undelivered entries; returns the response to the last one applied, if any. */
-        internal fun deliver(database: DatabaseRef, log: List<LogEntry>): ByteArray? {
-            val stateMachine = running[database.id] ?: return null
-            var index = delivered.getOrDefault(database.id, 0L)
+        internal fun deliver(group: GroupState): ByteArray? {
+            val id = group.database.id
+            val stateMachine = running[id] ?: return null
+            var index = maxOf(delivered.getOrDefault(id, 0L), snapshots[id]?.position?.index ?: 0L)
+            if (index < group.compactedUpTo) {
+                // A member that applied the discarded entries before has them in its own log.
+                if (stateMachine.lastAppliedIndex() < group.compactedUpTo) {
+                    if (snapshotRequested.add(id)) {
+                        val leader = group.members.firstOrNull { it.id == group.leader }
+                        stateMachine.onSnapshotNeeded(leader, group.compactedUpTo)
+                    }
+                    return null
+                }
+                index = group.compactedUpTo
+            }
             var response: ByteArray? = null
-            while (index < log.size) {
-                val entry = log[index.toInt()]
+            while (index < group.log.size) {
+                val entry = group.log[index.toInt()]
                 if (entry.index > stateMachine.lastAppliedIndex()) {
                     response = stateMachine.apply(entry)
                 }
                 index++
             }
-            delivered[database.id] = index
+            delivered[id] = index
             return response
         }
 
@@ -208,11 +239,12 @@ class InMemoryConsensus {
                 }
                 running[database.id] = stateMachine
                 delivered[database.id] = 0L
-                deliver(database, group.log)
+                snapshotRequested -= database.id
+                deliver(group)
             }
         }
 
-        override fun stopGroup(database: DatabaseRef) {
+        override fun detachGroup(database: DatabaseRef) {
             val notifications =
                 synchronized(lock) {
                     running.remove(database.id) ?: return
@@ -223,6 +255,41 @@ class InMemoryConsensus {
                 }
             notifications.forEach { it() }
         }
+
+        override fun currentSnapshot(database: DatabaseRef): Snapshot? =
+            synchronized(lock) {
+                val stateMachine = running[database.id] ?: return null
+                val group = group(database)
+                val last =
+                    maxOf(
+                        delivered.getOrDefault(database.id, 0L),
+                        snapshots[database.id]?.position?.index ?: 0L,
+                    )
+                val position =
+                    if (last == 0L) LogPosition(0, 0)
+                    else LogPosition(last, group.log[(last - 1).toInt()].term)
+                Snapshot(position, minOf(stateMachine.lastAppliedIndex(), position.index))
+            }
+
+        override fun latestSnapshot(database: DatabaseRef): Snapshot? =
+            synchronized(lock) { snapshots[database.id] }
+
+        override fun installSnapshot(database: DatabaseRef, snapshot: Snapshot): Boolean =
+            synchronized(lock) {
+                check(database.id !in running) { "detach the state machine of $database first" }
+                check(database.id in localState) { "group $database has no local state" }
+                val latest = snapshots[database.id]
+                require(latest == null || snapshot.position.index >= latest.position.index) {
+                    "snapshot $snapshot is behind the latest snapshot $latest"
+                }
+                val behind = database.id in snapshotRequested
+                if (behind && snapshot.position.index >= group(database).compactedUpTo) {
+                    snapshots[database.id] = snapshot
+                    true
+                } else {
+                    false
+                }
+            }
 
         override val maxEntrySize: Int
             get() = this@InMemoryConsensus.maxEntrySize
@@ -346,7 +413,7 @@ class InMemoryConsensus {
 
         override fun close() {
             val database = synchronized(lock) { runningGroups() }
-            database.forEach { stopGroup(it) }
+            database.forEach { detachGroup(it) }
             synchronized(lock) { transportUp = false }
         }
     }

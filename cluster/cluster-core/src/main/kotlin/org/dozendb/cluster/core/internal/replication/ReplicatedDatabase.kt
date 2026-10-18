@@ -115,7 +115,10 @@ internal class ReplicatedDatabase(
         }
     }
 
-    /** Leaves the database's Raft group, before the database stops or after it panicked. */
+    /**
+     * Stops applying the group's entries, before the database stops or after it panicked. The group
+     * keeps running on this member, which no longer leads it.
+     */
     fun stop() {
         synchronized(lock) {
             val listener = statusListener ?: return
@@ -123,7 +126,7 @@ internal class ReplicatedDatabase(
             statusListener = null
             leaveWritableTerm()
             kernelTransactions = null
-            consensus.stopGroup(ref)
+            consensus.detachGroup(ref)
             log.info("Stopped replicating database %s", ref.name)
         }
     }

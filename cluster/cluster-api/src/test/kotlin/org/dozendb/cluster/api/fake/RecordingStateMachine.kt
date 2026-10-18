@@ -1,6 +1,9 @@
 package org.dozendb.cluster.api.fake
 
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import org.dozendb.cluster.api.LogEntry
+import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.ReplicatedStateMachine
 
 /**
@@ -21,6 +24,40 @@ class RecordingStateMachine : ReplicatedStateMachine {
     }
 
     @Synchronized override fun lastAppliedIndex(): Long = applied.lastOrNull()?.index ?: -1
+
+    /** Everything applied is durable, unless a test sets this lower. */
+    @Volatile var durable: Long? = null
+
+    /** How often [durableIndex] was called, so tests can wait until a value was observed. */
+    val durableReads = AtomicInteger()
+
+    override fun durableIndex(): Long {
+        durableReads.incrementAndGet()
+        return durable ?: lastAppliedIndex()
+    }
+
+    /** Sets [durable] and waits until it was read at least once. */
+    fun makeDurable(index: Long) {
+        durable = index
+        val reads = durableReads.get()
+        // The read in progress may have returned the previous value; wait for one more.
+        while (durableReads.get() < reads + 2) Thread.sleep(10)
+    }
+
+    /** The snapshot requests received, as (leader, minimum index). */
+    val snapshotRequests: MutableList<Pair<Member?, Long>> = CopyOnWriteArrayList()
+
+    override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {
+        snapshotRequests += leader to minimumIndex
+    }
+
+    /** Replaces the state with a copy of [other]'s, as a store copy would. */
+    @Synchronized
+    fun replaceWith(other: RecordingStateMachine) {
+        val copy = other.entries()
+        applied.clear()
+        applied += copy
+    }
 
     /** The payloads applied so far, decoded as UTF-8. */
     @Synchronized fun payloads(): List<String> = applied.map { it.payload.decodeToString() }

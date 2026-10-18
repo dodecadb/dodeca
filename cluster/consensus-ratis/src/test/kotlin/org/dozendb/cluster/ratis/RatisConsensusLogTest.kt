@@ -109,13 +109,11 @@ class RatisConsensusLogTest {
             val replayed = RecordingStateMachine()
             val gate = CountDownLatch(1)
             val gated =
-                object : ReplicatedStateMachine {
+                object : ReplicatedStateMachine by replayed {
                     override fun apply(entry: LogEntry): ByteArray {
                         gate.await()
                         return replayed.apply(entry)
                     }
-
-                    override fun lastAppliedIndex(): Long = replayed.lastAppliedIndex()
                 }
             try {
                 node.start()
@@ -321,13 +319,11 @@ class RatisConsensusLogTest {
             val cluster = RatisTestCluster(root, 3).also { cluster = it }
             val broken = cluster.nodes.first()
             val poisoned =
-                object : ReplicatedStateMachine {
+                object : ReplicatedStateMachine by broken.machine {
                     override fun apply(entry: LogEntry): ByteArray {
                         check(entry.payload.decodeToString() != "poison") { "disk on fire" }
                         return broken.machine.apply(entry)
                     }
-
-                    override fun lastAppliedIndex(): Long = broken.machine.lastAppliedIndex()
                 }
             cluster.form { if (it == broken) poisoned else it.machine }
             val healthy = cluster.nodes - broken
@@ -355,21 +351,55 @@ class RatisConsensusLogTest {
         }
 
     @Test
-    fun `a stopped group keeps its state and starts again`() =
+    fun `a detached member keeps storing entries and applies them once attached again`() =
         runBlocking<Unit> {
-            val cluster = formCluster(size = 1)
-            val node = cluster.nodes.single()
-            cluster.awaitLeader()
-            node.write("one")
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val follower = cluster.nodes.first { it != leader }
+            leader.write("one")
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(follower.machine.payloads()).containsExactly("one")
+                }
 
-            node.consensus.stopGroup(cluster.database)
-            assertThat(node.consensus.status(cluster.database).role).isEqualTo(Role.Inactive)
-            assertThat(node.consensus.localGroups()).containsExactly(cluster.database.id)
+            follower.consensus.detachGroup(cluster.database)
+            cluster.nodes.filter { it != follower }.forEach { it.stop() }
+            // Alone, the detached member can neither commit nor apply; with it the leader can.
+            val other = cluster.nodes.first { it != follower && it != leader }
+            other.start()
+            other.consensus.startGroup(cluster.database, other.machine, emptyList())
+            val newLeader = cluster.awaitLeader()
+            assertThat(newLeader).isEqualTo(other)
+            assertThat(newLeader.write("two")).isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(follower.machine.payloads()).containsExactly("one")
 
-            node.consensus.startGroup(cluster.database, node.machine, emptyList())
-            cluster.awaitLeader()
-            assertThat(node.write("two")).isInstanceOf(CommitResult.Committed::class.java)
-            assertThat(node.machine.payloads()).containsExactly("one", "two")
+            follower.consensus.startGroup(cluster.database, follower.machine, emptyList())
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(follower.machine.payloads()).containsExactly("one", "two")
+                }
+        }
+
+    @Test
+    fun `a detached leader hands leadership over`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            leader.write("one")
+
+            leader.consensus.detachGroup(cluster.database)
+
+            val newLeader = cluster.awaitLeader()
+            assertThat(newLeader).isNotEqualTo(leader)
+            assertThat(newLeader.write("two")).isInstanceOf(CommitResult.Committed::class.java)
+            leader.consensus.startGroup(cluster.database, leader.machine, emptyList())
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(leader.machine.payloads()).containsExactly("one", "two")
+                }
         }
 
     @Test

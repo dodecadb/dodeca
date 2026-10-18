@@ -20,6 +20,10 @@ import org.dozendb.cluster.api.MemberId
  *   probe, so it may change.
  * @property maxEntrySize the largest payload a group accepts. Ratis sizes per-group buffers from
  *   it, and members must agree on it, so production code keeps the default.
+ * @property snapshotInterval how often the state machines' durable indexes are checked for a new
+ *   snapshot.
+ * @property logSegmentSize the size at which a log segment is closed, raised to twice the largest
+ *   entry if smaller. Logs are discarded a whole closed segment at a time.
  */
 data class RatisConsensusConfig(
     val memberId: MemberId,
@@ -32,6 +36,8 @@ data class RatisConsensusConfig(
     val requestTimeout: Duration = Duration.ofSeconds(5),
     val metadata: () -> Map<String, String> = { emptyMap() },
     val maxEntrySize: Int = DEFAULT_MAX_ENTRY_SIZE,
+    val snapshotInterval: Duration = Duration.ofSeconds(10),
+    val logSegmentSize: Long = DEFAULT_LOG_SEGMENT_SIZE,
 ) {
     init {
         require(listenPort in 0..65535) { "listen port must be in 0..65535, was $listenPort" }
@@ -44,6 +50,10 @@ data class RatisConsensusConfig(
         require(!requestTimeout.isNegative && !requestTimeout.isZero) {
             "request timeout must be positive, was $requestTimeout"
         }
+        require(!snapshotInterval.isNegative && !snapshotInterval.isZero) {
+            "snapshot interval must be positive, was $snapshotInterval"
+        }
+        require(logSegmentSize > 0) { "log segment size must be positive, was $logSegmentSize" }
         require(maxEntrySize in MIN_MAX_ENTRY_SIZE..MAX_MAX_ENTRY_SIZE) {
             "max entry size must be in $MIN_MAX_ENTRY_SIZE..$MAX_MAX_ENTRY_SIZE, was $maxEntrySize"
         }
@@ -51,6 +61,7 @@ data class RatisConsensusConfig(
 
     companion object {
         const val DEFAULT_MAX_ENTRY_SIZE: Int = 16 shl 20
+        const val DEFAULT_LOG_SEGMENT_SIZE: Long = 32L shl 20
         private const val MIN_MAX_ENTRY_SIZE = 1 shl 20
         private const val MAX_MAX_ENTRY_SIZE = 256 shl 20
     }
