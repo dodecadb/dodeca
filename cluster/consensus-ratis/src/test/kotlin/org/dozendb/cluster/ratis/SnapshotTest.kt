@@ -176,13 +176,16 @@ class SnapshotTest {
             val cluster = formCluster()
             val leader = cluster.awaitLeader()
             val node = cluster.nodes.first { it != leader }
+            // Nothing durable while the entries are applied: the durable index only moves up.
+            node.machine.durable = -1
             repeat(4) { leader.write("entry-$it") }
             node.machine.makeDurable(2)
-            node.machine.durable = 4
+            node.machine.makeDurable(4)
             await atMost
                 RatisTestCluster.AWAIT untilAsserted
                 {
-                    assertThat(node.consensus.latestSnapshot(cluster.database)).isNotNull
+                    assertThat(node.consensus.latestSnapshot(cluster.database)?.position?.index)
+                        .isEqualTo(2)
                 }
             val snapshot = checkNotNull(node.consensus.latestSnapshot(cluster.database))
 
