@@ -192,16 +192,25 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         stateMachine: ReplicatedStateMachine,
         bootstrapMembers: List<Member>,
     ) {
-        val raftServer = requireServer()
-        val groupId = RaftGroupId.valueOf(database.id)
         groupStateMachine(database.id).attach(database, stateMachine)
-        if (groupId in raftServer.groupIds) {
+        if (RaftGroupId.valueOf(database.id) in requireServer().groupIds) {
             log.info("Raft group {} attached to its state machine", database)
             publishStatus(database.id)
             return
         }
-        val hasLocalState =
-            config.storageDirectory.resolve(database.id.toString()).toFile().isDirectory
+        addGroup(database, bootstrapMembers)
+    }
+
+    override fun joinGroup(database: DatabaseRef, bootstrapMembers: List<Member>) {
+        groupStateMachine(database.id).bind(database)
+        if (RaftGroupId.valueOf(database.id) in requireServer().groupIds) return
+        addGroup(database, bootstrapMembers)
+    }
+
+    private fun addGroup(database: DatabaseRef, bootstrapMembers: List<Member>) {
+        val raftServer = requireServer()
+        val groupId = RaftGroupId.valueOf(database.id)
+        val hasLocalState = groupDirectory(database.id).toFile().isDirectory
         val group =
             if (hasLocalState) {
                 RaftGroup.valueOf(groupId)
@@ -231,6 +240,42 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         )
         publishStatus(database.id)
     }
+
+    override fun removeGroup(database: DatabaseRef) {
+        val raftServer = requireServer()
+        val groupId = RaftGroupId.valueOf(database.id)
+        // Closing the division waits for every committed entry to be applied.
+        stateMachines[database.id]?.let {
+            it.detach()
+            it.release()
+        }
+        if (groupId in raftServer.groupIds) {
+            val reply =
+                raftServer.groupManagement(
+                    GroupManagementRequest.newRemove(
+                        clientId,
+                        peerId,
+                        callIds.incrementAndGet(),
+                        groupId,
+                        true,
+                        false,
+                    )
+                )
+            if (!reply.isSuccess) {
+                throw IllegalStateException(
+                    "could not remove Raft group $database",
+                    reply.exception,
+                )
+            }
+        }
+        val directory = groupDirectory(database.id)
+        if (directory.toFile().exists()) directory.toFile().deleteRecursively()
+        stateMachines.remove(database.id)
+        log.info("Raft group {} removed with its local state", database)
+        publishStatus(database.id)
+    }
+
+    private fun groupDirectory(groupId: UUID) = config.storageDirectory.resolve(groupId.toString())
 
     override fun detachGroup(database: DatabaseRef) {
         val stateMachine = stateMachines[database.id] ?: return

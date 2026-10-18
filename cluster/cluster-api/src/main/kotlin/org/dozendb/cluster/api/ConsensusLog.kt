@@ -58,6 +58,20 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
     )
 
     /**
+     * Starts the group of [database] if it is not running here, without a state machine: this
+     * member votes and stores entries, which are applied once [startGroup] attaches one. Bootstrap
+     * members work as in [startGroup].
+     */
+    public fun joinGroup(database: DatabaseRef, bootstrapMembers: List<Member>)
+
+    /**
+     * Stops the group of [database] on this member and deletes its local consensus state, after its
+     * database was dropped. The other members keep their own state until they remove the group too.
+     * A group that is not running here only has its local state deleted.
+     */
+    public fun removeGroup(database: DatabaseRef)
+
+    /**
      * Detaches the state machine of [database], for example while its database is stopped. The
      * group keeps running on this member, which keeps voting and storing entries; they are applied
      * once a state machine is attached again with [startGroup]. A leader hands leadership to

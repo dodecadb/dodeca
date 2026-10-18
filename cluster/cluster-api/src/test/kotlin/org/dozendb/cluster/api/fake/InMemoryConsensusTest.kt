@@ -46,6 +46,38 @@ class InMemoryConsensusTest {
         }
 
     @Test
+    fun `a member that joined without a state machine applies the log once one is attached`() =
+        runBlocking<Unit> {
+            all.forEach { it.start() }
+            listOf(a, b).forEach {
+                it.startGroup(database, machines.getValue(it.self.id), all.map { m -> m.self })
+            }
+            c.joinGroup(database, all.map { it.self })
+            assertThat(c.localGroups()).containsExactly(database.id)
+            consensus.electLeader(database, a.self.id)
+            a.submit(database, "one".encodeToByteArray())
+
+            c.startGroup(database, machines.getValue(c.self.id), emptyList())
+
+            assertThat(machines.getValue(c.self.id).payloads()).containsExactly("one")
+        }
+
+    @Test
+    fun `a removed group leaves no local state`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+            a.submit(database, "one".encodeToByteArray())
+
+            c.removeGroup(database)
+
+            assertThat(c.localGroups()).isEmpty()
+            assertThat(a.submit(database, "two".encodeToByteArray()))
+                .isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(machines.getValue(c.self.id).payloads()).containsExactly("one")
+        }
+
+    @Test
     fun `followers reject writes and name the leader`() =
         runBlocking<Unit> {
             startAll()

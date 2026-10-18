@@ -387,6 +387,50 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a member that joined without a state machine applies the log once one is attached`() =
+        runBlocking<Unit> {
+            val cluster = RatisTestCluster(root, 3).also { cluster = it }
+            cluster.nodes.forEach { it.start() }
+            val members = cluster.nodes.map { it.consensus.self }
+            val (joined, others) = cluster.nodes.first() to cluster.nodes.drop(1)
+            // A leader without a state machine would answer writes only once one is attached.
+            others.forEach { it.consensus.startGroup(cluster.database, it.machine, members) }
+            val leader = cluster.awaitLeader()
+            joined.consensus.joinGroup(cluster.database, members)
+            assertThat(leader.write("one")).isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(joined.machine.payloads()).isEmpty()
+
+            joined.consensus.startGroup(cluster.database, joined.machine, emptyList())
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(joined.machine.payloads()).containsExactly("one")
+                }
+        }
+
+    @Test
+    fun `a removed group leaves no local state and the others continue`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            leader.write("one")
+            val removed = cluster.nodes.first { it != leader }
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(removed.machine.payloads()).containsExactly("one")
+                }
+
+            removed.consensus.removeGroup(cluster.database)
+
+            assertThat(removed.consensus.localGroups()).doesNotContain(cluster.database.id)
+            assertThat(removed.directory.resolve(cluster.database.id.toString())).doesNotExist()
+            assertThat(leader.write("two")).isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(removed.machine.payloads()).containsExactly("one")
+        }
+
+    @Test
     fun `a detached leader hands leadership over`() =
         runBlocking<Unit> {
             val cluster = formCluster()

@@ -47,6 +47,17 @@ class InMemoryConsensus {
     /** The [ConsensusLog.maxEntrySize] of every member. */
     @Volatile var maxEntrySize: Int = 16 shl 20
 
+    /** Stands in for the state machine of a member that joined a group without one. */
+    private object Unattached : ReplicatedStateMachine {
+        override fun apply(entry: LogEntry): ByteArray = error("no state machine is attached")
+
+        override fun lastAppliedIndex(): Long = -1
+
+        override fun durableIndex(): Long = -1
+
+        override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {}
+    }
+
     internal class GroupState(val database: DatabaseRef, var members: List<Member>) {
         var term = 0L
         var leader: MemberId? = null
@@ -169,6 +180,7 @@ class InMemoryConsensus {
         internal fun deliver(group: GroupState): ByteArray? {
             val id = group.database.id
             val stateMachine = running[id] ?: return null
+            if (stateMachine === Unattached) return null
             var index = maxOf(delivered.getOrDefault(id, 0L), snapshots[id]?.position?.index ?: 0L)
             if (index < group.compactedUpTo) {
                 // A member that applied the discarded entries before has them in its own log.
@@ -223,25 +235,56 @@ class InMemoryConsensus {
             bootstrapMembers: List<Member>,
         ) {
             synchronized(lock) {
-                check(transportUp) { "start() the member before starting groups" }
-                check(database.id !in running) { "group $database is already running" }
-                val group =
-                    groups.getOrPut(database.id) {
-                        require(bootstrapMembers.isNotEmpty()) { "no bootstrap members" }
-                        GroupState(database, bootstrapMembers.toList())
-                    }
-                if (database.id !in localState) {
-                    check(bootstrapMembers == group.members) {
-                        "conflicting bootstrap configuration for $database: " +
-                            "stored=${group.members}, supplied=$bootstrapMembers"
-                    }
-                    localState += database.id
+                check(running[database.id].let { it == null || it === Unattached }) {
+                    "group $database is already running"
                 }
+                val group = register(database, bootstrapMembers)
                 running[database.id] = stateMachine
                 delivered[database.id] = 0L
                 snapshotRequested -= database.id
                 deliver(group)
             }
+        }
+
+        /**
+         * Takes part in the group, applying nothing until [startGroup] attaches a state machine.
+         */
+        override fun joinGroup(database: DatabaseRef, bootstrapMembers: List<Member>) {
+            synchronized(lock) {
+                register(database, bootstrapMembers)
+                running.putIfAbsent(database.id, Unattached)
+            }
+        }
+
+        private fun register(database: DatabaseRef, bootstrapMembers: List<Member>): GroupState {
+            check(transportUp) { "start() the member before starting groups" }
+            val group =
+                groups.getOrPut(database.id) {
+                    require(bootstrapMembers.isNotEmpty()) { "no bootstrap members" }
+                    GroupState(database, bootstrapMembers.toList())
+                }
+            if (database.id !in localState) {
+                check(bootstrapMembers == group.members) {
+                    "conflicting bootstrap configuration for $database: " +
+                        "stored=${group.members}, supplied=$bootstrapMembers"
+                }
+                localState += database.id
+            }
+            return group
+        }
+
+        override fun removeGroup(database: DatabaseRef) {
+            val notifications =
+                synchronized(lock) {
+                    running.remove(database.id)
+                    delivered.remove(database.id)
+                    snapshotRequested -= database.id
+                    localState -= database.id
+                    val group = groups[database.id] ?: return
+                    if (group.leader == self.id) group.leader = null
+                    statusNotifications(database)
+                }
+            notifications.forEach { it() }
         }
 
         override fun detachGroup(database: DatabaseRef) {

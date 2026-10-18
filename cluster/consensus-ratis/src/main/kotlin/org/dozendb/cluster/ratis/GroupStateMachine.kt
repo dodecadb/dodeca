@@ -122,6 +122,12 @@ internal class GroupStateMachine(
     val isDetached: Boolean
         get() = stateLock.withLock { detached }
 
+    /** Names the group's database before a state machine is attached. */
+    fun bind(database: DatabaseRef) {
+        require(database.id == groupId) { "database $database does not belong to group $groupId" }
+        stateLock.withLock { this.database = database }
+    }
+
     /** Attaches [stateMachine]; it starts applying once the group's snapshot record is loaded. */
     fun attach(database: DatabaseRef, stateMachine: ReplicatedStateMachine) {
         require(database.id == groupId) { "database $database does not belong to group $groupId" }
