@@ -1,0 +1,78 @@
+<project xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns="http://maven.apache.org/POM/4.0.0"
+  xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>org.dozerdb</groupId>
+    <artifactId>dozerdb-core-parent</artifactId>
+    <version>5.26.8-1.1.0</version>
+    <relativePath>../pom.xml</relativePath>
+  </parent>
+
+
+  <artifactId>dozerdb-core</artifactId>
+  <version>5.26.8-1.1.0</version>
+
+  <name>DozerDB</name>
+  <description>Enhances Neo4j Community (AKA Core) with enterprise features.</description>
+  <packaging>jar</packaging>
+
+  <properties>
+    <moduleName>org.neo4j.community</moduleName>
+    <skip-scalastyle>true</skip-scalastyle>
+  </properties>
+
+
+  <build>
+    <finalName>dozerdb-core-${dozerdb-core.version}</finalName>
+    <plugins>
+      <plugin>
+        <groupId>net.alchim31.maven</groupId>
+        <artifactId>scala-maven-plugin</artifactId>
+      </plugin>
+      <!-- Spotless is used for checkstyle and automatic code formatting -->
+      <plugin>
+        <groupId>com.diffplug.spotless</groupId>
+        <artifactId>spotless-maven-plugin</artifactId>
+        <version>2.43.0</version>
+        <executions>
+          <execution>
+            <goals>
+              <goal>check</goal>
+            </goals>
+          </execution>
+        </executions>
+        <configuration>
+          <upToDateChecking>
+            <enabled>true</enabled>
+          </upToDateChecking>
+          <java>
+            <palantirJavaFormat/>
+          </java>
+          <scala>
+            <scalafmt>
+              <file>build-resources/scalafmt/scalafmt.conf</file>
+            </scalafmt>
+          </scala>
+        </configuration>
+        <dependencies>
+          <dependency>
+            <groupId>org.neo4j.build</groupId>
+            <artifactId>resources</artifactId>
+            <version>${build-resources.version}</version>
+          </dependency>
+        </dependencies>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <configuration>
+          <finalName>dozerdb-core-${dozerdb-core.version}</finalName>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+
+</project>
