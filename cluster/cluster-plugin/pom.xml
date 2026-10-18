@@ -135,6 +135,8 @@
         <configuration>
           <systemPropertyVariables>
             <dozendb.plugin.jar>${dozendb.plugin.jar}</dozendb.plugin.jar>
+            <expected.neo4j.version>${neo4j.version}</expected.neo4j.version>
+            <expected.dozerdb.version>${dozerdb-core.version}</expected.dozerdb.version>
           </systemPropertyVariables>
           <classpathDependencyExcludes>
             <classpathDependencyExclude>org.dozerdb:dozerdb-core</classpathDependencyExclude>

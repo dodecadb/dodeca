@@ -49,7 +49,7 @@ class DisabledParityIT {
 
     @Test
     fun `runs the DozenDB entry point with clustering disabled`() {
-        assertThat(dozenDb.logs).contains("DozenDB 0.1.0-SNAPSHOT: clustering is disabled")
+        assertThat(dozenDb.logs).containsPattern("DozenDB \\S+: clustering is disabled")
         servers.forEach { assertThat(it.logs).contains("Enhanced By DozerDB Plugin") }
         assertThat(stock.logs).doesNotContain("DozenDB")
     }

@@ -89,7 +89,16 @@ class ClusterFormationIT {
 
         assertThat(debugLog).contains("[o.d.c.r.RatisConsensusLog] Raft member")
         assertThat(debugLog).containsPattern("\\[o\\.a\\.r\\.[^]]+]")
-        assertThat(members.first().logs).contains("All 3 initial cluster members are reachable")
+    }
+
+    @Test
+    @Order(2)
+    fun `one member forms the group and the others form it too or adopt it`() {
+        val formed = "All 3 initial cluster members are reachable"
+        val adopted = "Joining the already formed cluster"
+
+        assertThat(members).anyMatch { formed in it.logs }
+        assertThat(members).allMatch { formed in it.logs || adopted in it.logs }
     }
 
     @Test

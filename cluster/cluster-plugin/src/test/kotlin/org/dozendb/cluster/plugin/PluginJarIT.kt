@@ -80,7 +80,9 @@ class PluginJarIT {
         val attributes = jar.manifest.mainAttributes
 
         assertThat(attributes.getValue("Implementation-Title")).isEqualTo("DozenDB")
-        assertThat(attributes.getValue("DozenDB-Neo4j-Version")).isEqualTo("5.26.27")
-        assertThat(attributes.getValue("DozenDB-DozerDB-Version")).isEqualTo("5.26.27-1.1.0")
+        assertThat(attributes.getValue("DozenDB-Neo4j-Version"))
+            .isEqualTo(System.getProperty("expected.neo4j.version"))
+        assertThat(attributes.getValue("DozenDB-DozerDB-Version"))
+            .isEqualTo(System.getProperty("expected.dozerdb.version"))
     }
 }
