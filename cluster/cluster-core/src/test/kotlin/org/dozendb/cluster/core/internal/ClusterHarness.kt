@@ -84,8 +84,11 @@ internal class ClusterHarness(
         }
 
         fun stop() {
-            dbms?.shutdown()
-            dbms = null
+            try {
+                dbms?.shutdown()
+            } finally {
+                dbms = null
+            }
         }
 
         fun database(name: String = DEFAULT_DATABASE): GraphDatabaseAPI =
