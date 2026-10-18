@@ -29,6 +29,7 @@ class ClusterBootstrapper : DozerDbBootstrapper() {
             DozenDbMetadata.version,
             DozenDbMetadata.builtForNeo4j,
         )
+        Slf4jLogRouting.install(dependencies.userLogProvider(), log)
         return DatabaseManagementServiceFactory(DbmsInfo.ENTERPRISE, ::ClusterEditionModule)
             .build(config, daemonMode, dependencies)
     }

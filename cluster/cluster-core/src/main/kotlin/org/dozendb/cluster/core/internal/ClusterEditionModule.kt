@@ -31,6 +31,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
     init {
         val config = globalModule.globalConfig
         val logService = globalModule.logService
+        // Before anything creates a Ratis or DozenDB SLF4J logger.
+        Slf4jLogRouting.useDebugLogProvider(logService.internalLogProvider)
         val userLog = logService.getUserLog(ClusterService::class.java)
         val neo4jVersion = Version.getNeo4jVersion()
         val consensus =
