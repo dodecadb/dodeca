@@ -72,6 +72,16 @@ internal class ReplicatedDatabase(
     /** The local commit process that applies committed entries, set when the database starts. */
     @Volatile var applyProcess: TransactionCommitProcess? = null
 
+    /**
+     * Whether this member hands leadership over when the database stops. Not when it stops on every
+     * member, as when it is taken offline or dropped: nobody could take over.
+     */
+    @Volatile var handOverOnStop: Boolean = true
+
+    /** Whether this member is the leader and can commit transactions. */
+    val writable: Boolean
+        get() = synchronized(lock) { writableTerm != NOT_WRITABLE }
+
     private val lock = Any()
     private lateinit var database: Database
     private var kernelTransactions: KernelTransactions? = null
@@ -140,7 +150,7 @@ internal class ReplicatedDatabase(
 
     /**
      * Stops applying the group's entries, before the database stops or after it panicked. The group
-     * keeps running on this member, which no longer leads it.
+     * keeps running on this member, which hands leadership over unless [handOverOnStop] is off.
      */
     fun stop() {
         synchronized(lock) {
@@ -150,7 +160,7 @@ internal class ReplicatedDatabase(
             statusListener = null
             leaveWritableTerm()
             kernelTransactions = null
-            consensus.detachGroup(ref)
+            consensus.detachGroup(ref, handOverOnStop)
             log.info("Stopped replicating database %s", ref.name)
         }
     }

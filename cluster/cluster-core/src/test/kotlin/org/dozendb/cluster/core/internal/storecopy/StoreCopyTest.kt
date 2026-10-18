@@ -151,6 +151,29 @@ class StoreCopyTest {
     }
 
     @Test
+    fun `database files are listed, complete or not, and deleted by name`() {
+        val home = root.resolve("member")
+        dbms(home).also { it.shutdown() }
+        services.clear()
+        val layout = Neo4jLayout.of(home)
+        Files.createDirectories(layout.databasesDirectory().resolve("films"))
+        Files.createDirectories(layout.transactionLogsRootDirectory().resolve("series"))
+        Files.createFile(layout.databasesDirectory().resolve(".dozendb-incomplete-drama"))
+        val stores = stores(home)
+
+        assertThat(stores.stored())
+            .containsExactlyInAnyOrder(*names.toTypedArray(), "films", "series", "drama")
+        assertThat(stores.complete(GraphDatabaseSettings.DEFAULT_DATABASE_NAME)).isTrue()
+        assertThat(stores.complete("films")).isFalse()
+
+        listOf("films", "series", "drama").forEach(stores::delete)
+
+        assertThat(stores.stored()).containsExactlyInAnyOrderElementsOf(names)
+        assertThatThrownBy { stores.delete(GraphDatabaseSettings.DEFAULT_DATABASE_NAME) }
+            .isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    @Test
     fun `a member without databases misses them all`() {
         assertThat(stores(root.resolve("empty")).missing()).isEqualTo(names)
     }

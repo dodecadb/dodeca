@@ -15,8 +15,9 @@ import org.neo4j.logging.InternalLog
 import org.neo4j.storageengine.api.StorageEngineFactory
 
 /**
- * The `system` and replicated databases of this member, which it copies from another member when
- * they are missing or behind.
+ * The database files of this member, which it copies from another member when they are missing or
+ * behind. [databaseNames] are the databases a member needs to form a cluster: `system` and the
+ * default database.
  *
  * Databases are first copied to staging directories next to their final places and synced. Only
  * then are they moved into place, each with a marker file present while it is moved. A database
@@ -60,6 +61,44 @@ internal class Neo4jLocalStores(
         }
         moveIntoPlace(staged)
         return snapshot
+    }
+
+    /** Copies the database [database], which this member lacks, from [source]. */
+    fun copyNew(source: HostPort, database: DatabaseRef) {
+        moveIntoPlace(fetch(source, database.name, database.id, NO_MINIMUM))
+    }
+
+    /** Names of the databases with files on this member, complete or not. */
+    fun stored(): Set<String> {
+        val names = mutableSetOf<String>()
+        for (directory in
+            listOf(layout.databasesDirectory(), layout.transactionLogsRootDirectory())) {
+            if (!fs.isDirectory(directory)) continue
+            for (path in fs.listFiles(directory)) {
+                val name = path.fileName.toString()
+                when {
+                    name.startsWith(INCOMPLETE_MARKER_PREFIX) ->
+                        names += name.removePrefix(INCOMPLETE_MARKER_PREFIX)
+                    // Staging directories; database names start with a letter.
+                    name.startsWith(".") -> {}
+                    fs.isDirectory(path) -> names += name
+                }
+            }
+        }
+        return names
+    }
+
+    /** Whether the store of [name] is complete: present and not left half-moved. */
+    fun complete(name: String): Boolean = !incomplete(name) && storageExists(name)
+
+    /** Deletes the files of the database [name], which must not be running. */
+    fun delete(name: String) {
+        require(name !in databaseNames) { "database $name is needed to form a cluster" }
+        val target = layout.databaseLayout(name)
+        fs.deleteRecursively(target.databaseDirectory())
+        fs.deleteRecursively(target.transactionLogsDirectory)
+        fs.deleteFile(marker(name))
+        log.info("Deleted the files of database %s", name)
     }
 
     private fun storageExists(name: String): Boolean =

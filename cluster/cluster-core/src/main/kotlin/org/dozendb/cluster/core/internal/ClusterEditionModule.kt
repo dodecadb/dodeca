@@ -13,6 +13,7 @@ import org.dozendb.cluster.core.internal.durability.SingleFsyncFileSystem
 import org.dozendb.cluster.core.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.core.internal.replication.CatchUp
 import org.dozendb.cluster.core.internal.replication.DatabaseControl
+import org.dozendb.cluster.core.internal.replication.DatabaseReconciler
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
@@ -71,18 +72,30 @@ import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
  * The cluster service is registered in the global lifecycle from the constructor, before DozerDB
  * registers its database starters, so consensus starts (and the databases are copied from another
  * member if needed) before any database starts, and stops after every database.
+ *
+ * Databases other than `system` and the default database are created, started, stopped and dropped
+ * by the [DatabaseReconciler], which replaces DozerDB's system graph listener and its starter of
+ * those databases.
  */
 class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(globalModule) {
     private val cluster: ClusterService
     private val replication: ReplicationService
     private val directory: MemberDirectory
     private val consensus: ConsensusLog
+    private val memberId = MemberId(identityModule.serverId().uuid())
+    private val systemDatabase =
+        DatabaseRef(
+            NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.name(),
+            NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid(),
+        )
+    private val localStores: Neo4jLocalStores
 
     private var clusterDefaultDatabaseInitializer: Lifecycle = LifecycleAdapter()
 
     /** DozerDB's database manager and databases, created with the database context provider. */
     private lateinit var databaseManager: MultiDatabaseManager
     private lateinit var databaseContexts: DatabaseRepository<StandaloneDatabaseContext>
+    private lateinit var reconciler: DatabaseReconciler
 
     init {
         val config = globalModule.globalConfig
@@ -93,11 +106,6 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         val userLog = logService.getUserLog(ClusterService::class.java)
         val neo4jVersion = Version.getNeo4jVersion()
         val defaultDatabase = config.get(GraphDatabaseSettings.initial_default_database)
-        val systemDatabase =
-            DatabaseRef(
-                NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.name(),
-                NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid(),
-            )
         lateinit var stores: Neo4jLocalStores
         lateinit var replicationService: ReplicationService
         val tuning =
@@ -111,7 +119,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
             RatisConsensusLog(
                 tuning.adjust(
                     RatisConsensusConfig(
-                        memberId = MemberId(identityModule.serverId().uuid()),
+                        memberId = memberId,
                         listenHost = config.get(DozenDbSettings.listenAddress).hostname,
                         listenPort = config.get(DozenDbSettings.listenAddress).port,
                         advertisedAddress =
@@ -144,6 +152,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 consensus,
                 logService.getInternalLog(Neo4jLocalStores::class.java),
             )
+        localStores = stores
         val catchUp =
             CatchUp(
                 consensus,
@@ -281,18 +290,35 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
             MultiDatabaseManager(globalModule, databaseRepository, databaseContextFactory)
         databaseManager = multiDatabaseManager
         databaseContexts = databaseRepository
-        setupMultiDbSystemGraphAdapter(multiDatabaseManager)
+        val defaultDatabase =
+            globalModule.globalConfig.get(GraphDatabaseSettings.initial_default_database)
+        reconciler =
+            DatabaseReconciler(
+                Neo4jSystemGraph(
+                    { databaseRepository.getSystemDatabaseContext().databaseFacade() },
+                    replication,
+                ),
+                Neo4jLocalDatabases(
+                    multiDatabaseManager,
+                    databaseRepository,
+                    localStores,
+                    replication,
+                ),
+                memberId,
+                defaultDatabase,
+                ::copySources,
+                globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
+            )
         val databaseLifecycles =
             MultiDatabaseLifecycleService(
                 multiDatabaseManager,
                 databaseRepository,
-                globalModule.globalConfig.get(GraphDatabaseSettings.initial_default_database),
+                defaultDatabase,
                 databaseContextFactory,
                 globalModule.logService.internalLogProvider,
             )
         databaseStateService = CommunityDatabaseStateService(databaseRepository)
         globalModule.globalLife.add(databaseLifecycles.systemDatabaseStarter())
-        globalModule.globalLife.add(databaseLifecycles.allDatabaseStarter())
         globalModule.globalLife.add(databaseLifecycles.allDatabaseShutdown())
         globalModule.globalDependencies.satisfyDependency(
             DatabaseContextProviderDelegate.delegate(databaseRepository)
@@ -313,9 +339,18 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
             databaseReferenceRepository.invalidateAll()
             (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
             globalReadOnlyChecker?.refresh()
+            reconciler.request()
         }
         return databaseRepository
     }
+
+    /** The members to copy a new database from, [creator] first. */
+    private fun copySources(creator: MemberId): List<HostPort> =
+        consensus
+            .members(systemDatabase)
+            .filter { it.id != memberId }
+            .sortedBy { it.id != creator }
+            .map { it.raftAddress }
 
     /**
      * Neo4j's system graph initialiser, run only by the member that founds the cluster: it writes
@@ -339,6 +374,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         globalModule.globalDependencies.satisfyDependency(clusterInitializer)
         globalModule.globalLife.add(clusterInitializer)
         registerDefaultDatabaseInitializer(globalModule)
+        // Once the system and default databases run; stops before the databases stop.
+        globalModule.globalLife.add(
+            object : LifecycleAdapter() {
+                override fun start() = reconciler.start()
+
+                override fun stop() = reconciler.close()
+            }
+        )
     }
 
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {

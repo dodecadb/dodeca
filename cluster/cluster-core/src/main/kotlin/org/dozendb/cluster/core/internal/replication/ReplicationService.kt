@@ -1,11 +1,16 @@
 package org.dozendb.cluster.core.internal.replication
 
+import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.api.ConsensusLog
+import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.Member
 import org.neo4j.graphdb.event.DatabaseEventContext
@@ -14,11 +19,7 @@ import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLogProvider
 
-/**
- * Decides which databases are replicated and runs their Raft groups alongside them.
- *
- * `system` and the default database are replicated; other databases stay local.
- */
+/** Runs the Raft group of every database alongside it. */
 internal class ReplicationService(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
@@ -41,17 +42,54 @@ internal class ReplicationService(
     val defaultDatabaseStarted: Boolean
         get() = databases[defaultDatabaseName]?.isRunning() == true
 
-    fun replicates(namedDatabaseId: NamedDatabaseId): Boolean = replicates(namedDatabaseId.name())
-
-    fun replicates(name: String): Boolean =
-        name == systemDatabase.name || name == defaultDatabaseName
-
     /** Whether this member founds the cluster and has not initialised its system graph yet. */
     val systemBootstrapping: Boolean
         get() = databases[systemDatabase.name]?.bootstrapping == true
 
     /** Runs after every transaction applied to the system database, on its apply thread. */
     @Volatile var afterSystemApply: () -> Unit = {}
+
+    /** Whether this member is the system leader and can commit system transactions. */
+    val systemWritable: Boolean
+        get() = databases[systemDatabase.name]?.writable == true
+
+    /**
+     * Waits until the system database here holds every transaction the cluster had committed when
+     * it was called. Returns false if the system leader could not confirm that in time.
+     */
+    fun awaitSystemCurrent(): Boolean =
+        try {
+            runBlocking {
+                withTimeoutOrNull(SYSTEM_READ_TIMEOUT.toMillis()) {
+                    consensus.readIndex(systemDatabase)
+                }
+            } != null
+        } catch (_: ConsensusUnavailableException) {
+            false
+        }
+
+    /** The replication of [namedDatabaseId] on this member, if it was created. */
+    fun replica(namedDatabaseId: NamedDatabaseId): ReplicatedDatabase? =
+        databases[namedDatabaseId.name()]?.takeIf { it.namedDatabaseId == namedDatabaseId }
+
+    /** Forgets the dropped database [namedDatabaseId] and deletes its Raft group here. */
+    fun remove(namedDatabaseId: NamedDatabaseId) {
+        replica(namedDatabaseId)?.let { databases.remove(namedDatabaseId.name(), it) }
+        consensus.removeGroup(
+            DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+        )
+    }
+
+    /** Deletes the Raft group [id] here, whose database was dropped. */
+    fun removeGroup(id: UUID) {
+        consensus.removeGroup(DatabaseRef(DROPPED, id))
+    }
+
+    /** Ids of the Raft groups with state on this member. */
+    fun localGroups(): Set<UUID> = consensus.localGroups()
+
+    /** Whether [namedDatabaseId] is being replaced by a copy because it fell behind its log. */
+    fun catchingUp(namedDatabaseId: NamedDatabaseId): Boolean = namedDatabaseId.name() in catchingUp
 
     /** Whether commits to the database [name] are durable through the Raft log alone. */
     fun singleFsync(name: String): Boolean = databases[name]?.replicating == true
@@ -163,5 +201,12 @@ internal class ReplicationService(
     fun close() {
         catchUpExecutor.shutdownNow()
         scheduler.shutdownNow()
+    }
+
+    private companion object {
+        val SYSTEM_READ_TIMEOUT: Duration = Duration.ofSeconds(10)
+
+        /** The name logged for a Raft group whose database was dropped and is unknown here. */
+        const val DROPPED = "dropped"
     }
 }

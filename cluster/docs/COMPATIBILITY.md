@@ -51,23 +51,35 @@ builds the public source, so it differs from the release in these ways:
 
 What clustering does not do yet.
 
-- **Replicated databases.** `system` and the default database (`neo4j`) are
-  replicated. Administration commands (users, `CREATE DATABASE` and the like)
-  run on the leader of `system` and reach every member; a follower rejects them
-  with `Neo.ClientError.Cluster.NotALeader`. Databases created with
-  `CREATE DATABASE` are still created and started on the system leader only
- .
+- **Replicated databases.** Every database is replicated, `system` included,
+  each in its own Raft group. Administration commands (users,
+  `CREATE DATABASE` and the like) run on the leader of `system` and reach every
+  member; a follower rejects them with `Neo.ClientError.Cluster.NotALeader`.
+  `CREATE`, `STOP`, `START` and `DROP DATABASE` apply on every member, and a
+  member that was down applies the ones it missed when it returns.
+- **New databases.** The system leader creates the store of a new database and
+  the other members copy it, which takes a moment: until then the database is
+  not available on them. Stores are copied only while a database is online, so
+  a member that lacks a stopped database gets it once it is started again. If
+  the creating member fails before it created the store, the others wait until
+  it returns.
+- **Default database.** As in DozerDB, `CREATE DATABASE` and `DROP DATABASE`
+  neither create nor drop the default database (`initial_default_database`);
+  `STOP DATABASE` and `START DATABASE` apply to it.
+- **System log.** The Raft log of `system` is never compacted, so that no member
+  ever needs a copy of `system` to catch up. It grows with every
+  administration command.
 - **Writes go to the leader.** A follower rejects writes with
   `Neo.ClientError.Cluster.NotALeader`. Drivers that route (`neo4j://`) get
   routing tables with the leader as writer and retry managed transactions on
   the new leader after a failover. Server-side routing
   (`dbms.routing.default_router=SERVER`) does not forward writes: a `bolt://`
-  write sent to a follower is rejected. Local databases (created with
-  `CREATE DATABASE`) are routed to the member asked.
+  write sent to a follower is rejected. A database that does not run on the
+  member asked, such as a stopped one, is routed to that member only.
 - **Linearizable reads** are requested per transaction with the metadata key
   `dozendb.consistency` set to `linearizable`, or for every transaction with
   `dbms.dozendb.reads.default_consistency`. They apply to Bolt clients
-  (drivers, Cypher Shell) on replicated databases.
+  (drivers, Cypher Shell).
 - **Transaction size.** A transaction can replicate at most 16 MiB of changes
   in Neo4j's command encoding. A larger one fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is

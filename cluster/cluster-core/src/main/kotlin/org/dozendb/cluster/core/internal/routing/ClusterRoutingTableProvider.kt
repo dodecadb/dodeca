@@ -14,9 +14,10 @@ import org.neo4j.kernel.database.DatabaseReferenceImpl
 import org.neo4j.values.virtual.MapValue
 
 /**
- * Routing tables for drivers that route (`neo4j://`). A replicated database is routed by its Raft
- * group: writes to the leader, reads to the followers and optionally the leader. Local databases,
- * and server-side routing, keep DozerDB's table that names only this member.
+ * Routing tables for drivers that route (`neo4j://`). A database that replicates here is routed by
+ * its Raft group: writes to the leader, reads to the followers and optionally the leader. Other
+ * databases, such as stopped ones, and server-side routing keep DozerDB's table that names only
+ * this member.
  */
 internal class ClusterRoutingTableProvider(
     private val replication: ReplicationService,

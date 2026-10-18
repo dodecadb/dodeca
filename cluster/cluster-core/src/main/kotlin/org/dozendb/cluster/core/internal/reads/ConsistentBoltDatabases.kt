@@ -18,10 +18,10 @@ import org.neo4j.kernel.impl.query.QueryExecutionConfiguration
 import org.neo4j.memory.MemoryTracker
 
 /**
- * DozerDB's Bolt databases with per-transaction read consistency. A transaction on a replicated
- * database that asks for linearizable reads, through the `dozendb.consistency` metadata key or the
- * server default, begins only once this member has applied everything the cluster had committed
- * when it asked. Bookmarks are handled by DozerDB's databases as before.
+ * DozerDB's Bolt databases with per-transaction read consistency. A transaction that asks for
+ * linearizable reads, through the `dozendb.consistency` metadata key or the server default, begins
+ * only once this member has applied everything the cluster had committed when it asked. Bookmarks
+ * are handled by DozerDB's databases as before.
  */
 internal class ConsistentBoltDatabases(
     private val delegate: BoltGraphDatabaseManagementServiceSPI,
@@ -36,7 +36,6 @@ internal class ConsistentBoltDatabases(
         val id =
             (database.databaseReference as? DatabaseReferenceImpl.Internal)?.databaseId()
                 ?: return database
-        if (!replication.replicates(id)) return database
         return ConsistentDatabase(database) {
             replication.running().firstOrNull { it.namedDatabaseId == id }
         }
