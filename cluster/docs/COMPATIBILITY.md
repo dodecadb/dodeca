@@ -21,9 +21,15 @@ Its bootstrap, edition module and Cypher classes match the public
 `neo4j-5.26.8` source, but its constraint enforcement was rewritten. DozenDB
 builds the public source, so it differs from the release in these ways:
 
-- **Constraints.** The release also enforces property type, key, label
-  existence and relationship endpoint label constraints. DozenDB enforces the
-  existence constraints supported by the public source only.
+- **Constraints (serious).** Creating a property existence constraint
+  (`REQUIRE x.p IS NOT NULL`) fails the database: the transaction does not
+  commit and the database must be restarted. The public source inherits Neo4j
+  Community's `readConstraint`, which rejects existence, key and property type
+  constraints when they are applied or loaded; the release overrides it to
+  accept them. The release also enforces property type, key, label existence
+  and relationship endpoint label constraints, which the public source does
+  not. `DisabledParityIT` asserts this difference so that it is noticed when
+  it changes.
 - **Multi-database housekeeping.** The release contains small refactors of
   `MultiDatabaseManager`, `MultiDatabaseLifecycleService` and
   `SystemGraphTransactionEventListenerAdapter`. One of them changes behaviour:

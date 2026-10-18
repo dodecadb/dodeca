@@ -23,6 +23,7 @@
     <module>consensus-ratis</module>
     <module>cluster-core</module>
     <module>cluster-plugin</module>
+    <module>cluster-it</module>
   </modules>
 
   <properties>
