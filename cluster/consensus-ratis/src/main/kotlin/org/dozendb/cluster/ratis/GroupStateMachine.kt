@@ -349,7 +349,10 @@ internal class GroupStateMachine(
      * Ratis found this member behind the start of the leader's log, or is adding it to the group.
      * The returned future completes when [install] records a copy of the state; until then Ratis
      * reports the installation as in progress. A member being added is asked even if the leader's
-     * log continues its own; it then needs no copy and the future completes at once, empty.
+     * log continues its own; it then needs no copy and the future completes at once, empty. The
+     * leader's log continues this member's only if this member holds the leader's first entry, or
+     * if both logs start empty: otherwise the leader cannot name the entry before the ones it would
+     * send, and would only ask again.
      *
      * Never throws: Ratis would then report the installation as in progress for good. A failure
      * fails the returned future instead, after [RETRY_DELAY_MILLIS], and the leader asks again.
@@ -382,8 +385,13 @@ internal class GroupStateMachine(
         pending: PendingInstall,
         firstTermIndexInLog: TermIndex,
     ): CompletableFuture<TermIndex> {
-        val logEnd = localLogEnd()
-        if (logEnd >= pending.minimumIndex) {
+        val raftLog = server.get().getDivision(RaftGroupId.valueOf(groupId)).raftLog
+        val logEnd = raftLog.nextIndex - 1
+        val continues =
+            raftLog.getTermIndex(firstTermIndexInLog.index) == firstTermIndexInLog ||
+                (logEnd == RaftLog.INVALID_LOG_INDEX &&
+                    firstTermIndexInLog.index == RaftLog.LEAST_VALID_LOG_INDEX)
+        if (continues) {
             log.info(
                 "{} needs no copy: the leader's log, which starts at {}, continues this member's, " +
                     "which ends at {}",
@@ -588,10 +596,6 @@ internal class GroupStateMachine(
         dropCoveredSeed()
         return index
     }
-
-    /** The index of the last entry in this member's log, or of its snapshot if the log is empty. */
-    private fun localLogEnd(): Long =
-        server.get().getDivision(RaftGroupId.valueOf(groupId)).raftLog.nextIndex - 1
 
     private fun termOf(index: Long): Long? =
         try {

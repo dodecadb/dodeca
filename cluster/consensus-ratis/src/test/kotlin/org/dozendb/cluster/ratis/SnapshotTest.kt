@@ -13,6 +13,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
+import org.awaitility.kotlin.untilNotNull
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.ReplicatedStateMachine
@@ -163,6 +164,66 @@ class SnapshotTest {
                 .isGreaterThanOrEqualTo(snapshot.position.index)
             assertThat(firstIndex(cluster.logDirectory(behind)))
                 .isGreaterThan(snapshot.position.index)
+        }
+
+    @Test
+    fun `a member whose log ends just before the leader's installs a copy and catches up`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val previous = cluster.awaitLeader()
+            previous.write("before")
+            val behind = cluster.nodes.first { it != previous }
+            // Every member holds the whole log, including the entry recording the last commit.
+            val end =
+                await atMost
+                    RatisTestCluster.AWAIT untilNotNull
+                    {
+                        val applied = cluster.nodes.map { it.consensus.status(cluster.database) }
+                        applied
+                            .map { it.appliedIndex }
+                            .distinct()
+                            .singleOrNull()
+                            ?.takeIf { index -> applied.all { it.commitIndex == index } }
+                    }
+            behind.stop()
+            // The next term starts a log segment after the last entry the stopped member holds.
+            previous.consensus.detachGroup(cluster.database, handOverLeadership = true)
+            val leader = cluster.awaitLeaderOtherThan(previous)
+            previous.consensus.startGroup(cluster.database, previous.machine, emptyList())
+            // Writes until the leader discards that segment, with a snapshot beyond the entry
+            // before
+            // its log.
+            var written = 0
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    runBlocking { leader.write("after-${written++}") }
+                    assertThat(firstIndex(cluster.logDirectory(leader))).isEqualTo(end + 1)
+                    assertThat(leader.consensus.latestSnapshot(cluster.database)?.position?.index)
+                        .isGreaterThan(end)
+                }
+
+            behind.start()
+            behind.consensus.startGroup(cluster.database, behind.machine, emptyList())
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(behind.machine.snapshotRequests).hasSize(1)
+                }
+            behind.consensus.detachGroup(cluster.database)
+            val snapshot = checkNotNull(leader.consensus.currentSnapshot(cluster.database))
+            behind.machine.replaceWith(leader.machine)
+            assertThat(behind.consensus.installSnapshot(cluster.database, snapshot)).isTrue()
+            behind.consensus.startGroup(cluster.database, behind.machine, emptyList())
+            leader.write("last")
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(behind.machine.payloads())
+                        .isEqualTo(leader.machine.payloads())
+                        .endsWith("last")
+                }
         }
 
     @Test
