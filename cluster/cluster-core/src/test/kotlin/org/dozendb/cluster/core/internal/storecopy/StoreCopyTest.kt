@@ -186,10 +186,36 @@ class StoreCopyTest {
         val transfer = InProcessTransfer(copySource(database, snapshot))
         val target = stores(root.resolve("target"), transfer)
 
-        assertThat(target.copyReplicated(SOURCE, database.ref(), 7)).isEqualTo(snapshot)
-        assertThatThrownBy { target.copyReplicated(SOURCE, database.ref(), 8) }
+        val staged = target.stageReplicated(SOURCE, database.ref(), 7)
+        assertThat(staged.snapshot).isEqualTo(snapshot)
+        assertThat(target.missing()).describedAs("only staged").isEqualTo(names)
+        staged.moveIntoPlace()
+        assertThatThrownBy { target.stageReplicated(SOURCE, database.ref(), 8) }
             .hasMessageContaining("not yet up to the requested index 8")
         assertThat(target.missing()).containsExactly(GraphDatabaseSettings.SYSTEM_DATABASE_NAME)
+    }
+
+    @Test
+    fun `a staged copy leaves the database in place until it is moved there`() {
+        val home = root.resolve("target")
+        dbms(home).also { it.shutdown() }
+        services.clear()
+        val kept =
+            Neo4jLayout.of(home)
+                .databaseLayout(GraphDatabaseSettings.DEFAULT_DATABASE_NAME)
+                .databaseDirectory()
+                .resolve("kept")
+        Files.createFile(kept)
+        val database = dbms(root.resolve("source")).neo4j()
+        val target =
+            stores(home, InProcessTransfer(copySource(database, Snapshot(LogPosition(7, 2), 5))))
+
+        val staged = target.stageReplicated(SOURCE, database.ref(), 7)
+
+        assertThat(kept).exists()
+        staged.moveIntoPlace()
+        assertThat(kept).doesNotExist()
+        assertThat(target.missing()).isEmpty()
     }
 
     @Test
@@ -200,7 +226,7 @@ class StoreCopyTest {
 
         assertThatThrownBy {
                 stores(root.resolve("target"), InProcessTransfer(copySource(database, snapshot)))
-                    .copyReplicated(SOURCE, namesake, 7)
+                    .stageReplicated(SOURCE, namesake, 7)
             }
             .hasMessageContaining("not the requested ${namesake.id}")
         assertThatThrownBy {
@@ -208,7 +234,7 @@ class StoreCopyTest {
                         root.resolve("target"),
                         InProcessTransfer(copySource(database, snapshot, replicating = { false })),
                     )
-                    .copyReplicated(SOURCE, database.ref(), 7)
+                    .stageReplicated(SOURCE, database.ref(), 7)
             }
             .hasMessageContaining("is not replicating here")
         assertThat(stores(root.resolve("target")).missing()).isEqualTo(names)
@@ -227,7 +253,7 @@ class StoreCopyTest {
             )
         val target = stores(root.resolve("target"), InProcessTransfer(source))
 
-        target.copyReplicated(SOURCE, database.ref(), 7)
+        target.stageReplicated(SOURCE, database.ref(), 7).moveIntoPlace()
 
         assertThat(target.missing()).containsExactly(GraphDatabaseSettings.SYSTEM_DATABASE_NAME)
     }

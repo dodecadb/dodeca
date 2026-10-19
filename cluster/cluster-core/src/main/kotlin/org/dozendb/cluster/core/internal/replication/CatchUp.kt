@@ -17,16 +17,26 @@ internal interface DatabaseControl {
     fun start(id: NamedDatabaseId): Boolean
 }
 
-/** Replaces a stopped replicated database with a copy and returns the Raft snapshot it holds. */
+/** A copy of a replicated database next to it, holding [snapshot], ready to replace it. */
+internal interface StagedCopy {
+    val snapshot: Snapshot
+
+    /** Replaces the database, which must be stopped, with this copy. */
+    fun moveIntoPlace()
+}
+
+/** Copies a replicated database next to it while it keeps running. */
 internal fun interface DatabaseCopier {
-    fun copy(source: HostPort, database: DatabaseRef, minimumIndex: Long): Snapshot
+    /** A copy of [database] from [source] holding every Raft entry up to [minimumIndex]. */
+    fun stage(source: HostPort, database: DatabaseRef, minimumIndex: Long): StagedCopy
 }
 
 /**
- * Brings a replicated database up to date when its group's log no longer holds entries it needs:
- * stops the database, which detaches its group, replaces it with a copy holding every entry up to
- * the requested index from the leader or another member, records the copy's snapshot, and starts
- * the database again. Copies are retried until one succeeds or the thread is interrupted.
+ * Brings a replicated database up to date when its group's log no longer holds entries it needs. A
+ * copy holding every entry up to the requested index is first fetched next to the database from the
+ * leader or another member, retried until one succeeds or the thread is interrupted. The database
+ * keeps serving reads meanwhile. Only then is it stopped, which detaches its group, replaced with
+ * the copy, whose snapshot is recorded, and started again.
  */
 internal class CatchUp(
     private val consensus: ConsensusLog,
@@ -45,11 +55,19 @@ internal class CatchUp(
             minimumIndex,
             leader?.raftAddress ?: "another member",
         )
+        val copy =
+            try {
+                stage(ref, leader, minimumIndex)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                log.warn("Copying database %s was interrupted; it keeps running", ref.name)
+                return
+            }
         control().stop(replica.namedDatabaseId)
         // The shutdown event detached the group; detach it also if the database was not running.
         replica.stop()
         try {
-            replace(ref, leader, minimumIndex)
+            install(ref, copy)
         } catch (e: InterruptedException) {
             Thread.currentThread().interrupt()
             log.warn("Replacing database %s was interrupted; it stays stopped", ref.name)
@@ -64,24 +82,29 @@ internal class CatchUp(
         }
     }
 
-    private fun replace(ref: DatabaseRef, leader: Member?, minimumIndex: Long) {
+    private fun stage(ref: DatabaseRef, leader: Member?, minimumIndex: Long): StagedCopy {
         while (true) {
             // Never install behind the group's own snapshot.
             val required = maxOf(minimumIndex, consensus.latestSnapshot(ref)?.position?.index ?: -1)
-            val snapshot = copyFromAnyMember(ref, leader, required)
-            if (snapshot != null) {
-                val skipped = consensus.installSnapshot(ref, snapshot)
-                log.info(
-                    "Database %s now holds Raft snapshot %s; %s",
-                    ref.name,
-                    snapshot,
-                    if (skipped) "the group continues after it"
-                    else "the group continues from its local log",
-                )
-                return
+            val copy = copyFromAnyMember(ref, leader, required)
+            if (copy != null) {
+                log.info("Copied database %s holding Raft snapshot %s", ref.name, copy.snapshot)
+                return copy
             }
             Thread.sleep(retryDelay.toMillis())
         }
+    }
+
+    private fun install(ref: DatabaseRef, copy: StagedCopy) {
+        copy.moveIntoPlace()
+        val skipped = consensus.installSnapshot(ref, copy.snapshot)
+        log.info(
+            "Database %s now holds Raft snapshot %s; %s",
+            ref.name,
+            copy.snapshot,
+            if (skipped) "the group continues after it"
+            else "the group continues from its local log",
+        )
     }
 
     /** Copies from the leader first, then from the other members; null if all of them failed. */
@@ -89,14 +112,14 @@ internal class CatchUp(
         database: DatabaseRef,
         leader: Member?,
         minimumIndex: Long,
-    ): Snapshot? {
+    ): StagedCopy? {
         val candidates =
             (listOfNotNull(leader) + consensus.members(systemDatabase))
                 .filter { it.id != consensus.self.id }
                 .distinctBy { it.id }
         for (member in candidates) {
             try {
-                return copier.copy(member.raftAddress, database, minimumIndex)
+                return copier.stage(member.raftAddress, database, minimumIndex)
             } catch (e: InterruptedException) {
                 throw e
             } catch (e: Exception) {

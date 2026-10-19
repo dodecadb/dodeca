@@ -7,8 +7,8 @@ import java.util.UUID
 import org.dozendb.cluster.api.BulkTransfer
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Snapshot
 import org.dozendb.cluster.core.LocalStores
+import org.dozendb.cluster.core.internal.replication.StagedCopy
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.logging.InternalLog
@@ -45,10 +45,10 @@ internal class Neo4jLocalStores(
     }
 
     /**
-     * Replaces [database], which must be stopped, with a copy from [source] holding every Raft
-     * entry up to [minimumIndex], and returns the Raft snapshot the copy holds.
+     * Copies [database] from [source] next to it, holding every Raft entry up to [minimumIndex].
+     * The database may keep running meanwhile; [StagedCopy.moveIntoPlace] replaces it once stopped.
      */
-    fun copyReplicated(source: HostPort, database: DatabaseRef, minimumIndex: Long): Snapshot {
+    fun stageReplicated(source: HostPort, database: DatabaseRef, minimumIndex: Long): StagedCopy {
         val name = database.name
         val staged = fetch(source, name, database.id, minimumIndex)
         val snapshot =
@@ -59,8 +59,11 @@ internal class Neo4jLocalStores(
                 "$source sent a copy of $name holding $snapshot, short of index $minimumIndex"
             )
         }
-        moveIntoPlace(staged)
-        return snapshot
+        return object : StagedCopy {
+            override val snapshot = snapshot
+
+            override fun moveIntoPlace() = moveIntoPlace(staged)
+        }
     }
 
     /** Copies the database [database], which this member lacks, from [source]. */

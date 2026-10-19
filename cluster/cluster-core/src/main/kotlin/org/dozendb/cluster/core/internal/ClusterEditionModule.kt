@@ -158,7 +158,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                 consensus,
                 systemDatabase,
                 { databaseControl() },
-                stores::copyReplicated,
+                stores::stageReplicated,
                 logService.getInternalLog(CatchUp::class.java),
             )
         replicationService =

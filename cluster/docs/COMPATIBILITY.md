@@ -110,10 +110,12 @@ What clustering does not do yet.
   checkpoints (`db.checkpoint.interval.*`): each member keeps its Raft log from
   its second-to-last checkpoint on. A member that was down for less than about
   one checkpoint interval catches up from the log. A member that was down
-  longer stops its copy of the database, replaces it with a copy from the
-  leader, and starts it again; the database is unavailable on that member
-  meanwhile. `dozendb.cluster.status()` reports each group's latest snapshot
-  as `snapshotIndex`.
+  longer copies the database from the leader, or from another member, while
+  its own copy keeps serving reads, which are stale meanwhile. Only then does
+  it stop the database, move the copy into place and start it again: the
+  database is unavailable on that member for well under a second (0.3 s in
+  tests). `dozendb.cluster.status()` reports each group's latest snapshot as
+  `snapshotIndex`.
 - **Lost databases.** A member whose replicated database is missing at startup
   (for example after deleting `data/databases/neo4j` and
   `data/transactions/neo4j`) copies it from another member and keeps its own
