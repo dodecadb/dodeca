@@ -4,6 +4,7 @@ import java.nio.file.Path
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.dozendb.cluster.ratis.RatisConsensusConfig
 import org.junit.jupiter.api.Test
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -52,6 +53,25 @@ class DozenDbSettingsTest {
                 SocketAddress("core2", 7701),
                 SocketAddress("::1", 7702),
             )
+    }
+
+    @Test
+    fun `Raft log sizes default to the consensus defaults and parse units`() {
+        assertThat(config().get(DozenDbSettings.raftLogSegmentSize))
+            .isEqualTo(RatisConsensusConfig.DEFAULT_LOG_SEGMENT_SIZE)
+        assertThat(config().get(DozenDbSettings.raftMaxEntrySize))
+            .isEqualTo(RatisConsensusConfig.DEFAULT_MAX_ENTRY_SIZE.toLong())
+
+        val config =
+            config(
+                "internal.dbms.dozendb.cluster.raft_log_segment_size" to "512k",
+                "internal.dbms.dozendb.cluster.raft_max_entry_size" to "1m",
+            )
+
+        assertThat(config.get(DozenDbSettings.raftLogSegmentSize)).isEqualTo(512L shl 10)
+        assertThat(config.get(DozenDbSettings.raftMaxEntrySize)).isEqualTo(1L shl 20)
+        assertThatThrownBy { config("internal.dbms.dozendb.cluster.raft_max_entry_size" to "512k") }
+            .isInstanceOf(IllegalArgumentException::class.java)
     }
 
     @Test

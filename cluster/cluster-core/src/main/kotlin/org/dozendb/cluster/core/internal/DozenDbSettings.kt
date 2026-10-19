@@ -2,12 +2,16 @@ package org.dozendb.cluster.core.internal
 
 import java.nio.file.Path
 import java.time.Duration
+import org.dozendb.cluster.ratis.RatisConsensusConfig
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.Internal
 import org.neo4j.configuration.SettingConstraints.NO_ALL_INTERFACES_ADDRESS
 import org.neo4j.configuration.SettingConstraints.min
+import org.neo4j.configuration.SettingConstraints.range
 import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BOOL
+import org.neo4j.configuration.SettingValueParsers.BYTES
 import org.neo4j.configuration.SettingValueParsers.DURATION
 import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
@@ -23,7 +27,7 @@ import org.neo4j.graphdb.config.Setting
  *
  * Neo4j only accepts setting names in a fixed set of namespaces. Following Neo4j's convention,
  * settings that must agree across the cluster live under `dbms.dozendb.`, settings specific to one
- * server under `server.dozendb.`.
+ * server under `server.dozendb.`, and undocumented settings for tests under `internal.`.
  */
 class DozenDbSettings : SettingsDeclaration {
     companion object {
@@ -140,6 +144,44 @@ class DozenDbSettings : SettingsDeclaration {
                     "dbms.dozendb.reads.default_consistency",
                     ofEnum(ReadConsistency::class.java),
                     ReadConsistency.CAUSAL,
+                )
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Internal
+        @field:Description(
+            "For tests: the size at which a Raft log segment is closed, raised to twice " +
+                "internal.dbms.dozendb.cluster.raft_max_entry_size if smaller. Logs are discarded " +
+                "a whole closed segment at a time, so smaller segments discard them sooner."
+        )
+        val raftLogSegmentSize: Setting<Long> =
+            newBuilder(
+                    "internal.dbms.dozendb.cluster.raft_log_segment_size",
+                    BYTES,
+                    RatisConsensusConfig.DEFAULT_LOG_SEGMENT_SIZE,
+                )
+                .addConstraint(min(1L))
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Internal
+        @field:Description(
+            "For tests: the largest Raft entry, and so the largest transaction, a database " +
+                "accepts. Every member must use the same value."
+        )
+        val raftMaxEntrySize: Setting<Long> =
+            newBuilder(
+                    "internal.dbms.dozendb.cluster.raft_max_entry_size",
+                    BYTES,
+                    RatisConsensusConfig.DEFAULT_MAX_ENTRY_SIZE.toLong(),
+                )
+                .addConstraint(
+                    range(
+                        RatisConsensusConfig.MIN_MAX_ENTRY_SIZE.toLong(),
+                        RatisConsensusConfig.MAX_MAX_ENTRY_SIZE.toLong(),
+                    )
                 )
                 .immutable()
                 .build()

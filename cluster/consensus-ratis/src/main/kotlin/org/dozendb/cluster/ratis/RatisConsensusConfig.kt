@@ -19,7 +19,7 @@ import org.dozendb.cluster.api.MemberId
  * @property metadata facts reported to probing members, such as the Neo4j version. Read at every
  *   probe, so it may change.
  * @property maxEntrySize the largest payload a group accepts. Ratis sizes per-group buffers from
- *   it, and members must agree on it, so production code keeps the default.
+ *   it, and members must agree on it.
  * @property snapshotInterval how often the state machines' durable indexes are checked for a new
  *   snapshot.
  * @property logSegmentSize the size at which a log segment is closed, raised to twice the largest
@@ -62,7 +62,7 @@ data class RatisConsensusConfig(
     companion object {
         const val DEFAULT_MAX_ENTRY_SIZE: Int = 16 shl 20
         const val DEFAULT_LOG_SEGMENT_SIZE: Long = 32L shl 20
-        private const val MIN_MAX_ENTRY_SIZE = 1 shl 20
-        private const val MAX_MAX_ENTRY_SIZE = 256 shl 20
+        const val MIN_MAX_ENTRY_SIZE: Int = 1 shl 20
+        const val MAX_MAX_ENTRY_SIZE: Int = 256 shl 20
     }
 }

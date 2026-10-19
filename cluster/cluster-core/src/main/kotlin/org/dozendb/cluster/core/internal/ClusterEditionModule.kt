@@ -127,6 +127,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
                         storageDirectory = config.get(DozenDbSettings.raftDirectory),
                         electionTimeoutMin = config.get(DozenDbSettings.electionTimeoutMin),
                         electionTimeoutMax = config.get(DozenDbSettings.electionTimeoutMax),
+                        maxEntrySize = config.get(DozenDbSettings.raftMaxEntrySize).toInt(),
+                        logSegmentSize = config.get(DozenDbSettings.raftLogSegmentSize),
                         metadata = {
                             mapOf(
                                 DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
