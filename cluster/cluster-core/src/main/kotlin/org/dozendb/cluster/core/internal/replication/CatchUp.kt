@@ -46,7 +46,17 @@ internal class CatchUp(
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
 ) {
-    fun run(replica: ReplicatedDatabase, leader: Member?, minimumIndex: Long) {
+    /**
+     * Replaces [replica] with a copy holding every entry up to [minimumIndex]. [exclusively] runs
+     * the part from stopping the database to starting it again, for example under a lock that
+     * readers of the database hold.
+     */
+    fun run(
+        replica: ReplicatedDatabase,
+        leader: Member?,
+        minimumIndex: Long,
+        exclusively: (() -> Unit) -> Unit = { it() },
+    ) {
         val ref = replica.ref
         log.warn(
             "Database %s needs Raft entries up to %d that the log no longer holds; replacing it " +
@@ -63,6 +73,12 @@ internal class CatchUp(
                 log.warn("Copying database %s was interrupted; it keeps running", ref.name)
                 return
             }
+        exclusively { replace(replica, copy) }
+    }
+
+    /** Stops the database, moves [copy] into place and starts the database again. */
+    private fun replace(replica: ReplicatedDatabase, copy: StagedCopy) {
+        val ref = replica.ref
         control().stop(replica.namedDatabaseId)
         // The shutdown event detached the group; detach it also if the database was not running.
         replica.stop()

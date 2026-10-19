@@ -24,8 +24,7 @@ import org.neo4j.storageengine.api.TransactionIdStore
  * transaction, which makes it the state machine's applied index across restarts.
  *
  * Neo4j's latest checkpoint makes the entries up to its transaction durable: recovery restores them
- * without the Raft log. Unless [compacted], the state machine reports nothing durable, so the group
- * keeps its whole log and no member ever needs a copy to catch up.
+ * without the Raft log, which may then discard them.
  *
  * Any exception propagates: Neo4j has then already panicked the database, and Ratis stops the group
  * on this member instead of skipping the entry.
@@ -37,7 +36,6 @@ import org.neo4j.storageengine.api.TransactionIdStore
 internal class DatabaseStateMachine(
     database: Database,
     private val applyProcess: TransactionCommitProcess,
-    private val compacted: Boolean,
     private val afterApply: () -> Unit,
     private val onSnapshotNeeded: (leader: Member?, minimumIndex: Long) -> Unit,
 ) : ReplicatedStateMachine {
@@ -54,15 +52,13 @@ internal class DatabaseStateMachine(
         transactionIdStore.lastCommittedTransaction.consensusIndex()
 
     override fun durableIndex(): Long =
-        if (!compacted) -1
-        else
-            minOf(
-                checkPointer
-                    .latestCheckPointInfo()
-                    .highestObservedClosedTransactionId()
-                    .consensusIndex(),
-                lastAppliedIndex(),
-            )
+        minOf(
+            checkPointer
+                .latestCheckPointInfo()
+                .highestObservedClosedTransactionId()
+                .consensusIndex(),
+            lastAppliedIndex(),
+        )
 
     override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {
         onSnapshotNeeded.invoke(leader, minimumIndex)

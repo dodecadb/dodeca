@@ -1,6 +1,8 @@
 package org.dozendb.cluster.it
 
 import java.time.Duration
+import java.time.OffsetDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -18,6 +20,8 @@ import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.TestMethodOrder
+import org.neo4j.driver.AuthTokens
+import org.neo4j.driver.GraphDatabase
 import org.testcontainers.containers.Network
 import org.testcontainers.lifecycle.Startables
 
@@ -115,14 +119,13 @@ class PartitionedCatchUpIT {
     /** A read on one member: when it finished and the count it returned, null if it failed. */
     private data class Read(val at: Long, val count: Long?)
 
-    /** Reads [label]s on [member] every 100 ms until the returned stop function is called. */
-    private fun probe(member: DozerDbContainer, label: String): () -> List<Read> {
+    /** Runs [read] every 100 ms until the returned stop function is called. */
+    private fun probe(read: () -> Long?): () -> List<Read> {
         val reads = ConcurrentLinkedQueue<Read>()
         val probing = AtomicBoolean(true)
         val prober = thread {
             while (probing.get()) {
-                val outcome = member.run("MATCH (n:$label) RETURN count(n) AS c")
-                val count = (outcome as? Outcome.Rows)?.rows?.single()?.get("c") as Long?
+                val count = read()
                 reads += Read(System.nanoTime(), count)
                 Thread.sleep(100)
             }
@@ -133,6 +136,31 @@ class PartitionedCatchUpIT {
             reads.toList()
         }
     }
+
+    /** Reads [label]s on [member] every 100 ms until the returned stop function is called. */
+    private fun probe(member: DozerDbContainer, label: String): () -> List<Read> = probe {
+        val outcome = member.run("MATCH (n:$label) RETURN count(n) AS c")
+        (outcome as? Outcome.Rows)?.rows?.single()?.get("c") as Long?
+    }
+
+    /** The time of a line of Neo4j's debug log. */
+    private fun timeOf(line: String): Long =
+        OffsetDateTime.parse(line.substring(0, 28), LOG_TIME).toInstant().toEpochMilli()
+
+    /** The first index of the system database's Raft log on [member]. */
+    private fun firstSystemIndex(member: DozerDbContainer): Long =
+        member
+            .execInContainer("ls", "/data/raft/$SYSTEM_GROUP/current")
+            .stdout
+            .lines()
+            .mapNotNull { SEGMENT.matchEntire(it)?.groupValues?.get(1)?.toLong() }
+            .min()
+
+    private fun userCount(member: DozerDbContainer): Long? =
+        (member.run("SHOW USERS YIELD user RETURN count(*) AS c", "system") as? Outcome.Rows)
+            ?.rows
+            ?.single()
+            ?.get("c") as Long?
 
     /** The longest time from a failed read to the next successful one, in milliseconds. */
     private fun longestOutage(reads: List<Read>): Long {
@@ -186,5 +214,91 @@ class PartitionedCatchUpIT {
             .isLessThan(3_000)
         leader.rows("CREATE (:Marker {at: 'after'})")
         awaitSameData(behind, leader)
+    }
+
+    @Test
+    @Order(2)
+    fun `a follower copies system over a slow link while logins and administration keep working`() {
+        val leader = awaitLeader("system")
+        val behind = members.first { it != leader }
+        leader.rows("CREATE USER probe SET PASSWORD 'probe-secret' CHANGE NOT REQUIRED", "system")
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(userCount(behind)).isEqualTo(userCount(leader))
+            }
+        val usersBefore = checkNotNull(userCount(behind))
+        val partition = faultsOf(behind)
+        partition.cutRaft()
+        val cutAt = status(leader, "system")?.get("commitIndex") as Long
+        leader.rows("CREATE DATABASE docs", "system")
+        // About 2,000 users fill a segment of the system log; four at a time.
+        var created = 0
+        while (firstSystemIndex(leader) <= cutAt + 1) {
+            (0 until 4)
+                .map { worker ->
+                    thread {
+                        repeat(100) {
+                            leader.rows(
+                                "CREATE USER u${created}_${worker}_$it SET PASSWORD " +
+                                    "'user-secret' CHANGE NOT REQUIRED",
+                                "system",
+                            )
+                        }
+                    }
+                }
+                .forEach { it.join() }
+            created++
+        }
+        for (source in members - behind) {
+            faultsOf(source).shapeTo(behind, "rate", "4mbit", "delay", "20ms")
+        }
+
+        val probeUrl = "bolt://${behind.host}:${behind.getMappedPort(DozerDbContainer.BOLT_PORT)}"
+        val logins = probe {
+            try {
+                GraphDatabase.driver(probeUrl, AuthTokens.basic("probe", "probe-secret")).use {
+                    it.verifyConnectivity()
+                }
+                1L
+            } catch (e: Exception) {
+                null
+            }
+        }
+        val administration = probe { userCount(behind) }
+        val healedAt = System.nanoTime()
+        partition.healRaft()
+        await withPollInterval
+            Duration.ofMillis(500) atMost
+            Duration.ofMinutes(3) untilAsserted
+            {
+                assertThat(userCount(behind)).isEqualTo(userCount(leader))
+                assertThat(behind.run("SHOW DATABASE docs YIELD currentStatus", "system"))
+                    .isEqualTo(Outcome.Rows(listOf(mapOf("currentStatus" to "online"))))
+            }
+        val loginsAfterHealing = logins().filter { it.at > healedAt }
+        val readsAfterHealing = administration().filter { it.at > healedAt }
+
+        val log = behind.debugLog().lines()
+        val copyStarted = timeOf(log.last { "Database system needs Raft entries" in it })
+        val copied = timeOf(log.last { "Copied database system holding" in it })
+        assertThat(copied - copyStarted)
+            .describedAs("copy time, long enough to tell copying from being stopped")
+            .isGreaterThan(3_000)
+        assertThat(readsAfterHealing.count { it.count == usersBefore })
+            .describedAs("stale administration reads while copying")
+            .isGreaterThan(10)
+        assertThat(longestOutage(loginsAfterHealing))
+            .describedAs("logins unavailable only to move the copy into place")
+            .isLessThan(3_000)
+        assertThat(longestOutage(readsAfterHealing))
+            .describedAs("administration reads unavailable only to move the copy into place")
+            .isLessThan(3_000)
+    }
+
+    private companion object {
+        val LOG_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSXX")
+        const val SYSTEM_GROUP = "00000000-0000-0000-0000-000000000001"
+        val SEGMENT = Regex("log_(?:inprogress_)?(\\d+)(?:-\\d+)?")
     }
 }

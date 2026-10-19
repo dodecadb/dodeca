@@ -388,8 +388,17 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         )
     }
 
+    /**
+     * DozerDB's starter of the default database, which reads `system`: it waits while `system` is
+     * replaced by a copy, as when this member restarts behind the leader's log.
+     */
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
-        globalModule.globalLife.add(clusterDefaultDatabaseInitializer)
+        val starter = clusterDefaultDatabaseInitializer
+        globalModule.globalLife.add(
+            object : Lifecycle by starter {
+                override fun start() = replication.readingSystem { starter.start() }
+            }
+        )
     }
 
     /**

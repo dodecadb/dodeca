@@ -23,6 +23,7 @@ import org.neo4j.configuration.connectors.HttpsConnector
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
+import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies
 import org.neo4j.io.ByteUnit
@@ -53,6 +54,9 @@ internal class ClusterHarness(
         val running: Boolean
             get() = dbms != null
 
+        /** Listeners the DBMS calls before DozenDB's own, from its next start on. */
+        @Volatile var databaseEventListeners: List<DatabaseEventListener> = emptyList()
+
         /** Starts the DBMS; blocks until its databases run, which may wait for other members. */
         fun start() {
             check(dbms == null) { "member $index is running" }
@@ -67,7 +71,9 @@ internal class ClusterHarness(
                         false,
                         withSingleFsync(
                             config,
-                            GraphDatabaseDependencies.newDependencies().dependencies(given),
+                            GraphDatabaseDependencies.newDependencies()
+                                .dependencies(given)
+                                .databaseEventListeners(databaseEventListeners),
                         ),
                     )
         }

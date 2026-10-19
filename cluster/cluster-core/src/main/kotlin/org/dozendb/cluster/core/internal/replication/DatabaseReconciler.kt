@@ -321,6 +321,8 @@ internal class DatabaseReconciler(
     private fun nameCreator(id: NamedDatabaseId) {
         try {
             systemGraph.nameCreator(id, self)
+        } catch (e: InterruptedException) {
+            throw e
         } catch (e: Exception) {
             log.info("Naming this member the creator of %s failed: %s", id, e.message)
         }

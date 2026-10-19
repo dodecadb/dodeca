@@ -85,7 +85,6 @@ class StagedCatchUpTest {
             storeExists = true,
             scheduler,
             NullLog.getInstance(),
-            compacted = true,
             afterApply = {},
             onSnapshotNeeded = { _, _, _ -> },
         )

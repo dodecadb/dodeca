@@ -20,12 +20,13 @@ internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
     private val replication: ReplicationService,
 ) : SystemGraph {
-    override fun databases(): List<DesiredDatabase> =
+    override fun databases(): List<DesiredDatabase> = replication.readingSystem {
         system().beginTx().use { tx ->
             tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
                 nodes.asSequence().mapNotNull(::desired).toList()
             }
         }
+    }
 
     private fun desired(node: Node): DesiredDatabase? {
         val name = node.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null) as? String
@@ -41,11 +42,17 @@ internal class Neo4jSystemGraph(
         )
     }
 
+    // Not while reading: a member behind the log confirms only once `system` was replaced.
     override fun awaitCurrent(): Boolean = replication.awaitSystemCurrent()
 
     override fun leading(): Boolean = replication.systemWritable
 
-    override fun nameCreator(database: NamedDatabaseId, creator: MemberId) {
+    override fun nameCreator(database: NamedDatabaseId, creator: MemberId) =
+        replication.readingSystem {
+            writeCreator(database, creator)
+        }
+
+    private fun writeCreator(database: NamedDatabaseId, creator: MemberId) {
         system().beginTx().use { tx ->
             val node =
                 tx.findNode(

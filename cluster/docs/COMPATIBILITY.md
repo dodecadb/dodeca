@@ -72,9 +72,6 @@ What clustering does not do yet.
 - **Default database.** As in DozerDB, `CREATE DATABASE` and `DROP DATABASE`
   neither create nor drop the default database (`initial_default_database`);
   `STOP DATABASE` and `START DATABASE` apply to it.
-- **System log.** The Raft log of `system` is never compacted, so that no member
-  ever needs a copy of `system` to catch up. It grows with every
-  administration command.
 - **Writes go to the leader.** A follower rejects writes with
   `Neo.ClientError.Cluster.NotALeader`. Drivers that route (`neo4j://`) get
   routing tables with the leader as writer and retry managed transactions on
@@ -120,8 +117,11 @@ What clustering does not do yet.
   its own copy keeps serving reads, which are stale meanwhile. Only then does
   it stop the database, move the copy into place and start it again: the
   database is unavailable on that member for well under a second (0.3 s in
-  tests). `dozendb.cluster.status()` reports each group's latest snapshot as
-  `snapshotIndex`.
+  tests). This holds for `system` too: logins and administration commands on
+  that member see the old users and databases until the copy is in place, and
+  may fail with `Neo.TransientError.General.DatabaseUnavailable` while it is
+  moved there. `dozendb.cluster.status()` reports each group's latest snapshot
+  as `snapshotIndex`.
 - **Lost databases.** A member whose replicated database is missing at startup
   (for example after deleting `data/databases/neo4j` and
   `data/transactions/neo4j`) copies it from another member and keeps its own

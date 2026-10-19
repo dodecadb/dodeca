@@ -7,6 +7,8 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.locks.ReentrantReadWriteLock
+import kotlin.concurrent.write
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.api.ConsensusLog
@@ -37,6 +39,27 @@ internal class ReplicationService(
         Thread(runnable, "dozendb-catch-up").apply { isDaemon = true }
     }
     private val catchingUp: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Held shared by readers of the system database that run in the background, and exclusively
+     * while `system` is stopped to be replaced by a copy, so that those readers wait instead of
+     * finding it stopped. Fair, so that readers do not starve a waiting replacement.
+     */
+    private val systemLock = ReentrantReadWriteLock(true)
+
+    /**
+     * Runs [block], which reads the system database, while `system` is not being replaced by a
+     * copy. [block] must not wait for anything that needs `system` replaced first.
+     */
+    fun <T> readingSystem(block: () -> T): T {
+        // Interruptible, so that closing a waiting reader does not wait for the replacement.
+        systemLock.readLock().lockInterruptibly()
+        try {
+            return block()
+        } finally {
+            systemLock.readLock().unlock()
+        }
+    }
 
     /** Whether the default database is replicating here, so other members can copy it. */
     val defaultDatabaseStarted: Boolean
@@ -112,8 +135,6 @@ internal class ReplicationService(
                 storeExists,
                 scheduler,
                 logProvider.getLog(ReplicatedDatabase::class.java),
-                // The system database is small and must keep running: its log is kept whole.
-                compacted = !namedDatabaseId.isSystemDatabase,
                 afterApply =
                     if (namedDatabaseId.isSystemDatabase) {
                         { afterSystemApply() }
@@ -175,7 +196,15 @@ internal class ReplicationService(
         try {
             catchUpExecutor.execute {
                 try {
-                    catchUp.run(replica, leader, minimumIndex)
+                    if (name == systemDatabase.name) {
+                        catchUp.run(replica, leader, minimumIndex) { replace ->
+                            systemLock.write(replace)
+                        }
+                        // The copy brings changes that no applied transaction announced.
+                        afterSystemApply()
+                    } else {
+                        catchUp.run(replica, leader, minimumIndex)
+                    }
                 } catch (e: Exception) {
                     log.error("Catching up database $name failed", e)
                 } finally {
