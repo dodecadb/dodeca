@@ -673,6 +673,10 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         // Durability: an entry is acknowledged only after it is flushed on a majority.
         RaftServerConfigKeys.Log.setUnsafeFlushEnabled(properties, false)
         RaftServerConfigKeys.Log.setAsyncFlushEnabled(properties, false)
+        // After each commit the leader appends an entry recording the commit index. It doubles the
+        // entries of sequential commits, but it is how followers learn of a commit at once: without
+        // it they apply only with the next heartbeat, half the minimum election timeout later.
+        RaftServerConfigKeys.Log.setLogMetadataEnabled(properties, true)
         // Snapshots follow the state machines' durable indexes; see takeDueSnapshots.
         RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, false)
         // A member that is down must not keep the others from discarding their logs. Snapshots

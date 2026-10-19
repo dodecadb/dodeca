@@ -20,17 +20,26 @@ import org.testcontainers.lifecycle.Startables
  */
 @EnabledIfSystemProperty(named = "dozendb.benchmark", matches = "true")
 class FsyncBenchmarkIT {
-    private data class Result(val mode: String, val sequential: Double, val concurrent: Double)
+    private data class Result(
+        val mode: String,
+        val sequential: Double,
+        val concurrent: Double,
+        val entriesPerCommit: Double,
+    )
 
     @Test
     fun `single fsync against double fsync`() {
         val results = listOf(measure(singleFsync = true), measure(singleFsync = false))
         val report = buildString {
             appendLine(
-                "mode, sequential commits/s (1 writer), concurrent commits/s ($WRITERS writers)"
+                "mode, sequential commits/s (1 writer), concurrent commits/s ($WRITERS writers), " +
+                    "Raft entries per sequential commit"
             )
             results.forEach {
-                appendLine("${it.mode}, %.0f, %.0f".format(it.sequential, it.concurrent))
+                appendLine(
+                    "${it.mode}, %.0f, %.0f, %.2f"
+                        .format(it.sequential, it.concurrent, it.entriesPerCommit)
+                )
             }
         }
         print(report)
@@ -52,9 +61,11 @@ class FsyncBenchmarkIT {
                 val leader = awaitLeader(members)
                 leader.rows("CREATE (:Warmup)")
 
+                val indexBefore = commitIndex(leader)
                 val sequentialStart = System.nanoTime()
                 repeat(SEQUENTIAL) { leader.rows("CREATE (:Sequential {i: $it})") }
                 val sequential = SEQUENTIAL / seconds(sequentialStart)
+                val entriesPerCommit = (commitIndex(leader) - indexBefore).toDouble() / SEQUENTIAL
 
                 val committed = AtomicLong()
                 val concurrentStart = System.nanoTime()
@@ -70,7 +81,12 @@ class FsyncBenchmarkIT {
                     }
                     .forEach { it.join() }
                 val concurrent = committed.get() / seconds(concurrentStart)
-                return Result(if (singleFsync) "single" else "double", sequential, concurrent)
+                return Result(
+                    if (singleFsync) "single" else "double",
+                    sequential,
+                    concurrent,
+                    entriesPerCommit,
+                )
             } finally {
                 members.forEach { it.stop() }
             }
@@ -78,6 +94,14 @@ class FsyncBenchmarkIT {
     }
 
     private fun seconds(since: Long): Double = (System.nanoTime() - since) / 1e9
+
+    private fun commitIndex(member: DozerDbContainer): Long =
+        member
+            .rows("CALL dozendb.cluster.status()", "system")
+            .single {
+                it["database"] == "neo4j"
+            }["commitIndex"]
+            as Long
 
     private fun awaitLeader(members: List<DozerDbContainer>): DozerDbContainer =
         await.pollDelay(Duration.ZERO) withPollInterval
