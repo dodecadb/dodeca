@@ -9,7 +9,7 @@ changes over.
 
 | Neo4j class | DozenDB code | How |
 |---|---|---|
-| `NeoBootstrapper` | `ClusterBootstrapper` | Subclass. Starts `DozenDbEditionModule`, or `ClusterEditionModule` with clustering enabled, and reports the Enterprise edition. |
+| `NeoBootstrapper` | `DozenDbBootstrapper` | Subclass. Starts `DozenDbEditionModule`, or `ClusterEditionModule` with clustering enabled, and reports the Enterprise edition. |
 | `CommunityEditionModule` | `DozenDbEditionModule` | Subclass. `createDatabaseContextProvider` is a copy of Community's that uses `DatabaseManager` instead of `DatabaseLifecycles`, which allows only two databases, and `DozenDbDatabaseContextFactory` instead of `DefaultDatabaseContextFactory`. `registerDefaultDatabaseInitializer` is overridden because Community keeps its default database starter in a private field. |
 | `CommunityEditionModule` | `ClusterEditionModule` | Through `DozenDbEditionModule`. `registerDatabaseInitializers` is overridden so that only the member founding the cluster initializes the system graph, with `getSystemGraphComponents()`. |
 | `DatabaseLifecycles` | `DatabaseManager` | Port, for many databases. |
@@ -32,7 +32,7 @@ lists how DozenDB behaves differently.
 
 | DozerDB class | DozenDB code |
 |---|---|
-| `DozerDbBootstrapper`, `DozerDbEntryPoint` | `ClusterBootstrapper`, `ClusterEntryPoint` |
+| `DozerDbBootstrapper`, `DozerDbEntryPoint` | `DozenDbBootstrapper`, `DozenDbEntryPoint` |
 | `DozerDbEditionModule` | `DozenDbEditionModule` |
 | `DozerDbDatabaseContextFactory` | `DozenDbDatabaseContextFactory` |
 | `MultiDatabaseManager`, `MultiDatabaseLifecycleService` | `DatabaseManager` |

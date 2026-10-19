@@ -18,7 +18,7 @@ import org.neo4j.server.NeoBootstrapper
  * Reports the Enterprise edition, as DozerDB did, so that tools offer what DozenDB supports beyond
  * Neo4j Community, such as many databases.
  */
-class ClusterBootstrapper : NeoBootstrapper() {
+class DozenDbBootstrapper : NeoBootstrapper() {
     override fun createNeo(
         config: Config,
         daemonMode: Boolean,

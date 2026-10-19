@@ -49,7 +49,7 @@ class PluginJarIT {
     @Test
     fun `registers the DozenDB services`() {
         assertThat(services("org.neo4j.server.startup.EntryPoint"))
-            .containsExactly("org.dozendb.cluster.core.internal.ClusterEntryPoint")
+            .containsExactly("org.dozendb.cluster.core.internal.DozenDbEntryPoint")
         assertThat(services("org.neo4j.configuration.SettingsDeclaration"))
             .containsExactly("org.dozendb.cluster.core.internal.DozenDbSettings")
         assertThat(services("org.neo4j.kernel.impl.constraints.ConstraintSemantics"))

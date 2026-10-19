@@ -10,7 +10,7 @@ import org.neo4j.server.startup.EntryPoint
  * The JVM entry point Neo4j's launcher starts. Registered in `META-INF/services` with a higher
  * priority than Neo4j Community's entry point, so it wins regardless of classpath order.
  */
-class ClusterEntryPoint : EntryPoint {
+class DozenDbEntryPoint : EntryPoint {
     override fun getPriority(): Int = EntryPoint.Priority.MEDIUM.ordinal
 
     companion object {
@@ -18,14 +18,14 @@ class ClusterEntryPoint : EntryPoint {
 
         @JvmStatic
         fun main(args: Array<String>) {
-            val status = NeoBootstrapper.start(ClusterBootstrapper(), *args)
+            val status = NeoBootstrapper.start(DozenDbBootstrapper(), *args)
             if (status != 0) exitProcess(status)
         }
 
         /** Used by the Windows service wrapper. */
         @JvmStatic
         fun start(args: Array<String>) {
-            val blocking = BlockingBootstrapper(ClusterBootstrapper())
+            val blocking = BlockingBootstrapper(DozenDbBootstrapper())
             bootstrapper = blocking
             exitProcess(NeoBootstrapper.start(blocking, *args))
         }
