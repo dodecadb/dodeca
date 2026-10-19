@@ -91,6 +91,13 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     private val callIds = AtomicLong()
     private val appending: MutableSet<Long> = ConcurrentHashMap.newKeySet()
     private val stateMachines = ConcurrentHashMap<UUID, GroupStateMachine>()
+
+    /**
+     * Groups being added to the running server. Ratis serves requests for a group before it has
+     * started it; a leader's snapshot notification that arrives before its log is open leaves Ratis
+     * reporting the installation as in progress for good. Until started, a group is not offered.
+     */
+    private val startingGroups: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val listeners = ConcurrentHashMap<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
     private val events: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "dozendb-consensus-events").apply { isDaemon = true }
@@ -226,16 +233,22 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 }
                 RaftGroup.valueOf(groupId, bootstrapMembers.map(::toPeer))
             }
+        // Ratis answers once the group has started.
+        startingGroups += database.id
         val reply =
-            raftServer.groupManagement(
-                GroupManagementRequest.newAdd(
-                    clientId,
-                    peerId,
-                    callIds.incrementAndGet(),
-                    group,
-                    !hasLocalState,
+            try {
+                raftServer.groupManagement(
+                    GroupManagementRequest.newAdd(
+                        clientId,
+                        peerId,
+                        callIds.incrementAndGet(),
+                        group,
+                        !hasLocalState,
+                    )
                 )
-            )
+            } finally {
+                startingGroups -= database.id
+            }
         if (!reply.isSuccess) {
             throw IllegalStateException("could not start Raft group $database", reply.exception)
         }
@@ -682,9 +695,11 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     private fun describeSelf(): PeerInfo {
         val raftServer = requireServer()
-        // A group Ratis closed here, as for a removed member, is no longer hosted.
+        // A group Ratis closed here, as for a removed member, is no longer hosted; one still
+        // starting is not hosted yet.
         val groups =
             raftServer.groupIds
+                .filter { it.uuid !in startingGroups }
                 .map(raftServer::getDivision)
                 .filter { it.info.isAlive }
                 .associate { it.memberId.groupId.uuid to it.raftConf.currentPeers.map(::toMember) }

@@ -6,6 +6,7 @@ import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import kotlin.concurrent.thread
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.assertj.core.api.Assertions.assertThat
@@ -16,12 +17,15 @@ import org.awaitility.kotlin.during
 import org.awaitility.kotlin.untilAsserted
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusUnavailableException
+import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.LogEntry
+import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.ReplicatedStateMachine
 import org.dozendb.cluster.api.Role
+import org.dozendb.cluster.api.Snapshot
 import org.dozendb.cluster.api.fake.RecordingStateMachine
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -374,6 +378,49 @@ class RatisConsensusLogTest {
                 }
                 .isInstanceOf(ConsensusUnavailableException::class.java)
             assertThat(cluster.awaitLeader().consensus.members(cluster.database)).hasSize(3)
+        }
+
+    @Test
+    fun `a member can be added to a group as soon as it shows the group`() =
+        runBlocking<Unit> {
+            // Ratis serves a group before it has started it, and can lose a snapshot notification
+            // that arrives meanwhile; the member would then never finish joining.
+            val cluster = RatisTestCluster(root, 4).also { cluster = it }
+            val initial = cluster.nodes.take(3)
+            cluster.form(initial)
+            val joining = cluster.nodes.last().apply { start() }
+            val members = initial.map { it.consensus.self }
+            repeat(10) { n ->
+                val database = DatabaseRef("db$n", UUID.randomUUID())
+                initial.forEach {
+                    it.consensus.startGroup(database, RecordingStateMachine(), members)
+                }
+                await atMost
+                    RatisTestCluster.AWAIT untilAsserted
+                    {
+                        assertThat(initial.map { it.consensus.role(database) })
+                            .contains(Role.Leader)
+                    }
+                // As a member being added does, it records a copy before it runs the group.
+                joining.consensus.seed(database, Snapshot(LogPosition(0, 1), 0))
+                val starting = thread {
+                    joining.consensus.startGroup(database, RecordingStateMachine(), members)
+                }
+                try {
+                    // Asked without pause, to add it as early as it shows the group.
+                    val deadline = System.nanoTime() + RatisTestCluster.AWAIT.toNanos()
+                    val peer = joining.consensus.self.raftAddress
+                    while (database.id !in initial.first().consensus.probe(peer).groups) {
+                        check(System.nanoTime() < deadline) { "$database never showed on $peer" }
+                    }
+                    initial
+                        .first()
+                        .consensus
+                        .addMember(database, joining.consensus.self, CHANGE_TIMEOUT)
+                } finally {
+                    starting.join()
+                }
+            }
         }
 
     @Test
