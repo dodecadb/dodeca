@@ -4,6 +4,7 @@ import java.nio.ByteBuffer
 import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import org.apache.ratis.proto.RaftProtos.RaftConfigurationProto
@@ -255,7 +256,12 @@ internal class GroupStateMachine(
             if (snapshotRequested || candidate !== attached) return
             snapshotRequested = true
         }
-        attached.onSnapshotNeeded(leader, minimumIndex)
+        try {
+            attached.onSnapshotNeeded(leader, minimumIndex)
+        } catch (e: Exception) {
+            stateLock.withLock { snapshotRequested = false }
+            throw e
+        }
     }
 
     /**
@@ -344,15 +350,40 @@ internal class GroupStateMachine(
      * The returned future completes when [install] records a copy of the state; until then Ratis
      * reports the installation as in progress. A member being added is asked even if the leader's
      * log continues its own; it then needs no copy and the future completes at once, empty.
+     *
+     * Never throws: Ratis would then report the installation as in progress for good. A failure
+     * fails the returned future instead, after [RETRY_DELAY_MILLIS], and the leader asks again.
      */
     override fun notifyInstallSnapshotFromLeader(
         roleInfoProto: RoleInfoProto,
         firstTermIndexInLog: TermIndex,
     ): CompletableFuture<TermIndex> {
-        val leader = leaderOf(roleInfoProto)
-        val minimumIndex = firstTermIndexInLog.index - 1
+        val pending =
+            PendingInstall(
+                CompletableFuture(),
+                leaderOf(roleInfoProto),
+                firstTermIndexInLog.index - 1,
+            )
+        return try {
+            awaitCopy(pending, firstTermIndexInLog)
+        } catch (e: Exception) {
+            stateLock.withLock { if (pendingInstall === pending) pendingInstall = null }
+            log.error("Preparing a copy of {} failed; the leader will ask again", database, e)
+            // Ratis expects the future to complete after this returns.
+            CompletableFuture<TermIndex>().also {
+                CompletableFuture.delayedExecutor(RETRY_DELAY_MILLIS, TimeUnit.MILLISECONDS)
+                    .execute { it.completeExceptionally(e) }
+            }
+        }
+    }
+
+    /** Returns the future of [pending], or a completed one if this member needs no copy. */
+    private fun awaitCopy(
+        pending: PendingInstall,
+        firstTermIndexInLog: TermIndex,
+    ): CompletableFuture<TermIndex> {
         val logEnd = localLogEnd()
-        if (logEnd >= minimumIndex) {
+        if (logEnd >= pending.minimumIndex) {
             log.info(
                 "{} needs no copy: the leader's log, which starts at {}, continues this member's, " +
                     "which ends at {}",
@@ -366,14 +397,13 @@ internal class GroupStateMachine(
             "{} is behind the leader's log, which starts at {}; it needs a copy from {}",
             database,
             firstTermIndexInLog,
-            leader ?: "another member",
+            pending.leader ?: "another member",
         )
-        val pending = PendingInstall(CompletableFuture(), leader, minimumIndex)
         val attached = stateLock.withLock {
             pendingInstall = pending
             target
         }
-        attached?.let { requestSnapshot(it, leader, minimumIndex) }
+        attached?.let { requestSnapshot(it, pending.leader, pending.minimumIndex) }
         return pending.future
     }
 
@@ -631,6 +661,8 @@ internal class GroupStateMachine(
     override fun toString(): String = "GroupStateMachine($database)"
 
     companion object {
+        const val RETRY_DELAY_MILLIS = 1000L
+
         fun termIndex(snapshot: Snapshot): TermIndex =
             TermIndex.valueOf(snapshot.position.term, snapshot.position.index)
 

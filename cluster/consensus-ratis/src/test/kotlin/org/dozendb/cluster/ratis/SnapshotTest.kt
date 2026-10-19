@@ -3,6 +3,8 @@ package org.dozendb.cluster.ratis
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -13,6 +15,7 @@ import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.LogPosition
+import org.dozendb.cluster.api.ReplicatedStateMachine
 import org.dozendb.cluster.api.Snapshot
 import org.dozendb.cluster.api.fake.RecordingStateMachine
 import org.junit.jupiter.api.AfterEach
@@ -242,6 +245,54 @@ class SnapshotTest {
             assertThat(added.consensus.latestSnapshot(cluster.database)?.position?.index)
                 .isGreaterThanOrEqualTo(snapshot.position.index)
         }
+
+    @Test
+    fun `a member that fails to install its copy is asked again`() =
+        runBlocking<Unit> {
+            val cluster = formCluster(size = 4, initial = 3)
+            val leader = cluster.awaitLeader()
+            cluster.discardLogBeyond(leader, leader.write("before"))
+            val added = cluster.nodes.last().apply { start() }
+            val snapshot = checkNotNull(leader.consensus.currentSnapshot(cluster.database))
+            added.machine.replaceWith(leader.machine)
+            added.consensus.seed(cluster.database, snapshot)
+            val failing = FailingOnce(added.machine)
+            added.consensus.startGroup(
+                cluster.database,
+                failing,
+                cluster.nodes.take(3).map { it.consensus.self },
+            )
+            // The next read of its state, when the copy is installed, fails.
+            failing.armed.set(true)
+
+            leader.consensus.addMember(cluster.database, added.consensus.self, CHANGE_TIMEOUT)
+            leader.write("after")
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(added.machine.payloads())
+                        .isEqualTo(leader.machine.payloads())
+                        .endsWith("after")
+                }
+            assertThat(failing.failures.get()).isEqualTo(1)
+            assertThat(added.machine.snapshotRequests).isEmpty()
+        }
+
+    /** Delegates to [machine], except that [lastAppliedIndex] fails once after [armed] is set. */
+    private class FailingOnce(private val machine: RecordingStateMachine) :
+        ReplicatedStateMachine by machine {
+        val armed = AtomicBoolean()
+        val failures = AtomicInteger()
+
+        override fun lastAppliedIndex(): Long {
+            if (armed.compareAndSet(true, false)) {
+                failures.incrementAndGet()
+                throw IllegalStateException("the database is stopping")
+            }
+            return machine.lastAppliedIndex()
+        }
+    }
 
     @Test
     fun `snapshots are installed only into detached members behind the leader's log`() =
