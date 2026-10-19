@@ -101,6 +101,11 @@ What clustering does not do yet.
   new cluster starts from the databases of at most one member, or of the member
   with the lowest id if none has any; the others copy them during formation.
   Members with databases of their own refuse to form a cluster together.
+- **Members.** Members are added with `dozendb.cluster.addMember` and removed
+  with `dozendb.cluster.removeMember`, one at a time; every database's Raft
+  group follows. See `OPERATOR_GUIDE.md`. A removed member cannot rejoin with
+  its data: its data directory must be deleted first. A database that is
+  offline while a member is added gets the member once it is started again.
 - **ID reuse.** IDs freed while a member is a follower are reused only after a
   restart, as in Neo4j's own clustering.
 - **Durability (single fsync).** A commit to a replicated database is
@@ -137,7 +142,9 @@ What clustering does not do yet.
   (for example after deleting `data/databases/neo4j` and
   `data/transactions/neo4j`) copies it from another member and keeps its own
   `system` database. Never delete the Raft directory (`data/raft`) of a member
-  that keeps its identity (`data/server_id`): Raft would forget its votes.
+  that keeps its identity (`data/server_id`): Raft would forget its votes. To
+  rebuild a member from nothing, remove it from the cluster, delete its whole
+  data directory, and add it again as a new member.
 - **Stopped databases.** A member whose replicated database stops, for example
   after a panic, keeps taking part in the database's Raft group but no longer
   applies entries, and hands leadership to another member.
