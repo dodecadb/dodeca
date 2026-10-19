@@ -156,7 +156,8 @@ class RatisConsensusLogTest {
                 RatisTestCluster.AWAIT untilAsserted
                 {
                     cluster.nodes.forEach {
-                        assertThat(it.machine.entries().single().payload).hasSize(max)
+                        assertThat(it.machine.entries().map { entry -> entry.payload.size })
+                            .containsExactly(max)
                     }
                 }
             assertThatThrownBy {
