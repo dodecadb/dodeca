@@ -76,6 +76,34 @@ class SystemReplicationTest {
     }
 
     @Test
+    fun `a user altered on the system leader changes on every member`() {
+        val cluster = cluster()
+        cluster.administer("CREATE USER dave SET PASSWORD 'dave-secret' CHANGE NOT REQUIRED")
+
+        cluster.administer("ALTER USER dave SET PASSWORD 'dave-changed' CHANGE REQUIRED")
+
+        await withPollInterval
+            Duration.ofMillis(200) atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                for (member in cluster.running()) {
+                    assertThat(member.passwordChangeRequired("dave"))
+                        .describedAs("$member")
+                        .isTrue()
+                }
+            }
+    }
+
+    private fun ClusterHarness.Member.passwordChangeRequired(user: String): Boolean =
+        database(SYSTEM).executeTransactionally(
+            "SHOW USERS YIELD user, passwordChangeRequired WHERE user = \$user " +
+                "RETURN passwordChangeRequired",
+            mapOf("user" to user),
+        ) {
+            it.next()["passwordChangeRequired"] as Boolean
+        }
+
+    @Test
     fun `followers refuse administration commands`() {
         val cluster = cluster()
         val leader = cluster.awaitLeader(SYSTEM)

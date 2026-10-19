@@ -36,6 +36,7 @@ import org.neo4j.dbms.database.DefaultSystemGraphInitializer
 import org.neo4j.dbms.database.MultiDatabaseLifecycleService
 import org.neo4j.dbms.database.MultiDatabaseManager
 import org.neo4j.dbms.database.StandaloneDatabaseContext
+import org.neo4j.dbms.database.SystemGraphComponent
 import org.neo4j.dbms.database.SystemGraphComponents
 import org.neo4j.dbms.database.SystemGraphInitializer
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
@@ -65,6 +66,7 @@ import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
+import org.neo4j.server.security.systemgraph.UserSecurityGraphComponent
 
 /**
  * DozerDB's edition module with clustering added. Only used when clustering is enabled.
@@ -388,6 +390,30 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
 
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
         globalModule.globalLife.add(clusterDefaultDatabaseInitializer)
+    }
+
+    /**
+     * DozerDB's system graph components, with its user security component also offered as a
+     * dependency: DozerDB's `ALTER USER` resolves it from there, but DozerDB never puts it there,
+     * so `ALTER USER` fails in DozerDB itself.
+     */
+    override fun registerSystemGraphComponents(
+        systemGraphComponentsBuilder: SystemGraphComponents.Builder,
+        globalModule: GlobalModule,
+    ) {
+        super.registerSystemGraphComponents(
+            object : SystemGraphComponents.Builder() {
+                override fun register(component: SystemGraphComponent) {
+                    systemGraphComponentsBuilder.register(component)
+                    if (component is UserSecurityGraphComponent) {
+                        globalModule.globalDependencies.satisfyDependency(component)
+                    }
+                }
+
+                override fun build(): SystemGraphComponents = systemGraphComponentsBuilder.build()
+            },
+            globalModule,
+        )
     }
 
     /** Stops and starts databases through DozerDB's database manager. */

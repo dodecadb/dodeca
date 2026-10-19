@@ -42,6 +42,12 @@ builds the public source, so it differs from the release in these ways:
   verify existing data, and property type, key, label existence and
   relationship endpoint label constraints are not enforced. The release
   enforces those.
+- **`ALTER USER` with clustering enabled.** DozerDB, the release as well as
+  the public source, fails every `ALTER USER` with an
+  `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`: its
+  administration runtime resolves that component, but its edition module never
+  registers it as a dependency. With clustering enabled DozenDB registers it,
+  so `ALTER USER` works; with clustering disabled it fails as in DozerDB.
 - **Multi-database housekeeping.** The release contains small refactors of
   `MultiDatabaseManager`, `MultiDatabaseLifecycleService` and
   `SystemGraphTransactionEventListenerAdapter`. One of them changes behaviour:

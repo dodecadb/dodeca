@@ -2,6 +2,7 @@ package org.dozendb.cluster.it
 
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -20,6 +21,7 @@ import org.neo4j.driver.Config
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
+import org.neo4j.driver.exceptions.AuthenticationException
 import org.neo4j.driver.net.ServerAddress
 import org.testcontainers.containers.Network
 import org.testcontainers.lifecycle.Startables
@@ -169,23 +171,37 @@ class MultiDatabaseIT {
         }
     }
 
+    /** Waits until [user] logs in with [password] on every member. */
+    private fun awaitLoginEverywhere(user: String, password: String) {
+        for (port in boltPorts) {
+            GraphDatabase.driver("bolt://127.0.0.1:$port", AuthTokens.basic(user, password)).use {
+                eventually {
+                    it.session().use { session ->
+                        assertThat(session.run("RETURN 1 AS one").single()["one"].asInt())
+                            .isEqualTo(1)
+                    }
+                }
+            }
+        }
+    }
+
     @Test
     @Order(4)
-    fun `a user created through a routing driver logs in on every member`() {
+    fun `a user created and altered through a routing driver logs in on every member`() {
         administer("CREATE USER alice SET PASSWORD 'alice-secret' CHANGE NOT REQUIRED")
+        awaitLoginEverywhere("alice", "alice-secret")
 
+        administer("ALTER USER alice SET PASSWORD 'alice-changed' CHANGE NOT REQUIRED")
+
+        awaitLoginEverywhere("alice", "alice-changed")
         for (port in boltPorts) {
             GraphDatabase.driver(
                     "bolt://127.0.0.1:$port",
                     AuthTokens.basic("alice", "alice-secret"),
                 )
-                .use { alice ->
-                    eventually {
-                        alice.session().use { session ->
-                            assertThat(session.run("RETURN 1 AS one").single()["one"].asInt())
-                                .isEqualTo(1)
-                        }
-                    }
+                .use {
+                    assertThatThrownBy { it.verifyConnectivity() }
+                        .isInstanceOf(AuthenticationException::class.java)
                 }
         }
     }
