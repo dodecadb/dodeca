@@ -68,7 +68,7 @@ class CatchUpIT {
         running: List<DozerDbContainer>,
         database: String = "neo4j",
     ): DozerDbContainer =
-        await withPollInterval
+        await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
             {

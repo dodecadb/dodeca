@@ -89,7 +89,7 @@ class RatisTestCluster(
      * leader.
      */
     fun awaitLeader(): Node =
-        await withPollInterval
+        await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(50) atMost
             AWAIT untilNotNull
             {
@@ -103,6 +103,15 @@ class RatisTestCluster(
                         node(it).running && node(it).consensus.role(database) == Role.Leader
                     }
                     ?.let(::node)
+            }
+
+    /** Waits until a node other than [previous] leads, as [awaitLeader] sees it. */
+    fun awaitLeaderOtherThan(previous: Node): Node =
+        await.pollDelay(Duration.ZERO) withPollInterval
+            Duration.ofMillis(50) atMost
+            AWAIT untilNotNull
+            {
+                awaitLeader().takeIf { it != previous }
             }
 
     override fun close() {

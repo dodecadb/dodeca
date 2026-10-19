@@ -80,7 +80,7 @@ class FsyncBenchmarkIT {
     private fun seconds(since: Long): Double = (System.nanoTime() - since) / 1e9
 
     private fun awaitLeader(members: List<DozerDbContainer>): DozerDbContainer =
-        await withPollInterval
+        await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(60) untilNotNull
             {

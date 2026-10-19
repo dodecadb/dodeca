@@ -157,7 +157,7 @@ internal class ClusterHarness(
 
     /** Waits until every running member agrees on a leader of [name] that can take writes. */
     fun awaitLeader(name: String = DEFAULT_DATABASE): Member =
-        await withPollInterval
+        await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(100) atMost
             AWAIT untilNotNull
             {

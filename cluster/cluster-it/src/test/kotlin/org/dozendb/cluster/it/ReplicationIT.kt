@@ -55,7 +55,7 @@ class ReplicationIT {
         }
 
     private fun awaitLeader(): DozerDbContainer =
-        await withPollInterval
+        await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
             {

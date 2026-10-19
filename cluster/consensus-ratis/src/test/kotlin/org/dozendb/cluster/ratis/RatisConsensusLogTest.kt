@@ -440,8 +440,8 @@ class RatisConsensusLogTest {
 
             leader.consensus.detachGroup(cluster.database)
 
-            val newLeader = cluster.awaitLeader()
-            assertThat(newLeader).isNotEqualTo(leader)
+            // Leadership is handed over asynchronously.
+            val newLeader = cluster.awaitLeaderOtherThan(leader)
             assertThat(newLeader.write("two")).isInstanceOf(CommitResult.Committed::class.java)
             leader.consensus.startGroup(cluster.database, leader.machine, emptyList())
             await atMost
