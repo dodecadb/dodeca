@@ -3,6 +3,7 @@ package org.dozendb.cluster.core.internal
 import java.nio.file.Path
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -111,6 +112,20 @@ class MultiDatabaseTest {
                     .isFalse()
             }
         }
+    }
+
+    @Test
+    fun `the default database cannot be dropped, so that members can restart`() {
+        val cluster = ClusterHarness(root, 1).also { harness = it }
+        cluster.start()
+        val member = cluster.members.single()
+
+        assertThat(catchThrowable { cluster.administer("DROP DATABASE $DEFAULT") })
+            .hasMessage("Not allowed to delete the default database '$DEFAULT'.")
+        member.stop()
+        member.start()
+
+        assertThat(member.registered(DEFAULT)?.isStarted).isTrue()
     }
 
     @Test
@@ -230,6 +245,7 @@ class MultiDatabaseTest {
 
     private companion object {
         const val SYSTEM = "system"
+        const val DEFAULT = "neo4j"
         const val FILMS = "films"
         const val SERIES = "series"
     }

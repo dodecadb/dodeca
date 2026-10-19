@@ -47,6 +47,9 @@ difference.
   `DROP DATABASE ... DUMP DATA` and `WAIT` fail instead of being ignored or
   failing with an internal error; and `dbms.max_databases` counts every
   database including `system`, where DozerDB allows one fewer.
+- **The default database** cannot be dropped or replaced. DozerDB removes it
+  from the system graph but keeps it running, until a restart adds it back;
+  with clustering, a member could then no longer start.
 - **Databases follow the system graph only after a command commits**, every
   database a transaction changes. DozerDB drops a database before the command
   commits, so a command that then fails has still dropped it. A database that
@@ -72,10 +75,9 @@ What clustering does not do yet.
   a member that lacks a stopped database gets it once it is started again. If
   the creating member fails before it created the store, the others wait until
   it returns.
-- **Default database.** With clustering enabled or disabled, `CREATE DATABASE`
-  and `DROP DATABASE` neither create nor drop the default database
-  (`initial_default_database`); `STOP DATABASE` and `START DATABASE` apply to
-  it.
+- **Default database.** The default database (`initial_default_database`)
+  exists from the first start on and cannot be dropped or replaced;
+  `STOP DATABASE` and `START DATABASE` apply to it.
 - **Writes go to the leader.** A follower rejects writes with
   `Neo.ClientError.Cluster.NotALeader`. Drivers that route (`neo4j://`) get
   routing tables with the leader as writer and retry managed transactions on

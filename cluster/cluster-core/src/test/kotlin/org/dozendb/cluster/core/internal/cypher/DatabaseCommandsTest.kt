@@ -127,14 +127,13 @@ class DatabaseCommandsTest {
     }
 
     @Test
-    fun `marks a recreated default database as the default`() {
+    fun `refuses to drop or replace the default database`() {
         val server = start()
-        server.administer("DROP DATABASE neo4j")
-        server.administer("CREATE DATABASE neo4j")
 
-        assertThat(
-                server.rows("SHOW DEFAULT DATABASE YIELD name", StandaloneServer.SYSTEM).single()
-            )
-            .containsEntry("name", "neo4j")
+        assertThat(server.failure("DROP DATABASE neo4j"))
+            .hasMessage("Not allowed to delete the default database 'neo4j'.")
+        assertThat(server.failure("CREATE OR REPLACE DATABASE neo4j"))
+            .hasMessage("Not allowed to delete the default database 'neo4j'.")
+        assertThat(server.names()).contains("neo4j")
     }
 }

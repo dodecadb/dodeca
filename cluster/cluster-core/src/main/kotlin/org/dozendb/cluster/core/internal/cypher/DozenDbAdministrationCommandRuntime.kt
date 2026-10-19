@@ -9,9 +9,9 @@
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbAdministrationCommandRuntime (Scala), now a
  * subclass of Neo4j's CommunityAdministrationCommandRuntime that adds only the database commands.
  * Fixed parameterised and dotted database names, privilege checks that DROP DATABASE skipped, START
- * and STOP of a missing database succeeding, CREATE OR REPLACE of a missing database failing, the
- * default flag of a recreated default database, and the database limit counting one short.
- * Composite databases, DUMP DATA and WAIT are rejected instead of ignored or failing internally.
+ * and STOP of a missing database succeeding, CREATE OR REPLACE of a missing database failing, and
+ * the database limit counting one short. Composite databases, DUMP DATA and WAIT are rejected
+ * instead of ignored or failing internally, and so is dropping the default database.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -226,7 +226,7 @@ private class DatabaseCommands(
                 displayName: $key, name: $key, namespace: ${'$'}namespace, primary: true})
             SET database.access = 'READ_WRITE',
                 database.created_at = datetime(),
-                database.default = ($key = ${'$'}defaultDatabase),
+                database.default = false,
                 database.name = $key,
                 database.status = ${'$'}status,
                 database.uuid = randomUUID()
@@ -234,11 +234,10 @@ private class DatabaseCommands(
             """
                 .trimIndent(),
             VirtualValues.map(
-                arrayOf(name.nameKey(), "namespace", "defaultDatabase", "status"),
+                arrayOf(name.nameKey(), "namespace", "status"),
                 arrayOf(
                     name.nameValue(),
                     Values.utf8Value(TopologyGraphDbmsModel.DEFAULT_NAMESPACE),
-                    Values.utf8Value(config.get(GraphDatabaseSettings.initial_default_database)),
                     Values.utf8Value(DatabaseStatus.ONLINE.statusName()),
                 ),
             ),
@@ -299,18 +298,36 @@ private class DatabaseCommands(
             compile(plan.source(), context),
         )
 
+    /**
+     * Refuses the default database: it is created at startup, but only on the member that founds a
+     * cluster, so dropping it would keep every other member from starting.
+     */
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for this.
     private fun dropDatabase(
         plan: DropDatabase,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
-        val source = compile(plan.source(), context)
         val databaseName = plan.databaseName()
         if (plan.additionalAction() == `DumpData$`.`MODULE$`) {
-            return failure(source) {
+            return failure(compile(plan.source(), context)) {
                 "Failed to delete the specified database '${show(databaseName, it)}': " +
                     "DUMP DATA is not supported."
             }
         }
+        val defaultDatabase = config.get(GraphDatabaseSettings.initial_default_database)
+        val source =
+            PredicateExecutionPlan.apply(
+                Function2 { params, _ ->
+                    NormalizedDatabaseName(show(databaseName, params)).name() != defaultDatabase
+                },
+                Option.apply(compile(plan.source(), context)),
+                Function3 { params, _, _ ->
+                    InvalidArgumentException(
+                        "Not allowed to delete the default database " +
+                            "'${show(databaseName, params)}'."
+                    )
+                },
+            )
         val name = admin.getDatabaseNameFields("databaseName", databaseName)
         val key = parameter(name.displayNameKey())
         return updating(
