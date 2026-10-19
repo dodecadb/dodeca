@@ -745,6 +745,11 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         // Durability: an entry is acknowledged only after it is flushed on a majority.
         RaftServerConfigKeys.Log.setUnsafeFlushEnabled(properties, false)
         RaftServerConfigKeys.Log.setAsyncFlushEnabled(properties, false)
+        // A follower composing appends keys those in flight by their first index: a longer request
+        // with the same first index, as a leader resends after a reset, is acknowledged without
+        // appending the entries beyond the earlier one. The leader then counts them as replicated
+        // and never sends them again (Ratis 3.3.1).
+        RaftServerConfigKeys.Log.setAppendEntriesComposeEnabled(properties, false)
         // After each commit the leader appends an entry recording the commit index. It doubles the
         // entries of sequential commits, but it is how followers learn of a commit at once: without
         // it they apply only with the next heartbeat, half the minimum election timeout later.
