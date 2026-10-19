@@ -12,6 +12,7 @@ import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
+import org.awaitility.kotlin.until
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.junit.jupiter.api.AfterEach
@@ -183,23 +184,29 @@ class SystemCatchUpTest {
     }
 
     @Test
-    fun `a member that learns it is behind before system starts copies it while it starts`() {
+    fun `a member that learns it is behind while it starts copies system while it starts`() {
         val cluster = cluster()
         val leader = cluster.awaitLeader(SYSTEM)
         val behind = cluster.members.first { it != leader }
         behind.stop()
         cluster.discardSystemLogPast(checkNotNull(leader.status(SYSTEM)).commitIndex)
         val held = AtomicBoolean()
-        // Holds the first start of system for many heartbeats, so that the leader's snapshot
-        // notice arrives before system attaches and its copy replaces system while the DBMS starts.
+        // Holds the first start of the default database, which follows the start of system, until
+        // the leader's snapshot notice made system catch up, so that its copy replaces system
+        // while the DBMS starts. A Raft group hears from the leader only once its database runs,
+        // and the leader retries a member that was down only every few seconds.
         behind.databaseEventListeners =
             listOf(
                 object : DatabaseEventListenerAdapter() {
                     override fun databaseStart(eventContext: DatabaseEventContext) {
                         if (
-                            eventContext.databaseName == SYSTEM && held.compareAndSet(false, true)
+                            eventContext.databaseName == DEFAULT && held.compareAndSet(false, true)
                         ) {
-                            Thread.sleep(5_000)
+                            await atMost
+                                Duration.ofMinutes(1) until
+                                {
+                                    behind.debugLog().any { CATCH_UP_NOTICE in it }
+                                }
                         }
                     }
                 }
@@ -208,7 +215,7 @@ class SystemCatchUpTest {
         behind.start()
         val started = Instant.now()
 
-        val catchUp = behind.debugLog().first { "Database system needs Raft entries" in it }
+        val catchUp = behind.debugLog().first { CATCH_UP_NOTICE in it }
         assertThat(timeOf(catchUp)).describedAs("catch-up began while starting").isBefore(started)
         cluster.awaitSameEverywhere(SYSTEM)
         assertThat(behind.database().isAvailable(0)).isTrue()
@@ -263,6 +270,7 @@ class SystemCatchUpTest {
     private companion object {
         const val SYSTEM = "system"
         const val DEFAULT = "neo4j"
+        const val CATCH_UP_NOTICE = "Database system needs Raft entries"
         val SYSTEM_GROUP: UUID = NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid()
         val LOG_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSXX")
     }
