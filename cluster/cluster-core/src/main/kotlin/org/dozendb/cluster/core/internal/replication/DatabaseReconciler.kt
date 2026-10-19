@@ -70,6 +70,9 @@ internal interface LocalDatabases {
     /** Stops [id], which stops on every member at once: leadership is not handed over. */
     fun stop(id: NamedDatabaseId)
 
+    /** Stops [id] on this member only, which leaves the cluster: leadership is handed over. */
+    fun leave(id: NamedDatabaseId)
+
     /** Stops [id] and deletes its store and its Raft group. */
     fun drop(id: NamedDatabaseId)
 
@@ -110,6 +113,8 @@ internal interface LocalDatabases {
  * The default database is created at startup, and like without clustering the reconciler never
  * creates or drops it; it starts and stops it like any other.
  *
+ * A member removed from the cluster stops its databases, `system` aside, and changes nothing else.
+ *
  * A database whose store is being replaced by catch-up is left alone. Work that cannot be done yet,
  * such as a copy whose creator has not created the store, is tried again after [retryDelay], and
  * after twice as long each time it still cannot be done, up to [maximumRetryDelay].
@@ -117,6 +122,7 @@ internal interface LocalDatabases {
  * @property sources the addresses of the members to copy a new database from, its creator first.
  * @property systemMembers the members of the `system` group, or null while a change of them is not
  *   settled.
+ * @property removed whether this member was removed from the cluster.
  */
 internal class DatabaseReconciler(
     private val systemGraph: SystemGraph,
@@ -125,6 +131,7 @@ internal class DatabaseReconciler(
     private val defaultDatabase: String,
     private val sources: (creator: MemberId) -> List<HostPort>,
     private val systemMembers: () -> List<Member>?,
+    private val removed: () -> Boolean,
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
@@ -184,6 +191,14 @@ internal class DatabaseReconciler(
 
     /** Reconciles once, on the calling thread; returns whether some work has to be tried again. */
     fun reconcile(): Boolean {
+        if (removed()) {
+            for ((id, state) in databases.registered()) {
+                if (id.isSystemDatabase || !state.started) continue
+                log.info("Stopping database %s: this member was removed from the cluster", id)
+                databases.leave(id)
+            }
+            return false
+        }
         var desired = systemGraph.databases()
         var again = false
         if (deletions(desired).isNotEmpty()) {

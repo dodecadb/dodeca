@@ -8,6 +8,7 @@ import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Member
+import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.PeerInfo
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.Snapshot
@@ -38,7 +39,9 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
  * The members of the `system` group are the members of the cluster. A member that starts without
  * Raft state and finds the cluster formed without it joins it: it copies the databases it needs to
  * start, runs the `system` group without voting in it, and waits until a member of the cluster adds
- * it with [addMember].
+ * it with [addMember]. A member removed with [removeMember] stops its databases and takes no part
+ * in the cluster any more; to be added again it needs its data directory deleted, after which it
+ * joins as a new member.
  *
  * @property metadata what this member reports when probed, compared with a member being added.
  * @property replicatedDatabases the replicated databases running on this member.
@@ -69,6 +72,9 @@ class ClusterService(
     /** This member's place in the cluster. */
     val state: MemberState
         get() = record?.state ?: MemberState.JOINING
+
+    /** Runs once this member learns that it was removed from the cluster, on an internal thread. */
+    @Volatile var onRemoved: () -> Unit = {}
 
     /**
      * Starts consensus and blocks until this member takes part in the `system` group, with the
@@ -111,6 +117,7 @@ class ClusterService(
         // bootstrap members leave it out: it votes once it is added.
         consensus.joinGroup(systemDatabase, joined?.members ?: emptyList())
         followMembership()
+        if (state == MemberState.REMOVED) userLog.error(REMOVED_MESSAGE)
         if (state == MemberState.JOINING) {
             userLog.info(
                 "This member is not part of the cluster yet. To add it, run " +
@@ -121,7 +128,10 @@ class ClusterService(
         directory?.start()
     }
 
-    /** Records that this member became a voting member, once the change of members settled. */
+    /**
+     * Records that this member became a voting member, once the change of members settled, and that
+     * it was removed: Ratis stopped its group, or the settled members leave it out.
+     */
     @Synchronized
     private fun followMembership() {
         val membership =
@@ -138,6 +148,13 @@ class ClusterService(
                 "This member is now one of the cluster's members; it joins the group of each " +
                     "database once it has copied it"
             )
+        }
+        if (
+            state == MemberState.MEMBER && (membership.removed || (membership.settled && !included))
+        ) {
+            remember(MembershipRecord(MemberState.REMOVED, record?.formation.orEmpty()))
+            userLog.error(REMOVED_MESSAGE)
+            onRemoved()
         }
     }
 
@@ -183,6 +200,9 @@ class ClusterService(
     /** The local status of every group this member runs. */
     fun status(): List<GroupStatus> =
         (listOf(systemDatabase) + replicatedDatabases()).distinct().map(consensus::status)
+
+    /** The voting members of the group of [database], as this member knows them. */
+    fun groupMembers(database: DatabaseRef): List<Member> = consensus.members(database)
 
     /** The latest snapshot of [database] on this member: its log may lack entries up to it. */
     fun latestSnapshot(database: DatabaseRef): Snapshot? = consensus.latestSnapshot(database)
@@ -246,6 +266,34 @@ class ClusterService(
         return candidate
     }
 
+    /**
+     * Removes the member [id] from the cluster: from the `system` group, which it then stops
+     * running. Returns once the change is committed; the group of each database follows, and the
+     * removed member stops its databases.
+     *
+     * @throws MembershipChangeException if [id] is not a member, is the only one, or the change
+     *   failed.
+     */
+    fun removeMember(id: MemberId) {
+        requireMember()
+        val members = consensus.members(systemDatabase)
+        val member =
+            members.firstOrNull { it.id == id }
+                ?: throw MembershipChangeException("$id is not a member of the cluster.")
+        if (members.size == 1) {
+            throw MembershipChangeException(
+                "$member is the only member of the cluster and cannot be removed."
+            )
+        }
+        userLog.info("Removing member %s from the cluster", member)
+        try {
+            runBlocking { consensus.removeMember(systemDatabase, id, CHANGE_TIMEOUT) }
+        } catch (e: ConsensusUnavailableException) {
+            throw MembershipChangeException("Removing member $member failed: ${e.message}", e)
+        }
+        userLog.info("Removed member %s from the cluster", member)
+    }
+
     private fun requireMember() {
         if (state != MemberState.MEMBER) {
             throw MembershipChangeException(
@@ -291,6 +339,11 @@ class ClusterService(
     private companion object {
         /** How long a change of members may take: bringing a new member up to date included. */
         val CHANGE_TIMEOUT: Duration = Duration.ofMinutes(10)
+
+        const val REMOVED_MESSAGE =
+            "This member was removed from the cluster: it takes no part in it any more and its " +
+                "databases are stopped. Shut it down. To add it again, delete its data directory " +
+                "first, then start it: it joins as a new member."
     }
 
     private class RoleChangeLogger(private val log: Log) : (GroupStatus) -> Unit {

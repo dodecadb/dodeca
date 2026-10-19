@@ -22,6 +22,7 @@ class DatabaseReconcilerTest {
         listOf(Member(self, HostPort("self", 7000)), Member(creator, creatorAddress))
     /** The settled members of the system group, null while they change. */
     private var systemMembers: List<Member>? = members
+    private var removed = false
     private val reconciler =
         DatabaseReconciler(
             graph,
@@ -32,6 +33,7 @@ class DatabaseReconcilerTest {
                 listOf(if (it == creator) creatorAddress else otherAddress, otherAddress).distinct()
             },
             { systemMembers },
+            { removed },
             NullLog.getInstance(),
         )
 
@@ -61,6 +63,23 @@ class DatabaseReconcilerTest {
         assertThat(reconciler.reconcile()).isFalse()
         assertThat(local.registered).containsEntry(films, LocalDatabase(true, false))
         assertThat(local.copies).isEmpty()
+    }
+
+    @Test
+    fun `a member removed from the cluster stops its databases and creates none`() {
+        local.add(films, started = true)
+        local.add(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID, started = true)
+        graph.leading = true
+        graph.databases = listOf(desired(films), desired(database("series")))
+        removed = true
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.left).containsExactly(films)
+        assertThat(local.registered)
+            .containsEntry(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID, LocalDatabase(true, false))
+            .hasSize(2)
+        assertThat(graph.named).isEmpty()
     }
 
     @Test
@@ -319,6 +338,7 @@ class DatabaseReconcilerTest {
      */
     private class FakeLocalDatabases : LocalDatabases {
         val registered = mutableMapOf<NamedDatabaseId, LocalDatabase>()
+        val left = mutableListOf<NamedDatabaseId>()
         /** Database files by name; true if complete. */
         val stored = mutableMapOf<String, Boolean>()
         val groups = mutableSetOf<UUID>()
@@ -359,6 +379,11 @@ class DatabaseReconcilerTest {
 
         override fun stop(id: NamedDatabaseId) {
             registered[id] = LocalDatabase(started = false, failed = false)
+        }
+
+        override fun leave(id: NamedDatabaseId) {
+            registered[id] = LocalDatabase(started = false, failed = false)
+            left += id
         }
 
         override fun drop(id: NamedDatabaseId) {

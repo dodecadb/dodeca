@@ -46,6 +46,11 @@ internal class Neo4jLocalDatabases(
         manager.stopDatabase(id)
     }
 
+    override fun leave(id: NamedDatabaseId) {
+        replication.replica(id)?.handOverOnStop = true
+        manager.stopDatabase(id)
+    }
+
     override fun drop(id: NamedDatabaseId) {
         replication.replica(id)?.handOverOnStop = false
         manager.dropDatabase(id)

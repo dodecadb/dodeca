@@ -3,10 +3,12 @@ package org.dozendb.cluster.core.internal
 import java.nio.file.Path
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.MemberState
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -156,6 +158,105 @@ class MembershipTest {
             .describedAs("no database copied twice")
             .content()
             .doesNotContain("needs Raft entries")
+    }
+
+    /** The ids of the members voting in the group of [name], as this member knows them. */
+    private fun ClusterHarness.Member.groupMembers(name: String): List<MemberId> {
+        val database = cluster.status().first { it.database.name == name }.database
+        return cluster.groupMembers(database).map { it.id }
+    }
+
+    private val ClusterHarness.Member.id: MemberId
+        get() = cluster.self.id
+
+    /** Waits until every group of [members] lists exactly them, as each of them knows it. */
+    private fun awaitGroups(members: List<ClusterHarness.Member>, vararg names: String) {
+        eventually {
+            for (member in members) {
+                for (name in names) {
+                    assertThat(member.groupMembers(name))
+                        .describedAs("members of $name seen by $member")
+                        .containsExactlyInAnyOrderElementsOf(members.map { it.id })
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a removed member leaves every group, stops its databases and cannot be added again`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films")
+        eventually {
+            for (member in cluster.members) assertThat(member.count("films")).isEqualTo(0)
+        }
+        val removed = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        val remaining = cluster.members - removed
+
+        cluster.administer("CALL dozendb.cluster.removeMember('${removed.id}')")
+
+        awaitGroups(remaining, SYSTEM, DEFAULT, "films")
+        eventually {
+            assertThat(removed.cluster.state).isEqualTo(MemberState.REMOVED)
+            for (name in listOf(DEFAULT, "films")) {
+                assertThat(removed.database(name).isAvailable(0)).describedAs(name).isFalse()
+            }
+        }
+        cluster
+            .awaitLeader("films", among = { remaining })
+            .database("films")
+            .executeTransactionally("CREATE (:Film {title: 'Alien'})")
+        assertThatThrownBy {
+                cluster.administer(
+                    "CALL dozendb.cluster.addMember('127.0.0.1:${removed.raftPort}')",
+                    among = { remaining },
+                )
+            }
+            .hasMessageContaining("was removed from the cluster")
+    }
+
+    @Test
+    fun `the system leader removes itself and the others carry on`() {
+        val cluster = cluster()
+        val leader = cluster.awaitLeader(SYSTEM)
+        val remaining = cluster.members - leader
+
+        leader
+            .database(SYSTEM)
+            .executeTransactionally("CALL dozendb.cluster.removeMember('${leader.id}')")
+
+        awaitGroups(remaining, SYSTEM, DEFAULT)
+        eventually { assertThat(leader.cluster.state).isEqualTo(MemberState.REMOVED) }
+        cluster
+            .awaitLeader(DEFAULT, among = { remaining })
+            .database(DEFAULT)
+            .executeTransactionally("CREATE (:Marker)")
+    }
+
+    @Test
+    fun `a stopped member is replaced, and learns it was removed when it starts again`() {
+        val cluster = cluster()
+        val stopped = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        val stoppedId = stopped.id
+        stopped.stop()
+        val remaining = cluster.members - stopped
+
+        cluster.administer(
+            "CALL dozendb.cluster.removeMember('$stoppedId')",
+            among = { remaining },
+        )
+        val replacement = cluster.newMember().apply { start() }
+        cluster.administer(
+            "CALL dozendb.cluster.addMember('127.0.0.1:${replacement.raftPort}')",
+            among = { remaining },
+        )
+
+        awaitGroups(remaining + replacement, SYSTEM, DEFAULT)
+        stopped.start()
+        eventually {
+            assertThat(stopped.cluster.state).isEqualTo(MemberState.REMOVED)
+            assertThat(stopped.database(DEFAULT).isAvailable(0)).isFalse()
+        }
+        awaitGroups(remaining + replacement, SYSTEM, DEFAULT)
     }
 
     @Test

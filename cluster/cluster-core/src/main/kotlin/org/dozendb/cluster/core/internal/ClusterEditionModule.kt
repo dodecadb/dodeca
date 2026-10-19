@@ -9,6 +9,7 @@ import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
+import org.dozendb.cluster.core.MemberState
 import org.dozendb.cluster.core.MembershipFile
 import org.dozendb.cluster.core.MembershipReconciler
 import org.dozendb.cluster.core.internal.durability.FsyncPolicy
@@ -252,8 +253,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 defaultDatabase,
                 ::copySources,
                 { consensus.membership(systemDatabase).takeIf { it.settled }?.members },
+                { cluster.state == MemberState.REMOVED },
                 globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
             )
+        cluster.onRemoved = reconciler::request
         // Transactions applied from Raft fire no transaction event listeners: refresh what the
         // listeners refresh after local commits.
         replication.afterSystemApply = {
@@ -331,7 +334,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         val starter = defaultDatabaseStarter
         globalModule.globalLife.add(
             object : Lifecycle by starter {
-                override fun start() = replication.readingSystem { starter.start() }
+                override fun start() {
+                    // A removed member serves no database.
+                    if (cluster.state == MemberState.REMOVED) return
+                    replication.readingSystem { starter.start() }
+                }
             }
         )
     }

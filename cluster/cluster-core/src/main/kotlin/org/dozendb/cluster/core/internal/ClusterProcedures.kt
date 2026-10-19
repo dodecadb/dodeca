@@ -1,7 +1,9 @@
 package org.dozendb.cluster.core.internal
 
 import java.util.stream.Stream
+import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.MembershipChangeException
 import org.dozendb.cluster.core.displayName
@@ -38,6 +40,12 @@ class ClusterProcedures {
                 commitIndex = it.commitIndex,
                 appliedIndex = it.appliedIndex,
                 snapshotIndex = service.latestSnapshot(it.database)?.position?.index,
+                members =
+                    try {
+                        service.groupMembers(it.database).map { member -> member.id.toString() }
+                    } catch (_: ConsensusUnavailableException) {
+                        emptyList()
+                    },
             )
         }
     }
@@ -77,6 +85,25 @@ class ClusterProcedures {
         return Stream.of(AddedMemberRow(member.id.toString(), member.raftAddress.toString()))
     }
 
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dozendb.cluster.removeMember", mode = Mode.DBMS)
+    @Description(
+        "Removes the member with the given id from the cluster. Returns once it no longer votes " +
+            "in the group of the system database; the group of every other database follows. " +
+            "The removed member stops its databases; to add it again, delete its data directory " +
+            "first."
+    )
+    fun removeMember(@Name("memberId") memberId: String) {
+        val id =
+            try {
+                MemberId.parse(memberId)
+            } catch (e: IllegalArgumentException) {
+                throw ProcedureFailure("Invalid member id '$memberId': ${e.message}", e)
+            }
+        changingMembers { requireCluster().removeMember(id) }
+    }
+
     private fun <T> changingMembers(change: () -> T): T =
         try {
             change()
@@ -105,6 +132,8 @@ class ClusterProcedures {
         val appliedIndex: Long,
         /** The latest snapshot: the log no longer needs entries up to it. */
         val snapshotIndex: Long?,
+        /** The ids of the members voting in the group, as this member knows them. */
+        val members: List<String>,
     )
 
     @JvmRecord

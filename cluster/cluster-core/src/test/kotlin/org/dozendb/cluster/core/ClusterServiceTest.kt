@@ -7,6 +7,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.fake.InMemoryConsensus
 import org.junit.jupiter.api.Test
@@ -175,6 +176,36 @@ class ClusterServiceTest {
             .hasMessageContaining("is still starting")
         refusal(HostPort("nowhere", 7700)).hasMessageContaining("No DozenDB member answers")
         assertThat(services[0].members()).hasSize(3)
+    }
+
+    @Test
+    fun `a removed member stops taking part`() {
+        val services = formCluster()
+        var removals = 0
+        services[2].onRemoved = { removals++ }
+
+        services[1].removeMember(logs[2].self.id)
+
+        assertThat(services[0].members().map { it.member })
+            .containsExactlyInAnyOrder(logs[0].self, logs[1].self)
+        assertThat(services[2].state).isEqualTo(MemberState.REMOVED)
+        assertThat(memberships[2].record?.state).isEqualTo(MemberState.REMOVED)
+        assertThat(removals).isEqualTo(1)
+        assertThatThrownBy { services[2].addMember(logs[0].self.raftAddress) }
+            .hasMessageContaining("not one of the cluster's members")
+    }
+
+    @Test
+    fun `members that are not in the cluster, and the last member, cannot be removed`() {
+        val services = formCluster()
+
+        assertThatThrownBy { services[0].removeMember(MemberId(UUID.randomUUID())) }
+            .isInstanceOf(MembershipChangeException::class.java)
+            .hasMessageContaining("is not a member of the cluster")
+        services[0].removeMember(logs[2].self.id)
+        services[0].removeMember(logs[1].self.id)
+        assertThatThrownBy { services[0].removeMember(logs[0].self.id) }
+            .hasMessageContaining("is the only member of the cluster")
     }
 
     @Test
