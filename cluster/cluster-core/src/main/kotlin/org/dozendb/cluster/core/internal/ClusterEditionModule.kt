@@ -130,6 +130,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 listOf(systemDatabase.name, defaultDatabase),
                 consensus,
                 logService.getInternalLog(Neo4jLocalStores::class.java),
+                consensus::seed,
             )
         localStores = stores
         val catchUp =

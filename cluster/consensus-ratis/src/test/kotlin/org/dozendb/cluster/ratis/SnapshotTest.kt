@@ -208,6 +208,42 @@ class SnapshotTest {
         }
 
     @Test
+    fun `a member added with a copy that covers the leader's log needs no other`() =
+        runBlocking<Unit> {
+            val cluster = formCluster(size = 4, initial = 3)
+            val leader = cluster.awaitLeader()
+            cluster.discardLogBeyond(leader, leader.write("before"))
+            val added = cluster.nodes.last().apply { start() }
+            // As a store copy: the source's snapshot first, then a copy of its state.
+            val snapshot = checkNotNull(leader.consensus.currentSnapshot(cluster.database))
+            added.machine.replaceWith(leader.machine)
+            added.consensus.seed(cluster.database, snapshot)
+            added.consensus.startGroup(
+                cluster.database,
+                added.machine,
+                cluster.nodes.take(3).map { it.consensus.self },
+            )
+            // The copy's position survives a restart before the member is added.
+            added.stop()
+            added.start()
+            added.consensus.startGroup(cluster.database, added.machine, emptyList())
+
+            leader.consensus.addMember(cluster.database, added.consensus.self, CHANGE_TIMEOUT)
+            leader.write("after")
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(added.machine.payloads())
+                        .isEqualTo(leader.machine.payloads())
+                        .endsWith("after")
+                }
+            assertThat(added.machine.snapshotRequests).isEmpty()
+            assertThat(added.consensus.latestSnapshot(cluster.database)?.position?.index)
+                .isGreaterThanOrEqualTo(snapshot.position.index)
+        }
+
+    @Test
     fun `snapshots are installed only into detached members behind the leader's log`() =
         runBlocking<Unit> {
             val cluster = formCluster()

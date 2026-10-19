@@ -126,6 +126,15 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
      */
     public fun installSnapshot(database: DatabaseRef, snapshot: Snapshot): Boolean
 
+    /**
+     * Tells that this member holds a copy of the state of [database] that holds every entry up to
+     * [snapshot], made before the group ran here, as a member that is being added copies the
+     * databases it needs first. When the group's leader asks this member for a copy that [snapshot]
+     * covers, and the state machine still holds it, [snapshot] is installed instead of asking the
+     * state machine for another copy (see [ReplicatedStateMachine.onSnapshotNeeded]).
+     */
+    public fun seed(database: DatabaseRef, snapshot: Snapshot)
+
     /** The largest payload, in bytes, that [submit] accepts. The same on every member. */
     public val maxEntrySize: Int
 

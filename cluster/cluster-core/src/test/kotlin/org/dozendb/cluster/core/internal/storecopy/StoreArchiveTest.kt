@@ -6,6 +6,7 @@ import java.io.DataOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.UUID
 import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -33,7 +34,7 @@ class StoreArchiveTest {
     ): ByteArray {
         val bytes = ByteArrayOutputStream()
         StoreArchive.Writer(bytes, fs).apply {
-            header("neo4j", "test copy", snapshot)
+            header("neo4j", DATABASE_ID, "test copy", snapshot)
             build()
         }
         return bytes.toByteArray()
@@ -72,7 +73,9 @@ class StoreArchiveTest {
             )
 
         assertThat(summary)
-            .isEqualTo(StoreArchive.Summary("neo4j", "test copy", snapshot, 4, 3_080_000))
+            .isEqualTo(
+                StoreArchive.Summary("neo4j", DATABASE_ID, "test copy", snapshot, 4, 3_080_000)
+            )
         assertThat(root.resolve("target/database/neostore")).hasSameBinaryContentAs(store)
         assertThat(root.resolve("target/database/schema/index/1/index-1"))
             .hasSameBinaryContentAs(index)
@@ -154,5 +157,9 @@ class StoreArchiveTest {
     @Test
     fun `a copy of a database that is not replicated has no snapshot`() {
         assertThat(extract(archive(snapshot = null) { end() }).snapshot).isNull()
+    }
+
+    private companion object {
+        val DATABASE_ID: UUID = UUID.randomUUID()
     }
 }

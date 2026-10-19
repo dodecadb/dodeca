@@ -28,16 +28,19 @@ internal data class SnapshotRecord(val snapshot: Snapshot, val installed: Boolea
     companion object {
         private val log = LoggerFactory.getLogger(SnapshotRecord::class.java)
         const val FILE_NAME = "dozendb-snapshot"
+
+        /** The file of a seed, a copy made before the group ran here (see [GroupStateMachine]). */
+        const val SEED_FILE_NAME = "dozendb-seed"
         private const val MAGIC = 0x445a534e // "DZSN"
         private const val VERSION = 1
         private val OPEN_SEGMENT = Regex("""log_inprogress_(\d+)""")
         private val CLOSED_SEGMENT = Regex("""log_(\d+)-(\d+)""")
 
-        /** Reads the record in [directory], or null if there is none. */
-        fun read(directory: Path): SnapshotRecord? {
+        /** Reads the record in [file] of [directory], or null if there is none. */
+        fun read(directory: Path, file: String = FILE_NAME): SnapshotRecord? {
             val bytes =
                 try {
-                    Files.readAllBytes(directory.resolve(FILE_NAME))
+                    Files.readAllBytes(directory.resolve(file))
                 } catch (_: NoSuchFileException) {
                     return null
                 }
@@ -61,8 +64,8 @@ internal data class SnapshotRecord(val snapshot: Snapshot, val installed: Boolea
             }
         }
 
-        /** Replaces the record in [directory] atomically and durably. */
-        fun write(directory: Path, record: SnapshotRecord) {
+        /** Replaces the record in [file] of [directory] atomically and durably. */
+        fun write(directory: Path, record: SnapshotRecord, file: String = FILE_NAME) {
             val body =
                 ByteArrayOutputStream().use { buffer ->
                     DataOutputStream(buffer).use { out ->
@@ -77,7 +80,7 @@ internal data class SnapshotRecord(val snapshot: Snapshot, val installed: Boolea
                 }
             val bytes = ByteBuffer.allocate(body.size + Int.SIZE_BYTES).put(body).putInt(crc(body))
             Files.createDirectories(directory)
-            val temporary = directory.resolve("$FILE_NAME.tmp")
+            val temporary = directory.resolve("$file.tmp")
             FileChannel.open(
                     temporary,
                     StandardOpenOption.CREATE,
@@ -91,7 +94,7 @@ internal data class SnapshotRecord(val snapshot: Snapshot, val installed: Boolea
                 }
             Files.move(
                 temporary,
-                directory.resolve(FILE_NAME),
+                directory.resolve(file),
                 StandardCopyOption.ATOMIC_MOVE,
                 StandardCopyOption.REPLACE_EXISTING,
             )
@@ -125,6 +128,11 @@ internal data class SnapshotRecord(val snapshot: Snapshot, val installed: Boolea
                 Files.delete(segment)
             }
             if (covered.isNotEmpty()) syncDirectory(logDirectory)
+        }
+
+        /** Deletes the record in [file] of [directory], if there is one. */
+        fun delete(directory: Path, file: String) {
+            if (Files.deleteIfExists(directory.resolve(file))) syncDirectory(directory)
         }
 
         private fun crc(bytes: ByteArray): Int = CRC32().apply { update(bytes) }.value.toInt()

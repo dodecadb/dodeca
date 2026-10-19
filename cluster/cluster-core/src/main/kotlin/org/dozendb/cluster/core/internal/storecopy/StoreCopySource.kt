@@ -76,6 +76,7 @@ internal class StoreCopySource(
             val archive = StoreArchive.Writer(out, fs)
             archive.header(
                 name,
+                database.namedDatabaseId.databaseId().uuid(),
                 "store ${storeSnapshot.storeId()}, " +
                     "checkpoint ${storeSnapshot.lastAppliedTransactionId()}",
                 snapshot,

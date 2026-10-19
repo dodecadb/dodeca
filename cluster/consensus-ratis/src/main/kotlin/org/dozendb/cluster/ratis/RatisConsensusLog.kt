@@ -374,6 +374,10 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         }
     }
 
+    override fun seed(database: DatabaseRef, snapshot: Snapshot) {
+        groupStateMachine(database.id).seed(snapshot)
+    }
+
     override fun installSnapshot(database: DatabaseRef, snapshot: Snapshot): Boolean {
         val running = server?.let { RaftGroupId.valueOf(database.id) in it.groupIds } == true
         val stateMachine = stateMachines[database.id]

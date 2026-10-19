@@ -52,6 +52,11 @@ import org.slf4j.LoggerFactory
  * member that was down briefly catches up from it. A member behind the start of the leader's log is
  * asked for a copy ([ReplicatedStateMachine.onSnapshotNeeded]); [install] then completes Ratis'
  * snapshot installation, which skips the group's log to the copy.
+ *
+ * A member being added copies its databases before it runs their groups, and records each copy's
+ * position as a seed ([seed]). When the leader then asks for a copy the seed covers, the seed is
+ * installed instead. A seed never becomes the group's starting snapshot: Ratis learns the group's
+ * configuration with the leader's request, which it would otherwise miss.
  */
 internal class GroupStateMachine(
     private val groupId: UUID,
@@ -96,6 +101,8 @@ internal class GroupStateMachine(
     private var snapshotRequested = false
     private var pendingInstall: PendingInstall? = null
     private var stateMachineDirectory: Path? = null
+    /** A copy of the state made before the group ran here; kept in its file once it runs. */
+    private var seed: Snapshot? = null
 
     // Guarded by this; used by the snapshot poller and the apply thread.
     private var latestDurable = RaftLog.INVALID_LOG_INDEX
@@ -192,9 +199,20 @@ internal class GroupStateMachine(
         }
         loaded?.let { setLastAppliedTermIndex(termIndex(it.snapshot)) }
         start()
-        stateLock.withLock {
+        val storedSeed = SnapshotRecord.read(directory, SnapshotRecord.SEED_FILE_NAME)?.snapshot
+        val keptSeed = stateLock.withLock {
             record = loaded
             stateMachineDirectory = directory
+            seed =
+                listOfNotNull(seed, storedSeed)
+                    .maxByOrNull { it.position.index }
+                    ?.takeIf { beyondRecord(it) }
+            seed
+        }
+        when {
+            keptSeed == null && storedSeed != null ->
+                SnapshotRecord.delete(directory, SnapshotRecord.SEED_FILE_NAME)
+            keptSeed != null && keptSeed != storedSeed -> writeSeed(directory, keptSeed)
         }
         activateIfReady()
     }
@@ -232,11 +250,93 @@ internal class GroupStateMachine(
         leader: Member?,
         minimumIndex: Long,
     ) {
+        if (installSeed(attached, minimumIndex)) return
         stateLock.withLock {
             if (snapshotRequested || candidate !== attached) return
             snapshotRequested = true
         }
         attached.onSnapshotNeeded(leader, minimumIndex)
+    }
+
+    /**
+     * Records that this member holds a copy of the state holding [snapshot], made before the group
+     * ran here. Ignored if the group's snapshot or an earlier seed reaches as far.
+     */
+    fun seed(snapshot: Snapshot) {
+        val directory = stateLock.withLock {
+            val current = seed
+            if (
+                !beyondRecord(snapshot) ||
+                    (current != null && current.position.index >= snapshot.position.index)
+            ) {
+                return
+            }
+            seed = snapshot
+            stateMachineDirectory
+        }
+        log.info("{} holds a copy at {}, made before its group ran here", database, snapshot)
+        directory?.let { writeSeed(it, snapshot) }
+    }
+
+    /**
+     * Completes the pending installation with the seed, if the leader needs no more than the seed
+     * covers and [attached] still holds it. Returns whether it did.
+     */
+    private fun installSeed(attached: ReplicatedStateMachine, minimumIndex: Long): Boolean {
+        val (pending, usable, directory) =
+            stateLock.withLock { Triple(pendingInstall, seed, stateMachineDirectory) }
+        if (pending == null || usable == null || directory == null) return false
+        if (usable.position.index < minimumIndex) return false
+        if (attached.lastAppliedIndex() < usable.appliedIndex) {
+            log.warn(
+                "{} no longer holds its copy at {} (applied index {}); it needs another copy",
+                database,
+                usable,
+                attached.lastAppliedIndex(),
+            )
+            return false
+        }
+        // Durable first, as for any installed snapshot. The local log ends before the seed.
+        val installed = SnapshotRecord(usable, installed = true)
+        SnapshotRecord.write(directory, installed)
+        stateLock.withLock {
+            if (pendingInstall !== pending) return false
+            record = installed
+            pendingInstall = null
+            seed = null
+        }
+        SnapshotRecord.delete(directory, SnapshotRecord.SEED_FILE_NAME)
+        log.info(
+            "Installed snapshot {} of {} from the copy it made before joining",
+            usable,
+            database,
+        )
+        pending.future.complete(termIndex(usable))
+        return true
+    }
+
+    /** Whether [snapshot] reaches beyond the group's snapshot. Called holding [stateLock]. */
+    private fun beyondRecord(snapshot: Snapshot): Boolean =
+        snapshot.position.index > (record?.snapshot?.position?.index ?: RaftLog.INVALID_LOG_INDEX)
+
+    private fun writeSeed(directory: Path, snapshot: Snapshot) {
+        SnapshotRecord.write(
+            directory,
+            SnapshotRecord(snapshot, installed = false),
+            SnapshotRecord.SEED_FILE_NAME,
+        )
+    }
+
+    /** Forgets the seed once the group's snapshot reaches as far. */
+    private fun dropCoveredSeed() {
+        val directory =
+            stateLock.withLock {
+                val current = seed ?: return
+                if (beyondRecord(current)) return
+                seed = null
+                stateMachineDirectory
+            } ?: return
+        SnapshotRecord.delete(directory, SnapshotRecord.SEED_FILE_NAME)
     }
 
     /**
@@ -314,6 +414,7 @@ internal class GroupStateMachine(
             record = installed
             pendingInstall = null
         }
+        dropCoveredSeed()
         log.info("Installed snapshot {} of {}", snapshot, database)
         pending.future.complete(termIndex(snapshot))
         return true
@@ -453,7 +554,8 @@ internal class GroupStateMachine(
         }
         val written = SnapshotRecord(Snapshot(LogPosition(index, term), index), installed = false)
         SnapshotRecord.write(directory, written)
-        record = written
+        stateLock.withLock { record = written }
+        dropCoveredSeed()
         return index
     }
 

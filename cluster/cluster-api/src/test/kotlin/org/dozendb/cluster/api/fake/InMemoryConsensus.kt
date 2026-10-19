@@ -327,6 +327,9 @@ class InMemoryConsensus {
         override fun latestSnapshot(database: DatabaseRef): Snapshot? =
             synchronized(lock) { snapshots[database.id] }
 
+        /** Not needed: this fake never asks for a copy of entries a state machine holds. */
+        override fun seed(database: DatabaseRef, snapshot: Snapshot) {}
+
         override fun installSnapshot(database: DatabaseRef, snapshot: Snapshot): Boolean =
             synchronized(lock) {
                 check(database.id !in running) { "detach the state machine of $database first" }

@@ -10,14 +10,16 @@ import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.file.Path
 import java.util.Arrays
+import java.util.UUID
 import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.Snapshot
 import org.neo4j.io.fs.FileSystemAbstraction
 
 /**
- * The stream format of a database copy: a header with the database name, a description and the Raft
- * snapshot the copy holds, if the database is replicated; then each file with its root directory,
- * relative path and length; then a trailer with the totals so a truncated stream is detected.
+ * The stream format of a database copy: a header with the database name and id, a description and
+ * the Raft snapshot the copy holds, if the database is replicated; then each file with its root
+ * directory, relative path and length; then a trailer with the totals so a truncated stream is
+ * detected.
  *
  * A file's bytes follow in chunks of [CHUNK_SIZE], the last one shorter. A chunk of zeros is sent
  * as its tag alone: Neo4j preallocates transaction log files with zeros, 256 MiB each on Linux,
@@ -26,7 +28,7 @@ import org.neo4j.io.fs.FileSystemAbstraction
  */
 internal object StoreArchive {
     private const val MAGIC = 0x445A5343 // "DZSC"
-    private const val VERSION: Byte = 3
+    private const val VERSION: Byte = 4
     private const val TAG_END: Byte = 0
     private const val TAG_FILE: Byte = 1
     private const val CHUNK_DATA: Byte = 0
@@ -48,6 +50,7 @@ internal object StoreArchive {
     /** @property snapshot the Raft snapshot the copy holds, null if it is not replicated. */
     data class Summary(
         val database: String,
+        val databaseId: UUID,
         val description: String,
         val snapshot: Snapshot?,
         val files: Int,
@@ -60,10 +63,12 @@ internal object StoreArchive {
         private var files = 0
         private var bytes = 0L
 
-        fun header(database: String, description: String, snapshot: Snapshot?) {
+        fun header(database: String, databaseId: UUID, description: String, snapshot: Snapshot?) {
             data.writeInt(MAGIC)
             data.writeByte(VERSION.toInt())
             data.writeUTF(database)
+            data.writeLong(databaseId.mostSignificantBits)
+            data.writeLong(databaseId.leastSignificantBits)
             data.writeUTF(description)
             data.writeBoolean(snapshot != null)
             if (snapshot != null) {
@@ -126,6 +131,7 @@ internal object StoreArchive {
         val version = data.readByte()
         if (version != VERSION) throw IOException("unsupported database copy version $version")
         val database = data.readUTF()
+        val databaseId = UUID(data.readLong(), data.readLong())
         val description = data.readUTF()
         val snapshot =
             if (data.readBoolean()) {
@@ -180,7 +186,7 @@ internal object StoreArchive {
                                 "expected $expectedFiles and $expectedBytes"
                         )
                     }
-                    return Summary(database, description, snapshot, files, bytes)
+                    return Summary(database, databaseId, description, snapshot, files, bytes)
                 }
                 else -> throw IOException("unknown database copy entry $tag")
             }

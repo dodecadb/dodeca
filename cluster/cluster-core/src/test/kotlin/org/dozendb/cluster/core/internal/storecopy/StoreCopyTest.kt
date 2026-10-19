@@ -77,7 +77,9 @@ class StoreCopyTest {
     private fun stores(
         home: Path,
         transfer: BulkTransfer = InProcessTransfer { _, _ -> error("not used") },
-    ) = Neo4jLocalStores(fs, Neo4jLayout.of(home), names, transfer, NullLog.getInstance())
+    ) =
+        Neo4jLocalStores(fs, Neo4jLayout.of(home), names, transfer, NullLog.getInstance()) { _, _ ->
+        }
 
     @Test
     fun `a copy taken during writes starts with whole transactions only`() {

@@ -7,6 +7,7 @@ import java.util.UUID
 import org.dozendb.cluster.api.BulkTransfer
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.Snapshot
 import org.dozendb.cluster.core.LocalStores
 import org.dozendb.cluster.core.internal.replication.StagedCopy
 import org.neo4j.io.fs.FileSystemAbstraction
@@ -23,6 +24,10 @@ import org.neo4j.storageengine.api.StorageEngineFactory
  * then are they moved into place, each with a marker file present while it is moved. A database
  * with a marker was left half-moved by an interrupted copy: it counts as missing and is copied
  * again, and a member with any marker counts as having no databases during formation.
+ *
+ * A copy of a database whose group does not run here yet, as at startup or for a new database,
+ * leaves its Raft position as the group's seed ([seed]), so that the group does not ask for
+ * another.
  */
 internal class Neo4jLocalStores(
     private val fs: FileSystemAbstraction,
@@ -30,6 +35,7 @@ internal class Neo4jLocalStores(
     private val databaseNames: List<String>,
     private val transfer: BulkTransfer,
     private val log: InternalLog,
+    private val seed: (DatabaseRef, Snapshot) -> Unit,
 ) : LocalStores {
     override val existed: Boolean =
         databaseNames.none(::incomplete) && databaseNames.any(::storageExists)
@@ -41,7 +47,10 @@ internal class Neo4jLocalStores(
     override fun copyFrom(source: HostPort, databases: List<String>) {
         require(databases.all { it in databaseNames }) { "unknown databases in $databases" }
         val staged = databases.map { fetch(source, it, null, NO_MINIMUM) }
-        staged.forEach(::moveIntoPlace)
+        staged.forEach {
+            moveIntoPlace(it)
+            leaveSeed(it)
+        }
     }
 
     /**
@@ -68,7 +77,14 @@ internal class Neo4jLocalStores(
 
     /** Copies the database [database], which this member lacks, from [source]. */
     fun copyNew(source: HostPort, database: DatabaseRef) {
-        moveIntoPlace(fetch(source, database.name, database.id, NO_MINIMUM))
+        val staged = fetch(source, database.name, database.id, NO_MINIMUM)
+        moveIntoPlace(staged)
+        leaveSeed(staged)
+    }
+
+    private fun leaveSeed(copy: Staged) {
+        val snapshot = copy.summary.snapshot ?: return
+        seed(DatabaseRef(copy.name, copy.summary.databaseId), snapshot)
     }
 
     /** Names of the databases with files on this member, complete or not. */
