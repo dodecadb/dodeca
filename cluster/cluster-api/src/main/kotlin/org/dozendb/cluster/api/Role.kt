@@ -19,7 +19,10 @@ public sealed interface Role {
     /** Is running an election, or has won one and cannot accept writes yet. */
     public data object Candidate : Role
 
-    /** Does not take part in the group: not started, stopped or shutting down. */
+    /**
+     * Does not take part in the group: not started, stopped, shutting down, or not one of its
+     * voting members.
+     */
     public data object Inactive : Role
 }
 

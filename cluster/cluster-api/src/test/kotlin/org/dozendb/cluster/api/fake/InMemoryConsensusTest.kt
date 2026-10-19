@@ -1,5 +1,6 @@
 package org.dozendb.cluster.api.fake
 
+import java.time.Duration
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
@@ -7,6 +8,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
+import org.dozendb.cluster.api.GroupMembership
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.LogPosition
 import org.dozendb.cluster.api.Role
@@ -188,18 +190,57 @@ class InMemoryConsensusTest {
         }
 
     @Test
-    fun `membership changes need a leader`() =
+    fun `membership changes need a leader and a new member that runs the group`() =
         runBlocking<Unit> {
             startAll()
-            val d = consensus.newMember()
-            assertThatThrownBy { runBlocking { a.addMember(database, d.self) } }
-                .isInstanceOf(ConsensusUnavailableException::class.java)
-
+            val d = consensus.newMember().apply { start() }
             consensus.electLeader(database, a.self.id)
-            a.addMember(database, d.self)
-            a.removeMember(database, c.self.id)
+            assertThatThrownBy { runBlocking { a.addMember(database, d.self, TIMEOUT) } }
+                .isInstanceOf(ConsensusUnavailableException::class.java)
+            d.joinGroup(database, all.map { it.self })
+            consensus.crash(a.self.id)
 
-            assertThat(a.members(database)).containsExactly(a.self, b.self, d.self)
+            assertThatThrownBy { runBlocking { b.addMember(database, d.self, TIMEOUT) } }
+                .isInstanceOf(ConsensusUnavailableException::class.java)
+        }
+
+    @Test
+    fun `a member outside the configuration receives entries once it is added`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+            a.submit(database, "one".encodeToByteArray())
+            val d = consensus.newMember().apply { start() }
+            val machine = RecordingStateMachine()
+            d.startGroup(database, machine, all.map { it.self })
+            assertThat(d.status(database).role).isEqualTo(Role.Inactive)
+            assertThat(machine.payloads()).isEmpty()
+
+            a.addMember(database, d.self, TIMEOUT)
+            a.addMember(database, d.self, TIMEOUT)
+
+            assertThat(machine.payloads()).containsExactly("one")
+            assertThat(d.status(database).role).isEqualTo(Role.Follower)
+            assertThat(a.membership(database))
+                .isEqualTo(
+                    GroupMembership(all.map { it.self } + d.self, settled = true, removed = false)
+                )
+        }
+
+    @Test
+    fun `a removed member stops running the group`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+
+            a.removeMember(database, c.self.id, TIMEOUT)
+            a.removeMember(database, c.self.id, TIMEOUT)
+            a.submit(database, "after".encodeToByteArray())
+
+            assertThat(a.members(database)).containsExactly(a.self, b.self)
+            assertThat(c.membership(database).removed).isTrue()
+            assertThat(c.status(database).role).isEqualTo(Role.Inactive)
+            assertThat(machines.getValue(c.self.id).payloads()).isEmpty()
         }
 
     @Test
@@ -300,4 +341,8 @@ class InMemoryConsensusTest {
             assertThat(b.installSnapshot(database, snapshot)).isFalse()
             assertThat(b.latestSnapshot(database)).isNull()
         }
+
+    private companion object {
+        val TIMEOUT: Duration = Duration.ofSeconds(5)
+    }
 }

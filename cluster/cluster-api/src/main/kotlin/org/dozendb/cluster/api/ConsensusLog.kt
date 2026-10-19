@@ -1,5 +1,6 @@
 package org.dozendb.cluster.api
 
+import java.time.Duration
 import java.util.UUID
 
 /**
@@ -13,6 +14,21 @@ public data class PeerInfo(
     val member: Member,
     val metadata: Map<String, String>,
     val groups: Map<UUID, List<Member>>,
+)
+
+/**
+ * The voting members of a consensus group as this member knows them.
+ *
+ * @property members the voting members; while a change is in progress, the members it changes to.
+ * @property settled whether no change is in progress and this member knows that [members] are
+ *   committed.
+ * @property removed whether this member was removed from the group, which then stopped running
+ *   here.
+ */
+public data class GroupMembership(
+    val members: List<Member>,
+    val settled: Boolean,
+    val removed: Boolean,
 )
 
 /** The consensus layer could not complete an operation, for example because there is no leader. */
@@ -48,8 +64,9 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
      * which then receives every entry it has not applied yet.
      *
      * If the group has local state it is recovered and [bootstrapMembers] is ignored. Otherwise the
-     * group is created with exactly [bootstrapMembers] as its voting members, which must be the
-     * same list on every one of them.
+     * group is created with [bootstrapMembers] as its voting members. If they include this member,
+     * they must be the same list on every member they include: the group's initial members. A
+     * member that is not among them takes part only once it is added with [addMember].
      */
     public fun startGroup(
         database: DatabaseRef,
@@ -139,8 +156,15 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
     /** The leader of the group of [database] as known locally, if any. */
     public fun leader(database: DatabaseRef): MemberId? = status(database).leader
 
-    /** The current voting members of the group of [database]. */
-    public fun members(database: DatabaseRef): List<Member>
+    /**
+     * The voting members of the group of [database] as this member knows them.
+     *
+     * @throws ConsensusUnavailableException if the group is not running here.
+     */
+    public fun membership(database: DatabaseRef): GroupMembership
+
+    /** The voting members of the group of [database]; see [membership]. */
+    public fun members(database: DatabaseRef): List<Member> = membership(database).members
 
     /**
      * Registers [listener] for changes of the local role or the known leader of [database]. It is
@@ -152,16 +176,27 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
     ): AutoCloseable
 
     /**
-     * Adds [member] as a voting member of the group of [database].
+     * Adds [member] as a voting member of the group of [database], through the group's leader,
+     * which first brings it up to date with the log; this may ask [member]'s state machine for a
+     * copy (see [ReplicatedStateMachine.onSnapshotNeeded]). [member] must already run the group,
+     * with [startGroup] or [joinGroup] and bootstrap members without itself. Returns once the
+     * change is committed, at once if [member] is a member already. Only one change at a time is
+     * possible in a group.
      *
-     * @throws ConsensusUnavailableException if the change could not be committed.
+     * @throws ConsensusUnavailableException if the change was not committed within [timeout], for
+     *   example because [member] does not run the group or stopped responding, or another change is
+     *   in progress.
      */
-    public suspend fun addMember(database: DatabaseRef, member: Member)
+    public suspend fun addMember(database: DatabaseRef, member: Member, timeout: Duration)
 
     /**
-     * Removes the member [id] from the group of [database].
+     * Removes the member [id] from the group of [database], through the group's leader. Returns
+     * once the change is committed, at once if [id] is not a member as far as this member knows.
+     * The removed member stops running the group (see [GroupMembership.removed]).
      *
-     * @throws ConsensusUnavailableException if the change could not be committed.
+     * @throws ConsensusUnavailableException if the change was not committed within [timeout], for
+     *   example because no leader is reachable, another change is in progress, or this member's
+     *   view of the members is outdated.
      */
-    public suspend fun removeMember(database: DatabaseRef, id: MemberId)
+    public suspend fun removeMember(database: DatabaseRef, id: MemberId, timeout: Duration)
 }

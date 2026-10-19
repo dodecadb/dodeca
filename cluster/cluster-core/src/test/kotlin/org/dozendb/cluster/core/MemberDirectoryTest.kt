@@ -77,8 +77,9 @@ class MemberDirectoryTest {
             consensus
                 .newMember(metadata = mapOf(DozenDbMetadata.BOLT_ADDRESS to "core9:7687"))
                 .apply { start() }
+        newcomer.joinGroup(system, logs.map { it.self })
         consensus.electLeader(system, logs[0].self.id)
-        runBlocking { logs[0].addMember(system, newcomer.self) }
+        runBlocking { logs[0].addMember(system, newcomer.self, Duration.ofSeconds(5)) }
 
         await atMost
             Duration.ofSeconds(5) untilAsserted

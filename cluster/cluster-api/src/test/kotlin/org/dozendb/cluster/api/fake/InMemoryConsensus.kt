@@ -3,6 +3,7 @@ package org.dozendb.cluster.api.fake
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -11,6 +12,7 @@ import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
+import org.dozendb.cluster.api.GroupMembership
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.LogEntry
@@ -27,10 +29,11 @@ import org.dozendb.cluster.api.Snapshot
  *
  * There are no elections: tests choose the leader with [electLeader]. An entry submitted on the
  * leader commits immediately when a majority of the group's members are running, and is applied
- * synchronously, in order, by every running member. Starting a group replays the whole log, so
- * state machines must skip entries they have already applied, as with a real implementation. Faults
- * are injected with [crash] and [failNextSubmit]. Bulk transfers run synchronously on the calling
- * thread.
+ * synchronously, in order, by every running member. Membership changes commit at once; a member
+ * that runs a group without being one of its members receives nothing until it is added, and a
+ * removed member stops running the group. Starting a group replays the whole log, so state machines
+ * must skip entries they have already applied, as with a real implementation. Faults are injected
+ * with [crash] and [failNextSubmit]. Bulk transfers run synchronously on the calling thread.
  *
  * Logs are compacted only by [compact]. A member that then needs discarded entries, beyond its
  * installed snapshot, gets [ReplicatedStateMachine.onSnapshotNeeded] instead of entries.
@@ -58,7 +61,8 @@ class InMemoryConsensus {
         override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {}
     }
 
-    internal class GroupState(val database: DatabaseRef, var members: List<Member>) {
+    internal class GroupState(val database: DatabaseRef, val initialMembers: List<Member>) {
+        var members: List<Member> = initialMembers
         var term = 0L
         var leader: MemberId? = null
         val log = mutableListOf<LogEntry>()
@@ -164,6 +168,7 @@ class InMemoryConsensus {
         private val snapshots = mutableMapOf<UUID, Snapshot>()
         private val snapshotRequested = mutableSetOf<UUID>()
         private val listeners = mutableMapOf<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
+        private val removedFrom = mutableSetOf<UUID>()
 
         internal fun isRunning(database: DatabaseRef): Boolean = database.id in running
 
@@ -180,7 +185,7 @@ class InMemoryConsensus {
         internal fun deliver(group: GroupState): ByteArray? {
             val id = group.database.id
             val stateMachine = running[id] ?: return null
-            if (stateMachine === Unattached) return null
+            if (stateMachine === Unattached || group.members.none { it.id == self.id }) return null
             var index = maxOf(delivered.getOrDefault(id, 0L), snapshots[id]?.position?.index ?: 0L)
             if (index < group.compactedUpTo) {
                 // A member that applied the discarded entries before has them in its own log.
@@ -264,11 +269,15 @@ class InMemoryConsensus {
                     GroupState(database, bootstrapMembers.toList())
                 }
             if (database.id !in localState) {
-                check(bootstrapMembers == group.members) {
+                check(
+                    bootstrapMembers.none { it.id == self.id } ||
+                        bootstrapMembers == group.initialMembers
+                ) {
                     "conflicting bootstrap configuration for $database: " +
-                        "stored=${group.members}, supplied=$bootstrapMembers"
+                        "initial=${group.initialMembers}, supplied=$bootstrapMembers"
                 }
                 localState += database.id
+                removedFrom -= database.id
             }
             return group
         }
@@ -280,6 +289,7 @@ class InMemoryConsensus {
                     delivered.remove(database.id)
                     snapshotRequested -= database.id
                     localState -= database.id
+                    removedFrom -= database.id
                     val group = groups[database.id] ?: return
                     if (group.leader == self.id) group.leader = null
                     statusNotifications(database)
@@ -377,7 +387,7 @@ class InMemoryConsensus {
         private fun statusLocked(database: DatabaseRef): GroupStatus {
             val group = groups[database.id]
             val stateMachine = running[database.id]
-            if (group == null || stateMachine == null) {
+            if (group == null || stateMachine == null || group.members.none { it.id == self.id }) {
                 return GroupStatus(database, Role.Inactive, null, group?.term ?: 0, -1, -1)
             }
             val role = if (group.leader == self.id) Role.Leader else Role.Follower
@@ -391,8 +401,17 @@ class InMemoryConsensus {
             )
         }
 
-        override fun members(database: DatabaseRef): List<Member> =
-            synchronized(lock) { group(database).members.toList() }
+        override fun membership(database: DatabaseRef): GroupMembership =
+            synchronized(lock) {
+                if (database.id !in localState) {
+                    throw ConsensusUnavailableException("group $database is not running here")
+                }
+                GroupMembership(
+                    group(database).members.toList(),
+                    settled = true,
+                    removed = database.id in removedFrom,
+                )
+            }
 
         override fun addStatusListener(
             database: DatabaseRef,
@@ -404,27 +423,46 @@ class InMemoryConsensus {
             return AutoCloseable { synchronized(lock) { listeners[database.id]?.remove(listener) } }
         }
 
-        override suspend fun addMember(database: DatabaseRef, member: Member) {
-            changeMembers(database) { current ->
-                require(current.none { it.id == member.id }) { "${member.id} is already a member" }
-                current + member
-            }
-        }
-
-        override suspend fun removeMember(database: DatabaseRef, id: MemberId) {
-            changeMembers(database) { current ->
-                require(current.any { it.id == id }) { "$id is not a member" }
-                current.filterNot { it.id == id }
-            }
-        }
-
-        private fun changeMembers(database: DatabaseRef, change: (List<Member>) -> List<Member>) {
-            synchronized(lock) {
-                val group = group(database)
-                if (group.leader == null || !majorityRunning(group)) {
-                    throw ConsensusUnavailableException("no leader for $database")
+        override suspend fun addMember(database: DatabaseRef, member: Member, timeout: Duration) {
+            val notifications =
+                synchronized(lock) {
+                    val group = group(database)
+                    if (group.members.any { it.id == member.id }) return
+                    requireLeader(group)
+                    val target = members[member.id]
+                    if (
+                        target == null || !target.transportUp || database.id !in target.localState
+                    ) {
+                        throw ConsensusUnavailableException("$member does not run $database")
+                    }
+                    group.members = group.members + member
+                    deliverAll(group, self.id)
+                    statusNotifications(database)
                 }
-                group.members = change(group.members)
+            notifications.forEach { it() }
+        }
+
+        override suspend fun removeMember(database: DatabaseRef, id: MemberId, timeout: Duration) {
+            val notifications =
+                synchronized(lock) {
+                    val group = group(database)
+                    if (group.members.none { it.id == id }) return
+                    requireLeader(group)
+                    group.members = group.members.filterNot { it.id == id }
+                    if (group.leader == id) group.leader = null
+                    members[id]?.let { removed ->
+                        removed.running.remove(database.id)
+                        removed.delivered.remove(database.id)
+                        removed.removedFrom += database.id
+                    }
+                    statusNotifications(database)
+                }
+            notifications.forEach { it() }
+        }
+
+        private fun requireLeader(group: GroupState) {
+            if (group.leader == null || !majorityRunning(group)) {
+                throw ConsensusUnavailableException("no leader for ${group.database}")
             }
         }
 

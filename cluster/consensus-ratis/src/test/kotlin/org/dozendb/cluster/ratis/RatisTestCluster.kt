@@ -73,11 +73,14 @@ class RatisTestCluster(
     fun logDirectory(node: Node): Path =
         node.directory.resolve(database.id.toString()).resolve("current")
 
-    /** Starts every node and creates the group with all of them as voting members. */
-    fun form(stateMachine: (Node) -> ReplicatedStateMachine = { it.machine }) {
-        nodes.forEach { it.start() }
-        val members = nodes.map { it.consensus.self }
-        nodes.forEach { it.consensus.startGroup(database, stateMachine(it), members) }
+    /** Starts [initial] and creates the group with them as its voting members. */
+    fun form(
+        initial: List<Node> = nodes,
+        stateMachine: (Node) -> ReplicatedStateMachine = { it.machine },
+    ) {
+        initial.forEach { it.start() }
+        val members = initial.map { it.consensus.self }
+        initial.forEach { it.consensus.startGroup(database, stateMachine(it), members) }
     }
 
     fun running(): List<Node> = nodes.filter { it.running }

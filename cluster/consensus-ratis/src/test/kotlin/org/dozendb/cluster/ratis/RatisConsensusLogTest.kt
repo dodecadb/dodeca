@@ -301,7 +301,7 @@ class RatisConsensusLogTest {
             val leader = cluster.awaitLeader()
             val removed = cluster.nodes.first { it != leader }
 
-            leader.consensus.removeMember(cluster.database, removed.id)
+            leader.consensus.removeMember(cluster.database, removed.id, CHANGE_TIMEOUT)
 
             await atMost
                 RatisTestCluster.AWAIT untilAsserted
@@ -313,6 +313,117 @@ class RatisConsensusLogTest {
                 }
             assertThat(leader.write("after removal"))
                 .isInstanceOf(CommitResult.Committed::class.java)
+        }
+
+    @Test
+    fun `an added member is brought up to date before it votes`() =
+        runBlocking<Unit> {
+            val cluster = RatisTestCluster(root, 4).also { cluster = it }
+            val initial = cluster.nodes.take(3)
+            cluster.form(initial)
+            cluster.awaitLeader().write("before")
+            val added = cluster.nodes.last()
+            added.start()
+            added.consensus.startGroup(
+                cluster.database,
+                added.machine,
+                initial.map { it.consensus.self },
+            )
+            assertThat(added.consensus.status(cluster.database).role).isEqualTo(Role.Inactive)
+
+            cluster
+                .awaitLeader()
+                .consensus
+                .addMember(cluster.database, added.consensus.self, CHANGE_TIMEOUT)
+            // Adding a member again changes nothing.
+            initial
+                .first()
+                .consensus
+                .addMember(cluster.database, added.consensus.self, CHANGE_TIMEOUT)
+            cluster.awaitLeader().write("after")
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(added.machine.payloads()).containsExactly("before", "after")
+                    for (node in cluster.nodes) {
+                        val membership = node.consensus.membership(cluster.database)
+                        assertThat(membership.members.map { it.id })
+                            .containsExactlyInAnyOrderElementsOf(cluster.nodes.map { it.id })
+                        assertThat(membership.settled).isTrue()
+                    }
+                    assertThat(added.consensus.status(cluster.database).role)
+                        .isIn(Role.Follower, Role.Leader)
+                }
+        }
+
+    @Test
+    fun `adding a member that does not run the group fails`() =
+        runBlocking<Unit> {
+            val cluster = RatisTestCluster(root, 4).also { cluster = it }
+            cluster.form(cluster.nodes.take(3))
+            val absent = cluster.nodes.last().apply { start() }
+
+            assertThatThrownBy {
+                    runBlocking {
+                        cluster
+                            .awaitLeader()
+                            .consensus
+                            .addMember(cluster.database, absent.consensus.self, CHANGE_TIMEOUT)
+                    }
+                }
+                .isInstanceOf(ConsensusUnavailableException::class.java)
+            assertThat(cluster.awaitLeader().consensus.members(cluster.database)).hasSize(3)
+        }
+
+    @Test
+    fun `a removed follower stops running the group and knows it was removed`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val removed = cluster.nodes.first { it != leader }
+
+            cluster.nodes
+                .first { it != removed }
+                .consensus
+                .removeMember(cluster.database, removed.id, CHANGE_TIMEOUT)
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(removed.consensus.membership(cluster.database).removed).isTrue()
+                    assertThat(removed.consensus.status(cluster.database).role)
+                        .isEqualTo(Role.Inactive)
+                    assertThat(
+                            runBlocking {
+                                removed.consensus.probe(removed.consensus.self.raftAddress).groups
+                            }
+                        )
+                        .isEmpty()
+                }
+            assertThat(cluster.awaitLeader().write("after"))
+                .isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(removed.machine.payloads()).isEmpty()
+            assertThat(leader.consensus.membership(cluster.database).removed).isFalse()
+        }
+
+    @Test
+    fun `a removed leader hands over to the remaining members`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+
+            leader.consensus.removeMember(cluster.database, leader.id, CHANGE_TIMEOUT)
+
+            val next = cluster.awaitLeaderOtherThan(leader)
+            assertThat(next.write("after")).isInstanceOf(CommitResult.Committed::class.java)
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(leader.consensus.membership(cluster.database).removed).isTrue()
+                }
+            assertThat(next.consensus.members(cluster.database).map { it.id })
+                .containsExactlyInAnyOrderElementsOf(cluster.nodes.map { it.id } - leader.id)
         }
 
     @Test
@@ -510,5 +621,9 @@ class RatisConsensusLogTest {
 
         assertThatThrownBy { node.consensus.startGroup(unknown, node.machine, emptyList()) }
             .isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    private companion object {
+        val CHANGE_TIMEOUT: Duration = Duration.ofSeconds(20)
     }
 }

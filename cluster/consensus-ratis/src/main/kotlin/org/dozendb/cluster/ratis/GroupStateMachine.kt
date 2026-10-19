@@ -103,6 +103,14 @@ internal class GroupStateMachine(
 
     @Volatile private var record: SnapshotRecord? = null
 
+    /**
+     * Whether Ratis shut the group down because this member is not one of its members: its election
+     * found it left out of the configuration, or the leader answered that it was removed.
+     */
+    @Volatile
+    var shutDownAsNonMember: Boolean = false
+        private set
+
     /** Snapshots have no files; Ratis only asks this storage for the latest one. */
     private val storage =
         object : StateMachineStorage {
@@ -232,9 +240,10 @@ internal class GroupStateMachine(
     }
 
     /**
-     * Ratis found this member behind the start of the leader's log. The returned future completes
-     * when [install] records a copy of the state; until then Ratis reports the installation as in
-     * progress.
+     * Ratis found this member behind the start of the leader's log, or is adding it to the group.
+     * The returned future completes when [install] records a copy of the state; until then Ratis
+     * reports the installation as in progress. A member being added is asked even if the leader's
+     * log continues its own; it then needs no copy and the future completes at once, empty.
      */
     override fun notifyInstallSnapshotFromLeader(
         roleInfoProto: RoleInfoProto,
@@ -242,6 +251,17 @@ internal class GroupStateMachine(
     ): CompletableFuture<TermIndex> {
         val leader = leaderOf(roleInfoProto)
         val minimumIndex = firstTermIndexInLog.index - 1
+        val logEnd = localLogEnd()
+        if (logEnd >= minimumIndex) {
+            log.info(
+                "{} needs no copy: the leader's log, which starts at {}, continues this member's, " +
+                    "which ends at {}",
+                database,
+                firstTermIndexInLog,
+                logEnd,
+            )
+            return CompletableFuture.completedFuture(null)
+        }
         log.info(
             "{} is behind the leader's log, which starts at {}; it needs a copy from {}",
             database,
@@ -437,6 +457,10 @@ internal class GroupStateMachine(
         return index
     }
 
+    /** The index of the last entry in this member's log, or of its snapshot if the log is empty. */
+    private fun localLogEnd(): Long =
+        server.get().getDivision(RaftGroupId.valueOf(groupId)).raftLog.nextIndex - 1
+
     private fun termOf(index: Long): Long? =
         try {
             server.get().getDivision(RaftGroupId.valueOf(groupId)).raftLog.getTermIndex(index)?.term
@@ -483,6 +507,17 @@ internal class GroupStateMachine(
         newRaftConfiguration: RaftConfigurationProto,
     ) {
         listener.onGroupChanged(groupId)
+    }
+
+    override fun notifyServerShutdown(roleInfo: RoleInfoProto, allServer: Boolean) {
+        if (!allServer) {
+            log.info(
+                "Raft group {} stopped on this member, which is not one of its members",
+                database,
+            )
+            shutDownAsNonMember = true
+            listener.onGroupChanged(groupId)
+        }
     }
 
     override fun close() {

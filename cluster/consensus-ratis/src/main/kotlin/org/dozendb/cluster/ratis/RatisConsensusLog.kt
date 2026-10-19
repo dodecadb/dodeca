@@ -19,6 +19,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
 import org.apache.ratis.client.RaftClient
+import org.apache.ratis.client.RaftClientConfigKeys
 import org.apache.ratis.conf.Parameters
 import org.apache.ratis.conf.RaftProperties
 import org.apache.ratis.grpc.GrpcConfigKeys
@@ -40,8 +41,12 @@ import org.apache.ratis.protocol.exceptions.AlreadyClosedException
 import org.apache.ratis.protocol.exceptions.GroupMismatchException
 import org.apache.ratis.protocol.exceptions.LeaderNotReadyException
 import org.apache.ratis.protocol.exceptions.NotLeaderException
+import org.apache.ratis.protocol.exceptions.ReconfigurationInProgressException
+import org.apache.ratis.protocol.exceptions.ReconfigurationTimeoutException
 import org.apache.ratis.protocol.exceptions.ServerNotReadyException
+import org.apache.ratis.retry.ExceptionDependentRetry
 import org.apache.ratis.retry.RetryPolicies
+import org.apache.ratis.server.RaftConfiguration
 import org.apache.ratis.server.RaftServer
 import org.apache.ratis.server.RaftServerConfigKeys
 import org.apache.ratis.server.storage.RaftStorage
@@ -55,6 +60,7 @@ import org.dozendb.cluster.api.CommitResult
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
+import org.dozendb.cluster.api.GroupMembership
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Member
@@ -318,7 +324,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val stateMachine = stateMachines[groupId] ?: return
         if (!division.info.isLeader || !stateMachine.handsOverLeadership) return
         val database = stateMachine.database
-        for (candidate in division.group.peers.map { it.id }.filter { it != peerId }) {
+        for (candidate in division.raftConf.currentPeers.map { it.id }.filter { it != peerId }) {
             val reply = runCatching {
                 raftServer.transferLeadership(
                     TransferLeadershipRequest(
@@ -480,7 +486,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             runCatching { it.getDivision(RaftGroupId.valueOf(database.id)) }.getOrNull()
         }
         val info = division?.info
-        if (division == null || info == null || !info.isAlive) {
+        if (division == null || info == null || !info.isAlive || !isVoter(division.raftConf)) {
             return GroupStatus(database, Role.Inactive, null, 0, -1, -1)
         }
         val role =
@@ -511,15 +517,29 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         )
     }
 
-    override fun members(database: DatabaseRef): List<Member> {
+    override fun membership(database: DatabaseRef): GroupMembership {
         val division =
             try {
                 requireServer().getDivision(RaftGroupId.valueOf(database.id))
             } catch (e: IOException) {
                 throw ConsensusUnavailableException("group $database is not running", e)
             }
-        return division.group.peers.map { Member(memberId(it), HostPort.parse(it.address)) }
+        val conf = division.raftConf
+        val settled =
+            conf.previousPeers.isEmpty() &&
+                conf.logEntryIndex <= division.raftLog.lastCommittedIndex
+        // Ratis closes the group of a removed member: the leader once the change is committed,
+        // a follower when it finds itself left out of the configuration or the leader says so.
+        val removed =
+            !division.info.isAlive &&
+                (stateMachines[database.id]?.shutDownAsNonMember == true || !isVoter(conf))
+        return GroupMembership(conf.currentPeers.map(::toMember), settled, removed)
     }
+
+    /** Whether this member votes in [conf], or in the configuration it changes from. */
+    private fun isVoter(conf: RaftConfiguration): Boolean =
+        conf.getPeer(peerId, RaftPeerRole.FOLLOWER) != null ||
+            conf.previousPeers.any { it.id == peerId }
 
     override fun addStatusListener(
         database: DatabaseRef,
@@ -529,19 +549,28 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         return AutoCloseable { listeners[database.id]?.remove(listener) }
     }
 
-    override suspend fun addMember(database: DatabaseRef, member: Member) {
+    override suspend fun addMember(
+        database: DatabaseRef,
+        member: Member,
+        timeout: java.time.Duration,
+    ) {
         changeConfiguration(
             database,
             SetConfigurationRequest.Arguments.newBuilder()
                 .setServersInNewConf(listOf(toPeer(member)))
                 .setMode(SetConfigurationRequest.Mode.ADD)
                 .build(),
+            timeout,
         )
     }
 
-    override suspend fun removeMember(database: DatabaseRef, id: MemberId) {
+    override suspend fun removeMember(
+        database: DatabaseRef,
+        id: MemberId,
+        timeout: java.time.Duration,
+    ) {
         val current = members(database)
-        require(current.any { it.id == id }) { "$id is not a member of $database" }
+        if (current.none { it.id == id }) return
         changeConfiguration(
             database,
             SetConfigurationRequest.Arguments.newBuilder()
@@ -549,42 +578,66 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 .setServersInNewConf(current.filterNot { it.id == id }.map(::toPeer))
                 .setMode(SetConfigurationRequest.Mode.COMPARE_AND_SET)
                 .build(),
+            timeout,
         )
     }
 
-    /** Sends a configuration change through a client, which finds the leader and retries. */
+    /**
+     * Sends a configuration change through a client, which finds the leader. The leader answers
+     * once the change is committed, which may take as long as bringing a new member up to date, so
+     * the client waits up to [timeout] for the answer.
+     */
     private suspend fun changeConfiguration(
         database: DatabaseRef,
         arguments: SetConfigurationRequest.Arguments,
+        timeout: java.time.Duration,
     ) {
         val group =
             RaftGroup.valueOf(RaftGroupId.valueOf(database.id), members(database).map(::toPeer))
+        val clientProperties =
+            RaftProperties(properties).also {
+                RaftClientConfigKeys.Rpc.setRequestTimeout(it, timeDuration(timeout))
+            }
         val attempts = maxOf(1, (config.requestTimeout.toMillis() / RETRY_SLEEP_MS).toInt())
         val reply: RaftClientReply =
             withContext(Dispatchers.IO) {
                 try {
                     RaftClient.newBuilder()
-                        .setProperties(properties)
+                        .setProperties(clientProperties)
                         .setRaftGroup(group)
                         .setClientId(ClientId.randomId())
                         .setRetryPolicy(
-                            RetryPolicies.retryUpToMaximumCountWithFixedSleep(
-                                attempts,
-                                TimeDuration.valueOf(RETRY_SLEEP_MS, TimeUnit.MILLISECONDS),
-                            )
+                            // Retried while the leader is unknown, but not once a change failed
+                            // or another one is in progress.
+                            ExceptionDependentRetry.newBuilder()
+                                .setDefaultPolicy(
+                                    RetryPolicies.retryUpToMaximumCountWithFixedSleep(
+                                        attempts,
+                                        TimeDuration.valueOf(RETRY_SLEEP_MS, TimeUnit.MILLISECONDS),
+                                    )
+                                )
+                                .setExceptionToPolicy(
+                                    ReconfigurationTimeoutException::class.java,
+                                    RetryPolicies.noRetry(),
+                                )
+                                .setExceptionToPolicy(
+                                    ReconfigurationInProgressException::class.java,
+                                    RetryPolicies.noRetry(),
+                                )
+                                .build()
                         )
                         .build()
                         .use { it.admin().setConfiguration(arguments) }
                 } catch (e: IOException) {
                     throw ConsensusUnavailableException(
-                        "configuration change of $database failed",
+                        "configuration change of $database failed: ${e.message}",
                         e,
                     )
                 }
             }
         if (!reply.isSuccess) {
             throw ConsensusUnavailableException(
-                "configuration change of $database failed",
+                "configuration change of $database failed: ${reply.exception?.message}",
                 reply.exception,
             )
         }
@@ -625,13 +678,12 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     private fun describeSelf(): PeerInfo {
         val raftServer = requireServer()
+        // A group Ratis closed here, as for a removed member, is no longer hosted.
         val groups =
-            raftServer.groupIds.associate { groupId ->
-                groupId.uuid to
-                    raftServer.getDivision(groupId).group.peers.map {
-                        Member(memberId(it), HostPort.parse(it.address))
-                    }
-            }
+            raftServer.groupIds
+                .map(raftServer::getDivision)
+                .filter { it.info.isAlive }
+                .associate { it.memberId.groupId.uuid to it.raftConf.currentPeers.map(::toMember) }
         return PeerInfo(self, config.metadata(), groups)
     }
 
@@ -731,6 +783,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 .build()
 
         fun memberId(peer: RaftPeer): MemberId = memberId(peer.id)
+
+        fun toMember(peer: RaftPeer): Member = Member(memberId(peer), HostPort.parse(peer.address))
 
         fun memberId(peerId: RaftPeerId): MemberId = MemberId.parse(peerId.toString())
 

@@ -2,6 +2,9 @@ package org.dozendb.cluster.ratis
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -21,15 +24,30 @@ class SnapshotTest {
     @TempDir lateinit var root: Path
     private var cluster: RatisTestCluster? = null
 
-    /** Small segments, so that logs are discarded after a few entries. */
-    private fun formCluster(): RatisTestCluster =
-        RatisTestCluster(root, 3) {
+    /**
+     * Small segments, so that logs are discarded after a few entries. The group is formed by the
+     * first [initial] of [size] members.
+     */
+    private fun formCluster(size: Int = 3, initial: Int = size): RatisTestCluster =
+        RatisTestCluster(root, size) {
                 it.copy(maxEntrySize = 1 shl 20, logSegmentSize = 1)
             }
             .also {
                 cluster = it
-                it.form()
+                it.form(it.nodes.take(initial))
             }
+
+    /** Writes until the leader discarded the start of its log, past [index]. */
+    private fun RatisTestCluster.discardLogBeyond(leader: RatisTestCluster.Node, index: Long) {
+        // Each entry fills a fifth of a segment.
+        var written = 0
+        await atMost
+            RatisTestCluster.AWAIT untilAsserted
+            {
+                runBlocking { leader.write("entry-${written++}", size = 400_000) }
+                assertThat(firstIndex(logDirectory(leader))).isGreaterThan(index + 1)
+            }
+    }
 
     @AfterEach
     fun stopCluster() {
@@ -109,15 +127,7 @@ class SnapshotTest {
                     assertThat(behind.machine.payloads()).containsExactly("before")
                 }
             behind.stop()
-
-            // Each entry fills a fifth of a segment; keep writing until the leader discarded some.
-            var written = 0
-            await atMost
-                RatisTestCluster.AWAIT untilAsserted
-                {
-                    runBlocking { leader.write("entry-${written++}", size = 400_000) }
-                    assertThat(firstIndex(cluster.logDirectory(leader))).isGreaterThan(before + 1)
-                }
+            cluster.discardLogBeyond(leader, before)
 
             behind.start()
             behind.consensus.startGroup(cluster.database, behind.machine, emptyList())
@@ -150,6 +160,51 @@ class SnapshotTest {
                 .isGreaterThanOrEqualTo(snapshot.position.index)
             assertThat(firstIndex(cluster.logDirectory(behind)))
                 .isGreaterThan(snapshot.position.index)
+        }
+
+    @Test
+    fun `a member added after the leader discarded the start of its log installs a copy first`() =
+        runBlocking<Unit> {
+            val cluster = formCluster(size = 4, initial = 3)
+            val leader = cluster.awaitLeader()
+            cluster.discardLogBeyond(leader, leader.write("before"))
+            val added = cluster.nodes.last().apply { start() }
+            added.consensus.startGroup(
+                cluster.database,
+                added.machine,
+                cluster.nodes.take(3).map { it.consensus.self },
+            )
+
+            val adding =
+                async(Dispatchers.IO) {
+                    leader.consensus.addMember(
+                        cluster.database,
+                        added.consensus.self,
+                        CHANGE_TIMEOUT,
+                    )
+                }
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(added.machine.snapshotRequests).hasSize(1)
+                }
+            assertThat(leader.consensus.members(cluster.database)).hasSize(3)
+            added.consensus.detachGroup(cluster.database)
+            val snapshot = checkNotNull(leader.consensus.currentSnapshot(cluster.database))
+            added.machine.replaceWith(leader.machine)
+            assertThat(added.consensus.installSnapshot(cluster.database, snapshot)).isTrue()
+            added.consensus.startGroup(cluster.database, added.machine, emptyList())
+            adding.await()
+            leader.write("after")
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(added.machine.payloads())
+                        .isEqualTo(leader.machine.payloads())
+                        .endsWith("after")
+                }
+            assertThat(leader.consensus.members(cluster.database)).hasSize(4)
         }
 
     @Test
@@ -212,4 +267,8 @@ class SnapshotTest {
             advertisedAddress = null,
             storageDirectory = directory,
         )
+
+    private companion object {
+        val CHANGE_TIMEOUT: Duration = Duration.ofSeconds(20)
+    }
 }
