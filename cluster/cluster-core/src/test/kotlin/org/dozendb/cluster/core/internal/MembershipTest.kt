@@ -12,6 +12,9 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.dbms.api.DatabaseNotFoundException
+import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
+import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 
 /** Members added to and removed from a running cluster. */
 class MembershipTest {
@@ -56,6 +59,105 @@ class MembershipTest {
             it.stream().toList()
         }
 
+    /**
+     * Writes to [database] and checkpoints every running member until the leader discarded the
+     * start of the database's log, so that a member that joins later cannot catch up from it.
+     */
+    private fun ClusterHarness.discardLogStart(database: String) {
+        var written = 0
+        val among = { members.take(3) }
+        await withPollInterval
+            Duration.ofMillis(300) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                val leader = awaitLeader(database, among)
+                leader
+                    .database(database)
+                    .executeTransactionally(
+                        "CREATE (:Blob {i: \$i, data: \$data})",
+                        mapOf("i" to written++, "data" to "x".repeat(200_000)),
+                    )
+                running().forEach { it.checkpoint(database) }
+                val id = leader.database(database).databaseId().databaseId().uuid()
+                assertThat(leader.firstLogIndex(id)).isGreaterThan(1)
+            }
+    }
+
+    private fun ClusterHarness.Member.checkpoint(database: String) {
+        database(database)
+            .dependencyResolver
+            .resolveDependency(CheckPointer::class.java)
+            .forceCheckPoint(SimpleTriggerInfo("test"))
+    }
+
+    /** The nodes in [database]; fails as an assertion while the database does not run here. */
+    private fun ClusterHarness.Member.count(database: String): Long =
+        try {
+            database(database).executeTransactionally(
+                "MATCH (n) RETURN count(n) AS c",
+                emptyMap(),
+            ) {
+                it.next()["c"] as Long
+            }
+        } catch (e: DatabaseNotFoundException) {
+            throw AssertionError("$database does not run on $this", e)
+        }
+
+    /** The databases [member] votes in, as [observer] knows them. */
+    private fun ClusterHarness.Member.databasesOf(member: ClusterHarness.Member): List<String> =
+        cluster
+            .members()
+            .firstOrNull { it.member.id == member.cluster.self.id }
+            ?.databases
+            .orEmpty()
+
+    @Test
+    fun `an added member joins every database's group, copying each database once`() {
+        val cluster =
+            ClusterHarness(root, 3) {
+                    it.copy(
+                        maxEntrySize = 1 shl 20,
+                        logSegmentSize = 1,
+                        snapshotInterval = Duration.ofMillis(200),
+                    )
+                }
+                .also {
+                    harness = it
+                    it.start()
+                }
+        cluster.administer("CREATE DATABASE films")
+        eventually {
+            for (member in cluster.members) assertThat(member.count("films")).isEqualTo(0)
+        }
+        cluster.discardLogStart("films")
+        cluster.discardLogStart(DEFAULT)
+        val joining = cluster.newMember().apply { start() }
+
+        cluster.administer("CALL dozendb.cluster.addMember('127.0.0.1:${joining.raftPort}')")
+        cluster.administer("CREATE DATABASE series", among = { cluster.members })
+
+        eventually {
+            for (member in cluster.members) {
+                assertThat(member.databasesOf(joining))
+                    .describedAs("databases of the new member, seen by $member")
+                    .containsExactly(SYSTEM, "films", DEFAULT, "series")
+            }
+        }
+        val leader = cluster.awaitLeader("films")
+        leader.database("films").executeTransactionally("CREATE (:Film {title: 'Alien'})")
+        eventually {
+            for (database in listOf("films", DEFAULT)) {
+                assertThat(joining.count(database))
+                    .describedAs(database)
+                    .isEqualTo(cluster.awaitLeader(database).count(database))
+            }
+        }
+        assertThat(joining.home.resolve("logs/debug.log"))
+            .describedAs("no database copied twice")
+            .content()
+            .doesNotContain("needs Raft entries")
+    }
+
     @Test
     fun `a member started after the cluster formed votes in system once it is added`() {
         val cluster = cluster()
@@ -98,5 +200,6 @@ class MembershipTest {
 
     private companion object {
         const val SYSTEM = "system"
+        const val DEFAULT = "neo4j"
     }
 }

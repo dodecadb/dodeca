@@ -10,6 +10,7 @@ import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
 import org.dozendb.cluster.core.MembershipFile
+import org.dozendb.cluster.core.MembershipReconciler
 import org.dozendb.cluster.core.internal.durability.FsyncPolicy
 import org.dozendb.cluster.core.internal.durability.SingleFsyncFileSystem
 import org.dozendb.cluster.core.internal.edition.DozenDbEditionModule
@@ -65,6 +66,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     override val replication: ReplicationService
     private val directory: MemberDirectory
     private val consensus: ConsensusLog
+    private val membership: MembershipReconciler
     private val memberId = MemberId(identityModule.serverId().uuid())
     private val systemDatabase =
         DatabaseRef(
@@ -205,12 +207,23 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 directory = directory,
             )
         globalModule.globalDependencies.satisfyDependency(cluster)
+        membership =
+            MembershipReconciler(
+                consensus,
+                systemDatabase,
+                { replicationService.created() },
+                logService.getInternalLog(MembershipReconciler::class.java),
+            )
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
-                override fun start() = cluster.start()
+                override fun start() {
+                    cluster.start()
+                    membership.start()
+                }
 
                 override fun stop() {
                     try {
+                        membership.close()
                         cluster.stop()
                     } finally {
                         replication.close()
@@ -249,6 +262,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
             globalReadOnlyChecker?.refresh()
             reconciler.request()
+            // A new database may need members added since its initial members were recorded.
+            membership.request()
         }
         return provider
     }

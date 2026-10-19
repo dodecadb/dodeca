@@ -1,0 +1,117 @@
+package org.dozendb.cluster.core
+
+import java.time.Duration
+import java.util.UUID
+import kotlinx.coroutines.runBlocking
+import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.cluster.api.DatabaseRef
+import org.dozendb.cluster.api.fake.InMemoryConsensus
+import org.dozendb.cluster.api.fake.RecordingStateMachine
+import org.junit.jupiter.api.Test
+import org.neo4j.logging.NullLog
+
+class MembershipReconcilerTest {
+    private val consensus = InMemoryConsensus()
+    private val system = DatabaseRef("system", UUID(0, 1))
+    private val films = DatabaseRef("films", UUID.randomUUID())
+    private val logs = List(3) { consensus.newMember() }
+    private val initial = logs.map { it.self }
+    private val leader = logs[0]
+
+    /** The reconciler of [member], changing groups on the calling thread. */
+    private fun reconciler(member: InMemoryConsensus.InMemoryConsensusLog = leader) =
+        MembershipReconciler(
+            member,
+            system,
+            { listOf(system, films) },
+            NullLog.getInstance(),
+            changes = { it.run() },
+        )
+
+    private fun formCluster() {
+        for (log in logs) {
+            log.start()
+            log.startGroup(system, RecordingStateMachine(), initial)
+            log.startGroup(films, RecordingStateMachine(), initial)
+        }
+        consensus.electLeader(system, leader.self.id)
+        consensus.electLeader(films, logs[1].self.id)
+    }
+
+    private fun changeCluster(change: suspend () -> Unit) = runBlocking { change() }
+
+    @Test
+    fun `a member added to the cluster joins a group once it runs it`() {
+        formCluster()
+        val added = consensus.newMember().apply { start() }
+        added.joinGroup(system, initial)
+        changeCluster { leader.addMember(system, added.self, TIMEOUT) }
+        val reconciler = reconciler()
+
+        assertThat(reconciler.reconcile()).describedAs("waits for it to run the group").isTrue()
+        assertThat(leader.members(films)).containsExactlyElementsOf(initial)
+
+        added.startGroup(films, RecordingStateMachine(), initial)
+
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(leader.members(films)).containsExactlyElementsOf(initial + added.self)
+        assertThat(reconciler.reconcile()).describedAs("nothing left to do").isFalse()
+    }
+
+    @Test
+    fun `a member removed from the cluster leaves every group, before any member joins`() {
+        formCluster()
+        val added = consensus.newMember().apply { start() }
+        added.joinGroup(system, initial)
+        added.startGroup(films, RecordingStateMachine(), initial)
+        changeCluster {
+            leader.addMember(system, added.self, TIMEOUT)
+            leader.removeMember(system, logs[2].self.id, TIMEOUT)
+        }
+        val reconciler = reconciler()
+
+        reconciler.reconcile()
+
+        assertThat(leader.members(films)).containsExactly(logs[0].self, logs[1].self)
+
+        reconciler.reconcile()
+
+        assertThat(leader.members(films)).containsExactly(logs[0].self, logs[1].self, added.self)
+        assertThat(logs[2].membership(films).removed).isTrue()
+    }
+
+    @Test
+    fun `only the system leader changes groups`() {
+        formCluster()
+        changeCluster { leader.removeMember(system, logs[2].self.id, TIMEOUT) }
+
+        assertThat(reconciler(logs[1]).reconcile()).isFalse()
+
+        assertThat(leader.members(films)).containsExactlyElementsOf(initial)
+    }
+
+    @Test
+    fun `a group keeps one of the cluster's members`() {
+        formCluster()
+        val added = consensus.newMember().apply { start() }
+        added.joinGroup(system, initial)
+        added.startGroup(films, RecordingStateMachine(), initial)
+        changeCluster {
+            leader.addMember(system, added.self, TIMEOUT)
+            leader.removeMember(films, logs[0].self.id, TIMEOUT)
+            leader.removeMember(system, logs[1].self.id, TIMEOUT)
+            leader.removeMember(system, logs[2].self.id, TIMEOUT)
+        }
+        val reconciler = reconciler()
+
+        reconciler.reconcile()
+
+        assertThat(leader.members(films).map { it.id })
+            .describedAs("gains the cluster's members before losing its own")
+            .containsExactly(logs[1].self.id, logs[2].self.id, leader.self.id)
+    }
+
+    private companion object {
+        val TIMEOUT: Duration = Duration.ofSeconds(5)
+    }
+}

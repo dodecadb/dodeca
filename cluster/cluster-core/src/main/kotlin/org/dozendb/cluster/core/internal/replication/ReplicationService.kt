@@ -155,6 +155,9 @@ internal class ReplicationService(
         return replica
     }
 
+    /** The replicated databases created here, running or not. */
+    fun created(): List<DatabaseRef> = databases.values.map { it.ref }
+
     /** The replicated databases that are running. */
     fun running(): List<ReplicatedDatabase> = databases.values.filter { it.isRunning() }
 
