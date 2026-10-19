@@ -36,7 +36,7 @@ class RoutingIT {
     private val aliases = listOf("core1", "core2", "core3")
     private val boltPorts = aliases.map { TestPorts.free() }
     private val members = aliases.mapIndexed { index, alias ->
-        DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
+        DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
             .boltOnHostPort(boltPorts[index])
@@ -55,10 +55,10 @@ class RoutingIT {
      * one record per member does in production: the driver resolves the default database through
      * its seed, so a seed that names one member would fail once that member is gone.
      */
-    private fun driverSeededAt(seed: DozerDbContainer): Driver =
+    private fun driverSeededAt(seed: DozenDbContainer): Driver =
         GraphDatabase.driver(
             "neo4j://${boltAddress(seed)}",
-            AuthTokens.basic("neo4j", DozerDbContainer.PASSWORD),
+            AuthTokens.basic("neo4j", DozenDbContainer.PASSWORD),
             Config.builder()
                 .withResolver { boltPorts.map { ServerAddress.of("127.0.0.1", it) }.toSet() }
                 .build(),
@@ -68,22 +68,22 @@ class RoutingIT {
     fun stop() {
         driver.close()
         members.forEach {
-            it.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+            it.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
             it.stop()
         }
         network.close()
     }
 
-    private fun boltAddress(member: DozerDbContainer) =
+    private fun boltAddress(member: DozenDbContainer) =
         "127.0.0.1:${boltPorts[members.indexOf(member)]}"
 
-    private fun role(member: DozerDbContainer, database: String = "neo4j"): Any? =
+    private fun role(member: DozenDbContainer, database: String = "neo4j"): Any? =
         when (val outcome = member.run("CALL dozendb.cluster.status()", "system")) {
             is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == database }?.get("role")
             is Outcome.Failed -> null
         }
 
-    private fun awaitLeader(database: String = "neo4j"): DozerDbContainer =
+    private fun awaitLeader(database: String = "neo4j"): DozenDbContainer =
         await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
@@ -93,7 +93,7 @@ class RoutingIT {
 
     @Suppress("UNCHECKED_CAST")
     private fun routingTable(
-        member: DozerDbContainer,
+        member: DozenDbContainer,
         database: String,
     ): Map<String, List<String>> {
         val row =
@@ -218,7 +218,7 @@ class RoutingIT {
                     write("CREATE (:Failover {n: $n})", seededAtLeader)
                     acknowledged += n
                 }
-                leader.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+                leader.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
 
                 val killed = System.nanoTime()
                 leader.kill()

@@ -12,8 +12,8 @@
   <artifactId>cluster-plugin</artifactId>
   <name>DozenDB plugin</name>
   <description>
-    The single jar installed into Neo4j's lib/ in place of the DozerDB jar: the DozenDB modules,
-    Apache Ratis, and Kotlin relocated under org.dozendb.shaded.
+    The single jar installed into Neo4j's lib/: the DozenDB modules, Apache Ratis, and Kotlin
+    relocated under org.dozendb.shaded.
   </description>
 
   <dependencies>

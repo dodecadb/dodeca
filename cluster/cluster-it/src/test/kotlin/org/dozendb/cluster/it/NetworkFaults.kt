@@ -12,7 +12,7 @@ import org.testcontainers.utility.DockerImageName
  * A restarted member gets a new network stack: close its faults before restarting it and create new
  * ones afterwards.
  */
-class NetworkFaults(private val member: DozerDbContainer) : AutoCloseable {
+class NetworkFaults(private val member: DozenDbContainer) : AutoCloseable {
     private val sidecar: GenericContainer<*> =
         GenericContainer(DockerImageName.parse(IMAGE))
             .withCreateContainerCmdModifier {
@@ -40,7 +40,7 @@ class NetworkFaults(private val member: DozerDbContainer) : AutoCloseable {
      * Applies netem [arguments], such as `rate 10mbit`, to what the member sends to [target]; other
      * traffic is unaffected. Replaces earlier shaping.
      */
-    fun shapeTo(target: DozerDbContainer, vararg arguments: String) {
+    fun shapeTo(target: DozenDbContainer, vararg arguments: String) {
         clearShaping()
         exec("tc", "qdisc", "add", "dev", "eth0", "root", "handle", "1:", "prio")
         exec(
@@ -97,7 +97,7 @@ class NetworkFaults(private val member: DozerDbContainer) : AutoCloseable {
         const val IMAGE = "nicolaka/netshoot:v0.13"
         private const val RAFT_PORT = "7700"
 
-        fun ipOf(member: DozerDbContainer): String =
+        fun ipOf(member: DozenDbContainer): String =
             checkNotNull(member.containerInfo.networkSettings.networks.values.first().ipAddress) {
                 "${member.alias} has no IP address"
             }

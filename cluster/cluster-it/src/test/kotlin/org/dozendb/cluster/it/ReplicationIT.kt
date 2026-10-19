@@ -26,7 +26,7 @@ class ReplicationIT {
     private val aliases = listOf("core1", "core2", "core3")
     // Fixed host ports: Docker may publish a restarted container on other ports.
     private val members = aliases.map { alias ->
-        DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
+        DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
             .boltOnHostPort(TestPorts.free())
@@ -42,19 +42,19 @@ class ReplicationIT {
     @AfterAll
     fun stop() {
         members.forEach {
-            it.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+            it.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
             it.stop()
         }
         network.close()
     }
 
-    private fun role(member: DozerDbContainer): Any? =
+    private fun role(member: DozenDbContainer): Any? =
         when (val outcome = member.run("CALL dozendb.cluster.status()", "system")) {
             is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == "neo4j" }?.get("role")
             is Outcome.Failed -> null
         }
 
-    private fun awaitLeader(): DozerDbContainer =
+    private fun awaitLeader(): DozenDbContainer =
         await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
@@ -62,11 +62,11 @@ class ReplicationIT {
                 running.filter { role(it) == "LEADER" }.singleOrNull()
             }
 
-    private fun count(member: DozerDbContainer, label: String): Long =
+    private fun count(member: DozenDbContainer, label: String): Long =
         member.rows("MATCH (n:$label) RETURN count(n) AS c").single()["c"] as Long
 
     /** The whole graph with record IDs; members that applied the same log return the same. */
-    private fun contents(member: DozerDbContainer): List<Map<String, Any?>> =
+    private fun contents(member: DozenDbContainer): List<Map<String, Any?>> =
         member.rows(
             "MATCH (n) OPTIONAL MATCH (n)-[r]->(m) RETURN id(n) AS n, labels(n) AS labels, " +
                 "properties(n) AS props, id(r) AS r, type(r) AS type, id(m) AS m, properties(r) AS relProps " +
@@ -147,7 +147,7 @@ class ReplicationIT {
             if (leader.run("CREATE (:Ack {n: $n})") is Outcome.Rows) acknowledged += n
             if (killedAt < 0 && acknowledged.size == 50) {
                 killedAt = n
-                leader.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+                leader.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
                 leader.kill()
                 running -= leader
             }

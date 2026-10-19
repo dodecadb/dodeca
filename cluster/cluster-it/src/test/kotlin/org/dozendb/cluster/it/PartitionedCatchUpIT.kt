@@ -36,7 +36,7 @@ class PartitionedCatchUpIT {
     private val network = Network.newNetwork()
     private val aliases = listOf("core1", "core2", "core3")
     private val members = aliases.map { alias ->
-        DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
+        DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
             // Snapshots follow checkpoints; Neo4j's default interval is 15 minutes.
@@ -62,21 +62,21 @@ class PartitionedCatchUpIT {
     @AfterAll
     fun stop() {
         members.forEach {
-            it.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+            it.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
             it.stop()
         }
         network.close()
     }
 
-    private fun faultsOf(member: DozerDbContainer) = NetworkFaults(member).also { faults += it }
+    private fun faultsOf(member: DozenDbContainer) = NetworkFaults(member).also { faults += it }
 
-    private fun status(member: DozerDbContainer, database: String = "neo4j"): Map<String, Any?>? =
+    private fun status(member: DozenDbContainer, database: String = "neo4j"): Map<String, Any?>? =
         when (val outcome = member.run("CALL dozendb.cluster.status()", "system")) {
             is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == database }
             is Outcome.Failed -> null
         }
 
-    private fun awaitLeader(database: String = "neo4j"): DozerDbContainer =
+    private fun awaitLeader(database: String = "neo4j"): DozenDbContainer =
         await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
@@ -84,10 +84,10 @@ class PartitionedCatchUpIT {
                 members.singleOrNull { status(it, database)?.get("role") == "LEADER" }
             }
 
-    private fun count(member: DozerDbContainer, label: String): Long =
+    private fun count(member: DozenDbContainer, label: String): Long =
         member.rows("MATCH (n:$label) RETURN count(n) AS c").single()["c"] as Long
 
-    private fun awaitSameData(member: DozerDbContainer, leader: DozerDbContainer) {
+    private fun awaitSameData(member: DozenDbContainer, leader: DozenDbContainer) {
         await withPollInterval
             Duration.ofMillis(500) atMost
             Duration.ofMinutes(3) untilAsserted
@@ -102,7 +102,7 @@ class PartitionedCatchUpIT {
     }
 
     /** Writes blobs on [leader] until its snapshot is [entries] past [index]; returns it. */
-    private fun discardLogPast(leader: DozerDbContainer, index: Long, entries: Int): Long {
+    private fun discardLogPast(leader: DozenDbContainer, index: Long, entries: Int): Long {
         var written = 0
         return await withPollInterval
             Duration.ofMillis(100) atMost
@@ -138,7 +138,7 @@ class PartitionedCatchUpIT {
     }
 
     /** Reads [label]s on [member] every 100 ms until the returned stop function is called. */
-    private fun probe(member: DozerDbContainer, label: String): () -> List<Read> = probe {
+    private fun probe(member: DozenDbContainer, label: String): () -> List<Read> = probe {
         val outcome = member.run("MATCH (n:$label) RETURN count(n) AS c")
         (outcome as? Outcome.Rows)?.rows?.single()?.get("c") as Long?
     }
@@ -148,7 +148,7 @@ class PartitionedCatchUpIT {
         OffsetDateTime.parse(line.substring(0, 28), LOG_TIME).toInstant().toEpochMilli()
 
     /** The first index of the system database's Raft log on [member]. */
-    private fun firstSystemIndex(member: DozerDbContainer): Long =
+    private fun firstSystemIndex(member: DozenDbContainer): Long =
         member
             .execInContainer("ls", "/data/raft/$SYSTEM_GROUP/current")
             .stdout
@@ -156,7 +156,7 @@ class PartitionedCatchUpIT {
             .mapNotNull { SEGMENT.matchEntire(it)?.groupValues?.get(1)?.toLong() }
             .min()
 
-    private fun userCount(member: DozerDbContainer): Long? =
+    private fun userCount(member: DozenDbContainer): Long? =
         (member.run("SHOW USERS YIELD user RETURN count(*) AS c", "system") as? Outcome.Rows)
             ?.rows
             ?.single()
@@ -254,7 +254,7 @@ class PartitionedCatchUpIT {
             faultsOf(source).shapeTo(behind, "rate", "4mbit", "delay", "20ms")
         }
 
-        val probeUrl = "bolt://${behind.host}:${behind.getMappedPort(DozerDbContainer.BOLT_PORT)}"
+        val probeUrl = "bolt://${behind.host}:${behind.getMappedPort(DozenDbContainer.BOLT_PORT)}"
         val logins = probe {
             try {
                 GraphDatabase.driver(probeUrl, AuthTokens.basic("probe", "probe-secret")).use {

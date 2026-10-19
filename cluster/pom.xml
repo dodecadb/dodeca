@@ -52,8 +52,7 @@
     <ktfmt.version>0.64</ktfmt.version>
 
     <!-- The Docker image the plugin is tested against and installed into. -->
-    <dozerdb.image>graphstack/dozerdb:5.26.27.0</dozerdb.image>
-    <dozerdb.image.jar>dozerdb-core-5.26.27-1.1.0.jar</dozerdb.image.jar>
+    <neo4j.image>neo4j:${neo4j.version}-community</neo4j.image>
   </properties>
 
   <dependencyManagement>

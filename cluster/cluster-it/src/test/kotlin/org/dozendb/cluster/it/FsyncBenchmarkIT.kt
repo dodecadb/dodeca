@@ -43,7 +43,7 @@ class FsyncBenchmarkIT {
             }
         }
         print(report)
-        val directory = Files.createDirectories(DozerDbContainer.logsDirectory)
+        val directory = Files.createDirectories(DozenDbContainer.logsDirectory)
         Files.writeString(directory.resolve("fsync-benchmark.txt"), report)
     }
 
@@ -51,7 +51,7 @@ class FsyncBenchmarkIT {
         val aliases = listOf("core1", "core2", "core3")
         Network.newNetwork().use { network ->
             val members = aliases.map { alias ->
-                DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
+                DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
                     .inNetwork(network)
                     .clusterMember(aliases.map { "$it:7700" })
                     .withEnv("NEO4J_server_dozendb_cluster_single__fsync", singleFsync.toString())
@@ -95,7 +95,7 @@ class FsyncBenchmarkIT {
 
     private fun seconds(since: Long): Double = (System.nanoTime() - since) / 1e9
 
-    private fun commitIndex(member: DozerDbContainer): Long =
+    private fun commitIndex(member: DozenDbContainer): Long =
         member
             .rows("CALL dozendb.cluster.status()", "system")
             .single {
@@ -103,7 +103,7 @@ class FsyncBenchmarkIT {
             }["commitIndex"]
             as Long
 
-    private fun awaitLeader(members: List<DozerDbContainer>): DozerDbContainer =
+    private fun awaitLeader(members: List<DozenDbContainer>): DozenDbContainer =
         await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(60) untilNotNull

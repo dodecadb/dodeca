@@ -37,12 +37,12 @@ class MultiDatabaseIT {
     private val aliases = listOf("core1", "core2", "core3")
     private val boltPorts = aliases.map { TestPorts.free() }
     private val members = aliases.mapIndexed { index, alias ->
-        DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
+        DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
             .boltOnHostPort(boltPorts[index])
     }
-    private val down = mutableSetOf<DozerDbContainer>()
+    private val down = mutableSetOf<DozenDbContainer>()
     private lateinit var driver: Driver
 
     @BeforeAll
@@ -51,7 +51,7 @@ class MultiDatabaseIT {
         driver =
             GraphDatabase.driver(
                 "neo4j://127.0.0.1:${boltPorts.first()}",
-                AuthTokens.basic("neo4j", DozerDbContainer.PASSWORD),
+                AuthTokens.basic("neo4j", DozenDbContainer.PASSWORD),
                 Config.builder()
                     .withResolver { boltPorts.map { ServerAddress.of("127.0.0.1", it) }.toSet() }
                     .build(),
@@ -62,7 +62,7 @@ class MultiDatabaseIT {
     fun stop() {
         driver.close()
         members.forEach {
-            it.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+            it.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
             it.stop()
         }
         network.close()
@@ -88,7 +88,7 @@ class MultiDatabaseIT {
             }
     }
 
-    private fun live(): List<DozerDbContainer> = members - down
+    private fun live(): List<DozenDbContainer> = members - down
 
     /** The status of [database] as every live member reports it about itself, null if none. */
     private fun statuses(database: String): List<Any?> =
@@ -99,7 +99,7 @@ class MultiDatabaseIT {
                 ?.get("currentStatus")
         }
 
-    private fun role(member: DozerDbContainer, database: String): Any? =
+    private fun role(member: DozenDbContainer, database: String): Any? =
         member
             .rows("CALL dozendb.cluster.status()", "system")
             .singleOrNull { it["database"] == database }

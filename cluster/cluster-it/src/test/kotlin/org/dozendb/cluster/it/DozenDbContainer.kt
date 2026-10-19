@@ -30,9 +30,9 @@ sealed interface Outcome {
     data class Failed(val code: String, val message: String) : Outcome
 }
 
-/** A DozerDB server in Docker, either the stock image or the image with the DozenDB jar. */
-class DozerDbContainer(image: DockerImageName, val alias: String) :
-    GenericContainer<DozerDbContainer>(image) {
+/** A Neo4j server in Docker: the official Community image, or that image with the DozenDB jar. */
+class DozenDbContainer(image: DockerImageName, val alias: String) :
+    GenericContainer<DozenDbContainer>(image) {
     init {
         withNetworkAliases(alias)
         withCreateContainerCmdModifier { it.withHostName(alias) }
@@ -49,9 +49,9 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
 
     private var driver: Driver? = null
 
-    fun inNetwork(network: Network): DozerDbContainer = withNetwork(network)
+    fun inNetwork(network: Network): DozenDbContainer = withNetwork(network)
 
-    fun clusterMember(initialMembers: List<String>): DozerDbContainer =
+    fun clusterMember(initialMembers: List<String>): DozenDbContainer =
         withEnv("NEO4J_dbms_dozendb_cluster_enabled", "true")
             .withEnv(
                 "NEO4J_dbms_dozendb_cluster_initial__members",
@@ -62,7 +62,7 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
      * Publishes Bolt on [hostPort] of this machine and advertises it there, so routing tables lead
      * drivers outside the Docker network to this member.
      */
-    fun boltOnHostPort(hostPort: Int): DozerDbContainer {
+    fun boltOnHostPort(hostPort: Int): DozenDbContainer {
         setPortBindings(listOf("$hostPort:$BOLT_PORT"))
         return withEnv("NEO4J_server_bolt_advertised__address", "127.0.0.1:$hostPort")
     }
@@ -85,24 +85,6 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
             driver().session(SessionConfig.forDatabase(database)).use { session ->
                 Outcome.Rows(session.run(cypher, parameters).list { it.asMap() })
             }
-        } catch (e: Neo4jException) {
-            Outcome.Failed(e.code(), e.message.orEmpty())
-        }
-
-    /** Runs [cypher] as [user], against [database] or else the user's home database. */
-    fun runAs(user: String, password: String, cypher: String, database: String? = null): Outcome =
-        try {
-            GraphDatabase.driver(
-                    "bolt://$host:${getMappedPort(BOLT_PORT)}",
-                    AuthTokens.basic(user, password),
-                )
-                .use { driver ->
-                    val config =
-                        database?.let(SessionConfig::forDatabase) ?: SessionConfig.defaultConfig()
-                    driver.session(config).use { session ->
-                        Outcome.Rows(session.run(cypher).list { it.asMap() })
-                    }
-                }
         } catch (e: Neo4jException) {
             Outcome.Failed(e.code(), e.message.orEmpty())
         }
@@ -132,7 +114,7 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
     private var dataVolume: String? = null
 
     /** Keeps `/data` in the Docker volume [name], so that it survives restarts and can be wiped. */
-    fun withDataVolume(name: String): DozerDbContainer {
+    fun withDataVolume(name: String): DozenDbContainer {
         dataVolume = name
         return withCreateContainerCmdModifier { it.hostConfig!!.withBinds(Bind(name, DATA)) }
     }
@@ -207,10 +189,12 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
                 "system property $name is not set; run with -Pit"
             }
 
-        /** The stock DozerDB image the plugin is compared with and installed into. */
-        val stockImage: DockerImageName by lazy { DockerImageName.parse(property("dozerdb.image")) }
+        /** Neo4j's official Community image, which DozenDB is compared with and installed into. */
+        val communityImage: DockerImageName by lazy {
+            DockerImageName.parse(property("neo4j.image"))
+        }
 
-        /** The stock image with the DozerDB jar replaced by the DozenDB jar. */
+        /** The Community image with the DozenDB jar in `lib/`. */
         val dozenDbImage: DockerImageName by lazy {
             val jar = Path.of(property("dozendb.plugin.jar"))
             check(Files.isRegularFile(jar)) { "$jar does not exist; build cluster-plugin first" }
@@ -218,8 +202,7 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
                 ImageFromDockerfile("dozendb-it", true)
                     .withFileFromPath("dozendb.jar", jar)
                     .withDockerfileFromBuilder {
-                        it.from(stockImage.asCanonicalNameString())
-                            .run("rm /var/lib/neo4j/lib/${property("dozerdb.image.jar")}")
+                        it.from(communityImage.asCanonicalNameString())
                             .copy("dozendb.jar", "/var/lib/neo4j/lib/dozendb.jar")
                             .build()
                     }

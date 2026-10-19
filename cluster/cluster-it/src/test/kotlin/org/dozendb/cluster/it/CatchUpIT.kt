@@ -33,7 +33,7 @@ class CatchUpIT {
     // Fixed host ports: Docker may publish a restarted container on other ports.
     private val boltPorts = aliases.map { TestPorts.free() }
     private val members = aliases.mapIndexed { index, alias ->
-        DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
+        DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
             .boltOnHostPort(boltPorts[index])
@@ -51,23 +51,23 @@ class CatchUpIT {
     @AfterAll
     fun stop() {
         members.forEach {
-            it.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+            it.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
             it.stop()
         }
-        volumes.forEach(DozerDbContainer::removeVolume)
+        volumes.forEach(DozenDbContainer::removeVolume)
         network.close()
     }
 
-    private fun status(member: DozerDbContainer, database: String = "neo4j"): Map<String, Any?>? =
+    private fun status(member: DozenDbContainer, database: String = "neo4j"): Map<String, Any?>? =
         when (val outcome = member.run("CALL dozendb.cluster.status()", "system")) {
             is Outcome.Rows -> outcome.rows.singleOrNull { it["database"] == database }
             is Outcome.Failed -> null
         }
 
     private fun awaitLeader(
-        running: List<DozerDbContainer>,
+        running: List<DozenDbContainer>,
         database: String = "neo4j",
-    ): DozerDbContainer =
+    ): DozenDbContainer =
         await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(200) atMost
             Duration.ofSeconds(30) untilNotNull
@@ -75,10 +75,10 @@ class CatchUpIT {
                 running.singleOrNull { status(it, database)?.get("role") == "LEADER" }
             }
 
-    private fun count(member: DozerDbContainer, label: String): Long =
+    private fun count(member: DozenDbContainer, label: String): Long =
         member.rows("MATCH (n:$label) RETURN count(n) AS c").single()["c"] as Long
 
-    private fun awaitSameData(member: DozerDbContainer, leader: DozerDbContainer) {
+    private fun awaitSameData(member: DozenDbContainer, leader: DozenDbContainer) {
         await withPollInterval
             Duration.ofSeconds(1) atMost
             Duration.ofMinutes(2) untilAsserted

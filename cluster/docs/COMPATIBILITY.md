@@ -7,8 +7,8 @@ join a cluster whose members run a different Neo4j version.
 
 | Component | Version | Notes |
 |---|---|---|
-| Neo4j | 5.26.27 (Community) | The Neo4j version inside the `graphstack/dozerdb:5.26.27.0` image. |
-| Test image | `graphstack/dozerdb:5.26.27.0` | Test baseline and installation target. The DozenDB jar replaces `lib/dozerdb-core-5.26.27-1.1.0.jar`. |
+| Neo4j | 5.26.27 (Community) | Unmodified; the DozenDB jar goes into its `lib/`. |
+| Test image | `neo4j:5.26.27-community` | Neo4j's official image: test baseline and installation target. `StandaloneIT` compares DozenDB, with clustering disabled, against it. |
 | Apache Ratis | 3.3.1 | Uses the already shaded `ratis-thirdparty` 1.1.0 for gRPC, Netty and protobuf. |
 | Kotlin | 2.4.21, kotlinx-coroutines 1.11.0 | Bundled and relocated to `org.dozendb.shaded`. |
 | JDK | build 17, run 17 or 21 | Bytecode targets Java 17 like Neo4j 5.26. The test image runs Temurin 21. |
@@ -18,9 +18,9 @@ join a cluster whose members run a different Neo4j version.
 DozenDB contains its own port of the DozerDB code it used to build on, see
 `UPSTREAM_TOUCHPOINTS.md`, and no longer needs DozerDB. It is not a drop-in
 replacement for DozerDB: it declares only Neo4j's and its own settings, and
-behaves differently in these ways, with clustering enabled or disabled.
-`DisabledParityIT` compares both with clustering disabled and asserts each
-difference.
+behaves differently in these ways, with clustering enabled or disabled. Each
+difference was verified against the `graphstack/dozerdb:5.26.27.0` image when
+DozenDB took over the code.
 
 - **Constraints.** Stores with existence, key, property type and other
   Enterprise constraints can be read. A node or relationship that lacks a

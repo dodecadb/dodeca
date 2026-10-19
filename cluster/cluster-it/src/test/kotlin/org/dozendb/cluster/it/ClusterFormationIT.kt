@@ -23,7 +23,7 @@ class ClusterFormationIT {
     private val network = Network.newNetwork()
     private val aliases = listOf("core1", "core2", "core3")
     private val members = aliases.map { alias ->
-        DozerDbContainer(DozerDbContainer.dozenDbImage, alias)
+        DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
     }
@@ -37,16 +37,16 @@ class ClusterFormationIT {
     @AfterAll
     fun stop() {
         members.forEach {
-            it.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+            it.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
             it.stop()
         }
         network.close()
     }
 
-    private fun status(member: DozerDbContainer): Map<String, Any?> =
+    private fun status(member: DozenDbContainer): Map<String, Any?> =
         member.rows("CALL dozendb.cluster.status()", "system").single { it["database"] == "system" }
 
-    private fun awaitOneLeader(running: List<DozerDbContainer>): String {
+    private fun awaitOneLeader(running: List<DozenDbContainer>): String {
         var leader: String? = null
         await withPollInterval
             Duration.ofMillis(200) atMost
@@ -106,7 +106,7 @@ class ClusterFormationIT {
     fun `the remaining members elect a new leader when the leader dies`() {
         val leaderId = awaitOneLeader(members)
         val leader = members.single { status(it)["memberId"] == leaderId }
-        leader.saveLogs(DozerDbContainer.logsDirectory.resolve(javaClass.simpleName))
+        leader.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
 
         leader.kill()
 
