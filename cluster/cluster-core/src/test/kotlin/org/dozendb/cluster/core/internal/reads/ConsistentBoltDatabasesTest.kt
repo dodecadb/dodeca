@@ -30,6 +30,7 @@ class ConsistentBoltDatabasesTest {
                 NullLog.getInstance(),
             ),
             NullLogProvider.getInstance(),
+            { error("not used") },
         )
     private val unused = BoltGraphDatabaseManagementServiceSPI { _, _ -> error("not used") }
 

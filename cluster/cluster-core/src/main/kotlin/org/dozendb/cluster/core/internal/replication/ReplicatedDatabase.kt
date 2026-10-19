@@ -35,12 +35,14 @@ import org.neo4j.storageengine.api.CommandBatch
  * has closed: such a transaction may hold IDs from an earlier term, and its rollback can mark free
  * an ID that another leader used since. Until then IDs come from the high ID, which is always safe.
  *
+ * @property initialMembers the initial members of the database's group, which this member creates
+ *   with them if it has no local state for it.
  * @property onSnapshotNeeded called when the group's log no longer holds entries this member needs.
  */
 internal class ReplicatedDatabase(
     val namedDatabaseId: NamedDatabaseId,
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val initialMembers: () -> List<Member>,
     private val idGeneratorFactory: IdGeneratorFactory,
     storeExists: Boolean,
     private val scheduler: ScheduledExecutorService,
@@ -109,9 +111,7 @@ internal class ReplicatedDatabase(
                 ) { leader, minimumIndex ->
                     onSnapshotNeeded(this, leader, minimumIndex)
                 }
-            val bootstrap =
-                if (ref.id in consensus.localGroups()) emptyList()
-                else consensus.members(systemDatabase)
+            val bootstrap = if (ref.id in consensus.localGroups()) emptyList() else initialMembers()
             // From now on every transaction goes through Raft.
             bootstrapping = false
             val listener = consensus.addStatusListener(ref, ::onStatus)

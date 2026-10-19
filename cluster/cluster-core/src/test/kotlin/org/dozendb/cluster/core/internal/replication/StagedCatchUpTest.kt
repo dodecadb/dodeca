@@ -81,7 +81,7 @@ class StagedCatchUpTest {
         ReplicatedDatabase(
             id,
             self,
-            system,
+            { error("not used") },
             Proxy.newProxyInstance(
                 javaClass.classLoader,
                 arrayOf(IdGeneratorFactory::class.java),

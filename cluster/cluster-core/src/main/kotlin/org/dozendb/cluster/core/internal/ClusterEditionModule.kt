@@ -3,11 +3,13 @@ package org.dozendb.cluster.core.internal
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
+import org.dozendb.cluster.core.MembershipFile
 import org.dozendb.cluster.core.internal.durability.FsyncPolicy
 import org.dozendb.cluster.core.internal.durability.SingleFsyncFileSystem
 import org.dozendb.cluster.core.internal.edition.DozenDbEditionModule
@@ -71,6 +73,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         )
     private val localStores: Neo4jLocalStores
 
+    private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
 
     init {
@@ -144,6 +147,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 defaultDatabase,
                 catchUp,
                 logService.internalLogProvider,
+                ::initialMembers,
             )
         replication = replicationService
         val fileSystem = globalModule.fileSystem
@@ -189,6 +193,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 systemDatabase,
                 formation,
                 stores,
+                MembershipFile(config.get(DozenDbSettings.raftDirectory).resolve(MEMBERSHIP_FILE)),
                 userLog,
                 { replication.running().map { it.ref } },
                 directory,
@@ -215,16 +220,19 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     ): DatabaseContextProvider<*> {
         val provider = super.createDatabaseContextProvider(globalModule)
         val repository = databaseRepository
+        systemGraph =
+            Neo4jSystemGraph(
+                { repository.getSystemDatabaseContext().databaseFacade() },
+                replication,
+            )
         reconciler =
             DatabaseReconciler(
-                Neo4jSystemGraph(
-                    { repository.getSystemDatabaseContext().databaseFacade() },
-                    replication,
-                ),
+                systemGraph,
                 Neo4jLocalDatabases(databaseManager, repository, localStores, replication),
                 memberId,
                 defaultDatabase,
                 ::copySources,
+                { consensus.membership(systemDatabase).takeIf { it.settled }?.members },
                 globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
             )
         // Transactions applied from Raft fire no transaction event listeners: refresh what the
@@ -238,6 +246,20 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         }
         return provider
     }
+
+    /**
+     * The initial members of the group of the database [id], which this member creates with them if
+     * it has no local state for it. A member that is not among them waits to be added.
+     */
+    private fun initialMembers(id: NamedDatabaseId): List<Member> =
+        if (id.name() == defaultDatabase) {
+            cluster.foundingMembers
+                ?: consensus.members(systemDatabase).filter { it.id != memberId }
+        } else {
+            checkNotNull(systemGraph.initialMembers(id)) {
+                "No initial members are recorded for database $id"
+            }
+        }
 
     /** The members to copy a new database from, [creator] first. */
     private fun copySources(creator: MemberId): List<HostPort> =
@@ -382,6 +404,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     private companion object {
+        /** This member's [org.dozendb.cluster.core.MembershipRecord], in the Raft directory. */
+        const val MEMBERSHIP_FILE = "membership"
+
         fun SocketAddress.toHostPort(): HostPort = HostPort(hostname, port)
 
         fun initialMembers(config: Config): List<HostPort> =

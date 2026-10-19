@@ -4,6 +4,7 @@ import java.io.IOException
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.MemberId
 import org.junit.jupiter.api.Test
 import org.neo4j.kernel.database.DatabaseIdFactory
@@ -17,6 +18,10 @@ class DatabaseReconcilerTest {
     private val otherAddress = HostPort("other", 7000)
     private val graph = FakeSystemGraph()
     private val local = FakeLocalDatabases()
+    private val members =
+        listOf(Member(self, HostPort("self", 7000)), Member(creator, creatorAddress))
+    /** The settled members of the system group, null while they change. */
+    private var systemMembers: List<Member>? = members
     private val reconciler =
         DatabaseReconciler(
             graph,
@@ -26,6 +31,7 @@ class DatabaseReconcilerTest {
             {
                 listOf(if (it == creator) creatorAddress else otherAddress, otherAddress).distinct()
             },
+            { systemMembers },
             NullLog.getInstance(),
         )
 
@@ -47,6 +53,7 @@ class DatabaseReconcilerTest {
 
         assertThat(reconciler.reconcile()).isTrue()
         assertThat(graph.named).containsExactly(films to self)
+        assertThat(graph.initialMembers).containsExactly(members)
         assertThat(local.registered).isEmpty()
 
         graph.databases = listOf(desired(films, creator = self))
@@ -54,6 +61,21 @@ class DatabaseReconcilerTest {
         assertThat(reconciler.reconcile()).isFalse()
         assertThat(local.registered).containsEntry(films, LocalDatabase(true, false))
         assertThat(local.copies).isEmpty()
+    }
+
+    @Test
+    fun `no creator is named while the members change`() {
+        graph.leading = true
+        graph.databases = listOf(desired(films))
+        systemMembers = null
+
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(graph.named).isEmpty()
+
+        systemMembers = members
+
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(graph.named).containsExactly(films to self)
     }
 
     @Test
@@ -269,6 +291,7 @@ class DatabaseReconcilerTest {
         var reachable = true
         var leading = false
         val named = mutableListOf<Pair<NamedDatabaseId, MemberId>>()
+        val initialMembers = mutableListOf<List<Member>>()
 
         override fun databases(): List<DesiredDatabase> = databases
 
@@ -281,8 +304,13 @@ class DatabaseReconcilerTest {
 
         override fun leading(): Boolean = leading
 
-        override fun nameCreator(database: NamedDatabaseId, creator: MemberId) {
+        override fun nameCreator(
+            database: NamedDatabaseId,
+            creator: MemberId,
+            initialMembers: List<Member>,
+        ) {
             named += database to creator
+            this.initialMembers += initialMembers
         }
     }
 

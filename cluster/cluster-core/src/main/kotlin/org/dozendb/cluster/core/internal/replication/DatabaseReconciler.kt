@@ -8,6 +8,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.MemberId
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLog
@@ -34,8 +35,11 @@ internal interface SystemGraph {
     /** Whether this member is the system leader and can write the system graph. */
     fun leading(): Boolean
 
-    /** Names [creator] the creator of [database], unless one is named already. */
-    fun nameCreator(database: NamedDatabaseId, creator: MemberId)
+    /**
+     * Names [creator] the creator of [database] and [initialMembers] the initial members of its
+     * group, unless a creator is named already.
+     */
+    fun nameCreator(database: NamedDatabaseId, creator: MemberId, initialMembers: List<Member>)
 }
 
 /** The state of a database registered on this member. */
@@ -90,9 +94,12 @@ internal interface LocalDatabases {
  * The store of a new database is created by one member, its creator, and copied by every other
  * member. The system leader names itself the creator of a database without one, in a replicated
  * system transaction, before it creates the store: so the creator survives restarts and leader
- * changes, and no two members create the same database. A member creates a store only as the
- * creator, and only if it has no Raft group for the database yet; otherwise it copies the store.
- * Stores are created and copied while their database is online.
+ * changes, and no two members create the same database. The same transaction records the initial
+ * members of the database's group, the settled members of the `system` group: every member that
+ * creates the group without local state uses them, so that no two members bootstrap it differently
+ * while the membership changes. A member creates a store only as the creator, and only if it has no
+ * Raft group for the database yet; otherwise it copies the store. Stores are created and copied
+ * while their database is online.
  *
  * A local store counts only together with the Raft group of its database. A store without one is a
  * leftover: of a database dropped while this member was down that has the same name, or of a copy
@@ -108,6 +115,8 @@ internal interface LocalDatabases {
  * after twice as long each time it still cannot be done, up to [maximumRetryDelay].
  *
  * @property sources the addresses of the members to copy a new database from, its creator first.
+ * @property systemMembers the members of the `system` group, or null while a change of them is not
+ *   settled.
  */
 internal class DatabaseReconciler(
     private val systemGraph: SystemGraph,
@@ -115,6 +124,7 @@ internal class DatabaseReconciler(
     private val self: MemberId,
     private val defaultDatabase: String,
     private val sources: (creator: MemberId) -> List<HostPort>,
+    private val systemMembers: () -> List<Member>?,
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
@@ -319,8 +329,13 @@ internal class DatabaseReconciler(
     }
 
     private fun nameCreator(id: NamedDatabaseId) {
+        val members = systemMembers()
+        if (members == null) {
+            log.info("Naming the creator of %s waits until the change of members settles", id)
+            return
+        }
         try {
-            systemGraph.nameCreator(id, self)
+            systemGraph.nameCreator(id, self, members)
         } catch (e: InterruptedException) {
             throw e
         } catch (e: Exception) {

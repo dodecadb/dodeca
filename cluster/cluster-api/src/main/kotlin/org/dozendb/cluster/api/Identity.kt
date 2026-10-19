@@ -54,7 +54,22 @@ public data class HostPort(val host: String, val port: Int) {
 }
 
 /** A voting member of a consensus group and the address other members reach it on. */
-public data class Member(val id: MemberId, val raftAddress: HostPort)
+public data class Member(val id: MemberId, val raftAddress: HostPort) {
+    /** `id@host:port`, as [parse] reads it. */
+    public fun toText(): String = "$id@$raftAddress"
+
+    public companion object {
+        /** Parses `id@host:port`. */
+        public fun parse(text: String): Member {
+            val separator = text.indexOf('@')
+            require(separator > 0) { "expected id@host:port, was '$text'" }
+            return Member(
+                MemberId.parse(text.substring(0, separator)),
+                HostPort.parse(text.substring(separator + 1)),
+            )
+        }
+    }
+}
 
 /**
  * A database replicated by its own consensus group. [id] identifies the group and is identical on

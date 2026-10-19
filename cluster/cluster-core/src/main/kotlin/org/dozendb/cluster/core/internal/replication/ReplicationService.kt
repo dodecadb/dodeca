@@ -21,13 +21,17 @@ import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLogProvider
 
-/** Runs the Raft group of every database alongside it. */
+/**
+ * Runs the Raft group of every database alongside it. [initialMembers] tells the initial members of
+ * a database's group, which a member that has no local state for it creates it with.
+ */
 internal class ReplicationService(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
     private val defaultDatabaseName: String,
     private val catchUp: CatchUp,
     private val logProvider: InternalLogProvider,
+    private val initialMembers: (NamedDatabaseId) -> List<Member>,
 ) : DatabaseEventListenerAdapter() {
     private val log = logProvider.getLog(ReplicationService::class.java)
     private val databases = ConcurrentHashMap<String, ReplicatedDatabase>()
@@ -130,7 +134,7 @@ internal class ReplicationService(
             ReplicatedDatabase(
                 namedDatabaseId,
                 consensus,
-                systemDatabase,
+                { initialMembers(namedDatabaseId) },
                 idGeneratorFactory,
                 storeExists,
                 scheduler,

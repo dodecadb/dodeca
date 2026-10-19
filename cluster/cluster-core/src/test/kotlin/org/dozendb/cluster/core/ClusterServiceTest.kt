@@ -19,6 +19,7 @@ class ClusterServiceTest {
     private val logs = List(3) { consensus.newMember(metadata = metadata) }
     private val addresses = logs.map { it.self.raftAddress }
     private val stores = List(3) { FakeStores() }
+    private val memberships = List(3) { InMemoryMembershipStore() }
     private val log = NullLog.getInstance()
 
     /** The member every other one copies from when no member has databases. */
@@ -54,6 +55,7 @@ class ClusterServiceTest {
             system,
             ClusterFormation(logs[index], addresses, "5.26.27", log, sleep = {}),
             localStores,
+            memberships[index],
             log,
         )
 
@@ -76,6 +78,22 @@ class ClusterServiceTest {
     }
 
     @Test
+    fun `members that form the cluster remember the formation`() {
+        val services = logs.indices.map(::service)
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+
+        for (index in logs.indices) {
+            assertThat(memberships[index].record)
+                .isEqualTo(
+                    MembershipRecord(MemberState.MEMBER, logs.map { it.self }.sortedBy { it.id })
+                )
+            assertThat(services[index].foundingMembers)
+                .isEqualTo(memberships[index].record!!.formation)
+        }
+    }
+
+    @Test
     fun `members without databases copy them from the store source`() {
         val version = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27")
         logs.forEach {
@@ -95,6 +113,7 @@ class ClusterServiceTest {
                         sleep = { Thread.sleep(1) },
                     ),
                     stores[index],
+                    memberships[index],
                     log,
                 )
             }
@@ -182,6 +201,7 @@ class ClusterServiceTest {
                 system,
                 ClusterFormation(logs[0], addresses, "5.26.27", log, sleep = {}),
                 FakeStores(existed = true),
+                InMemoryMembershipStore(),
                 log,
                 replicatedDatabases = { listOf(neo4j) },
             )

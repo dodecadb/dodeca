@@ -1,6 +1,7 @@
 package org.dozendb.cluster.core.internal
 
 import java.util.UUID
+import org.dozendb.cluster.api.Member
 import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.internal.replication.DesiredDatabase
 import org.dozendb.cluster.core.internal.replication.ReplicationService
@@ -9,12 +10,15 @@ import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.Node
+import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
  * The databases in this member's copy of the system graph: its `Database` nodes, with a
- * `dozendb_creator` property that names the member creating the database's store.
+ * `dozendb_creator` property that names the member creating the database's store, and a
+ * `dozendb_initial_members` property that lists the initial members of its group, each as
+ * `id@host:port`.
  */
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
@@ -47,26 +51,46 @@ internal class Neo4jSystemGraph(
 
     override fun leading(): Boolean = replication.systemWritable
 
-    override fun nameCreator(database: NamedDatabaseId, creator: MemberId) =
-        replication.readingSystem {
-            writeCreator(database, creator)
-        }
+    override fun nameCreator(
+        database: NamedDatabaseId,
+        creator: MemberId,
+        initialMembers: List<Member>,
+    ) = replication.readingSystem { writeCreator(database, creator, initialMembers) }
 
-    private fun writeCreator(database: NamedDatabaseId, creator: MemberId) {
+    private fun writeCreator(
+        database: NamedDatabaseId,
+        creator: MemberId,
+        initialMembers: List<Member>,
+    ) {
         system().beginTx().use { tx ->
-            val node =
-                tx.findNode(
-                    TopologyGraphDbmsModel.DATABASE_LABEL,
-                    TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY,
-                    database.databaseId().uuid().toString(),
-                ) ?: return
+            val node = tx.findDatabase(database) ?: return
             if (node.hasProperty(CREATOR_PROPERTY)) return
             node.setProperty(CREATOR_PROPERTY, creator.toString())
+            node.setProperty(
+                INITIAL_MEMBERS_PROPERTY,
+                initialMembers.map { it.toText() }.toTypedArray(),
+            )
             tx.commit()
         }
     }
 
+    /** The initial members of the group of [database], or null if none are recorded. */
+    fun initialMembers(database: NamedDatabaseId): List<Member>? = replication.readingSystem {
+        system().beginTx().use { tx ->
+            val members = tx.findDatabase(database)?.getProperty(INITIAL_MEMBERS_PROPERTY, null)
+            (members as? Array<*>)?.map { Member.parse(it as String) }
+        }
+    }
+
+    private fun Transaction.findDatabase(database: NamedDatabaseId): Node? =
+        findNode(
+            TopologyGraphDbmsModel.DATABASE_LABEL,
+            TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY,
+            database.databaseId().uuid().toString(),
+        )
+
     private companion object {
         const val CREATOR_PROPERTY = "dozendb_creator"
+        const val INITIAL_MEMBERS_PROPERTY = "dozendb_initial_members"
     }
 }

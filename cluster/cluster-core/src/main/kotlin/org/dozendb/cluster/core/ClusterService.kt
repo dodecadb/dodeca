@@ -31,11 +31,21 @@ class ClusterService(
     val systemDatabase: DatabaseRef,
     private val formation: ClusterFormation,
     private val stores: LocalStores,
+    private val membershipStore: MembershipStore,
     private val userLog: Log,
     private val replicatedDatabases: () -> List<DatabaseRef> = { emptyList() },
     val directory: MemberDirectory? = null,
 ) {
     private var statusListener: AutoCloseable? = null
+
+    @Volatile private var record: MembershipRecord? = null
+
+    /**
+     * The members this member formed the cluster with, if it is one of them: the initial members of
+     * the groups of `system` and the default database. Null for a member that joined later.
+     */
+    val foundingMembers: List<Member>?
+        get() = record?.formation?.takeIf { members -> members.any { it.id == self.id } }
 
     /**
      * Starts consensus and blocks until this member takes part in the `system` group, with the
@@ -43,12 +53,15 @@ class ClusterService(
      */
     fun start() {
         consensus.start()
+        record = membershipStore.read()
         val joined =
             if (systemDatabase.id in consensus.localGroups()) {
                 userLog.info("Rejoining the cluster from local Raft state")
                 null
             } else {
-                formation.awaitFormation(systemDatabase.id)
+                formation.awaitFormation(systemDatabase.id).also {
+                    remember(MembershipRecord(MemberState.MEMBER, it.members))
+                }
             }
         val missing = stores.missing()
         if (missing.isNotEmpty()) {
@@ -64,6 +77,11 @@ class ClusterService(
         // The system database attaches its state machine when it starts.
         consensus.joinGroup(systemDatabase, joined?.members ?: emptyList())
         directory?.start()
+    }
+
+    private fun remember(update: MembershipRecord) {
+        membershipStore.write(update)
+        record = update
     }
 
     private fun copyStores(source: Member?, databases: List<String>) {
