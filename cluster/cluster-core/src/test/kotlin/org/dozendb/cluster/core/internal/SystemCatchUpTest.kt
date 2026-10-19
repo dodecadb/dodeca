@@ -40,11 +40,14 @@ class SystemCatchUpTest {
         harness?.close()
     }
 
-    /** Small entries and segments, and frequent snapshots, so that logs are discarded quickly. */
+    /**
+     * The smallest entries and segments (256 KiB, about 280 administration commands), and frequent
+     * snapshots, so that logs are discarded quickly.
+     */
     private fun cluster(size: Int = 3): ClusterHarness =
         ClusterHarness(root, size) {
                 it.copy(
-                    maxEntrySize = 1 shl 20,
+                    maxEntrySize = 64 shl 10,
                     logSegmentSize = 1,
                     snapshotInterval = Duration.ofMillis(200),
                 )
@@ -83,7 +86,7 @@ class SystemCatchUpTest {
 
     /** Writes and checkpoints the default database until the leader discarded [index]. */
     private fun ClusterHarness.discardDefaultLogPast(index: Long, group: UUID) {
-        val blob = "x".repeat(200_000)
+        val blob = "x".repeat(20_000)
         await withPollInterval
             Duration.ofMillis(10) atMost
             Duration.ofMinutes(2) untilAsserted

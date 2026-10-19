@@ -70,7 +70,7 @@ class DozenDbSettingsTest {
 
         assertThat(config.get(DozenDbSettings.raftLogSegmentSize)).isEqualTo(512L shl 10)
         assertThat(config.get(DozenDbSettings.raftMaxEntrySize)).isEqualTo(1L shl 20)
-        assertThatThrownBy { config("internal.dbms.dozendb.cluster.raft_max_entry_size" to "512k") }
+        assertThatThrownBy { config("internal.dbms.dozendb.cluster.raft_max_entry_size" to "32k") }
             .isInstanceOf(IllegalArgumentException::class.java)
     }
 

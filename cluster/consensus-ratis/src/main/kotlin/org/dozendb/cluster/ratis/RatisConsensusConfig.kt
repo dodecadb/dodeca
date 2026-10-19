@@ -62,7 +62,7 @@ data class RatisConsensusConfig(
     companion object {
         const val DEFAULT_MAX_ENTRY_SIZE: Int = 16 shl 20
         const val DEFAULT_LOG_SEGMENT_SIZE: Long = 32L shl 20
-        const val MIN_MAX_ENTRY_SIZE: Int = 1 shl 20
+        const val MIN_MAX_ENTRY_SIZE: Int = 64 shl 10
         const val MAX_MAX_ENTRY_SIZE: Int = 256 shl 20
     }
 }
