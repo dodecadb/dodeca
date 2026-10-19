@@ -182,7 +182,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         log.info(
             "Raft member {} listening on {}, advertised as {}, recovered groups {}",
             config.memberId,
-            boundAddress,
+            // Ratis reports the wildcard address even when it binds one interface.
+            HostPort(config.listenHost.ifEmpty { "0.0.0.0" }, checkNotNull(boundAddress).port),
             self.raftAddress,
             started.groupIds.map { it.uuid },
         )
