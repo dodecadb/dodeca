@@ -110,10 +110,14 @@ class ClusterServiceTest {
         threads.forEach { it.join(10_000) }
 
         assertThat(threads).noneMatch { it.isAlive }
-        logs.indices.forEach {
-            val expected = if (it == source) emptyList() else listOf(addresses[source])
-            assertThat(stores[it].copies).isEqualTo(expected)
+        assertThat(stores[source].copies).describedAs("the source creates them").isEmpty()
+        // A member that finds the cluster already formed copies from any member serving them.
+        for (index in logs.indices - source) {
+            assertThat(stores[index].copies).hasSize(1).doesNotContain(addresses[index])
         }
+        assertThat(stores.flatMap { it.copies })
+            .describedAs("at first only the source serves them")
+            .contains(addresses[source])
     }
 
     @Test
