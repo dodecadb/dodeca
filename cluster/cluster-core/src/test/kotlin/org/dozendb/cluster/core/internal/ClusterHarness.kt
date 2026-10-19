@@ -37,7 +37,8 @@ import org.neo4j.kernel.internal.GraphDatabaseAPI
  * Clustered DBMSes in this JVM, on loopback, for tests. The first [size] members form the cluster;
  * [newMember] adds members that join it later. [tuning] adjusts every member's consensus
  * configuration; [fileSystem] supplies the file system a member's DBMS runs on, below DozenDB's
- * single-fsync file system, each time it starts.
+ * single-fsync file system, each time it starts. The logging of Ratis and DozenDB's consensus,
+ * which the members' debug logs lack, goes to `raft.log` in [root].
  */
 internal class ClusterHarness(
     private val root: Path,
@@ -143,6 +144,7 @@ internal class ClusterHarness(
     }
 
     private val all = CopyOnWriteArrayList(List(size) { Member(it) })
+    private val raftLog = RaftLogCapture.writeTo(root.resolve("raft.log"))
 
     /** The initial members, then those added with [newMember]. */
     val members: List<Member>
@@ -203,6 +205,7 @@ internal class ClusterHarness(
                 System.err.println("stopping $it failed: $e")
             }
         }
+        raftLog.close()
     }
 
     companion object {
