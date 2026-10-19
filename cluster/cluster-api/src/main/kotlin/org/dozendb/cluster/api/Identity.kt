@@ -58,6 +58,9 @@ public data class Member(val id: MemberId, val raftAddress: HostPort) {
     /** `id@host:port`, as [parse] reads it. */
     public fun toText(): String = "$id@$raftAddress"
 
+    /** For logs and messages: `id at host:port`. */
+    override fun toString(): String = "$id at $raftAddress"
+
     public companion object {
         /** Parses `id@host:port`. */
         public fun parse(text: String): Member {
