@@ -59,7 +59,7 @@ internal class RaftTransactionCommitProcess(
         mode: TransactionApplicationMode,
     ): Long {
         if (batch.next() != null) {
-            // Only multi-versioned stores commit in chunks; DozerDB uses the record format.
+            // Only multi-versioned stores commit in chunks; Community uses the record format.
             throw CommitFailure.COMMIT_FAILED.exception("Chunked transactions cannot be replicated")
         }
         readOnlyChecker.check()

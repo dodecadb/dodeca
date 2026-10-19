@@ -89,6 +89,24 @@ class DozerDbContainer(image: DockerImageName, val alias: String) :
             Outcome.Failed(e.code(), e.message.orEmpty())
         }
 
+    /** Runs [cypher] as [user], against [database] or else the user's home database. */
+    fun runAs(user: String, password: String, cypher: String, database: String? = null): Outcome =
+        try {
+            GraphDatabase.driver(
+                    "bolt://$host:${getMappedPort(BOLT_PORT)}",
+                    AuthTokens.basic(user, password),
+                )
+                .use { driver ->
+                    val config =
+                        database?.let(SessionConfig::forDatabase) ?: SessionConfig.defaultConfig()
+                    driver.session(config).use { session ->
+                        Outcome.Rows(session.run(cypher).list { it.asMap() })
+                    }
+                }
+        } catch (e: Neo4jException) {
+            Outcome.Failed(e.code(), e.message.orEmpty())
+        }
+
     /** Like [run] but fails the test on an error. */
     fun rows(
         cypher: String,

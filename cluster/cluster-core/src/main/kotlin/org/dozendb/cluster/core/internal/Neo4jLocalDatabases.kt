@@ -3,18 +3,18 @@ package org.dozendb.cluster.core.internal
 import java.util.UUID
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
+import org.dozendb.cluster.core.internal.edition.DatabaseManager
 import org.dozendb.cluster.core.internal.replication.LocalDatabase
 import org.dozendb.cluster.core.internal.replication.LocalDatabases
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
 import org.neo4j.dbms.database.DatabaseRepository
-import org.neo4j.dbms.database.MultiDatabaseManager
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.kernel.database.NamedDatabaseId
 
-/** This member's databases, through DozerDB's database manager, their files and replication. */
+/** This member's databases, through the database manager, their files and replication. */
 internal class Neo4jLocalDatabases(
-    private val manager: MultiDatabaseManager,
+    private val manager: DatabaseManager,
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
     private val stores: Neo4jLocalStores,
     private val replication: ReplicationService,

@@ -27,12 +27,7 @@
       <artifactId>kotlinx-coroutines-core</artifactId>
     </dependency>
 
-    <!-- On the Neo4j classpath at runtime. The plugin jar bundles dozerdb-core itself. -->
-    <dependency>
-      <groupId>org.dozerdb</groupId>
-      <artifactId>dozerdb-core</artifactId>
-      <scope>provided</scope>
-    </dependency>
+    <!-- On the Neo4j classpath at runtime. -->
     <dependency>
       <groupId>org.neo4j</groupId>
       <artifactId>neo4j</artifactId>

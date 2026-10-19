@@ -35,36 +35,25 @@ class PluginJarIT {
         assertThat(packages.filter { it.startsWith("kotlin") }).isEmpty()
         assertThat(packages)
             .contains("org/dozendb/shaded/kotlin", "org/dozendb/shaded/kotlinx/coroutines")
-        assertThat(packages.filter { it.startsWith("org/slf4j") || it.startsWith("scala") })
+        assertThat(
+                packages.filter {
+                    it.startsWith("org/slf4j") ||
+                        it.startsWith("scala") ||
+                        it.startsWith("org/neo4j") ||
+                        it.startsWith("org/dozerdb")
+                }
+            )
             .isEmpty()
-        // The only org.neo4j classes are DozerDB's own.
-        val neo4jClasses = classes.filter { it.startsWith("org/neo4j/") }
-        assertThat(neo4jClasses).isNotEmpty.allMatch {
-            "DozerDb" in it ||
-                "Constraint" in it ||
-                "MultiDatabase" in it ||
-                "SystemGraphTransactionEventListenerAdapter" in it
-        }
     }
 
     @Test
-    fun `registers the DozenDB services next to DozerDB's`() {
+    fun `registers the DozenDB services`() {
         assertThat(services("org.neo4j.server.startup.EntryPoint"))
-            .containsExactlyInAnyOrder(
-                "org.dozendb.cluster.core.internal.ClusterEntryPoint",
-                "org.neo4j.server.DozerDbEntryPoint",
-            )
+            .containsExactly("org.dozendb.cluster.core.internal.ClusterEntryPoint")
         assertThat(services("org.neo4j.configuration.SettingsDeclaration"))
-            .containsExactlyInAnyOrder(
-                "org.dozendb.cluster.core.internal.DozenDbSettings",
-                "org.neo4j.configuration.DozerDbSettings",
-            )
-        // DozenDB's outranks DozerDB's only when clustering is enabled.
+            .containsExactly("org.dozendb.cluster.core.internal.DozenDbSettings")
         assertThat(services("org.neo4j.kernel.impl.constraints.ConstraintSemantics"))
-            .containsExactlyInAnyOrder(
-                "org.dozendb.cluster.core.internal.DozenDbConstraintSemantics",
-                "org.neo4j.kernel.impl.constraints.DozerDbConstraintSemantics",
-            )
+            .containsExactly("org.dozendb.cluster.core.internal.DozenDbConstraintSemantics")
     }
 
     @Test
@@ -86,7 +75,5 @@ class PluginJarIT {
         assertThat(attributes.getValue("Implementation-Title")).isEqualTo("DozenDB")
         assertThat(attributes.getValue("DozenDB-Neo4j-Version"))
             .isEqualTo(System.getProperty("expected.neo4j.version"))
-        assertThat(attributes.getValue("DozenDB-DozerDB-Version"))
-            .isEqualTo(System.getProperty("expected.dozerdb.version"))
     }
 }

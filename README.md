@@ -1,12 +1,14 @@
 # DozenDB
 
-DozenDB adds Raft-based replication with automatic leader failover to
-[DozerDB](https://dozerdb.org), the plugin that enhances Neo4j Community
-Edition. A cluster of three or more voting members survives the loss of a
+DozenDB adds to Neo4j Community Edition what Community leaves to Enterprise:
+many databases (`CREATE`, `DROP`, `START` and `STOP DATABASE`), property
+existence constraints, and Raft-based replication with automatic leader
+failover. A cluster of three or more voting members survives the loss of a
 minority of members without losing acknowledged writes.
 
-DozenDB is a separate add-on. The upstream DozerDB source lives unmodified in
-`dozerdb-core/` (a git subtree), and all clustering code lives in `cluster/`.
+DozenDB is a single jar installed into Neo4j Community's `lib/`. It began as an
+add-on to [DozerDB](https://dozerdb.org) and contains a Kotlin port of the
+DozerDB code it built on; see `cluster/docs/UPSTREAM_TOUCHPOINTS.md`.
 
 ## Status
 
@@ -16,11 +18,10 @@ Under development. Not ready for production use.
 
 | Path | Contents |
 |---|---|
-| `dozerdb-core/` | Upstream DozerDB source, imported with `git subtree`. Only the edits listed in `cluster/docs/UPSTREAM_TOUCHPOINTS.md` differ from upstream. |
 | `cluster/cluster-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `cluster/consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
-| `cluster/cluster-core/` | Neo4j integration: bootstrap, settings, commit interception, routing, reads, snapshots and membership. |
-| `cluster/cluster-plugin/` | Builds the single plugin jar that replaces the DozerDB jar. |
+| `cluster/cluster-core/` | Neo4j integration: bootstrap, settings, edition module, database management, administration commands, constraints, commit interception, routing, reads, snapshots and membership. |
+| `cluster/cluster-plugin/` | Builds the single jar installed into Neo4j's `lib/`. |
 | `cluster/cluster-it/` | Integration, fault, crash and benchmark tests. |
 | `cluster/docs/` | Compatibility matrix, upstream touchpoints and operator documentation. |
 
@@ -39,4 +40,5 @@ The plugin jar is written to `cluster/cluster-plugin/target/`.
 
 ## License
 
-GNU General Public License v3.0, the same license as DozerDB. See `LICENSE`.
+GNU General Public License v3.0, the same license as Neo4j Community Edition and
+DozerDB. See `LICENSE`.

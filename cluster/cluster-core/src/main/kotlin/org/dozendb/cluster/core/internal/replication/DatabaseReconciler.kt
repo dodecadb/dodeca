@@ -41,7 +41,7 @@ internal interface SystemGraph {
 /** The state of a database registered on this member. */
 internal data class LocalDatabase(val started: Boolean, val failed: Boolean)
 
-/** This member's databases: DozerDB's database manager, their stores and their Raft groups. */
+/** This member's databases: the database manager, their stores and their Raft groups. */
 internal interface LocalDatabases {
     /** The databases registered with the database manager, started or not. */
     fun registered(): Map<NamedDatabaseId, LocalDatabase>
@@ -82,10 +82,10 @@ internal interface LocalDatabases {
 /**
  * Makes this member's databases follow the replicated system graph.
  *
- * DozerDB creates, starts, stops and drops databases from transaction event listeners, only on the
- * member that ran the command and partly before the command commits. With clustering every member
- * instead compares the system graph with its own databases once it has started and after every
- * system transaction it applies, whichever member ran it.
+ * Without clustering, a transaction event listener makes the databases follow the system graph
+ * after every local commit to it. With clustering every member instead compares the system graph
+ * with its own databases once it has started and after every system transaction it applies,
+ * whichever member ran it.
  *
  * The store of a new database is created by one member, its creator, and copied by every other
  * member. The system leader names itself the creator of a database without one, in a replicated
@@ -100,7 +100,7 @@ internal interface LocalDatabases {
  * are deleted, but only once the system leader confirmed that this member's copy of the system
  * graph is current: after a restart it may lack transactions this member already acted on.
  *
- * The default database is created by DozerDB at startup, and like DozerDB the reconciler never
+ * The default database is created at startup, and like without clustering the reconciler never
  * creates or drops it; it starts and stops it like any other.
  *
  * A database whose store is being replaced by catch-up is left alone. Work that cannot be done yet,

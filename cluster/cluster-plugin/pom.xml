@@ -12,15 +12,11 @@
   <artifactId>cluster-plugin</artifactId>
   <name>DozenDB plugin</name>
   <description>
-    The single jar installed into Neo4j's lib/ in place of the DozerDB jar: dozerdb-core built from
-    source, the DozenDB modules, Apache Ratis, and Kotlin relocated under org.dozendb.shaded.
+    The single jar installed into Neo4j's lib/ in place of the DozerDB jar: the DozenDB modules,
+    Apache Ratis, and Kotlin relocated under org.dozendb.shaded.
   </description>
 
   <dependencies>
-    <dependency>
-      <groupId>org.dozerdb</groupId>
-      <artifactId>dozerdb-core</artifactId>
-    </dependency>
     <dependency>
       <groupId>org.dozendb</groupId>
       <artifactId>cluster-core</artifactId>
@@ -60,7 +56,6 @@
               <!-- Everything else (Neo4j, Scala, slf4j) is already in Neo4j's lib/. -->
               <artifactSet>
                 <includes>
-                  <include>org.dozerdb:dozerdb-core</include>
                   <include>org.dozendb:*</include>
                   <include>org.apache.ratis:*</include>
                   <include>org.jetbrains.kotlin:kotlin-stdlib</include>
@@ -128,7 +123,6 @@
                     <Implementation-Title>DozenDB</Implementation-Title>
                     <Implementation-Version>${project.version}</Implementation-Version>
                     <DozenDB-Neo4j-Version>${neo4j.version}</DozenDB-Neo4j-Version>
-                    <DozenDB-DozerDB-Version>${dozerdb-core.version}</DozenDB-DozerDB-Version>
                   </manifestEntries>
                 </transformer>
               </transformers>
@@ -144,10 +138,8 @@
           <systemPropertyVariables>
             <dozendb.plugin.jar>${dozendb.plugin.jar}</dozendb.plugin.jar>
             <expected.neo4j.version>${neo4j.version}</expected.neo4j.version>
-            <expected.dozerdb.version>${dozerdb-core.version}</expected.dozerdb.version>
           </systemPropertyVariables>
           <classpathDependencyExcludes>
-            <classpathDependencyExclude>org.dozerdb:dozerdb-core</classpathDependencyExclude>
             <classpathDependencyExclude>org.dozendb:cluster-core</classpathDependencyExclude>
           </classpathDependencyExcludes>
         </configuration>

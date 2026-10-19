@@ -32,9 +32,8 @@
     <java.release>17</java.release>
     <maven.compiler.release>${java.release}</maven.compiler.release>
 
-    <!-- Pinned platform. Change together with dozerdb-core (see docs/UPSTREAM_TOUCHPOINTS.md). -->
+    <!-- Pinned platform (see docs/UPSTREAM_TOUCHPOINTS.md). -->
     <neo4j.version>5.26.27</neo4j.version>
-    <dozerdb-core.version>5.26.27-1.1.0</dozerdb-core.version>
     <!-- Neo4j 5.26 ships slf4j-api 2.0.9 in lib/. We compile against it and never bundle it. -->
     <slf4j.version>2.0.9</slf4j.version>
 
@@ -50,12 +49,6 @@
     <archunit.version>1.5.1</archunit.version>
 
     <spotless.version>3.10.4</spotless.version>
-    <!--
-      .mvn/maven.config sets spotless.skip=true so that Spotless never checks or
-      formats the upstream dozerdb-core tree. Our modules opt back in through
-      this property, which an explicit <skip> below takes precedence over.
-    -->
-    <dozendb.spotless.skip>false</dozendb.spotless.skip>
     <ktfmt.version>0.64</ktfmt.version>
 
     <!-- The Docker image the plugin is tested against and installed into. -->
@@ -92,22 +85,6 @@
         <version>${project.version}</version>
       </dependency>
 
-      <!--
-        dozerdb-core declares its Neo4j and test libraries at compile scope.
-        We only ever want its own classes, so every consumer excludes its
-        transitive dependencies and declares Neo4j explicitly.
-      -->
-      <dependency>
-        <groupId>org.dozerdb</groupId>
-        <artifactId>dozerdb-core</artifactId>
-        <version>${dozerdb-core.version}</version>
-        <exclusions>
-          <exclusion>
-            <groupId>*</groupId>
-            <artifactId>*</artifactId>
-          </exclusion>
-        </exclusions>
-      </dependency>
       <dependency>
         <groupId>org.neo4j</groupId>
         <artifactId>neo4j</artifactId>
@@ -318,7 +295,6 @@
         <groupId>com.diffplug.spotless</groupId>
         <artifactId>spotless-maven-plugin</artifactId>
         <configuration>
-          <skip>${dozendb.spotless.skip}</skip>
           <kotlin>
             <includes>
               <include>src/**/*.kt</include>

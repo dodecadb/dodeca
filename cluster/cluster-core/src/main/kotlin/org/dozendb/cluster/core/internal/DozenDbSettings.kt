@@ -13,6 +13,7 @@ import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BOOL
 import org.neo4j.configuration.SettingValueParsers.BYTES
 import org.neo4j.configuration.SettingValueParsers.DURATION
+import org.neo4j.configuration.SettingValueParsers.INT
 import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
 import org.neo4j.configuration.SettingValueParsers.listOf
@@ -27,7 +28,8 @@ import org.neo4j.graphdb.config.Setting
  *
  * Neo4j only accepts setting names in a fixed set of namespaces. Following Neo4j's convention,
  * settings that must agree across the cluster live under `dbms.dozendb.`, settings specific to one
- * server under `server.dozendb.`, and undocumented settings for tests under `internal.`.
+ * server under `server.dozendb.`, and undocumented settings for tests under `internal.`. Settings
+ * Neo4j Enterprise has too keep Enterprise's names.
  */
 class DozenDbSettings : SettingsDeclaration {
     companion object {
@@ -35,7 +37,7 @@ class DozenDbSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
-            "Enables DozenDB clustering. When false, the plugin behaves exactly like DozerDB."
+            "Enables DozenDB clustering. When false, DozenDB runs as a single server."
         )
         val clusterEnabled: Setting<Boolean> =
             newBuilder("dbms.dozendb.cluster.enabled", BOOL, false).immutable().build()
@@ -123,6 +125,14 @@ class DozenDbSettings : SettingsDeclaration {
                 .addConstraint(min(Duration.ofMillis(200)))
                 .immutable()
                 .build()
+
+        @JvmField
+        @field:Description(
+            "The maximum number of databases, including system. CREATE DATABASE fails once it " +
+                "is reached. Named like Neo4j Enterprise's setting."
+        )
+        val maxDatabases: Setting<Int> =
+            newBuilder("dbms.max_databases", INT, 100).addConstraint(min(2)).dynamic().build()
 
         @JvmField
         @field:Description(

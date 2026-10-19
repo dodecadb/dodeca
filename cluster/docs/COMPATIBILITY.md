@@ -1,57 +1,59 @@
 # Compatibility
 
-Each DozenDB build is pinned to exactly one Neo4j and DozerDB version. A node
-refuses to join a cluster whose members run a different Neo4j version.
+Each DozenDB build is pinned to exactly one Neo4j version. A node refuses to
+join a cluster whose members run a different Neo4j version.
 
 ## Pinned versions
 
 | Component | Version | Notes |
 |---|---|---|
 | Neo4j | 5.26.27 (Community) | The Neo4j version inside the `graphstack/dozerdb:5.26.27.0` image. |
-| DozerDB source | `dozerdb-core` branch `neo4j-5.26.8`, commit `f76393e` | Built against Neo4j 5.26.27, see `UPSTREAM_TOUCHPOINTS.md`. |
-| DozerDB image | `graphstack/dozerdb:5.26.27.0` | Test baseline and installation target. The DozenDB jar replaces `lib/dozerdb-core-5.26.27-1.1.0.jar`. |
+| Test image | `graphstack/dozerdb:5.26.27.0` | Test baseline and installation target. The DozenDB jar replaces `lib/dozerdb-core-5.26.27-1.1.0.jar`. |
 | Apache Ratis | 3.3.1 | Uses the already shaded `ratis-thirdparty` 1.1.0 for gRPC, Netty and protobuf. |
 | Kotlin | 2.4.21, kotlinx-coroutines 1.11.0 | Bundled and relocated to `org.dozendb.shaded`. |
-| JDK | build 17, run 17 or 21 | Bytecode targets Java 17 like Neo4j 5.26. The DozerDB image runs Temurin 21. |
+| JDK | build 17, run 17 or 21 | Bytecode targets Java 17 like Neo4j 5.26. The test image runs Temurin 21. |
 
-## Known differences from the DozerDB 5.26.27.0 release
+## Differences from DozerDB 5.26.27.0
 
-The DozerDB 5.26.27.0 release jar was built from source that is not public.
-Its bootstrap, edition module and Cypher classes match the public
-`neo4j-5.26.8` source, but its constraint enforcement was rewritten. DozenDB
-builds the public source, so it differs from the release in these ways:
+DozenDB contains its own port of the DozerDB code it used to build on, see
+`UPSTREAM_TOUCHPOINTS.md`, and no longer needs DozerDB. It is not a drop-in
+replacement for DozerDB: it declares only Neo4j's and its own settings, and
+behaves differently in these ways, with clustering enabled or disabled.
+`DisabledParityIT` compares both with clustering disabled and asserts each
+difference.
 
-- **Constraints (serious, with clustering disabled).** Creating a property
-  existence constraint (`REQUIRE x.p IS NOT NULL`) fails the database: the
-  transaction does not commit and the database must be restarted. The public
-  source inherits Neo4j Community's `readConstraint`, which rejects existence,
-  key and property type constraints when they are applied or loaded; the
-  release overrides it to accept them. `DisabledParityIT` asserts this
-  difference so that it is noticed when it changes.
-- **Constraints with clustering enabled.** DozenDB's own constraint semantics
-  fix three defects of the public source, without changing it: stores with
-  existence, key and type constraints can be read; commit-time enforcement
-  builds its checker from each constraint's schema (the public source casts the
-  constraint itself, which fails every write once an existence constraint
-  exists); and a relationship missing a required property fails with
-  `Neo.ClientError.Schema.ConstraintValidationFailed`, also when the property
-  is removed later (the public source reports an unknown error and checks only
-  new relationships). Property existence constraints therefore work and are
-  enforced.
-  Still as in the public source: creating an existence constraint does not
-  verify existing data, and property type, key, label existence and
-  relationship endpoint label constraints are not enforced. The release
-  enforces those.
-- **`ALTER USER` with clustering enabled.** DozerDB, the release as well as
-  the public source, fails every `ALTER USER` with an
-  `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`: its
-  administration runtime resolves that component, but its edition module never
-  registers it as a dependency. With clustering enabled DozenDB registers it,
-  so `ALTER USER` works; with clustering disabled it fails as in DozerDB.
-- **Multi-database housekeeping.** The release contains small refactors of
-  `MultiDatabaseManager`, `MultiDatabaseLifecycleService` and
-  `SystemGraphTransactionEventListenerAdapter`. One of them changes behaviour:
-  on shutdown the release no longer stops the default database twice.
+- **Constraints.** Stores with existence, key, property type and other
+  Enterprise constraints can be read. A node or relationship that lacks a
+  property that an existence or key constraint requires fails its transaction
+  with `Neo.ClientError.Schema.ConstraintValidationFailed`, whether it is
+  created or its labels or properties change later. As in DozerDB, creating an
+  existence constraint does not verify existing data, and property type, label
+  existence and relationship endpoint label constraints are not enforced
+  (DozerDB's release enforces those).
+- **`ALTER USER`** works. DozerDB fails every `ALTER USER` with an
+  `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`.
+- **User status and home database.** `SET STATUS` and `SET HOME DATABASE`
+  fail, as in Neo4j Community. DozerDB stores both but acts on neither: a
+  suspended user still logs in, and a user's home database is ignored.
+- **Database commands** fail with Neo4j's messages and status codes, such as
+  `Neo.ClientError.Database.ExistingDatabaseFound` and
+  `Neo.ClientError.Database.DatabaseNotFound`. Unlike in DozerDB:
+  `START DATABASE` of a database that does not exist fails;
+  `START DATABASE $name`, `STOP DATABASE $name` and the embedded
+  `DatabaseManagementService` methods work; names with a dot, such as
+  `film.archive`, work in every command; `CREATE OR REPLACE DATABASE` also
+  creates a database that does not exist yet; `CREATE COMPOSITE DATABASE`,
+  `DROP DATABASE ... DUMP DATA` and `WAIT` fail instead of being ignored or
+  failing with an internal error; and `dbms.max_databases` counts every
+  database including `system`, where DozerDB allows one fewer.
+- **Databases follow the system graph only after a command commits**, every
+  database a transaction changes. DozerDB drops a database before the command
+  commits, so a command that then fails has still dropped it. A database that
+  failed to start is started again by `STOP DATABASE` and `START DATABASE`.
+  A stopped default database starts with the server, like in DozerDB, but is
+  then stopped again, where DozerDB leaves it running. On shutdown, `system`
+  stops after every other database.
+- **Startup banner.** DozenDB logs its version instead of DozerDB's banner.
 
 ## Clustering limitations
 
@@ -69,9 +71,10 @@ What clustering does not do yet.
   a member that lacks a stopped database gets it once it is started again. If
   the creating member fails before it created the store, the others wait until
   it returns.
-- **Default database.** As in DozerDB, `CREATE DATABASE` and `DROP DATABASE`
-  neither create nor drop the default database (`initial_default_database`);
-  `STOP DATABASE` and `START DATABASE` apply to it.
+- **Default database.** With clustering enabled or disabled, `CREATE DATABASE`
+  and `DROP DATABASE` neither create nor drop the default database
+  (`initial_default_database`); `STOP DATABASE` and `START DATABASE` apply to
+  it.
 - **Writes go to the leader.** A follower rejects writes with
   `Neo.ClientError.Cluster.NotALeader`. Drivers that route (`neo4j://`) get
   routing tables with the leader as writer and retry managed transactions on

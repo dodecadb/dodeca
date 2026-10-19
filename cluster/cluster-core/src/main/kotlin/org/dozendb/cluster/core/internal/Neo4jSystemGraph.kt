@@ -13,7 +13,7 @@ import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
- * The databases in this member's copy of the system graph: DozerDB's `Database` nodes, with a
+ * The databases in this member's copy of the system graph: its `Database` nodes, with a
  * `dozendb_creator` property that names the member creating the database's store.
  */
 internal class Neo4jSystemGraph(

@@ -15,8 +15,9 @@ import org.junit.jupiter.api.TestMethodOrder
 import org.testcontainers.lifecycle.Startables
 
 /**
- * With clustering disabled, the DozenDB jar must behave exactly like the stock DozerDB image. Every
- * test runs the same statements on both servers and compares rows or errors.
+ * With clustering disabled, the DozenDB jar behaves like the stock DozerDB image, except for the
+ * known differences at the end, where DozenDB fixes DozerDB's defects. Every other test runs the
+ * same statements on both servers and compares rows or errors.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
@@ -47,11 +48,20 @@ class DisabledParityIT {
     private fun names(server: DozerDbContainer, cypher: String): Set<String> =
         server.rows(cypher, "system").map { it.getValue("name") as String }.toSet()
 
+    private fun assertBothFail(cypher: String, database: String = "neo4j"): Outcome.Failed {
+        assertThat(stock.run(cypher, database))
+            .describedAs(cypher)
+            .isInstanceOf(Outcome.Failed::class.java)
+        val outcome = dozenDb.run(cypher, database)
+        assertThat(outcome).describedAs(cypher).isInstanceOf(Outcome.Failed::class.java)
+        return outcome as Outcome.Failed
+    }
+
     @Test
     fun `runs the DozenDB entry point with clustering disabled`() {
         assertThat(dozenDb.logs).containsPattern("DozenDB \\S+: clustering is disabled")
-        servers.forEach { assertThat(it.logs).contains("Enhanced By DozerDB Plugin") }
-        assertThat(stock.logs).doesNotContain("DozenDB")
+        assertThat(stock.logs).contains("Enhanced By DozerDB Plugin").doesNotContain("DozenDB")
+        assertThat(dozenDb.logs).doesNotContain("DozerDB")
     }
 
     @Test
@@ -115,8 +125,6 @@ class DisabledParityIT {
                         .containsExactly(mapOf("currentStatus" to "online"))
                 }
             }
-        assertSame("CREATE DATABASE parity", "system")
-        assertSame("CREATE DATABASE parity2 WAIT", "system")
         assertSame("CREATE (:Probe {value: 1})", "parity")
         assertSame("MATCH (p:Probe) RETURN p.value AS value", "parity")
         assertSame("STOP DATABASE parity", "system")
@@ -148,7 +156,6 @@ class DisabledParityIT {
         listOf(
                 "CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED",
                 "CREATE USER alice SET PASSWORD 'alice-secret-1'",
-                "ALTER USER alice SET PASSWORD CHANGE REQUIRED",
                 "SHOW USERS YIELD user, passwordChangeRequired ORDER BY user",
                 "DROP USER alice",
                 "SHOW USERS YIELD user ORDER BY user",
@@ -156,14 +163,8 @@ class DisabledParityIT {
             .forEach { assertSame(it, "system") }
     }
 
-    /**
-     * Known difference, see `cluster/docs/COMPATIBILITY.md`: the public DozerDB source fails the
-     * database when it applies an existence constraint, while the DozerDB 5.26.27.0 release accepts
-     * and enforces it. Runs last, on its own database, because it leaves that database failed.
-     */
     @Test
-    @Order(Int.MAX_VALUE)
-    fun `known difference - an existence constraint fails the database on DozenDB`() {
+    fun `enforces existence constraints the same way`() {
         servers.forEach { it.rows("CREATE DATABASE constraints", "system") }
         await atMost
             Duration.ofSeconds(60) untilAsserted
@@ -173,17 +174,86 @@ class DisabledParityIT {
                         .containsExactly(mapOf("currentStatus" to "online"))
                 }
             }
-        val create = "CREATE CONSTRAINT person_born FOR (p:Person) REQUIRE p.born IS NOT NULL"
+        assertSame(
+            "CREATE CONSTRAINT person_born FOR (p:Person) REQUIRE p.born IS NOT NULL",
+            "constraints",
+        )
+        assertSame("CREATE (:Person {name: 'ada', born: 1815})", "constraints")
+        assertThat(assertBothFail("CREATE (:Person {name: 'nobody'})", "constraints").code)
+            .isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed")
+        assertSame("MATCH (p:Person) RETURN p.name AS name", "constraints")
+    }
 
-        assertThat(stock.run(create, "constraints")).isInstanceOf(Outcome.Rows::class.java)
-        assertThat(stock.run("CREATE (:Person {name: 'nobody'})", "constraints"))
-            .isInstanceOf(Outcome.Failed::class.java)
-        val outcome = dozenDb.run(create, "constraints")
-        assertThat(outcome).isInstanceOf(Outcome.Failed::class.java)
-        assertThat((outcome as Outcome.Failed).code)
-            .isEqualTo("Neo.DatabaseError.Transaction.TransactionCommitFailed")
-        assertThat(dozenDb.debugLog())
-            .contains("Property existence constraint requires Neo4j Enterprise Edition")
+    /**
+     * Known difference: DozenDB reports failed database commands with Neo4j's messages and status
+     * codes, where DozerDB has its own, and says that WAIT is not supported.
+     */
+    @Test
+    @Order(KNOWN_DIFFERENCES)
+    fun `known difference - database commands fail with Neo4j's messages`() {
+        servers.forEach { it.rows("CREATE DATABASE messages", "system") }
+
+        val exists = assertBothFail("CREATE DATABASE messages", "system")
+        assertThat(exists.code).isEqualTo("Neo.ClientError.Database.ExistingDatabaseFound")
+        assertThat(exists.message)
+            .isEqualTo(
+                "Failed to create the specified database 'messages': Database already exists."
+            )
+        assertThat(assertBothFail("CREATE DATABASE waiting WAIT", "system").message)
+            .isEqualTo(
+                "Failed to wait for the specified database 'waiting': WAIT is not supported."
+            )
+        assertThat(assertBothFail("STOP DATABASE missing", "system").code)
+            .isEqualTo("Neo.ClientError.Database.DatabaseNotFound")
+    }
+
+    /** Known difference: `ALTER USER` fails in DozerDB, which never offers what it needs. */
+    @Test
+    @Order(KNOWN_DIFFERENCES)
+    fun `known difference - ALTER USER works`() {
+        servers.forEach {
+            it.rows("CREATE USER bob SET PASSWORD 'bob-secret-1' CHANGE NOT REQUIRED", "system")
+        }
+        val alter = "ALTER USER bob SET PASSWORD CHANGE REQUIRED"
+
+        assertThat(stock.run(alter, "system")).isInstanceOf(Outcome.Failed::class.java)
+        dozenDb.rows(alter, "system")
+        assertThat(
+                dozenDb.rows(
+                    "SHOW USERS YIELD user, passwordChangeRequired WHERE user = 'bob'",
+                    "system",
+                )
+            )
+            .containsExactly(mapOf("user" to "bob", "passwordChangeRequired" to true))
+    }
+
+    /**
+     * Known difference: DozerDB stores a user's status and home database but acts on neither, so a
+     * suspended user still logs in and a home database is ignored. DozenDB refuses both, as Neo4j
+     * Community does.
+     */
+    @Test
+    @Order(KNOWN_DIFFERENCES)
+    fun `known difference - a user's status and home database are refused, not ignored`() {
+        val suspended =
+            "CREATE USER carol SET PASSWORD 'carol-secret-1' CHANGE NOT REQUIRED " +
+                "SET STATUS SUSPENDED"
+        val homed =
+            "CREATE USER dan SET PASSWORD 'dan-secret-1' CHANGE NOT REQUIRED " +
+                "SET HOME DATABASE homes"
+        stock.rows("CREATE DATABASE homes", "system")
+
+        stock.rows(suspended, "system")
+        stock.rows(homed, "system")
+        assertThat(stock.runAs("carol", "carol-secret-1", "RETURN 1 AS one"))
+            .isEqualTo(Outcome.Rows(listOf(mapOf("one" to 1L))))
+        assertThat(stock.runAs("dan", "dan-secret-1", "CALL db.info() YIELD name"))
+            .isEqualTo(Outcome.Rows(listOf(mapOf("name" to "neo4j"))))
+
+        assertThat((dozenDb.run(suspended, "system") as Outcome.Failed).message)
+            .contains("'SET STATUS' is not available")
+        assertThat((dozenDb.run(homed, "system") as Outcome.Failed).message)
+            .contains("'HOME DATABASE' is not available")
     }
 
     @Test
@@ -199,5 +269,10 @@ class DisabledParityIT {
             }
 
         assertThat(shape(dozenDb)).isEqualTo(shape(stock))
+    }
+
+    private companion object {
+        /** Known differences run last: they leave the servers' users and databases different. */
+        const val KNOWN_DIFFERENCES = Int.MAX_VALUE
     }
 }

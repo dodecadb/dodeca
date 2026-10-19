@@ -8,8 +8,7 @@ import org.neo4j.server.startup.EntryPoint
 
 /**
  * The JVM entry point Neo4j's launcher starts. Registered in `META-INF/services` with a higher
- * priority than DozerDB's and Neo4j Community's entry points, so it wins regardless of classpath
- * order.
+ * priority than Neo4j Community's entry point, so it wins regardless of classpath order.
  */
 class ClusterEntryPoint : EntryPoint {
     override fun getPriority(): Int = EntryPoint.Priority.MEDIUM.ordinal

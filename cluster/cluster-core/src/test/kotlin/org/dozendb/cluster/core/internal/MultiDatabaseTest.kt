@@ -37,7 +37,7 @@ class MultiDatabaseTest {
         awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command)
     }
 
-    /** The database [name] of this member as DozerDB's database manager has it, if registered. */
+    /** The database [name] of this member as the database manager has it, if registered. */
     private fun ClusterHarness.Member.registered(name: String) =
         database(SYSTEM)
             .dependencyResolver

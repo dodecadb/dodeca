@@ -286,7 +286,9 @@ class DatabaseReconcilerTest {
         }
     }
 
-    /** Databases as DozerDB's manager and the replication keep them: starting starts the group. */
+    /**
+     * Databases as the database manager and the replication keep them: starting starts the group.
+     */
     private class FakeLocalDatabases : LocalDatabases {
         val registered = mutableMapOf<NamedDatabaseId, LocalDatabase>()
         /** Database files by name; true if complete. */

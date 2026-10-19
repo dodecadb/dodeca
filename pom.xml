@@ -5,9 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
 
   <!--
-    Build aggregator only. It owns no configuration so that the upstream
-    dozerdb-core tree keeps its own parent (org.neo4j:parent) untouched.
-    All DozenDB build configuration lives in cluster/pom.xml.
+    Build aggregator only. All DozenDB build configuration lives in cluster/pom.xml.
   -->
   <groupId>org.dozendb</groupId>
   <artifactId>dozendb-build</artifactId>
@@ -23,7 +21,6 @@
   </licenses>
 
   <modules>
-    <module>dozerdb-core</module>
     <module>cluster</module>
   </modules>
 

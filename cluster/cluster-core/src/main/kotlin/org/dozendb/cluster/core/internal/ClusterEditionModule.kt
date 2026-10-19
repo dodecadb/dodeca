@@ -10,6 +10,8 @@ import org.dozendb.cluster.core.DozenDbMetadata
 import org.dozendb.cluster.core.MemberDirectory
 import org.dozendb.cluster.core.internal.durability.FsyncPolicy
 import org.dozendb.cluster.core.internal.durability.SingleFsyncFileSystem
+import org.dozendb.cluster.core.internal.edition.DozenDbEditionModule
+import org.dozendb.cluster.core.internal.edition.StandaloneDatabases
 import org.dozendb.cluster.core.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.core.internal.replication.CatchUp
 import org.dozendb.cluster.core.internal.replication.DatabaseControl
@@ -22,22 +24,11 @@ import org.dozendb.cluster.ratis.RatisConsensusConfig
 import org.dozendb.cluster.ratis.RatisConsensusLog
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
-import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
-import org.neo4j.dbms.CommunityDatabaseStateService
-import org.neo4j.dbms.CommunityKernelPanicListener
 import org.neo4j.dbms.database.DatabaseContextProvider
-import org.neo4j.dbms.database.DatabaseContextProviderDelegate
-import org.neo4j.dbms.database.DatabaseReferenceCacheClearingListener
-import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.DefaultSystemGraphInitializer
-import org.neo4j.dbms.database.MultiDatabaseLifecycleService
-import org.neo4j.dbms.database.MultiDatabaseManager
-import org.neo4j.dbms.database.StandaloneDatabaseContext
-import org.neo4j.dbms.database.SystemGraphComponent
-import org.neo4j.dbms.database.SystemGraphComponents
 import org.neo4j.dbms.database.SystemGraphInitializer
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
 import org.neo4j.dbms.routing.DefaultDatabaseAvailabilityChecker
@@ -50,38 +41,26 @@ import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
-import org.neo4j.graphdb.factory.module.edition.DozerDbEditionModule
-import org.neo4j.io.device.DeviceMapper
 import org.neo4j.kernel.api.procedure.GlobalProcedures
-import org.neo4j.kernel.database.DatabaseId
-import org.neo4j.kernel.database.DatabaseIdRepository
-import org.neo4j.kernel.database.DatabaseReferenceRepository
-import org.neo4j.kernel.database.MapCachingDatabaseIdRepository
-import org.neo4j.kernel.database.MapCachingDatabaseReferenceRepository
 import org.neo4j.kernel.database.NamedDatabaseId
-import org.neo4j.kernel.database.SystemGraphDatabaseIdRepository
-import org.neo4j.kernel.database.SystemGraphDatabaseReferenceRepository
-import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
 import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
-import org.neo4j.server.security.systemgraph.UserSecurityGraphComponent
 
 /**
- * DozerDB's edition module with clustering added. Only used when clustering is enabled.
+ * DozenDB's edition module with clustering added. Only used when clustering is enabled.
  *
- * The cluster service is registered in the global lifecycle from the constructor, before DozerDB
- * registers its database starters, so consensus starts (and the databases are copied from another
- * member if needed) before any database starts, and stops after every database.
+ * The cluster service is registered in the global lifecycle from the constructor, before the base
+ * module registers its database starters, so consensus starts (and the databases are copied from
+ * another member if needed) before any database starts, and stops after every database.
  *
  * Databases other than `system` and the default database are created, started, stopped and dropped
- * by the [DatabaseReconciler], which replaces DozerDB's system graph listener and its starter of
- * those databases.
+ * by the [DatabaseReconciler], which replaces [StandaloneDatabases].
  */
-class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(globalModule) {
+class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(globalModule) {
     private val cluster: ClusterService
-    private val replication: ReplicationService
+    override val replication: ReplicationService
     private val directory: MemberDirectory
     private val consensus: ConsensusLog
     private val memberId = MemberId(identityModule.serverId().uuid())
@@ -92,11 +71,6 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         )
     private val localStores: Neo4jLocalStores
 
-    private var clusterDefaultDatabaseInitializer: Lifecycle = LifecycleAdapter()
-
-    /** DozerDB's database manager and databases, created with the database context provider. */
-    private lateinit var databaseManager: MultiDatabaseManager
-    private lateinit var databaseContexts: DatabaseRepository<StandaloneDatabaseContext>
     private lateinit var reconciler: DatabaseReconciler
 
     init {
@@ -104,10 +78,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         val logService = globalModule.logService
         // Before anything creates a Ratis or DozenDB SLF4J logger.
         Slf4jLogRouting.useDebugLogProvider(logService.internalLogProvider)
-        DozenDbConstraintSemantics.enableForClustering()
         val userLog = logService.getUserLog(ClusterService::class.java)
         val neo4jVersion = Version.getNeo4jVersion()
-        val defaultDatabase = config.get(GraphDatabaseSettings.initial_default_database)
         lateinit var stores: Neo4jLocalStores
         lateinit var replicationService: ReplicationService
         val tuning =
@@ -237,115 +209,34 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         )
     }
 
-    /**
-     * A port of DozerDB's wiring that differs only in the database context factory, which hosts
-     * replicated databases on Raft. DozerDB keeps the default database starter in a private field,
-     * hence [registerDefaultDatabaseInitializer].
-     */
+    /** The base wiring, with the databases following the replicated system graph. */
     override fun createDatabaseContextProvider(
         globalModule: GlobalModule
     ): DatabaseContextProvider<*> {
-        val databaseContextFactory =
-            ClusterDatabaseContextFactory(
-                globalModule,
-                identityModule,
-                transactionMonitorFactory,
-                indexMonitorFactory,
-                AbstractEditionModule.createIdContextFactory(globalModule),
-                DeviceMapper.UNKNOWN_MAPPER,
-                CommunityIOControllerService(),
-                createCommitProcessFactory(),
-                this,
-                replication,
-            )
-        val databaseIdRepository = MapCachingDatabaseIdRepository()
-        val databaseRepository = DatabaseRepository<StandaloneDatabaseContext>(databaseIdRepository)
-        val rootDatabaseIdRepository =
-            AbstractEditionModule.tryResolveOrCreate(
-                DatabaseIdRepository::class.java,
-                globalModule.externalDependencyResolver,
-            ) {
-                SystemGraphDatabaseIdRepository(
-                    { databaseRepository.getDatabaseContext(DatabaseId.SYSTEM_DATABASE_ID) },
-                    globalModule.logService.internalLogProvider,
-                )
-            }
-        val rootDatabaseReferenceRepository =
-            AbstractEditionModule.tryResolveOrCreate(
-                DatabaseReferenceRepository::class.java,
-                globalModule.externalDependencyResolver,
-            ) {
-                SystemGraphDatabaseReferenceRepository(databaseRepository::getSystemDatabaseContext)
-            }
-        // DozerDB's constructor creates this repository; its getter only exposes the interface.
-        val databaseReferenceRepository =
-            databaseReferenceRepo as MapCachingDatabaseReferenceRepository
-        databaseIdRepository.setDelegate(rootDatabaseIdRepository)
-        databaseReferenceRepository.setDelegate(rootDatabaseReferenceRepository)
-        val databaseIdCacheCleaner =
-            DatabaseReferenceCacheClearingListener(
-                databaseIdRepository,
-                databaseReferenceRepository,
-            )
-        globalModule.globalLife.add(
-            CommunityKernelPanicListener(globalModule.databaseEventListeners, databaseRepository)
-        )
-        val multiDatabaseManager =
-            MultiDatabaseManager(globalModule, databaseRepository, databaseContextFactory)
-        databaseManager = multiDatabaseManager
-        databaseContexts = databaseRepository
-        val defaultDatabase =
-            globalModule.globalConfig.get(GraphDatabaseSettings.initial_default_database)
+        val provider = super.createDatabaseContextProvider(globalModule)
+        val repository = databaseRepository
         reconciler =
             DatabaseReconciler(
                 Neo4jSystemGraph(
-                    { databaseRepository.getSystemDatabaseContext().databaseFacade() },
+                    { repository.getSystemDatabaseContext().databaseFacade() },
                     replication,
                 ),
-                Neo4jLocalDatabases(
-                    multiDatabaseManager,
-                    databaseRepository,
-                    localStores,
-                    replication,
-                ),
+                Neo4jLocalDatabases(databaseManager, repository, localStores, replication),
                 memberId,
                 defaultDatabase,
                 ::copySources,
                 globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
             )
-        val databaseLifecycles =
-            MultiDatabaseLifecycleService(
-                multiDatabaseManager,
-                databaseRepository,
-                defaultDatabase,
-                databaseContextFactory,
-                globalModule.logService.internalLogProvider,
-            )
-        databaseStateService = CommunityDatabaseStateService(databaseRepository)
-        globalModule.globalLife.add(databaseLifecycles.systemDatabaseStarter())
-        globalModule.globalLife.add(databaseLifecycles.allDatabaseShutdown())
-        globalModule.globalDependencies.satisfyDependency(
-            DatabaseContextProviderDelegate.delegate(databaseRepository)
-        )
-        globalModule.globalDependencies.satisfyDependency(databaseStateService)
-        globalModule.transactionEventListeners.registerTransactionEventListener(
-            GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
-            databaseIdCacheCleaner,
-        )
-        clusterDefaultDatabaseInitializer = databaseLifecycles.defaultDatabaseStarter()
-        globalModule.globalDependencies.satisfyDependency<SystemGraphComponents.UpgradeChecker>(
-            SystemGraphComponents.UpgradeChecker.UPGRADE_ALWAYS_ALLOWED
-        )
         // Transactions applied from Raft fire no transaction event listeners: refresh what the
         // listeners refresh after local commits.
         replication.afterSystemApply = {
-            databaseIdRepository.invalidateAll()
-            databaseReferenceRepository.invalidateAll()
+            databaseIdCache.invalidateAll()
+            referenceCache.invalidateAll()
             (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
             globalReadOnlyChecker?.refresh()
             reconciler.request()
         }
-        return databaseRepository
+        return provider
     }
 
     /** The members to copy a new database from, [creator] first. */
@@ -389,11 +280,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
     }
 
     /**
-     * DozerDB's starter of the default database, which reads `system`: it waits while `system` is
-     * replaced by a copy, as when this member restarts behind the leader's log.
+     * The starter of the default database, which reads `system`: it waits while `system` is
+     * replaced by a copy, as when this member restarts behind the leader's log. The reconciler
+     * follows the system graph instead of [StandaloneDatabases].
      */
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
-        val starter = clusterDefaultDatabaseInitializer
+        val starter = defaultDatabaseStarter
         globalModule.globalLife.add(
             object : Lifecycle by starter {
                 override fun start() = replication.readingSystem { starter.start() }
@@ -401,38 +293,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
         )
     }
 
-    /**
-     * DozerDB's system graph components, with its user security component also offered as a
-     * dependency: DozerDB's `ALTER USER` resolves it from there, but DozerDB never puts it there,
-     * so `ALTER USER` fails in DozerDB itself.
-     */
-    override fun registerSystemGraphComponents(
-        systemGraphComponentsBuilder: SystemGraphComponents.Builder,
-        globalModule: GlobalModule,
-    ) {
-        super.registerSystemGraphComponents(
-            object : SystemGraphComponents.Builder() {
-                override fun register(component: SystemGraphComponent) {
-                    systemGraphComponentsBuilder.register(component)
-                    if (component is UserSecurityGraphComponent) {
-                        globalModule.globalDependencies.satisfyDependency(component)
-                    }
-                }
-
-                override fun build(): SystemGraphComponents = systemGraphComponentsBuilder.build()
-            },
-            globalModule,
-        )
-    }
-
-    /** Stops and starts databases through DozerDB's database manager. */
+    /** Stops and starts databases through the database manager. */
     private fun databaseControl(): DatabaseControl =
         object : DatabaseControl {
             override fun stop(id: NamedDatabaseId) = databaseManager.stopDatabase(id)
 
             override fun start(id: NamedDatabaseId): Boolean {
                 databaseManager.startDatabase(id)
-                return databaseContexts
+                return databaseRepository
                     .getDatabaseContext(id)
                     .map { it.database().isStarted }
                     .orElse(false)
@@ -450,9 +318,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozerDbEditionModule(gl
     }
 
     /**
-     * DozerDB's routing service, port of its wiring, with routing tables of replicated databases
-     * taken from their Raft groups. The member is alone, and drivers get DozerDB's single-address
-     * tables, only in a one-member cluster.
+     * Neo4j Community's routing service, with routing tables of replicated databases taken from
+     * their Raft groups. The member is alone, and drivers get Community's single-address tables,
+     * only in a one-member cluster.
      */
     override fun createRoutingService(
         databaseContextProvider: DatabaseContextProvider<*>,

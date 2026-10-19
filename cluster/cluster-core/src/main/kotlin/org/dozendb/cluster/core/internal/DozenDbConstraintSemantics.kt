@@ -1,45 +1,316 @@
+/*
+ * Copyright (c) "Neo4j"
+ * Neo4j Sweden AB [http://neo4j.com]
+ *
+ * Copyright (c) DozerDB
+ * https://dozerdb.org
+ *
+ * Modifications Copyright (c) DozenDB
+ * 2026-10-19: ported to Kotlin from DozerDB's DozerDbConstraintSemantics, ConstraintChecker and
+ * ConstraintDelegator, and merged with DozenDB's fixes of their defects.
+ *
+ * This program is free software: you can redistribute it and/or modify it under the terms of the
+ * GNU General Public License as published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ */
 package org.dozendb.cluster.core.internal
 
 import java.util.function.Function
+import org.dozendb.cluster.core.internal.edition.DozenDbDatabaseContextFactory
+import org.eclipse.collections.api.IntIterable
+import org.eclipse.collections.api.set.primitive.LongSet
+import org.eclipse.collections.impl.map.mutable.primitive.IntObjectHashMap
 import org.eclipse.collections.impl.set.mutable.primitive.IntHashSet
+import org.neo4j.common.TokenNameLookup
 import org.neo4j.internal.kernel.api.CursorFactory
+import org.neo4j.internal.kernel.api.EntityCursor
+import org.neo4j.internal.kernel.api.NodeCursor
+import org.neo4j.internal.kernel.api.NodeLabelIndexCursor
+import org.neo4j.internal.kernel.api.PropertyCursor
 import org.neo4j.internal.kernel.api.Read
+import org.neo4j.internal.kernel.api.RelationshipScanCursor
+import org.neo4j.internal.kernel.api.RelationshipTypeIndexCursor
+import org.neo4j.internal.kernel.api.exceptions.schema.ConstraintValidationException
+import org.neo4j.internal.kernel.api.exceptions.schema.CreateConstraintFailureException
 import org.neo4j.internal.schema.ConstraintDescriptor
 import org.neo4j.internal.schema.LabelSchemaDescriptor
 import org.neo4j.internal.schema.RelationTypeSchemaDescriptor
+import org.neo4j.internal.schema.SchemaDescriptor
+import org.neo4j.internal.schema.constraints.ConstraintDescriptorFactory
+import org.neo4j.internal.schema.constraints.KeyConstraintDescriptor
+import org.neo4j.internal.schema.constraints.NodeLabelExistenceConstraintDescriptor
+import org.neo4j.internal.schema.constraints.RelationshipEndpointLabelConstraintDescriptor
+import org.neo4j.internal.schema.constraints.TypeConstraintDescriptor
+import org.neo4j.internal.schema.constraints.TypeRepresentation
+import org.neo4j.internal.schema.constraints.UniquenessConstraintDescriptor
 import org.neo4j.io.IOUtils
 import org.neo4j.io.pagecache.context.CursorContext
-import org.neo4j.kernel.impl.constraints.ConstraintChecker
-import org.neo4j.kernel.impl.constraints.ConstraintDelegator
-import org.neo4j.kernel.impl.constraints.DozerDbConstraintSemantics
+import org.neo4j.kernel.api.exceptions.schema.NodePropertyExistenceException
+import org.neo4j.kernel.api.exceptions.schema.PropertyTypeException
+import org.neo4j.kernel.api.exceptions.schema.RelationshipPropertyExistenceException
+import org.neo4j.kernel.impl.constraints.StandardConstraintSemantics
 import org.neo4j.memory.MemoryTracker
+import org.neo4j.storageengine.api.PropertySelection
 import org.neo4j.storageengine.api.RelationshipVisitorWithProperties
+import org.neo4j.storageengine.api.StandardConstraintRuleAccessor
+import org.neo4j.storageengine.api.StorageProperty
 import org.neo4j.storageengine.api.StorageReader
 import org.neo4j.storageengine.api.txstate.ReadableTransactionState
 import org.neo4j.storageengine.api.txstate.RelationshipModifications
 import org.neo4j.storageengine.api.txstate.TxStateVisitor
 
 /**
- * DozerDB's constraint semantics with the defects of the public 5.26.8 source fixed, so property
- * existence constraints work:
- * - Stores that hold existence, key or type constraints can be read, as in the DozerDB 5.26.27.0
- *   release; the public source rejects them, which fails the database.
- * - Commit-time enforcement builds its checker from each constraint's schema. The public source
- *   casts the constraint itself to a schema descriptor, which fails every write transaction once an
- *   existence constraint exists.
- * - A relationship that lacks a required property fails its transaction with a constraint
- *   violation; the public source reports an unknown error, and does not check relationships whose
- *   properties change.
+ * Constraint semantics that accept every constraint type Neo4j can store and enforce property
+ * existence at commit, which Neo4j Community leaves to Enterprise:
+ * - Stores holding existence, key, type and other Enterprise constraints can be read; Community
+ *   rejects them, which fails the database.
+ * - A node or relationship that lacks a property an existence or key constraint requires fails its
+ *   transaction with `Neo.ClientError.Schema.ConstraintValidationFailed`, whether it is created or
+ *   its labels or properties change.
+ * - Creating a constraint checks existing data for property existence and property types where a
+ *   cursor over the entities is given; the other checks (keys, endpoint labels, label existence)
+ *   are not made.
  *
- * Enforcement otherwise runs DozerDB's own checker. Clustered databases get an instance directly
- * from [ClusterDatabaseContextFactory]. Crash recovery instead picks the service with the highest
- * priority, so this class outranks DozerDB's only when clustering is enabled; with clustering
- * disabled DozerDB behaves exactly as shipped.
+ * Every database gets an instance from [DozenDbDatabaseContextFactory]; crash recovery picks the
+ * registered service with the highest priority, which this is.
  */
-class DozenDbConstraintSemantics : DozerDbConstraintSemantics(if (clustered) PRIORITY else 0) {
+class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
+    private val rules = StandardConstraintRuleAccessor()
+
     override fun getName(): String = "dozenDbConstraints"
 
     override fun readConstraint(constraint: ConstraintDescriptor): ConstraintDescriptor = constraint
+
+    override fun assertKeyConstraintAllowed(descriptor: SchemaDescriptor) {}
+
+    override fun createUniquenessConstraintRule(
+        ruleId: Long,
+        descriptor: UniquenessConstraintDescriptor,
+        indexId: Long,
+    ): ConstraintDescriptor = rules.createUniquenessConstraintRule(ruleId, descriptor, indexId)
+
+    override fun createKeyConstraintRule(
+        ruleId: Long,
+        descriptor: KeyConstraintDescriptor,
+        indexId: Long,
+    ): ConstraintDescriptor = rules.createKeyConstraintRule(ruleId, descriptor, indexId)
+
+    override fun createExistenceConstraint(
+        ruleId: Long,
+        descriptor: ConstraintDescriptor,
+    ): ConstraintDescriptor = rules.createExistenceConstraint(ruleId, descriptor)
+
+    override fun createPropertyTypeConstraint(
+        ruleId: Long,
+        descriptor: TypeConstraintDescriptor,
+    ): ConstraintDescriptor = rules.createPropertyTypeConstraint(ruleId, descriptor)
+
+    override fun createRelationshipEndpointLabelConstraint(
+        ruleId: Long,
+        descriptor: RelationshipEndpointLabelConstraintDescriptor,
+    ): ConstraintDescriptor = rules.createRelationshipEndpointLabelConstraint(ruleId, descriptor)
+
+    override fun createNodeLabelExistenceConstraint(
+        ruleId: Long,
+        descriptor: NodeLabelExistenceConstraintDescriptor,
+    ): ConstraintDescriptor = rules.createNodeLabelExistenceConstraint(ruleId, descriptor)
+
+    // Checks of existing data when a constraint is created.
+
+    override fun validateNodePropertyExistenceConstraint(
+        nodeCursor: NodeCursor,
+        propertyCursor: PropertyCursor,
+        schema: LabelSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+        isDependent: Boolean,
+    ) {
+        while (nodeCursor.next()) {
+            if (hasAll(schema.propertyIds, propertyCursor, nodeCursor)) continue
+            val violation =
+                NodePropertyExistenceException.propertyPresenceViolation(
+                    schema,
+                    tokenNameLookup,
+                    ConstraintDescriptorFactory.existsForSchema(schema, false),
+                    ConstraintValidationException.Phase.VERIFICATION,
+                    nodeCursor.nodeReference(),
+                )
+            throw CreateConstraintFailureException(violation, violation.constraint(), violation)
+        }
+    }
+
+    override fun validateNodePropertyExistenceConstraint(
+        allNodes: NodeLabelIndexCursor,
+        nodeCursor: NodeCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: LabelSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+        isDependent: Boolean,
+    ) {}
+
+    override fun validateRelationshipPropertyExistenceConstraint(
+        relationshipCursor: RelationshipScanCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: RelationTypeSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+        isDependent: Boolean,
+    ) {}
+
+    override fun validateRelationshipPropertyExistenceConstraint(
+        allRelationships: RelationshipTypeIndexCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: RelationTypeSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+        isDependent: Boolean,
+    ) {}
+
+    override fun validateNodeKeyConstraint(
+        nodeCursor: NodeCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: LabelSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) =
+        validateNodePropertyExistenceConstraint(
+            nodeCursor,
+            propertyCursor,
+            descriptor,
+            tokenNameLookup,
+            false,
+        )
+
+    override fun validateNodeKeyConstraint(
+        allNodes: NodeLabelIndexCursor,
+        nodeCursor: NodeCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: LabelSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {}
+
+    override fun validateRelKeyConstraint(
+        relCursor: RelationshipScanCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: RelationTypeSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {}
+
+    override fun validateRelKeyConstraint(
+        allRelationships: RelationshipTypeIndexCursor,
+        relCursor: RelationshipScanCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: RelationTypeSchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {}
+
+    override fun validateNodePropertyTypeConstraint(
+        nodeCursor: NodeCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: TypeConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        while (nodeCursor.next()) {
+            checkType(descriptor, nodeCursor, propertyCursor, tokenNameLookup)
+        }
+    }
+
+    override fun validateNodePropertyTypeConstraint(
+        allNodes: NodeLabelIndexCursor,
+        nodeCursor: NodeCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: TypeConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        while (allNodes.next()) {
+            allNodes.node(nodeCursor)
+            validateNodePropertyTypeConstraint(
+                nodeCursor,
+                propertyCursor,
+                descriptor,
+                tokenNameLookup,
+            )
+        }
+    }
+
+    override fun validateRelationshipPropertyTypeConstraint(
+        relationshipCursor: RelationshipScanCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: TypeConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        while (relationshipCursor.next()) {
+            checkType(descriptor, relationshipCursor, propertyCursor, tokenNameLookup)
+        }
+    }
+
+    override fun validateRelationshipPropertyTypeConstraint(
+        allRelationships: RelationshipTypeIndexCursor,
+        propertyCursor: PropertyCursor,
+        descriptor: TypeConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        while (allRelationships.next()) {
+            if (allRelationships.readFromStore()) {
+                checkType(descriptor, allRelationships, propertyCursor, tokenNameLookup)
+            }
+        }
+    }
+
+    override fun validateRelationshipEndpointLabelConstraint(
+        relCursor: RelationshipScanCursor,
+        nodeCursor: NodeCursor,
+        descriptor: RelationshipEndpointLabelConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {}
+
+    override fun validateNodeLabelExistenceConstraint(
+        allNodes: NodeLabelIndexCursor,
+        nodeCursor: NodeCursor,
+        descriptor: NodeLabelExistenceConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {}
+
+    override fun validateNodeLabelExistenceConstraint(
+        nodeCursor: NodeCursor,
+        descriptor: NodeLabelExistenceConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {}
+
+    /** Whether the entity at [entity] has every property in [propertyIds]. */
+    private fun hasAll(
+        propertyIds: IntArray,
+        properties: PropertyCursor,
+        entity: EntityCursor,
+    ): Boolean {
+        entity.properties(properties, PropertySelection.onlyKeysSelection(*propertyIds))
+        var missing = propertyIds.size
+        while (properties.next()) missing--
+        return missing == 0
+    }
+
+    private fun checkType(
+        descriptor: TypeConstraintDescriptor,
+        entity: EntityCursor,
+        properties: PropertyCursor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        entity.properties(
+            properties,
+            PropertySelection.selection(descriptor.schema().propertyId),
+        )
+        if (!properties.next()) return
+        val value = properties.propertyValue()
+        if (TypeRepresentation.disallows(descriptor.propertyType(), value)) {
+            val violation =
+                PropertyTypeException(
+                    descriptor,
+                    ConstraintValidationException.Phase.VERIFICATION,
+                    entity.reference(),
+                    tokenNameLookup,
+                    value,
+                )
+            throw CreateConstraintFailureException(violation, violation.constraint(), violation)
+        }
+    }
+
+    // Enforcement at commit.
 
     override fun decorateTxStateVisitor(
         storageReader: StorageReader,
@@ -51,104 +322,194 @@ class DozenDbConstraintSemantics : DozerDbConstraintSemantics(if (clustered) PRI
         memoryTracker: MemoryTracker,
     ): TxStateVisitor {
         if (!readableTransactionState.hasDataChanges()) return txStateVisitor
-        val checker =
+        val required =
             storageReader.getOrCreateSchemaDependantState(
-                ExistenceChecker::class.java,
-                BUILD_CHECKER,
+                RequiredProperties::class.java,
+                BUILD_REQUIRED_PROPERTIES,
             )
-        return Enforcer(checker, cursorContext, cursorFactory, memoryTracker, txStateVisitor, read)
+        if (required.isEmpty) return txStateVisitor
+        return Enforcer(
+            required,
+            storageReader,
+            read,
+            cursorFactory,
+            cursorContext,
+            memoryTracker,
+            txStateVisitor,
+        )
     }
 
-    /** DozerDB's checker, cached per schema state under a key of its own. */
-    private class ExistenceChecker(
-        storageReader: StorageReader,
-        nodes: List<LabelSchemaDescriptor>,
-        relationships: List<RelationTypeSchemaDescriptor>,
-    ) : ConstraintChecker(storageReader, nodes, relationships)
+    /**
+     * The properties that existence and key constraints require, by label and by relationship type.
+     * Cached with the schema, so it holds no transaction's state.
+     */
+    private class RequiredProperties(
+        val nodeSchemas: List<LabelSchemaDescriptor>,
+        val relationshipSchemas: List<RelationTypeSchemaDescriptor>,
+    ) {
+        val byLabel = IntObjectHashMap<IntArray>()
+        val byType = IntObjectHashMap<IntArray>()
 
-    /** DozerDB's enforcement, with relationships checked here first, after all their changes. */
+        init {
+            for (schema in nodeSchemas) merge(byLabel, schema.labelId, schema.propertyIds)
+            for (schema in relationshipSchemas) merge(byType, schema.relTypeId, schema.propertyIds)
+        }
+
+        val isEmpty: Boolean
+            get() = byLabel.isEmpty && byType.isEmpty
+
+        private fun merge(map: IntObjectHashMap<IntArray>, token: Int, keys: IntArray) {
+            val current = map.get(token) ?: IntArray(0)
+            map.put(token, (current + keys).distinct().sorted().toIntArray())
+        }
+    }
+
+    /** Checks every changed node and relationship before passing the changes on. */
     private class Enforcer(
-        private val checker: ConstraintChecker,
-        cursorContext: CursorContext,
+        private val required: RequiredProperties,
+        private val storageReader: StorageReader,
+        private val read: Read,
         cursorFactory: CursorFactory,
+        cursorContext: CursorContext,
         memoryTracker: MemoryTracker,
         next: TxStateVisitor,
-        private val read: Read,
-    ) : ConstraintDelegator(checker, cursorContext, cursorFactory, memoryTracker, next, read) {
+    ) : TxStateVisitor.Delegator(next) {
+        private val nodes = cursorFactory.allocateFullAccessNodeCursor(cursorContext, memoryTracker)
         private val relationships =
             cursorFactory.allocateFullAccessRelationshipScanCursor(cursorContext, memoryTracker)
         private val properties =
             cursorFactory.allocateFullAccessPropertyCursor(cursorContext, memoryTracker)
         private val present = IntHashSet()
 
-        override fun visitRelationshipModifications(
-            relationshipModifications: RelationshipModifications
+        override fun visitNodePropertyChanges(
+            id: Long,
+            added: Iterable<StorageProperty>,
+            changed: Iterable<StorageProperty>,
+            removed: IntIterable,
         ) {
-            if (!checker.relPropertyMap.isEmpty) {
+            checkNode(id)
+            super.visitNodePropertyChanges(id, added, changed, removed)
+        }
+
+        override fun visitNodeLabelChanges(id: Long, added: LongSet, removed: LongSet) {
+            checkNode(id)
+            super.visitNodeLabelChanges(id, added, removed)
+        }
+
+        override fun visitRelationshipModifications(modifications: RelationshipModifications) {
+            if (!required.byType.isEmpty) {
                 val check =
                     RelationshipVisitorWithProperties<RuntimeException> { id, type, _, _, _, _, _ ->
                         checkRelationship(id, type)
                     }
-                relationshipModifications.creations().forEach(check)
-                relationshipModifications.updates().forEach(check)
+                modifications.creations().forEach(check)
+                modifications.updates().forEach(check)
             }
-            super.visitRelationshipModifications(relationshipModifications)
+            super.visitRelationshipModifications(modifications)
+        }
+
+        private fun checkNode(id: Long) {
+            if (required.byLabel.isEmpty) return
+            read.singleNode(id, nodes)
+            // Deleted in this transaction: nothing left to violate a constraint.
+            if (!nodes.next()) return
+            val labels = nodes.labels()
+            var loaded = false
+            for (i in 0 until labels.numberOfTokens()) {
+                val label = labels.token(i)
+                val keys = required.byLabel.get(label) ?: continue
+                if (!loaded) {
+                    load(nodes)
+                    loaded = true
+                }
+                for (key in keys) if (!present.contains(key)) throw nodeViolation(id, label, key)
+            }
         }
 
         private fun checkRelationship(id: Long, type: Int) {
-            val required = checker.relPropertyMap.get(type.toLong()) ?: return
+            val keys = required.byType.get(type) ?: return
             read.singleRelationship(id, relationships)
             if (!relationships.next()) return
-            present.clear()
-            relationships.properties(properties)
-            while (properties.next()) present.add(properties.propertyKey())
-            for (key in required) {
-                if (!present.contains(key)) checker.relConstraintFailure(id, type, key)
+            load(relationships)
+            for (key in keys) {
+                if (!present.contains(key)) throw relationshipViolation(id, type, key)
             }
         }
+
+        private fun load(entity: EntityCursor) {
+            present.clear()
+            entity.properties(properties)
+            while (properties.next()) present.add(properties.propertyKey())
+        }
+
+        private fun nodeViolation(id: Long, label: Int, key: Int): ConstraintValidationException {
+            for (schema in required.nodeSchemas) {
+                if (schema.labelId != label || key !in schema.propertyIds) continue
+                val constraint = existenceConstraint(schema) ?: continue
+                return NodePropertyExistenceException.propertyPresenceViolation(
+                    schema,
+                    storageReader.tokenNameLookup(),
+                    constraint,
+                    ConstraintValidationException.Phase.VALIDATION,
+                    id,
+                )
+            }
+            error("no constraint requires property $key of label $label")
+        }
+
+        private fun relationshipViolation(
+            id: Long,
+            type: Int,
+            key: Int,
+        ): ConstraintValidationException {
+            for (schema in required.relationshipSchemas) {
+                if (schema.relTypeId != type || key !in schema.propertyIds) continue
+                val constraint = existenceConstraint(schema) ?: continue
+                return RelationshipPropertyExistenceException.propertyPresenceViolation(
+                    schema,
+                    storageReader.tokenNameLookup(),
+                    constraint,
+                    ConstraintValidationException.Phase.VALIDATION,
+                    id,
+                )
+            }
+            error("no constraint requires property $key of relationship type $type")
+        }
+
+        private fun existenceConstraint(schema: SchemaDescriptor): ConstraintDescriptor? =
+            storageReader.constraintsGetForSchema(schema).asSequence().firstOrNull {
+                it.enforcesPropertyExistence()
+            }
 
         override fun close() {
             try {
                 super.close()
             } finally {
-                IOUtils.closeAllUnchecked(relationships, properties)
+                IOUtils.closeAllUnchecked(nodes, relationships, properties)
             }
         }
     }
 
-    companion object {
-        /** Above DozerDB's priority of 1. */
-        private const val PRIORITY = 2
+    private companion object {
+        /** Above Neo4j Community's standard constraint semantics, priority 1. */
+        const val PRIORITY = 2
 
-        @Volatile private var clustered = false
-
-        private val BUILD_CHECKER =
-            Function<StorageReader, ExistenceChecker> { reader ->
+        val BUILD_REQUIRED_PROPERTIES =
+            Function<StorageReader, RequiredProperties> { reader ->
                 val nodes = mutableListOf<LabelSchemaDescriptor>()
                 val relationships = mutableListOf<RelationTypeSchemaDescriptor>()
                 reader.constraintsGetAll().forEachRemaining { constraint ->
-                    if (constraint.enforcesPropertyExistence()) {
-                        val schema = constraint.schema()
-                        if (schema.isSchemaDescriptorType(LabelSchemaDescriptor::class.java)) {
-                            nodes +=
-                                schema.asSchemaDescriptorType(LabelSchemaDescriptor::class.java)
-                        }
-                        if (
-                            schema.isSchemaDescriptorType(RelationTypeSchemaDescriptor::class.java)
-                        ) {
-                            relationships +=
-                                schema.asSchemaDescriptorType(
-                                    RelationTypeSchemaDescriptor::class.java
-                                )
-                        }
+                    if (!constraint.enforcesPropertyExistence()) return@forEachRemaining
+                    val schema = constraint.schema()
+                    if (schema.isSchemaDescriptorType(LabelSchemaDescriptor::class.java)) {
+                        nodes += schema.asSchemaDescriptorType(LabelSchemaDescriptor::class.java)
+                    }
+                    if (schema.isSchemaDescriptorType(RelationTypeSchemaDescriptor::class.java)) {
+                        relationships +=
+                            schema.asSchemaDescriptorType(RelationTypeSchemaDescriptor::class.java)
                     }
                 }
-                ExistenceChecker(reader, nodes, relationships)
+                RequiredProperties(nodes, relationships)
             }
-
-        /** Called once clustering is known to be enabled, before any database starts. */
-        fun enableForClustering() {
-            clustered = true
-        }
     }
 }

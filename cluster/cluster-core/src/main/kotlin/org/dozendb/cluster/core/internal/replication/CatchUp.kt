@@ -13,7 +13,7 @@ import org.dozendb.cluster.api.Snapshot
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLog
 
-/** Stops and starts databases: DozerDB's database manager. */
+/** Stops and starts databases: the database manager. */
 internal interface DatabaseControl {
     fun stop(id: NamedDatabaseId)
 
