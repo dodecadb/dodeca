@@ -26,10 +26,11 @@ difference.
   Enterprise constraints can be read. A node or relationship that lacks a
   property that an existence or key constraint requires fails its transaction
   with `Neo.ClientError.Schema.ConstraintValidationFailed`, whether it is
-  created or its labels or properties change later. As in DozerDB, creating an
-  existence constraint does not verify existing data, and property type, label
-  existence and relationship endpoint label constraints are not enforced
-  (DozerDB's release enforces those).
+  created or its labels or properties change later, and creating such a
+  constraint fails if existing data lacks the property, as in DozerDB's
+  release. Property type, label existence and relationship endpoint label
+  constraints are not enforced when data changes (DozerDB's release enforces
+  those).
 - **`ALTER USER`** works. DozerDB fails every `ALTER USER` with an
   `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`.
 - **User status and home database.** `SET STATUS` and `SET HOME DATABASE`

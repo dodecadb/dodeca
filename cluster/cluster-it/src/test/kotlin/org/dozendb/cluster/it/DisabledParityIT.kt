@@ -174,10 +174,11 @@ class DisabledParityIT {
                         .containsExactly(mapOf("currentStatus" to "online"))
                 }
             }
-        assertSame(
-            "CREATE CONSTRAINT person_born FOR (p:Person) REQUIRE p.born IS NOT NULL",
-            "constraints",
-        )
+        val create = "CREATE CONSTRAINT person_born FOR (p:Person) REQUIRE p.born IS NOT NULL"
+        assertSame("CREATE (:Person {name: 'unborn'})", "constraints")
+        assertThat(assertSame(create, "constraints")).isInstanceOf(Outcome.Failed::class.java)
+        assertSame("MATCH (p:Person {name: 'unborn'}) DELETE p", "constraints")
+        assertSame(create, "constraints")
         assertSame("CREATE (:Person {name: 'ada', born: 1815})", "constraints")
         assertThat(assertBothFail("CREATE (:Person {name: 'nobody'})", "constraints").code)
             .isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed")
