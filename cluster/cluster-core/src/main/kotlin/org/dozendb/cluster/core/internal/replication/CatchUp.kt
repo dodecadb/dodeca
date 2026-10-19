@@ -1,6 +1,10 @@
 package org.dozendb.cluster.core.internal.replication
 
+import java.time.Clock
 import java.time.Duration
+import java.time.Instant
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
@@ -37,6 +41,9 @@ internal fun interface DatabaseCopier {
  * leader or another member, retried until one succeeds or the thread is interrupted. The database
  * keeps serving reads meanwhile. Only then is it stopped, which detaches its group, replaced with
  * the copy, whose snapshot is recorded, and started again.
+ *
+ * A database that needs another copy within [REPEAT_WARNING] of the previous one gets a warning:
+ * its member does not keep up with the others.
  */
 internal class CatchUp(
     private val consensus: ConsensusLog,
@@ -45,7 +52,11 @@ internal class CatchUp(
     private val copier: DatabaseCopier,
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
+    private val clock: Clock = Clock.systemUTC(),
 ) {
+    /** When each database, by group id, last started again after it was replaced. */
+    private val replaced = ConcurrentHashMap<UUID, Instant>()
+
     /**
      * Replaces [replica] with a copy holding every entry up to [minimumIndex]. [exclusively] runs
      * the part from stopping the database to starting it again, for example under a lock that
@@ -65,6 +76,7 @@ internal class CatchUp(
             minimumIndex,
             leader?.raftAddress ?: "another member",
         )
+        warnIfRepeated(ref)
         val copy =
             try {
                 stage(ref, leader, minimumIndex)
@@ -74,6 +86,20 @@ internal class CatchUp(
                 return
             }
         exclusively { replace(replica, copy) }
+    }
+
+    private fun warnIfRepeated(ref: DatabaseRef) {
+        val previous = replaced[ref.id] ?: return
+        val since = Duration.between(previous, clock.instant())
+        if (since < REPEAT_WARNING) {
+            log.warn(
+                "Database %s needs another copy %d s after the previous one. This member does " +
+                    "not keep up with the others: it keeps losing its connection to them, or its " +
+                    "links to them are slower than the cluster writes.",
+                ref.name,
+                since.seconds,
+            )
+        }
     }
 
     /** Stops the database, moves [copy] into place and starts the database again. */
@@ -96,6 +122,7 @@ internal class CatchUp(
         } else {
             log.error("Database %s did not start after it was replaced", ref.name)
         }
+        replaced[ref.id] = clock.instant()
     }
 
     private fun stage(ref: DatabaseRef, leader: Member?, minimumIndex: Long): StagedCopy {
@@ -148,5 +175,13 @@ internal class CatchUp(
             }
         }
         return null
+    }
+
+    companion object {
+        /**
+         * A member that keeps up needs a copy only after an absence of about two checkpoints, which
+         * Neo4j takes every 15 minutes by default.
+         */
+        val REPEAT_WARNING: Duration = Duration.ofHours(1)
     }
 }

@@ -122,6 +122,11 @@ What clustering does not do yet.
   may fail with `Neo.TransientError.General.DatabaseUnavailable` while it is
   moved there. `dozendb.cluster.status()` reports each group's latest snapshot
   as `snapshotIndex`.
+- **Slow links.** A member whose links to the others are slower than the
+  cluster writes falls further and further behind. Once the others discard the
+  log it still needs, it copies the database, falls behind again, and copies
+  it again. Each copy logs a warning; one needed within an hour of the
+  previous copy of that database also says that the member does not keep up.
 - **Lost databases.** A member whose replicated database is missing at startup
   (for example after deleting `data/databases/neo4j` and
   `data/transactions/neo4j`) copies it from another member and keeps its own

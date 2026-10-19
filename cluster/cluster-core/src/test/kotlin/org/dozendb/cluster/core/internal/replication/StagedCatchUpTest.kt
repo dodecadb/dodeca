@@ -1,8 +1,13 @@
 package org.dozendb.cluster.core.internal.replication
 
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.lang.reflect.Proxy
+import java.time.Clock
 import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.Executors
@@ -26,6 +31,7 @@ import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.NullLog
+import org.neo4j.logging.log4j.Log4jLogProvider
 
 /** A member behind its group's log copies the database while it runs, then swaps the copy in. */
 class StagedCatchUpTest {
@@ -196,6 +202,41 @@ class StagedCatchUpTest {
         assertThat(events).containsExactly("copying")
         assertThat(running()).isEqualTo("running")
         assertThat(self.latestSnapshot(database)).isNull()
+    }
+
+    @Test
+    fun `a database that soon needs another copy warns that its member does not keep up`() {
+        val output = ByteArrayOutputStream()
+        val clock = MutableClock(Instant.parse("2026-10-19T10:00:00Z"))
+        val warning = "needs another copy"
+        val catchUp =
+            CatchUp(
+                self,
+                system,
+                { control },
+                { source, _, _ -> stage(source) },
+                Log4jLogProvider(output).getLog(CatchUp::class.java),
+                retryDelay = Duration.ofMillis(10),
+                clock = clock,
+            )
+
+        catchUp.run(replica, leader.self, 3)
+        clock.now = clock.now.plus(Duration.ofMinutes(10))
+        catchUp.run(replica, leader.self, 3)
+        clock.now = clock.now.plus(Duration.ofHours(2))
+        catchUp.run(replica, leader.self, 3)
+
+        val log = output.toString()
+        assertThat(log.split(warning)).describedAs(log).hasSize(2)
+        assertThat(log).contains("$warning 600 s after the previous one")
+    }
+
+    private class MutableClock(var now: Instant) : Clock() {
+        override fun instant(): Instant = now
+
+        override fun getZone(): ZoneId = ZoneOffset.UTC
+
+        override fun withZone(zone: ZoneId): Clock = this
     }
 
     @Test
