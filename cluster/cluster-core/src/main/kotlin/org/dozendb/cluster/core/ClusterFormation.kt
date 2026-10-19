@@ -17,7 +17,9 @@ class ClusterFormationException(message: String) : RuntimeException(message)
 /**
  * The outcome of forming or joining a group.
  *
- * @property members the initial voting members, ordered by member id.
+ * @property members the initial voting members, ordered by member id; for a group formed before,
+ *   its members as a member that runs it knows them, which leave this member out if it is not one
+ *   of them yet.
  * @property storeSource for a newly formed cluster, the one member whose databases every other
  *   member copies; null when joining a cluster that was formed before.
  */
@@ -30,8 +32,9 @@ data class Formation(val members: List<Member>, val storeSource: Member?)
  * Every initial member probes every address in `dbms.dozendb.cluster.initial_members`, including
  * its own. When all of them answer, each member computes the same list, ordered by member id. If
  * one of them already hosts the group, its member list is adopted instead, which covers members
- * that start after the others already formed the group. Members that run a different Neo4j version
- * are refused.
+ * that start after the others already formed the group, and members that join the cluster later:
+ * they are not on the list until a member adds them. Members that run a different Neo4j version are
+ * refused.
  *
  * Members must start from identical databases. The store source of a new cluster is the only member
  * that had databases before startup, or the member with the lowest id if none had. More than one
@@ -62,16 +65,17 @@ class ClusterFormation(
             val reached = outcomes.mapNotNull { (_, outcome) -> outcome.getOrNull() }
 
             reached
-                .firstNotNullOfOrNull { it.groups[group] }
-                ?.let { formed ->
+                .firstNotNullOfOrNull { peer -> peer.groups[group]?.let { peer to it } }
+                ?.let { (peer, formed) ->
+                    checkCompatible(peer)
                     if (formed.none { it.id == self.id }) {
-                        throw ClusterFormationException(
-                            "The cluster was already formed by $formed without this member ($self). " +
-                                "A member whose data was removed rejoins as a new member, which must " +
-                                "be added to the cluster explicitly."
+                        userLog.info(
+                            "The cluster of %s was formed without this member, which joins it",
+                            formed,
                         )
+                    } else {
+                        userLog.info("Joining the already formed cluster of %s", formed)
                     }
-                    userLog.info("Joining the already formed cluster of %s", formed)
                     return Formation(formed, storeSource = null)
                 }
 

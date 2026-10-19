@@ -1,28 +1,46 @@
 package org.dozendb.cluster.core
 
+import java.time.Duration
+import kotlinx.coroutines.runBlocking
 import org.dozendb.cluster.api.ConsensusLog
 import org.dozendb.cluster.api.ConsensusUnavailableException
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.GroupStatus
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Member
+import org.dozendb.cluster.api.PeerInfo
 import org.dozendb.cluster.api.Role
 import org.dozendb.cluster.api.Snapshot
 import org.neo4j.logging.Log
 
-/** A voting member as seen from this member; [boltAddress] is null while it is not known. */
+/**
+ * A voting member as seen from this member; [boltAddress] is null while it is not known.
+ *
+ * @property databases the databases whose groups the member votes in, as this member knows them.
+ */
 data class MemberView(
     val member: Member,
     val isLeader: Boolean,
     val isSelf: Boolean,
     val boltAddress: HostPort? = null,
+    val databases: List<String> = emptyList(),
 )
 
+/** A change of the cluster's members that cannot be made; the message tells the operator why. */
+class MembershipChangeException(message: String, cause: Throwable? = null) :
+    RuntimeException(message, cause)
+
 /**
- * Runs this member's part of the cluster: starts consensus, forms or rejoins the `system` group,
- * makes sure this member starts from the cluster's databases, and reports status. It knows nothing
- * about Neo4j internals.
+ * Runs this member's part of the cluster: starts consensus, forms, joins or rejoins the `system`
+ * group, makes sure this member starts from the cluster's databases, follows and changes the
+ * cluster's members, and reports status. It knows nothing about Neo4j internals.
  *
+ * The members of the `system` group are the members of the cluster. A member that starts without
+ * Raft state and finds the cluster formed without it joins it: it copies the databases it needs to
+ * start, runs the `system` group without voting in it, and waits until a member of the cluster adds
+ * it with [addMember].
+ *
+ * @property metadata what this member reports when probed, compared with a member being added.
  * @property replicatedDatabases the replicated databases running on this member.
  * @property directory the members' Bolt addresses, if this member serves Bolt.
  */
@@ -33,6 +51,7 @@ class ClusterService(
     private val stores: LocalStores,
     private val membershipStore: MembershipStore,
     private val userLog: Log,
+    private val metadata: () -> Map<String, String> = { emptyMap() },
     private val replicatedDatabases: () -> List<DatabaseRef> = { emptyList() },
     val directory: MemberDirectory? = null,
 ) {
@@ -47,6 +66,10 @@ class ClusterService(
     val foundingMembers: List<Member>?
         get() = record?.formation?.takeIf { members -> members.any { it.id == self.id } }
 
+    /** This member's place in the cluster. */
+    val state: MemberState
+        get() = record?.state ?: MemberState.JOINING
+
     /**
      * Starts consensus and blocks until this member takes part in the `system` group, with the
      * databases it lacks copied from another member. Runs before any database starts.
@@ -59,8 +82,14 @@ class ClusterService(
                 userLog.info("Rejoining the cluster from local Raft state")
                 null
             } else {
-                formation.awaitFormation(systemDatabase.id).also {
-                    remember(MembershipRecord(MemberState.MEMBER, it.members))
+                formation.awaitFormation(systemDatabase.id).also { found ->
+                    remember(
+                        if (found.members.any { it.id == self.id }) {
+                            MembershipRecord(MemberState.MEMBER, found.members)
+                        } else {
+                            MembershipRecord(MemberState.JOINING)
+                        }
+                    )
                 }
             }
         val missing = stores.missing()
@@ -72,11 +101,44 @@ class ClusterService(
                 copyStores(source, missing)
             }
         }
-        val listener = RoleChangeLogger(userLog)
-        statusListener = consensus.addStatusListener(systemDatabase, listener)
-        // The system database attaches its state machine when it starts.
+        val roleLogger = RoleChangeLogger(userLog)
+        statusListener =
+            consensus.addStatusListener(systemDatabase) {
+                roleLogger(it)
+                followMembership()
+            }
+        // The system database attaches its state machine when it starts. A joining member's
+        // bootstrap members leave it out: it votes once it is added.
         consensus.joinGroup(systemDatabase, joined?.members ?: emptyList())
+        followMembership()
+        if (state == MemberState.JOINING) {
+            userLog.info(
+                "This member is not part of the cluster yet. To add it, run " +
+                    "CALL dozendb.cluster.addMember('%s') on a member of the cluster.",
+                self.raftAddress,
+            )
+        }
         directory?.start()
+    }
+
+    /** Records that this member became a voting member, once the change of members settled. */
+    @Synchronized
+    private fun followMembership() {
+        val membership =
+            try {
+                consensus.membership(systemDatabase)
+            } catch (_: Exception) {
+                // Not running yet, or stopping.
+                return
+            }
+        val included = membership.members.any { it.id == self.id }
+        if (state == MemberState.JOINING && membership.settled && included) {
+            remember(MembershipRecord(MemberState.MEMBER, record?.formation.orEmpty()))
+            userLog.info(
+                "This member is now one of the cluster's members; it joins the group of each " +
+                    "database once it has copied it"
+            )
+        }
     }
 
     private fun remember(update: MembershipRecord) {
@@ -125,17 +187,110 @@ class ClusterService(
     /** The latest snapshot of [database] on this member: its log may lack entries up to it. */
     fun latestSnapshot(database: DatabaseRef): Snapshot? = consensus.latestSnapshot(database)
 
-    /** The voting members of the `system` group. */
+    /** The voting members of the `system` group, the members of the cluster. */
     fun members(): List<MemberView> {
         val leader = consensus.status(systemDatabase).leader
-        return consensus.members(systemDatabase).map {
+        val groups =
+            replicatedDatabases()
+                .filter { it.id != systemDatabase.id }
+                .associateWith { database ->
+                    try {
+                        consensus.members(database).map { it.id }
+                    } catch (_: ConsensusUnavailableException) {
+                        emptyList()
+                    }
+                }
+        return consensus.members(systemDatabase).map { member ->
             MemberView(
-                it,
-                isLeader = it.id == leader,
-                isSelf = it.id == consensus.self.id,
-                boltAddress = directory?.boltAddress(it.id),
+                member,
+                isLeader = member.id == leader,
+                isSelf = member.id == consensus.self.id,
+                boltAddress = directory?.boltAddress(member.id),
+                databases =
+                    listOf(systemDatabase.name) +
+                        groups.filterValues { member.id in it }.keys.map { it.name }.sorted(),
             )
         }
+    }
+
+    /**
+     * Adds the member at [address] to the cluster, which first brings it up to date with the
+     * `system` group, and returns it. It must wait to join this cluster: started with initial
+     * members of this cluster, without Raft state of its own, and on the same Neo4j version.
+     * Returns once it votes in the `system` group, at once if it is a member already. It joins the
+     * group of each database once it has copied it.
+     *
+     * @throws MembershipChangeException if the member cannot be added.
+     */
+    fun addMember(address: HostPort): Member {
+        requireMember()
+        val peer =
+            try {
+                runBlocking { consensus.probe(address) }
+            } catch (e: ConsensusUnavailableException) {
+                throw MembershipChangeException(
+                    "No DozenDB member answers at $address: ${e.message}",
+                    e,
+                )
+            }
+        val candidate = peer.member
+        if (consensus.members(systemDatabase).any { it.id == candidate.id }) return candidate
+        checkCanJoin(address, peer)
+        userLog.info("Adding member %s to the cluster", candidate)
+        try {
+            runBlocking { consensus.addMember(systemDatabase, candidate, CHANGE_TIMEOUT) }
+        } catch (e: ConsensusUnavailableException) {
+            throw MembershipChangeException("Adding member $candidate failed: ${e.message}", e)
+        }
+        userLog.info("Added member %s to the cluster", candidate)
+        return candidate
+    }
+
+    private fun requireMember() {
+        if (state != MemberState.MEMBER) {
+            throw MembershipChangeException(
+                "This member is not one of the cluster's members; change members on one that is."
+            )
+        }
+    }
+
+    private fun checkCanJoin(address: HostPort, peer: PeerInfo) {
+        val own = metadata()
+        val candidate = "Member ${peer.member.id} at $address"
+        val version = peer.metadata[DozenDbMetadata.NEO4J_VERSION]
+        if (version != own[DozenDbMetadata.NEO4J_VERSION]) {
+            throw MembershipChangeException(
+                "$candidate runs Neo4j $version, but this cluster runs Neo4j " +
+                    "${own[DozenDbMetadata.NEO4J_VERSION]}. All members must run the same version."
+            )
+        }
+        when (peer.metadata[DozenDbMetadata.MEMBER_STATE]) {
+            MemberState.JOINING.name -> {}
+            MemberState.REMOVED.name ->
+                throw MembershipChangeException(
+                    "$candidate was removed from the cluster and cannot be added again. Delete " +
+                        "its data directory and start it again: it then joins as a new member."
+                )
+            else -> throw MembershipChangeException("$candidate is a member of another cluster.")
+        }
+        val clusterId = peer.metadata[DozenDbMetadata.CLUSTER_ID]
+        if (clusterId == null || systemDatabase.id !in peer.groups) {
+            throw MembershipChangeException(
+                "$candidate is still starting; add it once it has started."
+            )
+        }
+        if (clusterId != own[DozenDbMetadata.CLUSTER_ID]) {
+            throw MembershipChangeException(
+                "$candidate waits to join another cluster: its databases come from there. Check " +
+                    "its ${DozenDbMetadata.INITIAL_MEMBERS_SETTING}, delete its data directory " +
+                    "and start it again."
+            )
+        }
+    }
+
+    private companion object {
+        /** How long a change of members may take: bringing a new member up to date included. */
+        val CHANGE_TIMEOUT: Duration = Duration.ofMinutes(10)
     }
 
     private class RoleChangeLogger(private val log: Log) : (GroupStatus) -> Unit {

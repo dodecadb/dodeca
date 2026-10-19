@@ -85,6 +85,23 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         val neo4jVersion = Version.getNeo4jVersion()
         lateinit var stores: Neo4jLocalStores
         lateinit var replicationService: ReplicationService
+        // What this member reports when probed; read once consensus runs.
+        val metadata = {
+            mapOf(
+                DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
+                DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
+                DozenDbMetadata.HAS_STORES to stores.existed.toString(),
+                DozenDbMetadata.STORES_READY to
+                    replicationService.defaultDatabaseStarted.toString(),
+                DozenDbMetadata.MEMBER_STATE to cluster.state.name,
+            ) +
+                listOfNotNull(
+                    boltAddress()?.let { DozenDbMetadata.BOLT_ADDRESS to it.toString() },
+                    replicationService.defaultDatabaseId?.let {
+                        DozenDbMetadata.CLUSTER_ID to it.toString()
+                    },
+                )
+        }
         val tuning =
             AbstractEditionModule.tryResolveOrCreate(
                 ConsensusTuning::class.java,
@@ -106,20 +123,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         electionTimeoutMax = config.get(DozenDbSettings.electionTimeoutMax),
                         maxEntrySize = config.get(DozenDbSettings.raftMaxEntrySize).toInt(),
                         logSegmentSize = config.get(DozenDbSettings.raftLogSegmentSize),
-                        metadata = {
-                            mapOf(
-                                DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
-                                DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
-                                DozenDbMetadata.HAS_STORES to stores.existed.toString(),
-                                DozenDbMetadata.STORES_READY to
-                                    replicationService.defaultDatabaseStarted.toString(),
-                            ) +
-                                listOfNotNull(
-                                    boltAddress()?.let {
-                                        DozenDbMetadata.BOLT_ADDRESS to it.toString()
-                                    }
-                                )
-                        },
+                        metadata = metadata,
                     )
                 )
             )
@@ -196,8 +200,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 stores,
                 MembershipFile(config.get(DozenDbSettings.raftDirectory).resolve(MEMBERSHIP_FILE)),
                 userLog,
-                { replication.running().map { it.ref } },
-                directory,
+                metadata = metadata,
+                replicatedDatabases = { replication.running().map { it.ref } },
+                directory = directory,
             )
         globalModule.globalDependencies.satisfyDependency(cluster)
         globalModule.globalLife.add(

@@ -440,7 +440,7 @@ class InMemoryConsensus {
                     }
                     group.members = group.members + member
                     deliverAll(group, self.id)
-                    statusNotifications(database)
+                    this@InMemoryConsensus.statusNotifications(database)
                 }
             notifications.forEach { it() }
         }
@@ -458,7 +458,7 @@ class InMemoryConsensus {
                         removed.delivered.remove(database.id)
                         removed.removedFrom += database.id
                     }
-                    statusNotifications(database)
+                    this@InMemoryConsensus.statusNotifications(database)
                 }
             notifications.forEach { it() }
         }

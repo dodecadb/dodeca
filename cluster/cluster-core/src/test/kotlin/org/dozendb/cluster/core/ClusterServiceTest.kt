@@ -4,6 +4,7 @@ import java.io.IOException
 import java.util.UUID
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.cluster.api.DatabaseRef
 import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.api.Role
@@ -20,6 +21,16 @@ class ClusterServiceTest {
     private val addresses = logs.map { it.self.raftAddress }
     private val stores = List(3) { FakeStores() }
     private val memberships = List(3) { InMemoryMembershipStore() }
+    private val ownMetadata =
+        mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27", DozenDbMetadata.CLUSTER_ID to CLUSTER)
+
+    /** What a member that waits to join this cluster reports. */
+    private val joiningMetadata =
+        ownMetadata +
+            mapOf(
+                DozenDbMetadata.MEMBER_STATE to MemberState.JOINING.name,
+                DozenDbMetadata.STORES_READY to "true",
+            )
     private val log = NullLog.getInstance()
 
     /** The member every other one copies from when no member has databases. */
@@ -57,6 +68,7 @@ class ClusterServiceTest {
             localStores,
             memberships[index],
             log,
+            metadata = { ownMetadata },
         )
 
     @Test
@@ -91,6 +103,99 @@ class ClusterServiceTest {
             assertThat(services[index].foundingMembers)
                 .isEqualTo(memberships[index].record!!.formation)
         }
+    }
+
+    /** Forms the cluster of the three initial members, with the first one leading. */
+    private fun formCluster(): List<ClusterService> {
+        val services = logs.indices.map(::service)
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+        consensus.electLeader(system, logs[0].self.id)
+        return services
+    }
+
+    @Test
+    fun `a member started after the cluster formed joins it once it is added`() {
+        val services = formCluster()
+        val joiningLog = consensus.newMember(metadata = joiningMetadata)
+        val store = InMemoryMembershipStore()
+        val stores = FakeStores()
+        val joining =
+            ClusterService(
+                joiningLog,
+                system,
+                ClusterFormation(joiningLog, addresses, "5.26.27", log, sleep = {}),
+                stores,
+                store,
+                log,
+                metadata = { ownMetadata },
+            )
+
+        joining.start()
+
+        assertThat(joining.state).isEqualTo(MemberState.JOINING)
+        assertThat(store.record).isEqualTo(MembershipRecord(MemberState.JOINING))
+        assertThat(stores.copied).containsExactlyElementsOf(FakeStores.ALL_DATABASES)
+        assertThat(joiningLog.status(system).role).isEqualTo(Role.Inactive)
+        assertThat(joining.foundingMembers).isNull()
+
+        assertThat(services[1].addMember(joiningLog.self.raftAddress)).isEqualTo(joiningLog.self)
+
+        assertThat(joining.state).isEqualTo(MemberState.MEMBER)
+        assertThat(store.record).isEqualTo(MembershipRecord(MemberState.MEMBER))
+        assertThat(joiningLog.status(system).role).isEqualTo(Role.Follower)
+        assertThat(services[0].members().map { it.member })
+            .containsExactlyInAnyOrderElementsOf(logs.map { it.self } + joiningLog.self)
+        // Adding it again changes nothing.
+        assertThat(services[2].addMember(joiningLog.self.raftAddress)).isEqualTo(joiningLog.self)
+    }
+
+    @Test
+    fun `members that cannot join this cluster are refused`() {
+        val services = formCluster()
+        fun candidate(metadata: Map<String, String>, runsSystem: Boolean = true): HostPort {
+            val candidate = consensus.newMember(metadata = metadata).apply { start() }
+            if (runsSystem) candidate.joinGroup(system, logs.map { it.self })
+            return candidate.self.raftAddress
+        }
+        fun refusal(address: HostPort) = assertThatThrownBy { services[0].addMember(address) }
+
+        refusal(candidate(joiningMetadata + (DozenDbMetadata.NEO4J_VERSION to "5.26.32")))
+            .isInstanceOf(MembershipChangeException::class.java)
+            .hasMessageContaining("runs Neo4j 5.26.32")
+        refusal(candidate(joiningMetadata + (DozenDbMetadata.MEMBER_STATE to "REMOVED")))
+            .hasMessageContaining("was removed from the cluster")
+        refusal(candidate(joiningMetadata + (DozenDbMetadata.MEMBER_STATE to "MEMBER")))
+            .hasMessageContaining("is a member of another cluster")
+        refusal(candidate(joiningMetadata + (DozenDbMetadata.CLUSTER_ID to "elsewhere")))
+            .hasMessageContaining("waits to join another cluster")
+        refusal(candidate(joiningMetadata - DozenDbMetadata.CLUSTER_ID))
+            .hasMessageContaining("is still starting")
+        refusal(candidate(joiningMetadata, runsSystem = false))
+            .hasMessageContaining("is still starting")
+        refusal(HostPort("nowhere", 7700)).hasMessageContaining("No DozenDB member answers")
+        assertThat(services[0].members()).hasSize(3)
+    }
+
+    @Test
+    fun `only members add members`() {
+        formCluster()
+        val joiningLog = consensus.newMember(metadata = joiningMetadata)
+        val joining =
+            ClusterService(
+                joiningLog,
+                system,
+                ClusterFormation(joiningLog, addresses, "5.26.27", log, sleep = {}),
+                FakeStores(),
+                InMemoryMembershipStore(),
+                log,
+                metadata = { ownMetadata },
+            )
+        joining.start()
+
+        assertThatThrownBy { joining.addMember(logs[0].self.raftAddress) }
+            .isInstanceOf(MembershipChangeException::class.java)
+            .hasMessageContaining("not one of the cluster's members")
     }
 
     @Test
@@ -207,5 +312,9 @@ class ClusterServiceTest {
             )
 
         assertThat(service.status().map { it.database }).containsExactly(system, neo4j)
+    }
+
+    private companion object {
+        const val CLUSTER = "8a1c0f3e-0000-4000-8000-000000000001"
     }
 }

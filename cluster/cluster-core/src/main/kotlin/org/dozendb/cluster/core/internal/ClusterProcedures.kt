@@ -1,17 +1,22 @@
 package org.dozendb.cluster.core.internal
 
 import java.util.stream.Stream
+import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.core.ClusterService
+import org.dozendb.cluster.core.MembershipChangeException
 import org.dozendb.cluster.core.displayName
+import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.api.procedure.SystemProcedure
+import org.neo4j.procedure.Admin
 import org.neo4j.procedure.Context
 import org.neo4j.procedure.Description
 import org.neo4j.procedure.Mode
+import org.neo4j.procedure.Name
 import org.neo4j.procedure.Procedure
 
 /**
- * Read-only cluster procedures, callable on any database including `system`. Neo4j requires every
- * instance field to be a `@Context` field.
+ * Cluster procedures, callable on any database including `system`; those that change the cluster's
+ * members need an administrator. Neo4j requires every instance field to be a `@Context` field.
  */
 class ClusterProcedures {
     @JvmField @Context var cluster: ClusterService? = null
@@ -48,11 +53,45 @@ class ClusterProcedures {
                 boltAddress = it.boltAddress?.toString(),
                 role = if (it.isLeader) "LEADER" else "FOLLOWER",
                 self = it.isSelf,
+                databases = it.databases,
             )
+        }
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dozendb.cluster.addMember", mode = Mode.DBMS)
+    @Description(
+        "Adds the member at the given Raft address to the cluster. Start it first with " +
+            "dbms.dozendb.cluster.initial_members listing members of the cluster. Returns once it " +
+            "votes in the group of the system database; it joins the group of every other " +
+            "database once it has copied it, as dozendb.cluster.members() shows."
+    )
+    fun addMember(@Name("raftAddress") raftAddress: String): Stream<AddedMemberRow> {
+        val address =
+            try {
+                HostPort.parse(raftAddress)
+            } catch (e: IllegalArgumentException) {
+                throw ProcedureFailure("Invalid Raft address: ${e.message}", e)
+            }
+        val member = changingMembers { requireCluster().addMember(address) }
+        return Stream.of(AddedMemberRow(member.id.toString(), member.raftAddress.toString()))
+    }
+
+    private fun <T> changingMembers(change: () -> T): T =
+        try {
+            change()
+        } catch (e: MembershipChangeException) {
+            throw ProcedureFailure(e.message.orEmpty(), e)
         }
 
     private fun requireCluster(): ClusterService =
         checkNotNull(cluster) { "DozenDB clustering is not running" }
+
+    /** A failure whose message Neo4j reports as it is, as for any exception with a status. */
+    private class ProcedureFailure(message: String, cause: Throwable) :
+        RuntimeException(message, cause), Status.HasStatus {
+        override fun status(): Status = Status.Procedure.ProcedureCallFailed
+    }
 
     @JvmRecord
     data class StatusRow(
@@ -75,5 +114,9 @@ class ClusterProcedures {
         val boltAddress: String?,
         val role: String,
         val self: Boolean,
+        /** The databases whose groups the member votes in, as this member knows them. */
+        val databases: List<String>,
     )
+
+    @JvmRecord data class AddedMemberRow(val memberId: String, val raftAddress: String)
 }

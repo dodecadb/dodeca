@@ -143,19 +143,31 @@ class ClusterFormationTest {
     }
 
     @Test
-    fun `refuses to form when the cluster was formed without this member`() {
+    fun `a member the cluster was formed without joins it`() {
         members.forEach { it.start() }
-        val wiped = consensus.newMember(metadata = version).apply { start() }
+        val joining = consensus.newMember(metadata = version).apply { start() }
         val formed = members.map { it.self }
         members[0].startGroup(system, RecordingStateMachine(), formed)
 
+        val formation =
+            formation(joining, initial = addresses.take(1) + joining.self.raftAddress)
+                .awaitFormation(system.id)
+
+        assertThat(formation).isEqualTo(Formation(formed, storeSource = null))
+    }
+
+    @Test
+    fun `refuses to join a cluster that runs another Neo4j version`() {
+        members.forEach { it.start() }
+        members[0].metadata = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.32")
+        members[0].startGroup(system, RecordingStateMachine(), members.map { it.self })
+        val joining = consensus.newMember(metadata = version).apply { start() }
+
         assertThatThrownBy {
-                formation(wiped, initial = addresses.take(1) + wiped.self.raftAddress)
-                    .awaitFormation(system.id)
-                    .members
+                formation(joining, initial = addresses.take(1)).awaitFormation(system.id)
             }
             .isInstanceOf(ClusterFormationException::class.java)
-            .hasMessageContaining("already formed")
+            .hasMessageContaining("5.26.32")
     }
 
     @Test

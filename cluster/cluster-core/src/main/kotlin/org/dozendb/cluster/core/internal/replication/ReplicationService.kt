@@ -65,6 +65,10 @@ internal class ReplicationService(
         }
     }
 
+    /** The id of the default database, once it was created here. */
+    val defaultDatabaseId: UUID?
+        get() = databases[defaultDatabaseName]?.ref?.id
+
     /** Whether the default database is replicating here, so other members can copy it. */
     val defaultDatabaseStarted: Boolean
         get() = databases[defaultDatabaseName]?.isRunning() == true

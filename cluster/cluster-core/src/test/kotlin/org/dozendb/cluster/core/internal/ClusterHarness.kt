@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
@@ -33,13 +34,14 @@ import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 
 /**
- * Clustered DBMSes in this JVM, on loopback, for tests. [tuning] adjusts every member's consensus
+ * Clustered DBMSes in this JVM, on loopback, for tests. The first [size] members form the cluster;
+ * [newMember] adds members that join it later. [tuning] adjusts every member's consensus
  * configuration; [fileSystem] supplies the file system a member's DBMS runs on, below DozenDB's
  * single-fsync file system, each time it starts.
  */
 internal class ClusterHarness(
     private val root: Path,
-    size: Int,
+    private val size: Int,
     private val fileSystem: ((Member) -> FileSystemAbstraction)? = null,
     private val tuning: ConsensusTuning? = null,
 ) : AutoCloseable {
@@ -133,14 +135,24 @@ internal class ClusterHarness(
                 .set(DozenDbSettings.advertisedAddress, SocketAddress("127.0.0.1", raftPort))
                 .set(
                     DozenDbSettings.initialMembers,
-                    members.map { SocketAddress("127.0.0.1", it.raftPort) },
+                    members.take(size).map { SocketAddress("127.0.0.1", it.raftPort) },
                 )
                 .set(DozenDbSettings.electionTimeoutMin, Duration.ofMillis(300))
                 .set(DozenDbSettings.electionTimeoutMax, Duration.ofMillis(600))
                 .build()
     }
 
-    val members: List<Member> = List(size) { Member(it) }
+    private val all = CopyOnWriteArrayList(List(size) { Member(it) })
+
+    /** The initial members, then those added with [newMember]. */
+    val members: List<Member>
+        get() = all.toList()
+
+    /**
+     * A member that is not one of the initial members, configured with them: once started, it waits
+     * to join the cluster they formed.
+     */
+    fun newMember(): Member = Member(all.size).also { all += it }
 
     /** Starts members concurrently, as the first start of a real cluster does. */
     fun start(toStart: List<Member> = members) {
@@ -161,16 +173,23 @@ internal class ClusterHarness(
 
     fun running(): List<Member> = members.filter { it.running }
 
-    /** Waits until every running member agrees on a leader of [name] that can take writes. */
-    fun awaitLeader(name: String = DEFAULT_DATABASE): Member =
+    /**
+     * Waits until every running member of [among] agrees on a leader of [name] that can take
+     * writes.
+     */
+    fun awaitLeader(
+        name: String = DEFAULT_DATABASE,
+        among: () -> List<Member> = ::running,
+    ): Member =
         await.pollDelay(Duration.ZERO) withPollInterval
             Duration.ofMillis(100) atMost
             AWAIT untilNotNull
             {
-                val statuses = running().associateWith { it.status(name) }
+                val voters = among().filter { it.running }
+                val statuses = voters.associateWith { it.status(name) }
                 val leaders = statuses.values.map { it?.leader }.distinct()
                 val leader = leaders.singleOrNull() ?: return@untilNotNull null
-                running().firstOrNull {
+                voters.firstOrNull {
                     it.status(name)?.let { s -> s.role == Role.Leader && s.leader == leader } ==
                         true
                 }
