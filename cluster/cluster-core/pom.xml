@@ -68,6 +68,14 @@
           <include>org/dozendb/cluster/core/dozendb.properties</include>
         </includes>
       </resource>
+      <!-- The plugin jar merges it into its META-INF/NOTICE, ahead of the bundled libraries'. -->
+      <resource>
+        <directory>${project.basedir}/../..</directory>
+        <targetPath>META-INF</targetPath>
+        <includes>
+          <include>NOTICE</include>
+        </includes>
+      </resource>
     </resources>
   </build>
 </project>

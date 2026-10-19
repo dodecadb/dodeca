@@ -1,0 +1,28 @@
+DozenDB
+Copyright (c) DozenDB
+
+DozenDB is free software: you can redistribute it and/or modify it under the
+terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See LICENSE.
+
+DozenDB contains code derived from:
+
+- Neo4j Community Edition, Copyright (c) "Neo4j", Neo4j Sweden AB
+  (https://neo4j.com), under the GNU General Public License version 3 or
+  later.
+- DozerDB, Copyright (c) DozerDB (https://dozerdb.org,
+  https://github.com/dozerdb/dozerdb-core), under the GNU General Public
+  License version 3 or later. It was ported to Kotlin into DozenDB on
+  2026-10-19, see cluster/docs/UPSTREAM_TOUCHPOINTS.md.
+
+Files derived from them keep their copyright notices and state what DozenDB
+changed and when.
+
+The DozenDB jar bundles, under the Apache License 2.0 (META-INF/license/
+LICENSE.apache-2.0.txt in the jar):
+
+- Apache Ratis and Apache Ratis Thirdparty, whose notices are also in the
+  jar's META-INF/NOTICE.
+- The Kotlin standard library and kotlinx.coroutines, relocated under
+  org.dozendb.shaded.

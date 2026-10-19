@@ -41,4 +41,5 @@ The plugin jar is written to `cluster/cluster-plugin/target/`.
 ## License
 
 GNU General Public License v3.0, the same license as Neo4j Community Edition and
-DozerDB. See `LICENSE`.
+DozerDB. See `LICENSE`, and `NOTICE` for the code DozenDB derives from and
+bundles.

@@ -69,6 +69,16 @@ class PluginJarIT {
     }
 
     @Test
+    fun `ships the licenses and notices`() {
+        assertThat(text("META-INF/LICENSE"))
+            .contains("GNU GENERAL PUBLIC LICENSE", "Version 3, 29 June 2007")
+        assertThat(text("META-INF/license/LICENSE.apache-2.0.txt"))
+            .contains("Apache License", "Version 2.0, January 2004")
+        assertThat(text("META-INF/NOTICE"))
+            .contains("DozenDB\nCopyright", "Neo4j Sweden AB", "DozerDB", "Apache Ratis")
+    }
+
+    @Test
     fun `records the versions in the manifest`() {
         val attributes = jar.manifest.mainAttributes
 
