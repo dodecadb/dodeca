@@ -107,6 +107,36 @@ class DatabaseCommandsTest {
     }
 
     @Test
+    fun `refuses options and topologies instead of ignoring them`() {
+        val server = start()
+        val refusal = { option: String ->
+            "Failed to create the specified database 'films': $option not supported."
+        }
+
+        assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 's3://bucket/films'}"))
+            .hasMessage(refusal("OPTIONS are"))
+        assertThat(
+                catchThrowable {
+                    server.administer(
+                        "CREATE DATABASE films OPTIONS \$options",
+                        mapOf("options" to mapOf("storeFormat" to "block")),
+                    )
+                }
+            )
+            .hasMessage(refusal("OPTIONS are"))
+        assertThat(server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY"))
+            .hasMessage(refusal("TOPOLOGY is"))
+        assertThat(server.names()).doesNotContain("films")
+
+        server.administer("CREATE DATABASE films OPTIONS {}")
+        server.administer(
+            "CREATE DATABASE books OPTIONS \$options",
+            mapOf("options" to emptyMap<String, Any>()),
+        )
+        assertThat(server.names()).contains("films", "books")
+    }
+
+    @Test
     fun `limits the number of databases, including system`() {
         val server = start(mapOf(DozenDbSettings.maxDatabases to 3))
         server.administer("CREATE DATABASE films")

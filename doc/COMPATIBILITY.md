@@ -44,6 +44,8 @@ DozenDB took over the code.
   `DatabaseManagementService` methods work; names with a dot, such as
   `film.archive`, work in every command; `CREATE OR REPLACE DATABASE` also
   creates a database that does not exist yet; `CREATE COMPOSITE DATABASE`,
+  `CREATE DATABASE ... TOPOLOGY`, `CREATE DATABASE ... OPTIONS` with any
+  option (such as `seedURI`, which would otherwise create an empty database),
   `DROP DATABASE ... DUMP DATA` and `WAIT` fail instead of being ignored or
   failing with an internal error; and `dbms.max_databases` counts every
   database including `system`, where DozerDB allows one fewer.

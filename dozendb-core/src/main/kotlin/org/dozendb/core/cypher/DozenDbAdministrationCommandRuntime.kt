@@ -12,6 +12,7 @@
  * and STOP of a missing database succeeding, CREATE OR REPLACE of a missing database failing, and
  * the database limit counting one short. Composite databases, DUMP DATA and WAIT are rejected
  * instead of ignored or failing internally, and so is dropping the default database.
+ * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -34,6 +35,9 @@ import org.neo4j.cypher.internal.RuntimeContext
 import org.neo4j.cypher.internal.ast.AdministrationAction
 import org.neo4j.cypher.internal.ast.DatabaseName
 import org.neo4j.cypher.internal.ast.`DumpData$`
+import org.neo4j.cypher.internal.ast.Options
+import org.neo4j.cypher.internal.ast.OptionsMap
+import org.neo4j.cypher.internal.ast.OptionsParam
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AssertCanDropDatabase
 import org.neo4j.cypher.internal.logical.plans.AssertManagementActionNotBlocked
@@ -217,6 +221,13 @@ private class DatabaseCommands(
                     "composite databases are not supported."
             }
         }
+        if (plan.topology().isDefined) {
+            return failure(source) {
+                "Failed to create the specified database '${show(databaseName, it)}': " +
+                    "TOPOLOGY is not supported."
+            }
+        }
+        val checked = refuseOptions(plan.options(), source) { show(databaseName, it) }
         val name = admin.getNameFields("databaseName", databaseName, Function1(::validName))
         val key = parameter(name.nameKey())
         return updating(
@@ -253,9 +264,36 @@ private class DatabaseCommands(
                     }
                 }
             ),
-            source,
+            checked,
             transformer().convert(name.nameConverter()),
         )
+    }
+
+    /**
+     * Refuses [options] unless they are empty: DozenDB supports none of them, and ignoring one such
+     * as `seedURI` would create an empty database instead of the expected data.
+     */
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for unsupported features.
+    private fun refuseOptions(
+        options: Options,
+        source: ExecutionPlan,
+        name: (MapValue) -> String,
+    ): ExecutionPlan {
+        val message = { params: MapValue ->
+            "Failed to create the specified database '${name(params)}': OPTIONS are not supported."
+        }
+        return when (options) {
+            is OptionsMap -> if (options.map().isEmpty) source else failure(source, message)
+            is OptionsParam ->
+                PredicateExecutionPlan.apply(
+                    Function2 { params, _ ->
+                        (params.get(options.parameter().name()) as? MapValue)?.isEmpty == true
+                    },
+                    Option.apply(source),
+                    Function3 { params, _, _ -> InvalidArgumentException(message(params)) },
+                )
+            else -> source
+        }
     }
 
     @Suppress("DEPRECATION") // Like Neo4j's own name validation.
