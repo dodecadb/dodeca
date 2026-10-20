@@ -20,6 +20,12 @@
       <artifactId>kotlinx-coroutines-core</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- Test-only: TestCertificates. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
 
   <build>

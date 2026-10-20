@@ -48,6 +48,7 @@
     <testcontainers.version>2.0.5</testcontainers.version>
     <neo4j-java-driver.version>6.3.0</neo4j-java-driver.version>
     <archunit.version>1.5.1</archunit.version>
+    <bouncycastle.version>1.86</bouncycastle.version>
 
     <spotless.version>3.10.4</spotless.version>
     <ktfmt.version>0.64</ktfmt.version>
@@ -163,6 +164,12 @@
         <groupId>com.tngtech.archunit</groupId>
         <artifactId>archunit-junit5</artifactId>
         <version>${archunit.version}</version>
+      </dependency>
+      <!-- Test-only: certificates for tests of TLS between members. -->
+      <dependency>
+        <groupId>org.bouncycastle</groupId>
+        <artifactId>bcpkix-jdk18on</artifactId>
+        <version>${bouncycastle.version}</version>
       </dependency>
     </dependencies>
   </dependencyManagement>

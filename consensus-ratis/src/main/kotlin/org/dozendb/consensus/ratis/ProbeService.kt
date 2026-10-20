@@ -15,6 +15,7 @@ import org.apache.ratis.thirdparty.io.grpc.netty.NettyChannelBuilder
 import org.apache.ratis.thirdparty.io.grpc.stub.ClientCalls
 import org.apache.ratis.thirdparty.io.grpc.stub.ServerCalls
 import org.apache.ratis.thirdparty.io.grpc.stub.StreamObserver
+import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContext
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
@@ -72,10 +73,17 @@ internal object ProbeService {
             )
             .build()
 
-    /** Probes the member at [target] on behalf of [sender]. */
-    suspend fun probe(target: HostPort, sender: Member, timeout: Duration): PeerInfo {
+    /** Probes the member at [target] on behalf of [sender], over TLS with [tls] if not null. */
+    suspend fun probe(
+        target: HostPort,
+        sender: Member,
+        timeout: Duration,
+        tls: SslContext?,
+    ): PeerInfo {
         val channel =
-            NettyChannelBuilder.forAddress(target.host, target.port).usePlaintext().build()
+            NettyChannelBuilder.forAddress(target.host, target.port)
+                .apply { if (tls == null) usePlaintext() else sslContext(tls) }
+                .build()
         try {
             val reply = CompletableFuture<ByteArray>()
             ClientCalls.asyncUnaryCall(

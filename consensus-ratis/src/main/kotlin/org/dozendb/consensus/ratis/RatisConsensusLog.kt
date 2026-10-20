@@ -103,6 +103,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         Thread(runnable, "dozendb-consensus-events").apply { isDaemon = true }
     }
     private val properties = raftProperties()
+    private val tls = config.tls?.let(::TlsContexts)
     private val bulkSources = ConcurrentHashMap<String, BulkSource>()
     private val bulkExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "dozendb-bulk-source").apply { isDaemon = true }
@@ -142,7 +143,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     override fun start() {
         check(server == null) { "already started" }
-        val parameters = Parameters()
+        val parameters = tlsParameters()
         GrpcConfigKeys.Server.setServicesCustomizer(
             parameters,
             object : GrpcServices.Customizer {
@@ -180,17 +181,18 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             TimeUnit.MILLISECONDS,
         )
         log.info(
-            "Raft member {} listening on {}, advertised as {}, recovered groups {}",
+            "Raft member {} listening on {} ({}), advertised as {}, recovered groups {}",
             config.memberId,
             // Ratis reports the wildcard address even when it binds one interface.
             HostPort(config.listenHost.ifEmpty { "0.0.0.0" }, checkNotNull(boundAddress).port),
+            transport(),
             self.raftAddress,
             started.groupIds.map { it.uuid },
         )
     }
 
     override suspend fun probe(address: HostPort): PeerInfo =
-        ProbeService.probe(address, self, config.requestTimeout)
+        ProbeService.probe(address, self, config.requestTimeout, tls?.client)
 
     override fun localGroups(): Set<UUID> {
         val running = server?.groupIds?.map { it.uuid }.orEmpty()
@@ -622,6 +624,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 try {
                     RaftClient.newBuilder()
                         .setProperties(clientProperties)
+                        .setParameters(tlsParameters())
                         .setRaftGroup(group)
                         .setClientId(ClientId.randomId())
                         .setRetryPolicy(
@@ -670,7 +673,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         name: String,
         request: ByteArray,
         consume: (InputStream) -> T,
-    ): T = BulkService.fetch(address, name, request, consume)
+    ): T = BulkService.fetch(address, name, request, tls?.client, consume)
 
     private fun appliedTerm(database: DatabaseRef): Long =
         stateMachines[database.id]?.appliedTerm() ?: -1
@@ -729,6 +732,24 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         stateMachines.computeIfAbsent(groupId) { GroupStateMachine(it, clientId, groupListener) }
 
     private fun requireServer(): RaftServer = checkNotNull(server) { "consensus is not started" }
+
+    /** How this member talks to the others, for the log. */
+    private fun transport(): String =
+        config.tls?.let {
+            listOf(
+                    "TLS",
+                    if (it.requireClientCertificates) "client certificates required"
+                    else "client certificates not required",
+                    if (it.verifyHostname) "hostnames verified" else "hostnames not verified",
+                )
+                .joinToString(", ")
+        } ?: "plaintext"
+
+    /** Ratis parameters with the TLS of the server, its clients and admin clients, if any. */
+    private fun tlsParameters(): Parameters =
+        Parameters().also { parameters ->
+            tls?.let { GrpcConfigKeys.TLS.setConf(parameters, it.ratis) }
+        }
 
     private fun raftProperties(): RaftProperties {
         val properties = RaftProperties()

@@ -23,6 +23,7 @@ import org.apache.ratis.thirdparty.io.grpc.stub.ClientCalls
 import org.apache.ratis.thirdparty.io.grpc.stub.ServerCallStreamObserver
 import org.apache.ratis.thirdparty.io.grpc.stub.ServerCalls
 import org.apache.ratis.thirdparty.io.grpc.stub.StreamObserver
+import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContext
 import org.dozendb.consensus.BulkSource
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
@@ -198,16 +199,20 @@ internal object BulkService {
         }
     }
 
-    /** The client side: streams the response into [consume] on the calling thread. */
+    /**
+     * The client side: streams the response into [consume] on the calling thread, over TLS with
+     * [tls] if not null.
+     */
     fun <T> fetch(
         address: HostPort,
         name: String,
         request: ByteArray,
+        tls: SslContext?,
         consume: (InputStream) -> T,
     ): T {
         val channel: ManagedChannel =
             NettyChannelBuilder.forAddress(address.host, address.port)
-                .usePlaintext()
+                .apply { if (tls == null) usePlaintext() else sslContext(tls) }
                 .keepAliveTime(KEEP_ALIVE_SECONDS, TimeUnit.SECONDS)
                 .keepAliveTimeout(KEEP_ALIVE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
                 .build()

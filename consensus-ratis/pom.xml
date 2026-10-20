@@ -71,6 +71,12 @@
       <artifactId>awaitility-kotlin</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- TestCertificates in the consensus-api test-jar uses it. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-simple</artifactId>
