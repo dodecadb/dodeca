@@ -10,15 +10,20 @@ changes over.
 | Neo4j class | DozenDB code | How |
 |---|---|---|
 | `NeoBootstrapper` | `DozenDbBootstrapper` | Subclass. Starts `DozenDbEditionModule`, or `ClusterEditionModule` with clustering enabled, and reports the Enterprise edition. |
-| `CommunityEditionModule` | `DozenDbEditionModule` | Subclass. `createDatabaseContextProvider` is a copy of Community's that uses `DatabaseManager` instead of `DatabaseLifecycles`, which allows only two databases, and `DozenDbDatabaseContextFactory` instead of `DefaultDatabaseContextFactory`. `registerDefaultDatabaseInitializer` is overridden because Community keeps its default database starter in a private field. |
+| `CommunityEditionModule` | `DozenDbEditionModule` | Subclass. `createDatabaseContextProvider` is a copy of Community's that uses `DatabaseManager` instead of `DatabaseLifecycles`, which allows only two databases, and `DozenDbDatabaseContextFactory` instead of `DefaultDatabaseContextFactory`. `registerDefaultDatabaseInitializer` is overridden because Community keeps its default database starter in a private field. `createDefaultDatabaseResolver` and `createSecurityModule` are copies of Community's that use `DozenDbDefaultDatabaseResolver` and `DozenDbSecurityModule`. |
 | `CommunityEditionModule` | `ClusterEditionModule` | Through `DozenDbEditionModule`. `registerDatabaseInitializers` is overridden so that only the member founding the cluster initializes the system graph, with `getSystemGraphComponents()`. |
 | `DatabaseLifecycles` | `DatabaseManager` | Port, for many databases. |
 | `DefaultDatabaseContextFactory` | `DozenDbDatabaseContextFactory` | Port. Differs in the constraint semantics, the Cypher engine, and for replicated databases in the hosting mode, leases, commit process and ID allocation. |
 | `CommunityCypherEngineProvider` | `DozenDbCypherEngineProvider` | Subclass; overrides `makeCompilerFactory`. |
 | `CommunityCompilerFactory` | `DozenDbCompilerFactory` | Port; uses `DozenDbAdministrationCommandRuntime` on `system`. |
-| `CommunityAdministrationCommandRuntime` | `DozenDbAdministrationCommandRuntime` | Subclass. Adds `CREATE`, `DROP`, `START` and `STOP DATABASE` for the logical plans that `AdministrationCommandPlanBuilder` builds for them; recheck those plans after an upgrade. Uses the Scala companion `AdministrationCommandRuntime$` and the default arguments of `UpdatingSystemCommandExecutionPlan` and `ParameterTransformer` through their generated methods. |
+| `CommunityAdministrationCommandRuntime` | `DozenDbAdministrationCommandRuntime` | Subclass. Adds `CREATE`, `DROP`, `START` and `STOP DATABASE` for the logical plans that `AdministrationCommandPlanBuilder` builds for them; recheck those plans after an upgrade. Uses the Scala companion `AdministrationCommandRuntime$` and the default arguments of `UpdatingSystemCommandExecutionPlan`, `SystemCommandExecutionPlan` and `ParameterTransformer` through their generated methods. |
+| `CommunityAdministrationCommandRuntime` | `UserCommands` | Plans `CREATE USER` and `ALTER USER` with `makeCreateUserExecutionPlan` and `makeAlterUserExecutionPlan` of `AdministrationCommandRuntime$`, which store the status and home database that Community refuses, and `SHOW USERS` and `SHOW CURRENT USER` like Community but with those columns. |
+| `AdministrationChainedExecutionPlan` | `WaitExecutionPlan` | Subclass, for `WAIT`. Commits the command with `TransactionalContext.commitAndRestartTx`, as Neo4j Enterprise does. |
+| `CommunitySecurityModule`, `BasicSystemGraphRealm` | `DozenDbSecurityModule` | Subclasses. `setup` is a copy of Community's with a realm that refuses suspended users. |
+| `CommunityDefaultDatabaseResolver` | `DozenDbDefaultDatabaseResolver` | Subclass; resolves users' home databases. |
 | `StandardConstraintSemantics` | `DozenDbConstraintSemantics` | Subclass, registered as a service with a higher priority. |
-| `TopologyGraphDbmsModel` | `Neo4jSystemGraph`, `StandaloneDatabases` | The `Database` nodes (`name`, `uuid`, `status`) that the database commands write and that the databases follow. `Neo4jSystemGraph` adds a `dozendb_creator` property. |
+| `TopologyGraphDbmsModel` | `Neo4jSystemGraph`, `StandaloneDatabases`, `WaitExecutionPlan` | The `Database` nodes (`name`, `uuid`, `status`) that the database commands write and that the databases follow. `Neo4jSystemGraph` adds a `dozendb_creator` property. |
+| `KnownCommunitySecurityComponentVersion` | `SystemGraphUsers` | The `User` nodes' `suspended` and `homeDatabase` properties, which the user commands write and DozenDB reads. |
 
 ## Code ported from DozerDB
 
@@ -40,7 +45,7 @@ lists how DozenDB behaves differently.
 | `SystemGraphTransactionEventListenerAdapter` | `StandaloneDatabases` (rewritten) |
 | `DozerDbCypherEngineProvider`, `DozerDbCompilerFactory` | `DozenDbCypherEngineProvider`, `DozenDbCompilerFactory` |
 | `DozerDbAdministrationCommandRuntime` | `DozenDbAdministrationCommandRuntime` |
-| `DozerDbCreateUserExecutionPlanner`, `DozerDbAlterUserExecutionPlanner` | Not ported: Neo4j Community's planners. |
+| `DozerDbCreateUserExecutionPlanner`, `DozerDbAlterUserExecutionPlanner` | Not ported: `UserCommands` uses Neo4j's own plans. |
 | `DozerDbConstraintSemantics`, `ConstraintChecker`, `ConstraintDelegator` | `DozenDbConstraintSemantics` |
 | `DozerDbSettings` | `DozenDbSettings.maxDatabases` |
 
