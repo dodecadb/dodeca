@@ -149,7 +149,8 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     fun saveLogs(directory: Path) {
         val target = Files.createDirectories(directory.resolve(alias))
         Files.writeString(target.resolve("neo4j.log"), logs)
-        if (isRunning) Files.writeString(target.resolve("debug.log"), debugLog())
+        // Docker copies files from stopped containers too; not from removed ones.
+        runCatching { debugLog() }.onSuccess { Files.writeString(target.resolve("debug.log"), it) }
     }
 
     private var dataVolume: String? = null
