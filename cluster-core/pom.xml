@@ -5,7 +5,7 @@
   <modelVersion>4.0.0</modelVersion>
   <parent>
     <groupId>org.dozendb</groupId>
-    <artifactId>cluster-parent</artifactId>
+    <artifactId>dozendb-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
@@ -75,7 +75,7 @@
       </resource>
       <!-- The plugin jar merges it into its META-INF/NOTICE, ahead of the bundled libraries'. -->
       <resource>
-        <directory>${project.basedir}/../..</directory>
+        <directory>${project.basedir}/..</directory>
         <targetPath>META-INF</targetPath>
         <includes>
           <include>NOTICE</include>

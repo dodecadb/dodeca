@@ -69,5 +69,5 @@ catch most such changes.
 
 ## Build integration
 
-The root `pom.xml` is a plain aggregator over `cluster`, where all build
-configuration lives.
+The root `pom.xml` is the parent of every module and holds all build
+configuration.

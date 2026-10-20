@@ -14,7 +14,7 @@ DozenDB contains code derived from:
 - DozerDB, Copyright (c) DozerDB (https://dozerdb.org,
   https://github.com/dozerdb/dozerdb-core), under the GNU General Public
   License version 3 or later. It was ported to Kotlin into DozenDB on
-  2026-10-19, see cluster/docs/UPSTREAM_TOUCHPOINTS.md.
+  2026-10-19, see doc/UPSTREAM_TOUCHPOINTS.md.
 
 Files derived from them keep their copyright notices and state what DozenDB
 changed and when.
