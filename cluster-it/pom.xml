@@ -24,7 +24,7 @@
     <!-- Test utilities, such as ports for test servers. -->
     <dependency>
       <groupId>org.dozendb</groupId>
-      <artifactId>cluster-api</artifactId>
+      <artifactId>consensus-api</artifactId>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>

@@ -11,10 +11,10 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.write
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.ConsensusUnavailableException
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.Member
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.Member
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.internal.id.IdGeneratorFactory

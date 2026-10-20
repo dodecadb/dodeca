@@ -16,7 +16,7 @@
   <dependencies>
     <dependency>
       <groupId>org.dozendb</groupId>
-      <artifactId>cluster-api</artifactId>
+      <artifactId>consensus-api</artifactId>
     </dependency>
     <dependency>
       <groupId>org.jetbrains.kotlinx</groupId>
@@ -62,7 +62,7 @@
 
     <dependency>
       <groupId>org.dozendb</groupId>
-      <artifactId>cluster-api</artifactId>
+      <artifactId>consensus-api</artifactId>
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>

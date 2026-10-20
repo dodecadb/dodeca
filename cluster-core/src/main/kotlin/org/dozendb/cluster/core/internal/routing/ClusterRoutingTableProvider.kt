@@ -1,10 +1,10 @@
 package org.dozendb.cluster.core.internal.routing
 
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.core.ClusterRouting
 import org.dozendb.cluster.core.MemberDirectory
 import org.dozendb.cluster.core.internal.replication.ReplicationService
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.HostPort
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.routing.ClientSideRoutingTableProvider
 import org.neo4j.dbms.routing.RoutingResult

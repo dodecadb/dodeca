@@ -1,12 +1,12 @@
 package org.dozendb.cluster.core.internal
 
 import java.util.stream.Stream
-import org.dozendb.cluster.api.ConsensusUnavailableException
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.MembershipChangeException
 import org.dozendb.cluster.core.displayName
+import org.dozendb.consensus.ConsensusUnavailableException
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.MemberId
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.api.procedure.SystemProcedure
 import org.neo4j.procedure.Admin

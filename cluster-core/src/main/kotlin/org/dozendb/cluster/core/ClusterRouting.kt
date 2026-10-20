@@ -1,9 +1,9 @@
 package org.dozendb.cluster.core
 
-import org.dozendb.cluster.api.GroupStatus
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.MemberId
+import org.dozendb.consensus.GroupStatus
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
 
 /** The Bolt addresses a driver uses for one replicated database. */
 data class RoutingEndpoints(

@@ -9,10 +9,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.MemberId
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.MemberId
 import org.neo4j.logging.Log
 
 /**

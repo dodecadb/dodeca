@@ -1,8 +1,8 @@
 package org.dozendb.cluster.core.internal.replication
 
-import org.dozendb.cluster.api.LogEntry
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.ReplicatedStateMachine
+import org.dozendb.consensus.LogEntry
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.ReplicatedStateMachine
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.impl.api.CompleteTransaction
 import org.neo4j.kernel.impl.api.TransactionCommitProcess

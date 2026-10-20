@@ -1,6 +1,6 @@
 package org.dozendb.cluster.core
 
-import org.dozendb.cluster.api.HostPort
+import org.dozendb.consensus.HostPort
 
 /**
  * This member's databases as far as cluster formation is concerned: whether they existed before

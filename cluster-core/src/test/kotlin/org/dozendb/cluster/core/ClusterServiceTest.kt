@@ -5,11 +5,11 @@ import java.util.UUID
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.MemberId
-import org.dozendb.cluster.api.Role
-import org.dozendb.cluster.api.fake.InMemoryConsensus
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.Role
+import org.dozendb.consensus.fake.InMemoryConsensus
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
 

@@ -7,8 +7,8 @@ import java.io.IOException
 import java.io.OutputStream
 import java.time.Duration
 import java.util.UUID
-import org.dozendb.cluster.api.BulkSource
-import org.dozendb.cluster.api.Snapshot
+import org.dozendb.consensus.BulkSource
+import org.dozendb.consensus.Snapshot
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database

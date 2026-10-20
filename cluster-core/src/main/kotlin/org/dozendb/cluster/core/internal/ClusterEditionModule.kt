@@ -1,10 +1,5 @@
 package org.dozendb.cluster.core.internal
 
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.ClusterFormation
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.DozenDbMetadata
@@ -24,8 +19,13 @@ import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.core.internal.storecopy.StoreCopySource
-import org.dozendb.cluster.ratis.RatisConsensusConfig
-import org.dozendb.cluster.ratis.RatisConsensusLog
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.ratis.RatisConsensusConfig
+import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.connectors.BoltConnector

@@ -5,11 +5,11 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.Snapshot
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.Snapshot
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLog
 

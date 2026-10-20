@@ -10,11 +10,11 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
-import org.dozendb.cluster.api.GroupStatus
-import org.dozendb.cluster.api.Role
-import org.dozendb.cluster.api.testing.TestPorts
 import org.dozendb.cluster.core.ClusterService
 import org.dozendb.cluster.core.internal.durability.withSingleFsync
+import org.dozendb.consensus.GroupStatus
+import org.dozendb.consensus.Role
+import org.dozendb.consensus.testing.TestPorts
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings

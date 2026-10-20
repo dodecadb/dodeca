@@ -3,9 +3,9 @@ package org.dozendb.cluster.core.internal.replication
 import java.io.IOException
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.MemberId
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
 import org.junit.jupiter.api.Test
 import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId

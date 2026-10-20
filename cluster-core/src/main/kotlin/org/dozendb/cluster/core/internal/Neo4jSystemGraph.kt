@@ -1,11 +1,11 @@
 package org.dozendb.cluster.core.internal
 
 import java.util.UUID
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.internal.replication.DesiredDatabase
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.replication.SystemGraph
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.GraphDatabaseService

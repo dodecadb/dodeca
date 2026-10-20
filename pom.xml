@@ -19,7 +19,7 @@
   </licenses>
 
   <modules>
-    <module>cluster-api</module>
+    <module>consensus-api</module>
     <module>consensus-ratis</module>
     <module>cluster-core</module>
     <module>cluster-plugin</module>
@@ -59,12 +59,12 @@
     <dependencies>
       <dependency>
         <groupId>org.dozendb</groupId>
-        <artifactId>cluster-api</artifactId>
+        <artifactId>consensus-api</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>org.dozendb</groupId>
-        <artifactId>cluster-api</artifactId>
+        <artifactId>consensus-api</artifactId>
         <version>${project.version}</version>
         <type>test-jar</type>
       </dependency>

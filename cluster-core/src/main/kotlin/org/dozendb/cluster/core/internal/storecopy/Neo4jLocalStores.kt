@@ -4,12 +4,12 @@ import java.io.IOException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.UUID
-import org.dozendb.cluster.api.BulkTransfer
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Snapshot
 import org.dozendb.cluster.core.LocalStores
 import org.dozendb.cluster.core.internal.replication.StagedCopy
+import org.dozendb.consensus.BulkTransfer
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Snapshot
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.logging.InternalLog

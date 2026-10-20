@@ -3,11 +3,11 @@ package org.dozendb.cluster.core.internal.reads
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.fake.InMemoryConsensus
 import org.dozendb.cluster.core.internal.ReadConsistency
 import org.dozendb.cluster.core.internal.replication.CatchUp
 import org.dozendb.cluster.core.internal.replication.ReplicationService
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.fake.InMemoryConsensus
 import org.junit.jupiter.api.Test
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.kernel.api.exceptions.Status

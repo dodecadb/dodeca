@@ -1,13 +1,13 @@
 package org.dozendb.cluster.core.internal
 
 import java.util.UUID
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.HostPort
 import org.dozendb.cluster.core.internal.edition.DatabaseManager
 import org.dozendb.cluster.core.internal.replication.LocalDatabase
 import org.dozendb.cluster.core.internal.replication.LocalDatabases
 import org.dozendb.cluster.core.internal.replication.ReplicationService
 import org.dozendb.cluster.core.internal.storecopy.Neo4jLocalStores
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.HostPort
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.kernel.database.NamedDatabaseId

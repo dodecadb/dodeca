@@ -2,16 +2,16 @@ package org.dozendb.cluster.core
 
 import java.time.Duration
 import kotlinx.coroutines.runBlocking
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.ConsensusUnavailableException
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.GroupStatus
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.MemberId
-import org.dozendb.cluster.api.PeerInfo
-import org.dozendb.cluster.api.Role
-import org.dozendb.cluster.api.Snapshot
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.GroupStatus
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.PeerInfo
+import org.dozendb.consensus.Role
+import org.dozendb.consensus.Snapshot
 import org.neo4j.logging.Log
 
 /**

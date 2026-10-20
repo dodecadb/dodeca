@@ -18,7 +18,7 @@ Under development. Not ready for production use.
 
 | Path | Contents |
 |---|---|
-| `cluster-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
+| `consensus-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
 | `cluster-core/` | Neo4j integration: bootstrap, settings, edition module, database management, administration commands, constraints, commit interception, routing, reads, snapshots and membership. |
 | `cluster-plugin/` | Builds the single jar installed into Neo4j's `lib/`. |

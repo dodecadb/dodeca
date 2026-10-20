@@ -12,13 +12,13 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runBlocking
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.ConsensusUnavailableException
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.GroupMembership
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.MemberId
-import org.dozendb.cluster.api.Role
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.GroupMembership
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.Role
 import org.neo4j.logging.Log
 
 /**

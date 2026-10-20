@@ -2,7 +2,7 @@ package org.dozendb.cluster.core.internal
 
 import java.nio.file.Path
 import java.time.Duration
-import org.dozendb.cluster.ratis.RatisConsensusConfig
+import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.Internal

@@ -6,9 +6,9 @@ import java.nio.file.Path
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.MemberId
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 

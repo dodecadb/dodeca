@@ -4,9 +4,9 @@ import java.time.Duration
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
-import org.dozendb.cluster.api.DatabaseRef
-import org.dozendb.cluster.api.fake.InMemoryConsensus
-import org.dozendb.cluster.api.fake.RecordingStateMachine
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.fake.InMemoryConsensus
+import org.dozendb.consensus.fake.RecordingStateMachine
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
 

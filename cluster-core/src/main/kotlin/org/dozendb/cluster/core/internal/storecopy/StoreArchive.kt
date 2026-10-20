@@ -11,8 +11,8 @@ import java.nio.ByteBuffer
 import java.nio.file.Path
 import java.util.Arrays
 import java.util.UUID
-import org.dozendb.cluster.api.LogPosition
-import org.dozendb.cluster.api.Snapshot
+import org.dozendb.consensus.LogPosition
+import org.dozendb.consensus.Snapshot
 import org.neo4j.io.fs.FileSystemAbstraction
 
 /**

@@ -1,6 +1,6 @@
 package org.dozendb.cluster.core.internal
 
-import org.dozendb.cluster.ratis.RatisConsensusConfig
+import org.dozendb.consensus.ratis.RatisConsensusConfig
 
 /**
  * Adjusts the consensus configuration of a member, for tests that need small log segments or fast

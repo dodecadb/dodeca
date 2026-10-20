@@ -10,8 +10,8 @@ import java.util.UUID
 import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.dozendb.cluster.api.LogPosition
-import org.dozendb.cluster.api.Snapshot
+import org.dozendb.consensus.LogPosition
+import org.dozendb.consensus.Snapshot
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.io.fs.DefaultFileSystemAbstraction

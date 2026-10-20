@@ -5,10 +5,10 @@ import java.util.UUID
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
-import org.dozendb.cluster.api.ConsensusLog
-import org.dozendb.cluster.api.HostPort
-import org.dozendb.cluster.api.Member
-import org.dozendb.cluster.api.PeerInfo
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
+import org.dozendb.consensus.PeerInfo
 import org.neo4j.logging.Log
 
 /** Formation cannot succeed without an operator fixing the configuration or the members. */

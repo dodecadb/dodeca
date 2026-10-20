@@ -7,7 +7,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
-import org.dozendb.cluster.api.Member
+import org.dozendb.consensus.Member
 
 /** This member's place in the cluster. */
 enum class MemberState {

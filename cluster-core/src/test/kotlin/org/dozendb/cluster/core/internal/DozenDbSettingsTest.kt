@@ -4,7 +4,7 @@ import java.nio.file.Path
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.dozendb.cluster.ratis.RatisConsensusConfig
+import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.junit.jupiter.api.Test
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings

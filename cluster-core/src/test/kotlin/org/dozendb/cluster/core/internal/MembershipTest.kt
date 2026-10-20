@@ -8,8 +8,8 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
-import org.dozendb.cluster.api.MemberId
 import org.dozendb.cluster.core.MemberState
+import org.dozendb.consensus.MemberId
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
