@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal.replication
 
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.internal.kernel.api.exceptions.TransactionFailureException
@@ -16,15 +17,22 @@ internal enum class CommitFailure(private val gql: GqlStatusInfoCodes, private v
     /** Not retried by drivers: the transaction may have committed, or can never commit. */
     COMMIT_FAILED(GqlStatusInfoCodes.STATUS_2DN01, Status.Transaction.TransactionCommitFailed);
 
-    fun exception(message: String, cause: Throwable? = null): TransactionFailureException {
-        val exception =
-            TransactionFailureException(
-                ErrorGqlStatusObjectImplementation.from(gql).build(),
-                status,
-                "%s",
-                message,
-            )
-        if (cause != null) exception.initCause(cause)
-        return exception
-    }
+    fun exception(message: String, cause: Throwable? = null): TransactionFailureException =
+        ReplicationFailure(
+            ErrorGqlStatusObjectImplementation.from(gql).build(),
+            status,
+            cause,
+            message,
+        )
 }
+
+/**
+ * A failed replicated commit. Neo4j's public constructors that take a GQL status set the cause, to
+ * null, so that it cannot be set afterwards; the one that takes a cause is protected.
+ */
+private class ReplicationFailure(
+    gql: ErrorGqlStatusObject,
+    status: Status,
+    cause: Throwable?,
+    message: String,
+) : TransactionFailureException(gql, status, cause, "%s", message)

@@ -124,6 +124,24 @@ class ReplicationTest {
     }
 
     @Test
+    fun `a write that loses its majority fails with an unknown outcome, saying so`() {
+        val cluster = cluster()
+        val leader = cluster.awaitLeader()
+        leader.write("CREATE (:Committed)")
+        cluster.running().filter { it != leader }.forEach { it.stop() }
+
+        val error = catchThrowable { leader.write("CREATE (:Stranded)") }
+
+        assertThat(statusOf(error)).isEqualTo(Status.Transaction.TransactionCommitFailed)
+        assertThat(generateSequence(error) { it.cause }.map { it.message }.toList()).anyMatch {
+            it.orEmpty().contains("outcome is unknown")
+        }
+        assertThat(generateSequence(error) { it.cause }.toList()).noneMatch {
+            it is IllegalStateException
+        }
+    }
+
+    @Test
     fun `schema changes and existence constraints replicate and survive a restart`() {
         val cluster = cluster()
         val leader = cluster.awaitLeader()
