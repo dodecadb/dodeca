@@ -13,6 +13,7 @@ import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.Role
+import org.dozendb.core.edition.HostedDatabase
 import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.internal.kernel.api.exceptions.TransactionFailureException
 import org.neo4j.kernel.api.KernelTransactionHandle
@@ -49,7 +50,7 @@ internal class ReplicatedDatabase(
     private val log: InternalLog,
     private val afterApply: () -> Unit,
     private val onSnapshotNeeded: (ReplicatedDatabase, Member?, Long) -> Unit,
-) {
+) : HostedDatabase {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
 
     /**
@@ -60,7 +61,7 @@ internal class ReplicatedDatabase(
     var bootstrapping: Boolean = !storeExists
         private set
 
-    val leaseService = ClusterLeaseService { bootstrapping }
+    override val leaseService = ClusterLeaseService { bootstrapping }
 
     /**
      * True while the database's transactions go through Raft and its committed entries are applied,
@@ -90,10 +91,11 @@ internal class ReplicatedDatabase(
     private var writableTerm = NOT_WRITABLE
     private var reuseCheck: ScheduledFuture<*>? = null
 
-    fun commitProcessFactory(local: TransactionalProcessFactory): TransactionalProcessFactory =
-        RaftCommitProcessFactory(this, local)
+    override fun commitProcessFactory(
+        local: TransactionalProcessFactory
+    ): TransactionalProcessFactory = RaftCommitProcessFactory(this, local)
 
-    fun attach(database: Database) {
+    override fun attach(database: Database) {
         this.database = database
     }
 

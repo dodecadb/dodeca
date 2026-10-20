@@ -51,7 +51,7 @@ class ClusterFormation(
 ) {
     init {
         require(initialMembers.isNotEmpty()) {
-            "${DozenDbMetadata.INITIAL_MEMBERS_SETTING} must list the Raft address of every initial member"
+            "${MemberMetadata.INITIAL_MEMBERS_SETTING} must list the Raft address of every initial member"
         }
     }
 
@@ -113,7 +113,7 @@ class ClusterFormation(
                 val peer = outcome.getOrNull()
                 peer != null &&
                     peer.member.id != consensus.self.id &&
-                    peer.metadata[DozenDbMetadata.STORES_READY] == "true"
+                    peer.metadata[MemberMetadata.STORES_READY] == "true"
             }
             if (ready != null) {
                 checkCompatible(ready.second.getOrThrow())
@@ -150,7 +150,7 @@ class ClusterFormation(
             }
 
     private fun checkCompatible(peer: PeerInfo) {
-        val version = peer.metadata[DozenDbMetadata.NEO4J_VERSION]
+        val version = peer.metadata[MemberMetadata.NEO4J_VERSION]
         if (version != neo4jVersion) {
             throw ClusterFormationException(
                 "Member ${peer.member} runs Neo4j $version but this member runs Neo4j " +
@@ -164,18 +164,18 @@ class ClusterFormation(
         val duplicates = members.groupBy { it.id }.filterValues { it.size > 1 }
         if (duplicates.isNotEmpty()) {
             throw ClusterFormationException(
-                "${DozenDbMetadata.INITIAL_MEMBERS_SETTING} reaches the same member through " +
+                "${MemberMetadata.INITIAL_MEMBERS_SETTING} reaches the same member through " +
                     "several addresses: ${duplicates.keys}. List each member once."
             )
         }
         if (members.none { it.id == self.id }) {
             throw ClusterFormationException(
-                "This member ($self) is not one of ${DozenDbMetadata.INITIAL_MEMBERS_SETTING} " +
+                "This member ($self) is not one of ${MemberMetadata.INITIAL_MEMBERS_SETTING} " +
                     "$initialMembers. Add its advertised Raft address to the list."
             )
         }
         val withStores =
-            reached.filter { it.metadata[DozenDbMetadata.HAS_STORES] == "true" }.map { it.member }
+            reached.filter { it.metadata[MemberMetadata.HAS_STORES] == "true" }.map { it.member }
         if (withStores.size > 1) {
             throw ClusterFormationException(
                 "Members ${withStores.sortedBy { it.id }} all have existing databases. A new cluster " +

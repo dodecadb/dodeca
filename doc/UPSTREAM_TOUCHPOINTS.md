@@ -24,7 +24,8 @@ changes over.
 
 DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and kept its
 source as a git subtree. On 2026-10-19 the DozerDB code it built on was ported
-to Kotlin into `dozendb-cluster` and DozerDB was removed. The port started from
+to Kotlin and DozerDB was removed; that code is now in `dozendb-core` and
+`dozendb-plugin`. The port started from
 [dozerdb/dozerdb-core](https://github.com/dozerdb/dozerdb-core) branch
 `neo4j-5.26.8`, commit `f76393e`. Ported files keep the Neo4j and DozerDB
 copyright notices and add a DozenDB modification notice; `COMPATIBILITY.md`

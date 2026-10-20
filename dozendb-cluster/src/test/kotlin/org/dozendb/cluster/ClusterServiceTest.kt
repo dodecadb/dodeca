@@ -17,20 +17,20 @@ class ClusterServiceTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
     private val metadata =
-        mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27", DozenDbMetadata.STORES_READY to "true")
+        mapOf(MemberMetadata.NEO4J_VERSION to "5.26.27", MemberMetadata.STORES_READY to "true")
     private val logs = List(3) { consensus.newMember(metadata = metadata) }
     private val addresses = logs.map { it.self.raftAddress }
     private val stores = List(3) { FakeStores() }
     private val memberships = List(3) { InMemoryMembershipStore() }
     private val ownMetadata =
-        mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27", DozenDbMetadata.CLUSTER_ID to CLUSTER)
+        mapOf(MemberMetadata.NEO4J_VERSION to "5.26.27", MemberMetadata.CLUSTER_ID to CLUSTER)
 
     /** What a member that waits to join this cluster reports. */
     private val joiningMetadata =
         ownMetadata +
             mapOf(
-                DozenDbMetadata.MEMBER_STATE to MemberState.JOINING.name,
-                DozenDbMetadata.STORES_READY to "true",
+                MemberMetadata.MEMBER_STATE to MemberState.JOINING.name,
+                MemberMetadata.STORES_READY to "true",
             )
     private val log = NullLog.getInstance()
 
@@ -161,16 +161,16 @@ class ClusterServiceTest {
         }
         fun refusal(address: HostPort) = assertThatThrownBy { services[0].addMember(address) }
 
-        refusal(candidate(joiningMetadata + (DozenDbMetadata.NEO4J_VERSION to "5.26.32")))
+        refusal(candidate(joiningMetadata + (MemberMetadata.NEO4J_VERSION to "5.26.32")))
             .isInstanceOf(MembershipChangeException::class.java)
             .hasMessageContaining("runs Neo4j 5.26.32")
-        refusal(candidate(joiningMetadata + (DozenDbMetadata.MEMBER_STATE to "REMOVED")))
+        refusal(candidate(joiningMetadata + (MemberMetadata.MEMBER_STATE to "REMOVED")))
             .hasMessageContaining("was removed from the cluster")
-        refusal(candidate(joiningMetadata + (DozenDbMetadata.MEMBER_STATE to "MEMBER")))
+        refusal(candidate(joiningMetadata + (MemberMetadata.MEMBER_STATE to "MEMBER")))
             .hasMessageContaining("is a member of another cluster")
-        refusal(candidate(joiningMetadata + (DozenDbMetadata.CLUSTER_ID to "elsewhere")))
+        refusal(candidate(joiningMetadata + (MemberMetadata.CLUSTER_ID to "elsewhere")))
             .hasMessageContaining("waits to join another cluster")
-        refusal(candidate(joiningMetadata - DozenDbMetadata.CLUSTER_ID))
+        refusal(candidate(joiningMetadata - MemberMetadata.CLUSTER_ID))
             .hasMessageContaining("is still starting")
         refusal(candidate(joiningMetadata, runsSystem = false))
             .hasMessageContaining("is still starting")
@@ -244,7 +244,7 @@ class ClusterServiceTest {
 
     @Test
     fun `members without databases copy them from the store source`() {
-        val version = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27")
+        val version = mapOf(MemberMetadata.NEO4J_VERSION to "5.26.27")
         logs.forEach {
             it.metadata = version
             it.start()
@@ -272,7 +272,7 @@ class ClusterServiceTest {
             logs.indices.map { index ->
                 thread {
                     services[index].start()
-                    logs[index].metadata = version + (DozenDbMetadata.STORES_READY to "true")
+                    logs[index].metadata = version + (MemberMetadata.STORES_READY to "true")
                 }
             }
         threads.forEach { it.join(10_000) }

@@ -14,7 +14,7 @@ import org.neo4j.logging.NullLog
 class ClusterFormationTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
-    private val version = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.27")
+    private val version = mapOf(MemberMetadata.NEO4J_VERSION to "5.26.27")
     private val members = List(3) { consensus.newMember(metadata = version) }
     private val addresses = members.map { it.self.raftAddress }
 
@@ -46,7 +46,7 @@ class ClusterFormationTest {
 
     @Test
     fun `the only member with existing databases is the store source`() {
-        members[2].metadata = version + (DozenDbMetadata.HAS_STORES to "true")
+        members[2].metadata = version + (MemberMetadata.HAS_STORES to "true")
         members.forEach { it.start() }
 
         val formations = members.map { formation(it).awaitFormation(system.id) }
@@ -56,7 +56,7 @@ class ClusterFormationTest {
 
     @Test
     fun `refuses to form when several members have existing databases`() {
-        members.drop(1).forEach { it.metadata = version + (DozenDbMetadata.HAS_STORES to "true") }
+        members.drop(1).forEach { it.metadata = version + (MemberMetadata.HAS_STORES to "true") }
         members.forEach { it.start() }
 
         assertThatThrownBy { formation(members[0]).awaitFormation(system.id) }
@@ -82,7 +82,7 @@ class ClusterFormationTest {
             formation(members[0]) {
                     waits++
                     if (waits == 2)
-                        members[1].metadata = version + (DozenDbMetadata.STORES_READY to "true")
+                        members[1].metadata = version + (MemberMetadata.STORES_READY to "true")
                 }
                 .awaitStoreSource(members[1].self)
 
@@ -92,7 +92,7 @@ class ClusterFormationTest {
 
     @Test
     fun `without a store source any other member that serves its databases qualifies`() {
-        members.forEach { it.metadata = version + (DozenDbMetadata.STORES_READY to "true") }
+        members.forEach { it.metadata = version + (MemberMetadata.STORES_READY to "true") }
         members.forEach { it.start() }
         members[1].close()
 
@@ -106,8 +106,8 @@ class ClusterFormationTest {
         members.forEach { it.start() }
         members[1].metadata =
             mapOf(
-                DozenDbMetadata.NEO4J_VERSION to "5.26.32",
-                DozenDbMetadata.STORES_READY to "true",
+                MemberMetadata.NEO4J_VERSION to "5.26.32",
+                MemberMetadata.STORES_READY to "true",
             )
 
         assertThatThrownBy { formation(members[0]).awaitStoreSource(members[1].self) }
@@ -159,7 +159,7 @@ class ClusterFormationTest {
     @Test
     fun `refuses to join a cluster that runs another Neo4j version`() {
         members.forEach { it.start() }
-        members[0].metadata = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.32")
+        members[0].metadata = mapOf(MemberMetadata.NEO4J_VERSION to "5.26.32")
         members[0].startGroup(system, RecordingStateMachine(), members.map { it.self })
         val joining = consensus.newMember(metadata = version).apply { start() }
 
@@ -172,8 +172,7 @@ class ClusterFormationTest {
 
     @Test
     fun `refuses members that run another Neo4j version`() {
-        val other =
-            consensus.newMember(metadata = mapOf(DozenDbMetadata.NEO4J_VERSION to "5.26.32"))
+        val other = consensus.newMember(metadata = mapOf(MemberMetadata.NEO4J_VERSION to "5.26.32"))
         (members + other).forEach { it.start() }
 
         assertThatThrownBy {

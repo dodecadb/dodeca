@@ -131,15 +131,15 @@ internal class ClusterHarness(
                 .set(BoltConnector.enabled, false)
                 .set(HttpConnector.enabled, false)
                 .set(HttpsConnector.enabled, false)
-                .set(DozenDbSettings.clusterEnabled, true)
-                .set(DozenDbSettings.listenAddress, SocketAddress("127.0.0.1", raftPort))
-                .set(DozenDbSettings.advertisedAddress, SocketAddress("127.0.0.1", raftPort))
+                .set(ClusterSettings.clusterEnabled, true)
+                .set(ClusterSettings.listenAddress, SocketAddress("127.0.0.1", raftPort))
+                .set(ClusterSettings.advertisedAddress, SocketAddress("127.0.0.1", raftPort))
                 .set(
-                    DozenDbSettings.initialMembers,
+                    ClusterSettings.initialMembers,
                     members.take(size).map { SocketAddress("127.0.0.1", it.raftPort) },
                 )
-                .set(DozenDbSettings.electionTimeoutMin, Duration.ofMillis(300))
-                .set(DozenDbSettings.electionTimeoutMax, Duration.ofMillis(600))
+                .set(ClusterSettings.electionTimeoutMin, Duration.ofMillis(300))
+                .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
                 .build()
     }
 

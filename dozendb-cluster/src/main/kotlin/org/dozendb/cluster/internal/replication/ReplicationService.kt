@@ -15,6 +15,8 @@ import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.Member
+import org.dozendb.core.edition.DatabaseHosting
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.internal.id.IdGeneratorFactory
@@ -32,7 +34,12 @@ internal class ReplicationService(
     private val catchUp: CatchUp,
     private val logProvider: InternalLogProvider,
     private val initialMembers: (NamedDatabaseId) -> List<Member>,
-) : DatabaseEventListenerAdapter() {
+) : DatabaseEventListenerAdapter(), DatabaseHosting {
+    override val hostedOnMode: HostedOnMode = HostedOnMode.RAFT
+
+    /** See [ReplicatedDatabase]. */
+    override val reusesFreedIdsAtStart: Boolean = false
+
     private val log = logProvider.getLog(ReplicationService::class.java)
     private val databases = ConcurrentHashMap<String, ReplicatedDatabase>()
     private val scheduler: ScheduledExecutorService =
@@ -129,7 +136,7 @@ internal class ReplicationService(
      * Creates the replication of a database that is being created. [storeExists] tells whether the
      * database's files exist or Neo4j is about to create them.
      */
-    fun prepare(
+    override fun prepare(
         namedDatabaseId: NamedDatabaseId,
         idGeneratorFactory: IdGeneratorFactory,
         storeExists: Boolean,

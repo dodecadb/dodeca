@@ -1,6 +1,6 @@
 package org.dozendb.cluster.internal.durability
 
-import org.dozendb.cluster.internal.DozenDbSettings
+import org.dozendb.cluster.internal.ClusterSettings
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
@@ -25,7 +25,7 @@ internal fun withSingleFsync(
     config: Config,
     dependencies: GraphDatabaseDependencies,
 ): GraphDatabaseDependencies {
-    if (!config.get(DozenDbSettings.singleFsync)) return dependencies
+    if (!config.get(ClusterSettings.singleFsync)) return dependencies
     config.setIfNotSet(GraphDatabaseInternalSettings.fail_on_corrupted_log_files, false)
     val given = dependencies.dependencies()
     val fileSystem =

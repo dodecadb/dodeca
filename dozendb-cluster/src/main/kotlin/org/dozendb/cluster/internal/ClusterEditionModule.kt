@@ -2,15 +2,13 @@ package org.dozendb.cluster.internal
 
 import org.dozendb.cluster.ClusterFormation
 import org.dozendb.cluster.ClusterService
-import org.dozendb.cluster.DozenDbMetadata
 import org.dozendb.cluster.MemberDirectory
+import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.MemberState
 import org.dozendb.cluster.MembershipFile
 import org.dozendb.cluster.MembershipReconciler
 import org.dozendb.cluster.internal.durability.FsyncPolicy
 import org.dozendb.cluster.internal.durability.SingleFsyncFileSystem
-import org.dozendb.cluster.internal.edition.DozenDbEditionModule
-import org.dozendb.cluster.internal.edition.StandaloneDatabases
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
@@ -26,6 +24,9 @@ import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
+import org.dozendb.core.DozenDb
+import org.dozendb.core.edition.DatabaseHosting
+import org.dozendb.core.edition.DozenDbEditionModule
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.connectors.BoltConnector
@@ -60,11 +61,11 @@ import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
  * another member if needed) before any database starts, and stops after every database.
  *
  * Databases other than `system` and the default database are created, started, stopped and dropped
- * by the [DatabaseReconciler], which replaces [StandaloneDatabases].
+ * by the [DatabaseReconciler], as `StandaloneDatabases` does without clustering.
  */
 class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(globalModule) {
     private val cluster: ClusterService
-    override val replication: ReplicationService
+    private val replication: ReplicationService
     private val directory: MemberDirectory
     private val consensus: ConsensusLog
     private val membership: MembershipReconciler
@@ -75,6 +76,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid(),
         )
     private val localStores: Neo4jLocalStores
+
+    override val hosting: DatabaseHosting
+        get() = replication
 
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
@@ -91,17 +95,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         // What this member reports when probed; read once consensus runs.
         val metadata = {
             mapOf(
-                DozenDbMetadata.NEO4J_VERSION to neo4jVersion,
-                DozenDbMetadata.DOZENDB_VERSION to DozenDbMetadata.version,
-                DozenDbMetadata.HAS_STORES to stores.existed.toString(),
-                DozenDbMetadata.STORES_READY to
-                    replicationService.defaultDatabaseStarted.toString(),
-                DozenDbMetadata.MEMBER_STATE to cluster.state.name,
+                MemberMetadata.NEO4J_VERSION to neo4jVersion,
+                MemberMetadata.DOZENDB_VERSION to DozenDb.version,
+                MemberMetadata.HAS_STORES to stores.existed.toString(),
+                MemberMetadata.STORES_READY to replicationService.defaultDatabaseStarted.toString(),
+                MemberMetadata.MEMBER_STATE to cluster.state.name,
             ) +
                 listOfNotNull(
-                    boltAddress()?.let { DozenDbMetadata.BOLT_ADDRESS to it.toString() },
+                    boltAddress()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
                     replicationService.defaultDatabaseId?.let {
-                        DozenDbMetadata.CLUSTER_ID to it.toString()
+                        MemberMetadata.CLUSTER_ID to it.toString()
                     },
                 )
         }
@@ -117,15 +120,15 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 tuning.adjust(
                     RatisConsensusConfig(
                         memberId = memberId,
-                        listenHost = config.get(DozenDbSettings.listenAddress).hostname,
-                        listenPort = config.get(DozenDbSettings.listenAddress).port,
+                        listenHost = config.get(ClusterSettings.listenAddress).hostname,
+                        listenPort = config.get(ClusterSettings.listenAddress).port,
                         advertisedAddress =
-                            config.get(DozenDbSettings.advertisedAddress).toHostPort(),
-                        storageDirectory = config.get(DozenDbSettings.raftDirectory),
-                        electionTimeoutMin = config.get(DozenDbSettings.electionTimeoutMin),
-                        electionTimeoutMax = config.get(DozenDbSettings.electionTimeoutMax),
-                        maxEntrySize = config.get(DozenDbSettings.raftMaxEntrySize).toInt(),
-                        logSegmentSize = config.get(DozenDbSettings.raftLogSegmentSize),
+                            config.get(ClusterSettings.advertisedAddress).toHostPort(),
+                        storageDirectory = config.get(ClusterSettings.raftDirectory),
+                        electionTimeoutMin = config.get(ClusterSettings.electionTimeoutMin),
+                        electionTimeoutMax = config.get(ClusterSettings.electionTimeoutMax),
+                        maxEntrySize = config.get(ClusterSettings.raftMaxEntrySize).toInt(),
+                        logSegmentSize = config.get(ClusterSettings.raftLogSegmentSize),
                         metadata = metadata,
                     )
                 )
@@ -201,7 +204,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 systemDatabase,
                 formation,
                 stores,
-                MembershipFile(config.get(DozenDbSettings.raftDirectory).resolve(MEMBERSHIP_FILE)),
+                MembershipFile(config.get(ClusterSettings.raftDirectory).resolve(MEMBERSHIP_FILE)),
                 userLog,
                 metadata = metadata,
                 replicatedDatabases = { replication.running().map { it.ref } },
@@ -328,7 +331,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /**
      * The starter of the default database, which reads `system`: it waits while `system` is
      * replaced by a copy, as when this member restarts behind the leader's log. The reconciler
-     * follows the system graph instead of [StandaloneDatabases].
+     * follows the system graph instead of `StandaloneDatabases`.
      */
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
         val starter = defaultDatabaseStarter
@@ -392,7 +395,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 replication,
                 consensus,
                 directory,
-                config.get(DozenDbSettings.readsOnLeader),
+                config.get(ClusterSettings.readsOnLeader),
                 ttl,
                 singleAddress,
                 singleAddress,
@@ -419,7 +422,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         ConsistentBoltDatabases(
             super.createBoltDatabaseManagementServiceProvider(),
             replication,
-            globalModule.globalConfig.get(DozenDbSettings.defaultReadConsistency),
+            globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
         )
 
     override fun registerEditionSpecificProcedures(
@@ -438,6 +441,6 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         fun SocketAddress.toHostPort(): HostPort = HostPort(hostname, port)
 
         fun initialMembers(config: Config): List<HostPort> =
-            config.get(DozenDbSettings.initialMembers).map { it.toHostPort() }
+            config.get(ClusterSettings.initialMembers).map { it.toHostPort() }
     }
 }

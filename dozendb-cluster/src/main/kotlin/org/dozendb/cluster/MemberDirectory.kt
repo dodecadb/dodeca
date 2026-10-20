@@ -55,7 +55,7 @@ class MemberDirectory(
         for ((member, answer) in answers) {
             val peer = answer.getOrNull() ?: continue
             if (peer.member.id != member.id) continue
-            val reported = peer.metadata[DozenDbMetadata.BOLT_ADDRESS] ?: continue
+            val reported = peer.metadata[MemberMetadata.BOLT_ADDRESS] ?: continue
             val address = runCatching { HostPort.parse(reported) }.getOrNull()
             if (address == null) {
                 log.warn("Member %s reports an invalid Bolt address: %s", member, reported)

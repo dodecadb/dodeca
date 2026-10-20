@@ -12,8 +12,9 @@
   <artifactId>dozendb-plugin</artifactId>
   <name>DozenDB plugin</name>
   <description>
-    The single jar installed into Neo4j's lib/: the DozenDB modules, Apache Ratis, and Kotlin
-    relocated under org.dozendb.shaded.
+    DozenDB's entry point, which starts it with or without clustering, and the single jar installed
+    into Neo4j's lib/: the DozenDB modules, Apache Ratis, and Kotlin relocated under
+    org.dozendb.shaded.
   </description>
 
   <dependencies>
@@ -21,26 +22,37 @@
       <groupId>org.dozendb</groupId>
       <artifactId>dozendb-cluster</artifactId>
     </dependency>
+    <!-- On the Neo4j classpath at runtime. -->
+    <dependency>
+      <groupId>org.neo4j</groupId>
+      <artifactId>neo4j</artifactId>
+      <scope>provided</scope>
+    </dependency>
   </dependencies>
 
   <properties>
     <!--
-      The installable jar. Written next to the (empty) module jar instead of replacing it: when shade
+      The installable jar. Written next to the module jar instead of replacing it: when shade
       replaces the module jar, the next build shades the previous output again and stale classes win.
     -->
     <dozendb.plugin.jar>${project.build.directory}/dozendb-${project.version}.jar</dozendb.plugin.jar>
   </properties>
 
   <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- Merged into the jar's META-INF/NOTICE ahead of the bundled libraries'. -->
+      <resource>
+        <directory>${project.basedir}/..</directory>
+        <targetPath>META-INF</targetPath>
+        <includes>
+          <include>NOTICE</include>
+        </includes>
+      </resource>
+    </resources>
     <plugins>
-      <plugin>
-        <groupId>org.apache.maven.plugins</groupId>
-        <artifactId>maven-jar-plugin</artifactId>
-        <configuration>
-          <!-- The module jar is empty on purpose: shade reads it and writes the installable jar. -->
-          <forceCreation>true</forceCreation>
-        </configuration>
-      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
@@ -150,6 +162,7 @@
           </systemPropertyVariables>
           <classpathDependencyExcludes>
             <classpathDependencyExclude>org.dozendb:dozendb-cluster</classpathDependencyExclude>
+            <classpathDependencyExclude>org.dozendb:dozendb-core</classpathDependencyExclude>
           </classpathDependencyExcludes>
         </configuration>
         <executions>

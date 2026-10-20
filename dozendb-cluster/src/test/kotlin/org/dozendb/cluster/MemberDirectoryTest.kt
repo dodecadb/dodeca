@@ -20,7 +20,7 @@ class MemberDirectoryTest {
     private val system = DatabaseRef("system", UUID(0, 1))
     private val logs =
         List(3) { index ->
-            consensus.newMember(metadata = mapOf(DozenDbMetadata.BOLT_ADDRESS to "core$index:7687"))
+            consensus.newMember(metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "core$index:7687"))
         }
     private val directory =
         MemberDirectory(
@@ -56,7 +56,7 @@ class MemberDirectoryTest {
     fun `keeps the last address of a member that stops answering and ignores invalid ones`() {
         directory.refresh()
         logs[1].close()
-        logs[2].metadata = mapOf(DozenDbMetadata.BOLT_ADDRESS to "not an address")
+        logs[2].metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "not an address")
 
         directory.refresh()
 
@@ -72,10 +72,10 @@ class MemberDirectoryTest {
             {
                 assertThat(directory.boltAddress(logs[1].self.id)).isNotNull()
             }
-        logs[2].metadata = mapOf(DozenDbMetadata.BOLT_ADDRESS to "moved:7688")
+        logs[2].metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "moved:7688")
         val newcomer =
             consensus
-                .newMember(metadata = mapOf(DozenDbMetadata.BOLT_ADDRESS to "core9:7687"))
+                .newMember(metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "core9:7687"))
                 .apply { start() }
         newcomer.joinGroup(system, logs.map { it.self })
         consensus.electLeader(system, logs[0].self.id)

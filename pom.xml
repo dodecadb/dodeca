@@ -21,6 +21,7 @@
   <modules>
     <module>consensus-api</module>
     <module>consensus-ratis</module>
+    <module>dozendb-core</module>
     <module>dozendb-cluster</module>
     <module>dozendb-plugin</module>
     <module>dozendb-it</module>
@@ -72,6 +73,17 @@
         <groupId>org.dozendb</groupId>
         <artifactId>consensus-ratis</artifactId>
         <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dozendb</groupId>
+        <artifactId>dozendb-core</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dozendb</groupId>
+        <artifactId>dozendb-core</artifactId>
+        <version>${project.version}</version>
+        <type>test-jar</type>
       </dependency>
       <dependency>
         <groupId>org.dozendb</groupId>

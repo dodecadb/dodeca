@@ -20,8 +20,9 @@ Under development. Not ready for production use.
 |---|---|
 | `consensus-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
-| `dozendb-cluster/` | Neo4j integration: bootstrap, settings, edition module, database management, administration commands, constraints, commit interception, routing, reads, snapshots and membership. |
-| `dozendb-plugin/` | Builds the single jar installed into Neo4j's `lib/`. |
+| `dozendb-core/` | What DozenDB adds to Neo4j Community on every server, clustered or not: the edition module, database management, administration commands, constraints and settings. |
+| `dozendb-cluster/` | Clustering on top of `dozendb-core`: commit interception, routing, reads, snapshots and membership. |
+| `dozendb-plugin/` | The entry point, and the build of the single jar installed into Neo4j's `lib/`. |
 | `dozendb-it/` | Integration, fault, crash and benchmark tests. |
 | `doc/` | Compatibility matrix, upstream touchpoints and operator documentation. |
 

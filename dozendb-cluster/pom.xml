@@ -11,9 +11,13 @@
 
   <artifactId>dozendb-cluster</artifactId>
   <name>DozenDB clustering</name>
-  <description>Bootstrap, settings, cluster formation and procedures. Neo4j internals are used only under internal/.</description>
+  <description>Raft replication of every database on top of dozendb-core: cluster formation and membership, catch-up, routing and reads, single fsync, and the cluster procedures. Neo4j internals are used only under internal/.</description>
 
   <dependencies>
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-core</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.dozendb</groupId>
       <artifactId>consensus-api</artifactId>
@@ -41,6 +45,12 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-core</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>com.tngtech.archunit</groupId>
       <artifactId>archunit-junit5</artifactId>
       <scope>test</scope>
@@ -56,31 +66,4 @@
       <scope>test</scope>
     </dependency>
   </dependencies>
-
-  <build>
-    <resources>
-      <resource>
-        <directory>src/main/resources</directory>
-        <filtering>false</filtering>
-        <excludes>
-          <exclude>org/dozendb/cluster/dozendb.properties</exclude>
-        </excludes>
-      </resource>
-      <resource>
-        <directory>src/main/resources</directory>
-        <filtering>true</filtering>
-        <includes>
-          <include>org/dozendb/cluster/dozendb.properties</include>
-        </includes>
-      </resource>
-      <!-- The plugin jar merges it into its META-INF/NOTICE, ahead of the bundled libraries'. -->
-      <resource>
-        <directory>${project.basedir}/..</directory>
-        <targetPath>META-INF</targetPath>
-        <includes>
-          <include>NOTICE</include>
-        </includes>
-      </resource>
-    </resources>
-  </build>
 </project>

@@ -304,14 +304,14 @@ class ClusterService(
     private fun checkCanJoin(address: HostPort, peer: PeerInfo) {
         val own = metadata()
         val candidate = "Member ${peer.member.id} at $address"
-        val version = peer.metadata[DozenDbMetadata.NEO4J_VERSION]
-        if (version != own[DozenDbMetadata.NEO4J_VERSION]) {
+        val version = peer.metadata[MemberMetadata.NEO4J_VERSION]
+        if (version != own[MemberMetadata.NEO4J_VERSION]) {
             throw MembershipChangeException(
                 "$candidate runs Neo4j $version, but this cluster runs Neo4j " +
-                    "${own[DozenDbMetadata.NEO4J_VERSION]}. All members must run the same version."
+                    "${own[MemberMetadata.NEO4J_VERSION]}. All members must run the same version."
             )
         }
-        when (peer.metadata[DozenDbMetadata.MEMBER_STATE]) {
+        when (peer.metadata[MemberMetadata.MEMBER_STATE]) {
             MemberState.JOINING.name -> {}
             MemberState.REMOVED.name ->
                 throw MembershipChangeException(
@@ -320,16 +320,16 @@ class ClusterService(
                 )
             else -> throw MembershipChangeException("$candidate is a member of another cluster.")
         }
-        val clusterId = peer.metadata[DozenDbMetadata.CLUSTER_ID]
+        val clusterId = peer.metadata[MemberMetadata.CLUSTER_ID]
         if (clusterId == null || systemDatabase.id !in peer.groups) {
             throw MembershipChangeException(
                 "$candidate is still starting; add it once it has started."
             )
         }
-        if (clusterId != own[DozenDbMetadata.CLUSTER_ID]) {
+        if (clusterId != own[MemberMetadata.CLUSTER_ID]) {
             throw MembershipChangeException(
                 "$candidate waits to join another cluster: its databases come from there. Check " +
-                    "its ${DozenDbMetadata.INITIAL_MEMBERS_SETTING}, delete its data directory " +
+                    "its ${MemberMetadata.INITIAL_MEMBERS_SETTING}, delete its data directory " +
                     "and start it again."
             )
         }
