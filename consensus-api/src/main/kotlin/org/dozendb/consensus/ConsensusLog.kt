@@ -19,7 +19,8 @@ public data class PeerInfo(
 /**
  * The voting members of a consensus group as this member knows them.
  *
- * @property members the voting members; while a change is in progress, the members it changes to.
+ * @property members the voting members; while a change is in progress, the members it changes to. A
+ *   follower that installs a snapshot may briefly know an older configuration.
  * @property settled whether no change is in progress and this member knows that [members] are
  *   committed.
  * @property removed whether this member was removed from the group, which then stopped running

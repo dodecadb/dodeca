@@ -196,6 +196,19 @@ class ClusterServiceTest {
     }
 
     @Test
+    fun `a member that briefly sees a configuration without itself stays a member`() {
+        val services = formCluster()
+        var removals = 0
+        services[2].onRemoved = { removals++ }
+
+        logs[2].showPassingConfiguration(system, listOf(logs[0].self, logs[1].self))
+
+        assertThat(services[2].state).isEqualTo(MemberState.MEMBER)
+        assertThat(memberships[2].record?.state).isEqualTo(MemberState.MEMBER)
+        assertThat(removals).isZero()
+    }
+
+    @Test
     fun `members that are not in the cluster, and the last member, cannot be removed`() {
         val services = formCluster()
 

@@ -169,8 +169,27 @@ class InMemoryConsensus {
         private val snapshotRequested = mutableSetOf<UUID>()
         private val listeners = mutableMapOf<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
         private val removedFrom = mutableSetOf<UUID>()
+        private val passingConfigurations = mutableMapOf<UUID, List<Member>>()
 
         internal fun isRunning(database: DatabaseRef): Boolean = database.id in running
+
+        /**
+         * Shows this member the settled configuration [members] of [database] and notifies its
+         * status listeners, then restores the group's own configuration, as Ratis briefly shows an
+         * older configuration to a follower that installs a snapshot.
+         */
+        fun showPassingConfiguration(database: DatabaseRef, members: List<Member>) {
+            val notifications =
+                synchronized(lock) {
+                    passingConfigurations[database.id] = members
+                    statusNotifications(database)
+                }
+            try {
+                notifications.forEach { it() }
+            } finally {
+                synchronized(lock) { passingConfigurations.remove(database.id) }
+            }
+        }
 
         internal fun runningGroups(): List<DatabaseRef> =
             running.keys.map { groups.getValue(it).database }
@@ -410,7 +429,7 @@ class InMemoryConsensus {
                     throw ConsensusUnavailableException("group $database is not running here")
                 }
                 GroupMembership(
-                    group(database).members.toList(),
+                    passingConfigurations[database.id] ?: group(database).members.toList(),
                     settled = true,
                     removed = database.id in removedFrom,
                 )

@@ -130,7 +130,8 @@ class ClusterService(
 
     /**
      * Records that this member became a voting member, once the change of members settled, and that
-     * it was removed: Ratis stopped its group, or the settled members leave it out.
+     * it was removed, which only the group stopping tells: a follower that installs a snapshot
+     * briefly shows an older configuration, which may leave it out.
      */
     @Synchronized
     private fun followMembership() {
@@ -149,9 +150,7 @@ class ClusterService(
                     "database once it has copied it"
             )
         }
-        if (
-            state == MemberState.MEMBER && (membership.removed || (membership.settled && !included))
-        ) {
+        if (state == MemberState.MEMBER && membership.removed) {
             remember(MembershipRecord(MemberState.REMOVED, record?.formation.orEmpty()))
             userLog.error(REMOVED_MESSAGE)
             onRemoved()
