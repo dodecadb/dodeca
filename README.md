@@ -20,9 +20,9 @@ Under development. Not ready for production use.
 |---|---|
 | `consensus-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
-| `cluster-core/` | Neo4j integration: bootstrap, settings, edition module, database management, administration commands, constraints, commit interception, routing, reads, snapshots and membership. |
-| `cluster-plugin/` | Builds the single jar installed into Neo4j's `lib/`. |
-| `cluster-it/` | Integration, fault, crash and benchmark tests. |
+| `dozendb-cluster/` | Neo4j integration: bootstrap, settings, edition module, database management, administration commands, constraints, commit interception, routing, reads, snapshots and membership. |
+| `dozendb-plugin/` | Builds the single jar installed into Neo4j's `lib/`. |
+| `dozendb-it/` | Integration, fault, crash and benchmark tests. |
 | `doc/` | Compatibility matrix, upstream touchpoints and operator documentation. |
 
 ## Building
@@ -36,7 +36,7 @@ mise exec -- ./mvnw verify            # build and unit tests
 mise exec -- ./mvnw verify -Pit       # also run the Testcontainers suites
 ```
 
-The plugin jar is written to `cluster-plugin/target/`.
+The plugin jar is written to `dozendb-plugin/target/`.
 
 ## License
 

@@ -21,9 +21,9 @@
   <modules>
     <module>consensus-api</module>
     <module>consensus-ratis</module>
-    <module>cluster-core</module>
-    <module>cluster-plugin</module>
-    <module>cluster-it</module>
+    <module>dozendb-cluster</module>
+    <module>dozendb-plugin</module>
+    <module>dozendb-it</module>
   </modules>
 
   <properties>
@@ -75,12 +75,12 @@
       </dependency>
       <dependency>
         <groupId>org.dozendb</groupId>
-        <artifactId>cluster-core</artifactId>
+        <artifactId>dozendb-cluster</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
         <groupId>org.dozendb</groupId>
-        <artifactId>cluster-plugin</artifactId>
+        <artifactId>dozendb-plugin</artifactId>
         <version>${project.version}</version>
       </dependency>
 

@@ -24,7 +24,7 @@ changes over.
 
 DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and kept its
 source as a git subtree. On 2026-10-19 the DozerDB code it built on was ported
-to Kotlin into `cluster-core` and DozerDB was removed. The port started from
+to Kotlin into `dozendb-cluster` and DozerDB was removed. The port started from
 [dozerdb/dozerdb-core](https://github.com/dozerdb/dozerdb-core) branch
 `neo4j-5.26.8`, commit `f76393e`. Ported files keep the Neo4j and DozerDB
 copyright notices and add a DozenDB modification notice; `COMPATIBILITY.md`
@@ -47,7 +47,7 @@ lists how DozenDB behaves differently.
 
 `SingleFsyncFileSystem` wraps Neo4j's file system instead of changing Neo4j
 code. It depends on the following, verified against Neo4j 5.26. Recheck them
-after every Neo4j upgrade; the unit and power-loss tests in `cluster-core`
+after every Neo4j upgrade; the unit and power-loss tests in `dozendb-cluster`
 catch most such changes.
 
 - Transaction log and checkpoint files are opened for writing through the DBMS
