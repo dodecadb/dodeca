@@ -34,9 +34,14 @@
       <artifactId>testcontainers</artifactId>
       <scope>test</scope>
     </dependency>
+    <!--
+      Versioned here rather than managed by the parent: managing it would also replace the driver
+      that Neo4j itself depends on wherever Neo4j runs in a test JVM.
+    -->
     <dependency>
       <groupId>org.neo4j.driver</groupId>
       <artifactId>neo4j-java-driver</artifactId>
+      <version>${neo4j-java-driver.version}</version>
       <scope>test</scope>
     </dependency>
     <dependency>
