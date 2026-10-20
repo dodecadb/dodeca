@@ -12,7 +12,8 @@
  * and STOP of a missing database succeeding, CREATE OR REPLACE of a missing database failing, and
  * the database limit counting one short. Composite databases, DUMP DATA and WAIT are rejected
  * instead of ignored or failing internally, and so is dropping the default database.
- * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored.
+ * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored, and the
+ * user commands of UserCommands are added.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -93,7 +94,7 @@ import scala.collection.immutable.Seq
 import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
 
-private typealias Planner = Function1<AdministrationCommandRuntimeContext, ExecutionPlan>
+internal typealias Planner = Function1<AdministrationCommandRuntimeContext, ExecutionPlan>
 
 /**
  * Neo4j Community's administration commands, plus CREATE, DROP, START and STOP DATABASE, which
@@ -105,18 +106,30 @@ private constructor(
     engine: ExecutionEngine,
     dependencies: DependencyResolver,
     private val databaseCommands: DatabaseCommands,
-) : CommunityAdministrationCommandRuntime(engine, dependencies, databaseCommands) {
+    private val userCommands: UserCommands,
+) :
+    CommunityAdministrationCommandRuntime(
+        engine,
+        dependencies,
+        databaseCommands.orElse(userCommands),
+    ) {
     constructor(
         engine: ExecutionEngine,
         dependencies: DependencyResolver,
-    ) : this(engine, dependencies, DatabaseCommands(engine, dependencies))
+    ) : this(
+        engine,
+        dependencies,
+        DatabaseCommands(engine, dependencies),
+        UserCommands(engine, dependencies),
+    )
 
     // Community compiles nested plans with its commands and ours, but the top-level plan only with
     // its own; this runtime uses both everywhere.
-    private val commands = databaseCommands.orElse(logicalToExecutable())
+    private val commands = databaseCommands.orElse(userCommands).orElse(logicalToExecutable())
 
     init {
         databaseCommands.compile = ::compile
+        userCommands.compile = ::compile
     }
 
     override fun name(): String = "dozendb administration-commands"
@@ -131,6 +144,7 @@ private constructor(
     override fun isApplicableAdministrationCommand(logicalPlan: LogicalPlan): Boolean {
         val command = if (logicalPlan is LogSystemCommand) logicalPlan.source() else logicalPlan
         return databaseCommands.isDefinedAt(command) ||
+            userCommands.isDefinedAt(command) ||
             super.isApplicableAdministrationCommand(logicalPlan)
     }
 

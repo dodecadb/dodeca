@@ -34,9 +34,15 @@ DozenDB took over the code.
   Community instead of being created and not enforced.
 - **`ALTER USER`** works. DozerDB fails every `ALTER USER` with an
   `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`.
-- **User status and home database.** `SET STATUS` and `SET HOME DATABASE`
-  fail, as in Neo4j Community. DozerDB stores both but acts on neither: a
-  suspended user still logs in, and a user's home database is ignored.
+- **User status and home database** work as in Neo4j Enterprise. A suspended
+  user cannot log in, as with a wrong password, and the user's open sessions
+  lose access at their next transaction. A user's home database is the
+  database of the user's sessions that name none, also through routing.
+  `SHOW USERS` and `SHOW CURRENT USER` show both. DozerDB stores both but acts
+  on neither: a suspended user still logs in, and a user's home database is
+  ignored. Neo4j Community refuses both. `SET AUTH` with another provider than
+  native and `REMOVE AUTH` fail, since only native authentication exists, and
+  `roles` is null, since there are no roles.
 - **Database commands** fail with Neo4j's messages and status codes, such as
   `Neo.ClientError.Database.ExistingDatabaseFound` and
   `Neo.ClientError.Database.DatabaseNotFound`. Unlike in DozerDB:
@@ -61,6 +67,17 @@ DozenDB took over the code.
   then stopped again, where DozerDB leaves it running. On shutdown, `system`
   stops after every other database.
 - **Startup banner.** DozenDB logs its version instead of DozerDB's banner.
+
+## Edition
+
+DozenDB reports the Enterprise edition, in `CALL dbms.components()` for
+example, as DozerDB did, so that tools offer what DozenDB adds to Neo4j
+Community, such as many databases. Of what Neo4j Enterprise adds, DozenDB
+supports many databases, property existence, key and type constraints, user
+status and home databases, and clustering of its own. It refuses, with an
+error, the other Enterprise features that reach it, such as roles and
+privileges, composite databases, aliases, `CREATE DATABASE` options and
+topologies, and external authentication.
 
 ## Clustering limitations
 

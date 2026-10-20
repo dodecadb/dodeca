@@ -89,6 +89,28 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
             Outcome.Failed(e.code(), e.message.orEmpty())
         }
 
+    /**
+     * Runs [cypher] as [user] in a new connection, against [database] or, without one, the user's
+     * home database, and returns the rows or the error.
+     */
+    fun runAs(user: String, password: String, cypher: String, database: String? = null): Outcome =
+        GraphDatabase.driver(
+                "bolt://$host:${getMappedPort(BOLT_PORT)}",
+                AuthTokens.basic(user, password),
+            )
+            .use { driver ->
+                val config =
+                    if (database == null) SessionConfig.defaultConfig()
+                    else SessionConfig.forDatabase(database)
+                try {
+                    driver.session(config).use { session ->
+                        Outcome.Rows(session.run(cypher).list { it.asMap() })
+                    }
+                } catch (e: Neo4jException) {
+                    Outcome.Failed(e.code(), e.message.orEmpty())
+                }
+            }
+
     /** Like [run] but fails the test on an error. */
     fun rows(
         cypher: String,

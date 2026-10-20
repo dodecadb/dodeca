@@ -6,8 +6,11 @@ import org.dozendb.core.edition.DozenDbEditionModule
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.configuration.connectors.ConnectorPortRegister
+import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.connectors.HttpConnector
 import org.neo4j.configuration.connectors.HttpsConnector
+import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
@@ -63,6 +66,14 @@ internal class StandaloneServer(
             result.asSequence().map { it.toMap() }.toList()
         }
 
+    /** The address Bolt listens on, when enabled. */
+    fun boltAddress(): String {
+        val register =
+            database(SYSTEM).dependencyResolver.resolveDependency(ConnectorPortRegister::class.java)
+        val address = checkNotNull(register.getLocalAddress(ConnectorType.BOLT)) { "Bolt is off" }
+        return "${address.host}:${address.port}"
+    }
+
     override fun close() = stop()
 
     private fun config(): Config {
@@ -72,6 +83,8 @@ internal class StandaloneServer(
                 .set(GraphDatabaseSettings.auth_enabled, false)
                 .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
                 .set(BoltConnector.enabled, false)
+                .set(BoltConnector.listen_address, SocketAddress("localhost", 0))
+                .set(GraphDatabaseSettings.routing_listen_address, SocketAddress("localhost", 0))
                 .set(HttpConnector.enabled, false)
                 .set(HttpsConnector.enabled, false)
         @Suppress("UNCHECKED_CAST")

@@ -19,11 +19,14 @@ import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.configuration.connectors.ConnectorPortRegister
+import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.connectors.HttpConnector
 import org.neo4j.configuration.connectors.HttpsConnector
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies
@@ -44,6 +47,7 @@ internal class ClusterHarness(
     private val root: Path,
     private val size: Int,
     private val fileSystem: ((Member) -> FileSystemAbstraction)? = null,
+    private val settings: Map<Setting<*>, Any> = emptyMap(),
     private val tuning: ConsensusTuning? = null,
 ) : AutoCloseable {
     inner class Member(val index: Int) {
@@ -123,24 +127,44 @@ internal class ClusterHarness(
 
         override fun toString(): String = "member-$index"
 
-        private fun config(): Config =
-            Config.newBuilder()
-                .set(GraphDatabaseSettings.neo4j_home, home)
-                .set(GraphDatabaseSettings.auth_enabled, false)
-                .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
-                .set(BoltConnector.enabled, false)
-                .set(HttpConnector.enabled, false)
-                .set(HttpsConnector.enabled, false)
-                .set(ClusterSettings.clusterEnabled, true)
-                .set(ClusterSettings.listenAddress, SocketAddress("127.0.0.1", raftPort))
-                .set(ClusterSettings.advertisedAddress, SocketAddress("127.0.0.1", raftPort))
-                .set(
-                    ClusterSettings.initialMembers,
-                    members.take(size).map { SocketAddress("127.0.0.1", it.raftPort) },
-                )
-                .set(ClusterSettings.electionTimeoutMin, Duration.ofMillis(300))
-                .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
-                .build()
+        private fun config(): Config {
+            val builder =
+                Config.newBuilder()
+                    .set(GraphDatabaseSettings.neo4j_home, home)
+                    .set(GraphDatabaseSettings.auth_enabled, false)
+                    .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
+                    .set(BoltConnector.enabled, false)
+                    .set(BoltConnector.listen_address, SocketAddress("127.0.0.1", 0))
+                    .set(
+                        GraphDatabaseSettings.routing_listen_address,
+                        SocketAddress("127.0.0.1", 0),
+                    )
+                    .set(HttpConnector.enabled, false)
+                    .set(HttpsConnector.enabled, false)
+                    .set(ClusterSettings.clusterEnabled, true)
+                    .set(ClusterSettings.listenAddress, SocketAddress("127.0.0.1", raftPort))
+                    .set(ClusterSettings.advertisedAddress, SocketAddress("127.0.0.1", raftPort))
+                    .set(
+                        ClusterSettings.initialMembers,
+                        members.take(size).map { SocketAddress("127.0.0.1", it.raftPort) },
+                    )
+                    .set(ClusterSettings.electionTimeoutMin, Duration.ofMillis(300))
+                    .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
+            @Suppress("UNCHECKED_CAST")
+            settings.forEach { (setting, value) -> builder.set(setting as Setting<Any>, value) }
+            return builder.build()
+        }
+
+        /** The address Bolt listens on, when enabled in the settings. */
+        fun boltAddress(): String {
+            val register =
+                database("system")
+                    .dependencyResolver
+                    .resolveDependency(ConnectorPortRegister::class.java)
+            val address =
+                checkNotNull(register.getLocalAddress(ConnectorType.BOLT)) { "Bolt is off" }
+            return "${address.host}:${address.port}"
+        }
     }
 
     private val all = CopyOnWriteArrayList(List(size) { Member(it) })

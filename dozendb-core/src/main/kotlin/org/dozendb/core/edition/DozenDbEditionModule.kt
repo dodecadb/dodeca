@@ -16,6 +16,9 @@
  */
 package org.dozendb.core.edition
 
+import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
+import org.dozendb.core.security.DozenDbSecurityModule
+import org.dozendb.core.security.SystemGraphUsers
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.CommunityDatabaseStateService
 import org.neo4j.dbms.CommunityKernelPanicListener
@@ -26,10 +29,13 @@ import org.neo4j.dbms.database.DatabaseReferenceCacheClearingListener
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.SystemGraphComponents
+import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule
+import org.neo4j.internal.kernel.api.security.CommunitySecurityLog
 import org.neo4j.io.device.DeviceMapper
+import org.neo4j.kernel.api.security.provider.NoAuthSecurityProvider
 import org.neo4j.kernel.database.DatabaseId
 import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.DatabaseReferenceRepository
@@ -40,6 +46,7 @@ import org.neo4j.kernel.database.SystemGraphDatabaseReferenceRepository
 import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.server.security.auth.CommunitySecurityModule
 
 /**
  * Neo4j Community's edition module with many databases, which follow the `Database` nodes of the
@@ -147,6 +154,51 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     protected val referenceCache: MapCachingDatabaseReferenceRepository
         // Community creates it and exposes only the interface.
         get() = databaseReferenceRepo as MapCachingDatabaseReferenceRepository
+
+    /**
+     * Which users are suspended and their home databases, which the login realm and the default
+     * database resolver read.
+     */
+    private lateinit var users: SystemGraphUsers
+
+    /** Resolves a user's home database before the DBMS default database. */
+    override fun createDefaultDatabaseResolver(systemDatabaseProvider: SystemDatabaseProvider) {
+        users = SystemGraphUsers(systemDatabaseProvider)
+        val resolver =
+            DozenDbDefaultDatabaseResolver(
+                globalModule.globalConfig,
+                systemDatabaseProvider,
+                users,
+            )
+        globalModule.transactionEventListeners.registerTransactionEventListener(
+            GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
+            resolver,
+        )
+        defaultDatabaseResolver = resolver
+    }
+
+    /** Neo4j Community's, with a realm that refuses suspended users. */
+    override fun createSecurityModule(globalModule: GlobalModule) {
+        globalModule.globalDependencies.satisfyDependency(CommunitySecurityLog.NULL_LOG)
+        if (!globalModule.globalConfig.get(GraphDatabaseSettings.auth_enabled)) {
+            setSecurityProvider(NoAuthSecurityProvider.INSTANCE)
+            return
+        }
+        val module =
+            DozenDbSecurityModule(
+                globalModule.logService,
+                globalModule.globalConfig,
+                globalModule.globalDependencies,
+                CommunitySecurityLog(
+                    globalModule.logService.internalLogProvider.getLog(
+                        CommunitySecurityModule::class.java
+                    )
+                ),
+                users,
+            )
+        module.setup()
+        setSecurityProvider(module)
+    }
 
     /** Starts the default database, then follows the system graph for the other databases. */
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {

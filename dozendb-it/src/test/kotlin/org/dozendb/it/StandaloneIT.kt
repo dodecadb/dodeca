@@ -113,12 +113,13 @@ class StandaloneIT {
                 "SHOW DATABASES YIELD name, type, aliases, access, role, writer, requestedStatus, " +
                     "currentStatus, statusMessage, default, home, constituents RETURN * ORDER BY name",
                 "SHOW DEFAULT DATABASE YIELD name, currentStatus",
-                "SHOW USERS",
+                // DozenDB also shows the status and home database, where Community shows null.
+                "SHOW USERS YIELD user, roles, passwordChangeRequired",
                 "SHOW ROLES",
                 "SHOW SERVERS",
                 "SHOW ALIASES FOR DATABASE",
                 "SHOW PRIVILEGES",
-                "SHOW CURRENT USER",
+                "SHOW CURRENT USER YIELD user, roles, passwordChangeRequired",
             )
             .forEach { assertSame(it, "system") }
     }
@@ -147,8 +148,6 @@ class StandaloneIT {
                 "CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED",
                 "CREATE USER alice SET PASSWORD 'alice-secret-1'",
                 "ALTER USER alice SET PASSWORD CHANGE REQUIRED",
-                "CREATE USER carol SET PASSWORD 'carol-secret-1' SET STATUS SUSPENDED",
-                "CREATE USER dan SET PASSWORD 'dan-secret-1' SET HOME DATABASE neo4j",
                 "SHOW USERS YIELD user, passwordChangeRequired ORDER BY user",
                 "DROP USER alice",
                 "SHOW USERS YIELD user ORDER BY user",
@@ -238,6 +237,41 @@ class StandaloneIT {
             )
         assertThat(failed("DROP DATABASE neo4j", "system").message)
             .isEqualTo("Not allowed to delete the default database 'neo4j'.")
+    }
+
+    @Test
+    @Order(ADDITIONS)
+    fun `refuses suspended users and resolves home databases, which Community refuses to set`() {
+        refusedByCommunity(
+            "CREATE USER carol SET PASSWORD 'carol-secret-1' SET STATUS SUSPENDED",
+            "system",
+        )
+        refusedByCommunity(
+            "CREATE USER dan SET PASSWORD 'dan-secret-1' SET HOME DATABASE neo4j",
+            "system",
+        )
+        dozenDb.rows("CREATE DATABASE homes", "system")
+        dozenDb.rows(
+            "CREATE USER erin SET PASSWORD 'erin-secret-1' CHANGE NOT REQUIRED " +
+                "SET HOME DATABASE homes",
+            "system",
+        )
+        val home = "CALL db.info() YIELD name"
+
+        assertThat(dozenDb.runAs("erin", "erin-secret-1", home))
+            .isEqualTo(Outcome.Rows(listOf(mapOf("name" to "homes"))))
+        assertThat(
+                dozenDb.rows("SHOW USERS YIELD user, suspended, home WHERE user = 'erin'", "system")
+            )
+            .containsExactly(mapOf("user" to "erin", "suspended" to false, "home" to "homes"))
+
+        dozenDb.rows("ALTER USER erin SET STATUS SUSPENDED", "system")
+
+        assertThat((dozenDb.runAs("erin", "erin-secret-1", home) as Outcome.Failed).code)
+            .isEqualTo("Neo.ClientError.Security.Unauthorized")
+        dozenDb.rows("ALTER USER erin REMOVE HOME DATABASE SET STATUS ACTIVE", "system")
+        assertThat(dozenDb.runAs("erin", "erin-secret-1", home))
+            .isEqualTo(Outcome.Rows(listOf(mapOf("name" to "neo4j"))))
     }
 
     private companion object {
