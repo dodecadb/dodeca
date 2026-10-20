@@ -206,6 +206,25 @@ class StandaloneIT {
 
     @Test
     @Order(ADDITIONS)
+    fun `enforces property type constraints`() {
+        val create =
+            "CREATE CONSTRAINT person_born_type FOR (p:Person) REQUIRE p.born IS :: INTEGER"
+        refusedByCommunity(create)
+        dozenDb.rows("CREATE DATABASE types", "system")
+        dozenDb.rows("CREATE (:Person {born: 'long ago'})", "types")
+
+        assertThat(failed(create, "types").code)
+            .isEqualTo("Neo.DatabaseError.Schema.ConstraintCreationFailed")
+        dozenDb.rows("MATCH (p:Person) SET p.born = 1900", "types")
+        dozenDb.rows(create, "types")
+        assertThat(failed("CREATE (:Person {born: 'yesterday'})", "types").code)
+            .isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed")
+        assertThat(failed("MATCH (p:Person) SET p.born = 1900.5", "types").code)
+            .isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed")
+    }
+
+    @Test
+    @Order(ADDITIONS)
     fun `database commands fail with Neo4j's status codes`() {
         dozenDb.rows("CREATE DATABASE messages", "system")
 

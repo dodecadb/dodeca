@@ -24,13 +24,14 @@ DozenDB took over the code.
 
 - **Constraints.** Stores with existence, key, property type and other
   Enterprise constraints can be read. A node or relationship that lacks a
-  property that an existence or key constraint requires fails its transaction
-  with `Neo.ClientError.Schema.ConstraintValidationFailed`, whether it is
-  created or its labels or properties change later, and creating such a
-  constraint fails if existing data lacks the property, as in DozerDB's
-  release. Property type, label existence and relationship endpoint label
-  constraints are not enforced when data changes (DozerDB's release enforces
-  those).
+  property that an existence or key constraint requires, or holds a property
+  of a type that a property type constraint does not allow, fails its
+  transaction with `Neo.ClientError.Schema.ConstraintValidationFailed`,
+  whether it is created or its labels or properties change later. Creating
+  such a constraint fails if existing data violates it. This is as in
+  DozerDB's release. Label existence and relationship endpoint label
+  constraints, which Cypher 5 cannot create, are refused as in Neo4j
+  Community instead of being created and not enforced.
 - **`ALTER USER`** works. DozerDB fails every `ALTER USER` with an
   `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`.
 - **User status and home database.** `SET STATUS` and `SET HOME DATABASE`

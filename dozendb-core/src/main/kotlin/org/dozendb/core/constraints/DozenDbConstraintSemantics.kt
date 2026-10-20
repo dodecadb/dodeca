@@ -20,7 +20,7 @@ import org.dozendb.core.edition.DozenDbDatabaseContextFactory
 import org.eclipse.collections.api.IntIterable
 import org.eclipse.collections.api.set.primitive.LongSet
 import org.eclipse.collections.impl.map.mutable.primitive.IntObjectHashMap
-import org.eclipse.collections.impl.set.mutable.primitive.IntHashSet
+import org.neo4j.common.EntityType
 import org.neo4j.common.TokenNameLookup
 import org.neo4j.internal.kernel.api.CursorFactory
 import org.neo4j.internal.kernel.api.EntityCursor
@@ -38,8 +38,6 @@ import org.neo4j.internal.schema.RelationTypeSchemaDescriptor
 import org.neo4j.internal.schema.SchemaDescriptor
 import org.neo4j.internal.schema.constraints.ConstraintDescriptorFactory
 import org.neo4j.internal.schema.constraints.KeyConstraintDescriptor
-import org.neo4j.internal.schema.constraints.NodeLabelExistenceConstraintDescriptor
-import org.neo4j.internal.schema.constraints.RelationshipEndpointLabelConstraintDescriptor
 import org.neo4j.internal.schema.constraints.TypeConstraintDescriptor
 import org.neo4j.internal.schema.constraints.TypeRepresentation
 import org.neo4j.internal.schema.constraints.UniquenessConstraintDescriptor
@@ -58,17 +56,20 @@ import org.neo4j.storageengine.api.StorageReader
 import org.neo4j.storageengine.api.txstate.ReadableTransactionState
 import org.neo4j.storageengine.api.txstate.RelationshipModifications
 import org.neo4j.storageengine.api.txstate.TxStateVisitor
+import org.neo4j.values.storable.Value
 
 /**
- * Constraint semantics that accept every constraint type Neo4j can store and enforce property
- * existence at commit, which Neo4j Community leaves to Enterprise:
+ * Constraint semantics that enforce property existence, key and property type constraints at
+ * commit, which Neo4j Community leaves to Enterprise:
  * - Stores holding existence, key, type and other Enterprise constraints can be read; Community
  *   rejects them, which fails the database.
- * - A node or relationship that lacks a property an existence or key constraint requires fails its
- *   transaction with `Neo.ClientError.Schema.ConstraintValidationFailed`, whether it is created or
- *   its labels or properties change.
- * - Creating an existence, key or property type constraint fails if existing data violates it;
- *   label existence and relationship endpoint label constraints are neither checked nor enforced.
+ * - A node or relationship that lacks a property an existence or key constraint requires, or holds
+ *   one of a type a property type constraint disallows, fails its transaction with
+ *   `Neo.ClientError.Schema.ConstraintValidationFailed`, whether it is created or its labels or
+ *   properties change.
+ * - Creating an existence, key or property type constraint fails if existing data violates it.
+ * - Label existence and relationship endpoint label constraints, which Cypher 5 cannot create, are
+ *   refused as in Community rather than created and not enforced.
  *
  * Every database gets an instance from [DozenDbDatabaseContextFactory]; crash recovery picks the
  * registered service with the highest priority, which this is.
@@ -103,16 +104,6 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         ruleId: Long,
         descriptor: TypeConstraintDescriptor,
     ): ConstraintDescriptor = rules.createPropertyTypeConstraint(ruleId, descriptor)
-
-    override fun createRelationshipEndpointLabelConstraint(
-        ruleId: Long,
-        descriptor: RelationshipEndpointLabelConstraintDescriptor,
-    ): ConstraintDescriptor = rules.createRelationshipEndpointLabelConstraint(ruleId, descriptor)
-
-    override fun createNodeLabelExistenceConstraint(
-        ruleId: Long,
-        descriptor: NodeLabelExistenceConstraintDescriptor,
-    ): ConstraintDescriptor = rules.createNodeLabelExistenceConstraint(ruleId, descriptor)
 
     // Checks of existing data when a constraint is created.
 
@@ -270,26 +261,6 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         }
     }
 
-    override fun validateRelationshipEndpointLabelConstraint(
-        relCursor: RelationshipScanCursor,
-        nodeCursor: NodeCursor,
-        descriptor: RelationshipEndpointLabelConstraintDescriptor,
-        tokenNameLookup: TokenNameLookup,
-    ) {}
-
-    override fun validateNodeLabelExistenceConstraint(
-        allNodes: NodeLabelIndexCursor,
-        nodeCursor: NodeCursor,
-        descriptor: NodeLabelExistenceConstraintDescriptor,
-        tokenNameLookup: TokenNameLookup,
-    ) {}
-
-    override fun validateNodeLabelExistenceConstraint(
-        nodeCursor: NodeCursor,
-        descriptor: NodeLabelExistenceConstraintDescriptor,
-        tokenNameLookup: TokenNameLookup,
-    ) {}
-
     /** Runs [check] with [nodeCursor] at each node of [allNodes]. */
     private inline fun forEachNode(
         allNodes: NodeLabelIndexCursor,
@@ -403,14 +374,14 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         memoryTracker: MemoryTracker,
     ): TxStateVisitor {
         if (!readableTransactionState.hasDataChanges()) return txStateVisitor
-        val required =
+        val enforced =
             storageReader.getOrCreateSchemaDependantState(
-                RequiredProperties::class.java,
-                BUILD_REQUIRED_PROPERTIES,
+                EnforcedConstraints::class.java,
+                BUILD_ENFORCED_CONSTRAINTS,
             )
-        if (required.isEmpty) return txStateVisitor
+        if (enforced.isEmpty) return txStateVisitor
         return Enforcer(
-            required,
+            enforced,
             storageReader,
             read,
             cursorFactory,
@@ -421,33 +392,62 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
     }
 
     /**
-     * The properties that existence and key constraints require, by label and by relationship type.
-     * Cached with the schema, so it holds no transaction's state.
+     * The properties that existence and key constraints require, and the property type constraints,
+     * by label and by relationship type. Cached with the schema, so it holds no transaction's
+     * state.
      */
-    private class RequiredProperties(
+    private class EnforcedConstraints(
         val nodeSchemas: List<LabelSchemaDescriptor>,
         val relationshipSchemas: List<RelationTypeSchemaDescriptor>,
+        types: List<TypeConstraintDescriptor>,
     ) {
-        val byLabel = IntObjectHashMap<IntArray>()
-        val byType = IntObjectHashMap<IntArray>()
+        val requiredByLabel = IntObjectHashMap<IntArray>()
+        val requiredByType = IntObjectHashMap<IntArray>()
+        val typesByLabel = IntObjectHashMap<List<TypeConstraintDescriptor>>()
+        val typesByType = IntObjectHashMap<List<TypeConstraintDescriptor>>()
 
         init {
-            for (schema in nodeSchemas) merge(byLabel, schema.labelId, schema.propertyIds)
-            for (schema in relationshipSchemas) merge(byType, schema.relTypeId, schema.propertyIds)
+            for (schema in nodeSchemas) merge(requiredByLabel, schema.labelId, schema.propertyIds)
+            for (schema in relationshipSchemas) {
+                merge(requiredByType, schema.relTypeId, schema.propertyIds)
+            }
+            for (type in types) {
+                val schema = type.schema()
+                val token = schema.entityTokenIds.single()
+                if (schema.entityType() == EntityType.NODE) {
+                    add(typesByLabel, token, type)
+                } else {
+                    add(typesByType, token, type)
+                }
+            }
         }
 
         val isEmpty: Boolean
-            get() = byLabel.isEmpty && byType.isEmpty
+            get() = nodesEmpty && relationshipsEmpty
+
+        val nodesEmpty: Boolean
+            get() = requiredByLabel.isEmpty && typesByLabel.isEmpty
+
+        val relationshipsEmpty: Boolean
+            get() = requiredByType.isEmpty && typesByType.isEmpty
 
         private fun merge(map: IntObjectHashMap<IntArray>, token: Int, keys: IntArray) {
             val current = map.get(token) ?: IntArray(0)
             map.put(token, (current + keys).distinct().sorted().toIntArray())
         }
+
+        private fun add(
+            map: IntObjectHashMap<List<TypeConstraintDescriptor>>,
+            token: Int,
+            type: TypeConstraintDescriptor,
+        ) {
+            map.put(token, (map.get(token) ?: emptyList()) + type)
+        }
     }
 
     /** Checks every changed node and relationship before passing the changes on. */
     private class Enforcer(
-        private val required: RequiredProperties,
+        private val enforced: EnforcedConstraints,
         private val storageReader: StorageReader,
         private val read: Read,
         cursorFactory: CursorFactory,
@@ -460,7 +460,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
             cursorFactory.allocateFullAccessRelationshipScanCursor(cursorContext, memoryTracker)
         private val properties =
             cursorFactory.allocateFullAccessPropertyCursor(cursorContext, memoryTracker)
-        private val present = IntHashSet()
+        private val present = IntObjectHashMap<Value>()
 
         override fun visitNodePropertyChanges(
             id: Long,
@@ -478,7 +478,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         }
 
         override fun visitRelationshipModifications(modifications: RelationshipModifications) {
-            if (!required.byType.isEmpty) {
+            if (!enforced.relationshipsEmpty) {
                 val check =
                     RelationshipVisitorWithProperties<RuntimeException> { id, type, _, _, _, _, _ ->
                         checkRelationship(id, type)
@@ -490,7 +490,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         }
 
         private fun checkNode(id: Long) {
-            if (required.byLabel.isEmpty) return
+            if (enforced.nodesEmpty) return
             read.singleNode(id, nodes)
             // Deleted in this transaction: nothing left to violate a constraint.
             if (!nodes.next()) return
@@ -498,33 +498,56 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
             var loaded = false
             for (i in 0 until labels.numberOfTokens()) {
                 val label = labels.token(i)
-                val keys = required.byLabel.get(label) ?: continue
+                val keys = enforced.requiredByLabel.get(label)
+                val types = enforced.typesByLabel.get(label)
+                if (keys == null && types == null) continue
                 if (!loaded) {
                     load(nodes)
                     loaded = true
                 }
-                for (key in keys) if (!present.contains(key)) throw nodeViolation(id, label, key)
+                keys?.forEach { if (!present.containsKey(it)) throw nodeViolation(id, label, it) }
+                types?.forEach { checkType(it, id) }
             }
         }
 
         private fun checkRelationship(id: Long, type: Int) {
-            val keys = required.byType.get(type) ?: return
+            val keys = enforced.requiredByType.get(type)
+            val types = enforced.typesByType.get(type)
+            if (keys == null && types == null) return
             read.singleRelationship(id, relationships)
             if (!relationships.next()) return
             load(relationships)
-            for (key in keys) {
-                if (!present.contains(key)) throw relationshipViolation(id, type, key)
+            keys?.forEach {
+                if (!present.containsKey(it)) throw relationshipViolation(id, type, it)
             }
+            types?.forEach { checkType(it, id) }
         }
 
+        /** Loads the properties of [entity] into [present]. */
         private fun load(entity: EntityCursor) {
             present.clear()
             entity.properties(properties)
-            while (properties.next()) present.add(properties.propertyKey())
+            while (properties.next()) present.put(
+                properties.propertyKey(),
+                properties.propertyValue(),
+            )
+        }
+
+        private fun checkType(constraint: TypeConstraintDescriptor, id: Long) {
+            val value = present.get(constraint.schema().propertyId) ?: return
+            if (TypeRepresentation.disallows(constraint.propertyType(), value)) {
+                throw PropertyTypeException(
+                    constraint,
+                    ConstraintValidationException.Phase.VALIDATION,
+                    id,
+                    storageReader.tokenNameLookup(),
+                    value,
+                )
+            }
         }
 
         private fun nodeViolation(id: Long, label: Int, key: Int): ConstraintValidationException {
-            for (schema in required.nodeSchemas) {
+            for (schema in enforced.nodeSchemas) {
                 if (schema.labelId != label || key !in schema.propertyIds) continue
                 val constraint = existenceConstraint(schema) ?: continue
                 return NodePropertyExistenceException.propertyPresenceViolation(
@@ -543,7 +566,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
             type: Int,
             key: Int,
         ): ConstraintValidationException {
-            for (schema in required.relationshipSchemas) {
+            for (schema in enforced.relationshipSchemas) {
                 if (schema.relTypeId != type || key !in schema.propertyIds) continue
                 val constraint = existenceConstraint(schema) ?: continue
                 return RelationshipPropertyExistenceException.propertyPresenceViolation(
@@ -575,11 +598,15 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         /** Above Neo4j Community's standard constraint semantics, priority 1. */
         const val PRIORITY = 2
 
-        val BUILD_REQUIRED_PROPERTIES =
-            Function<StorageReader, RequiredProperties> { reader ->
+        val BUILD_ENFORCED_CONSTRAINTS =
+            Function<StorageReader, EnforcedConstraints> { reader ->
                 val nodes = mutableListOf<LabelSchemaDescriptor>()
                 val relationships = mutableListOf<RelationTypeSchemaDescriptor>()
+                val types = mutableListOf<TypeConstraintDescriptor>()
                 reader.constraintsGetAll().forEachRemaining { constraint ->
+                    if (constraint.isPropertyTypeConstraint) {
+                        types += constraint.asPropertyTypeConstraint()
+                    }
                     if (!constraint.enforcesPropertyExistence()) return@forEachRemaining
                     val schema = constraint.schema()
                     if (schema.isSchemaDescriptorType(LabelSchemaDescriptor::class.java)) {
@@ -590,7 +617,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                             schema.asSchemaDescriptorType(RelationTypeSchemaDescriptor::class.java)
                     }
                 }
-                RequiredProperties(nodes, relationships)
+                EnforcedConstraints(nodes, relationships, types)
             }
     }
 }

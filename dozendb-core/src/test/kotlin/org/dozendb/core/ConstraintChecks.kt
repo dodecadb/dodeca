@@ -27,6 +27,42 @@ object ConstraintChecks {
         constraints.forEach(write)
     }
 
+    /**
+     * Property type constraints reject writes that would violate them, before and after [restart]:
+     * created or changed properties, and labels added to nodes whose properties then violate one.
+     */
+    fun assertTypesEnforced(write: (String) -> Unit, restart: () -> Unit) {
+        fun rejected(cypher: String): Throwable? = catchThrowable { write(cypher) }
+        fun assertRejected(cypher: String) {
+            assertThat(statusOf(rejected(cypher)))
+                .describedAs(cypher)
+                .isEqualTo(Status.Schema.ConstraintValidationFailed)
+        }
+
+        write("CREATE CONSTRAINT person_age FOR (p:Person) REQUIRE p.age IS :: INTEGER")
+        write("CREATE CONSTRAINT knows_since FOR ()-[k:KNOWS]-() REQUIRE k.since IS :: DATE")
+        write("CREATE (:Person {age: 3})-[:KNOWS {since: date('2020-01-01')}]->(:Person)")
+        write("CREATE (:Robot {age: 'new'})")
+
+        assertThat(rejected("CREATE (:Person {age: 'three'})"))
+            .hasMessageContaining("INTEGER")
+            .hasMessageContaining("Person")
+        assertRejected("MATCH (p:Person {age: 3}) SET p.age = 3.5")
+        assertRejected("MATCH (r:Robot) SET r:Person")
+        assertRejected("MATCH ()-[k:KNOWS]->() SET k.since = 2020")
+        assertRejected(
+            "MATCH (a:Person {age: 3}), (r:Robot) CREATE (a)-[:KNOWS {since: 'today'}]->(r)"
+        )
+        write("MATCH (p:Person {age: 3}) SET p.age = 4")
+        write("MATCH (p:Person) WHERE p.age IS NULL SET p.name = 'no age'")
+
+        restart()
+
+        assertRejected("CREATE (:Person {age: true})")
+        write("CREATE (:Person {age: 5})")
+        assertRejected("MATCH (p:Person {age: 5}) SET p.age = '5'")
+    }
+
     /** The status of [error] or of its first cause that has one. */
     fun statusOf(error: Throwable?): Status? =
         generateSequence(error) { it.cause }
