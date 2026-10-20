@@ -218,6 +218,9 @@ class RatisConsensusLogTest {
 
         assertThatThrownBy { runBlocking { cluster.nodes[0].consensus.probe(unused) } }
             .isInstanceOf(ConsensusUnavailableException::class.java)
+            // One line that ends with why, without a stack trace.
+            .hasMessageNotContaining("\n")
+            .hasMessageContaining("Connection refused")
     }
 
     @Test

@@ -222,7 +222,7 @@ internal object BulkService {
             return ChunkInputStream(chunks).use(consume)
         } catch (e: StatusRuntimeException) {
             throw ConsensusUnavailableException(
-                "fetching $name from $address failed: ${e.status}",
+                "fetching $name from $address failed: ${describe(e)}",
                 e,
             )
         } catch (e: IOException) {
@@ -248,7 +248,7 @@ internal object BulkService {
                         if (!chunks.hasNext()) return false
                         chunks.next()
                     } catch (e: StatusRuntimeException) {
-                        throw IOException("bulk transfer failed: ${e.status}", e)
+                        throw IOException("bulk transfer failed: ${describe(e)}", e)
                     }
                 current = next
                 position = 0

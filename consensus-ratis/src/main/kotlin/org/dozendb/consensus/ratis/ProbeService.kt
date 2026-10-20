@@ -103,7 +103,7 @@ internal object ProbeService {
             )
             return ProbeCodec.decodeResponse(reply.await())
         } catch (e: StatusRuntimeException) {
-            throw ConsensusUnavailableException("probe of $target failed: ${e.status}", e)
+            throw ConsensusUnavailableException("probe of $target failed: ${describe(e)}", e)
         } catch (e: ProbeCodec.UnsupportedFormatException) {
             throw ConsensusUnavailableException("probe of $target failed: ${e.message}", e)
         } finally {

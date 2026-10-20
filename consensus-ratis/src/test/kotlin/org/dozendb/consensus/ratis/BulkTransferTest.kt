@@ -126,6 +126,9 @@ class BulkTransferTest {
                 receiver.consensus.fetchBulk(address, "random", ByteArray(0)) { it.readAllBytes() }
             }
             .isInstanceOf(ConsensusUnavailableException::class.java)
+            // One line that ends with why, without a stack trace.
+            .hasMessageNotContaining("\n")
+            .hasMessageContaining("Connection refused")
     }
 
     /** Never ends; counts what it wrote and signals when the transfer stopped it. */
