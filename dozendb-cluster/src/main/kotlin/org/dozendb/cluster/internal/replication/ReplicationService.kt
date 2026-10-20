@@ -178,10 +178,29 @@ internal class ReplicationService(
         if (replica.bootstrapping) {
             // Neo4j initialises the new store after this event returns; replicate after that.
             inBackground("Starting the replication of ${replica.ref.name}") {
-                replica.startAfterBootstrap()
+                joining(replica, replica::startAfterBootstrap)
             }
         } else {
-            replica.start()
+            joining(replica, replica::start)
+        }
+    }
+
+    /**
+     * Runs [join], which joins the group of [replica]. Only stopping this member interrupts it: the
+     * database then stops too, which is no reason for an error.
+     */
+    private fun joining(replica: ReplicatedDatabase, join: () -> Unit) {
+        try {
+            join()
+        } catch (e: Exception) {
+            if (generateSequence<Throwable>(e) { it.cause }.none { it is InterruptedException }) {
+                throw e
+            }
+            Thread.currentThread().interrupt()
+            log.info(
+                "Stopped joining the Raft group of %s: this member is stopping",
+                replica.ref.name,
+            )
         }
     }
 

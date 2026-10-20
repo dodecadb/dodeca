@@ -1,7 +1,12 @@
 package org.dozendb.cluster.internal
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.LockSupport
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
@@ -13,6 +18,8 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.graphdb.event.DatabaseEventContext
+import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.StoreId
@@ -209,6 +216,45 @@ class MultiDatabaseTest {
         cluster.awaitEverywhere(FILMS)
         cluster.addFilm("Alien")
         cluster.awaitFilms(1)
+    }
+
+    @Test
+    fun `a member stopped while it starts a database stops without errors`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        val entered = CountDownLatch(1)
+        val holding = AtomicReference<ClusterHarness.Member>()
+        // Holds the start of films on the member chosen below, as a slow start would, until
+        // stopping the member interrupts it.
+        for (member in cluster.members) {
+            member.databaseEventListeners =
+                listOf(
+                    object : DatabaseEventListenerAdapter() {
+                        override fun databaseStart(eventContext: DatabaseEventContext) {
+                            if (eventContext.databaseName != FILMS || holding.get() != member)
+                                return
+                            entered.countDown()
+                            val deadline = System.nanoTime() + Duration.ofMinutes(1).toNanos()
+                            while (!Thread.interrupted() && System.nanoTime() < deadline) {
+                                LockSupport.parkNanos(Duration.ofMillis(10).toNanos())
+                            }
+                            // DozenDB's own listener, next, sees the interruption.
+                            Thread.currentThread().interrupt()
+                        }
+                    }
+                )
+        }
+        cluster.start()
+        // A member other than the system leader copies films instead of creating it.
+        val stopping = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        holding.set(stopping)
+
+        cluster.administer("CREATE DATABASE $FILMS")
+        assertThat(entered.await(1, TimeUnit.MINUTES)).isTrue()
+        stopping.stop()
+
+        assertThat(Files.readAllLines(stopping.home.resolve("logs/debug.log"))).noneMatch {
+            " ERROR " in it
+        }
     }
 
     @Test
