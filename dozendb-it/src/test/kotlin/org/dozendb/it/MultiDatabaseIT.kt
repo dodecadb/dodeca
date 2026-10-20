@@ -208,6 +208,28 @@ class MultiDatabaseIT {
 
     @Test
     @Order(5)
+    fun `WAIT returns once every member runs a new database`() {
+        val config =
+            SessionConfig.builder()
+                .withDatabase("system")
+                .withDefaultAccessMode(AccessMode.WRITE)
+                .build()
+
+        val rows =
+            driver.session(config).use { session ->
+                session.run("CREATE DATABASE waited WAIT 60 SECONDS").list { it.asMap() }
+            }
+
+        assertThat(rows).hasSize(3).allSatisfy {
+            assertThat(it).containsEntry("state", "CaughtUp").containsEntry("success", true)
+        }
+        assertThat(rows.map { it["address"] }).doesNotHaveDuplicates()
+        // At once, without waiting any further.
+        assertThat(statuses("waited")).containsOnly("online")
+    }
+
+    @Test
+    @Order(6)
     fun `a member killed while a database is created copies it when it restarts`() {
         val killed = members.first { role(it, "system") != "LEADER" }
         killed.kill()

@@ -1,5 +1,6 @@
 package org.dozendb.core.cypher
 
+import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
@@ -134,6 +135,58 @@ class DatabaseCommandsTest {
             mapOf("options" to emptyMap<String, Any>()),
         )
         assertThat(server.names()).contains("films", "books")
+    }
+
+    /** The single row WAIT returns without clustering, without its address. */
+    private fun StandaloneServer.waited(command: String): Map<String, Any?> =
+        rows(command, StandaloneServer.SYSTEM).single().filterKeys { it != "address" }
+
+    private val caughtUp = mapOf("state" to "CaughtUp", "message" to "caught up", "success" to true)
+
+    private fun StandaloneServer.status(name: String): Map<String, Any?> =
+        rows(
+                "SHOW DATABASE $name YIELD currentStatus, statusMessage",
+                StandaloneServer.SYSTEM,
+            )
+            .single()
+
+    @Test
+    fun `waits for database commands and reports how this server did`() {
+        val server = start()
+
+        assertThat(server.waited("CREATE DATABASE films WAIT")).isEqualTo(caughtUp)
+        assertThat(server.status("films")["currentStatus"]).isEqualTo("online")
+        assertThat(server.waited("STOP DATABASE films WAIT 5 SECONDS")).isEqualTo(caughtUp)
+        assertThat(server.status("films")["currentStatus"]).isEqualTo("offline")
+        assertThat(server.waited("START DATABASE films WAIT 5 SECONDS")).isEqualTo(caughtUp)
+        assertThat(server.waited("CREATE OR REPLACE DATABASE films WAIT")).isEqualTo(caughtUp)
+        assertThat(server.waited("DROP DATABASE films WAIT")).isEqualTo(caughtUp)
+        assertThat(server.names()).doesNotContain("films")
+        assertThat(server.rows("CREATE DATABASE neo4j IF NOT EXISTS WAIT", StandaloneServer.SYSTEM))
+            .isEmpty()
+    }
+
+    @Test
+    fun `reports a database that fails to start, with WAIT and without`() {
+        val server = start()
+        // Where the stores would be created: neither can be.
+        Files.createFile(server.home.resolve("data/databases/films"))
+        Files.createFile(server.home.resolve("data/databases/books"))
+
+        val films = server.waited("CREATE DATABASE films WAIT")
+        server.administer("CREATE DATABASE books")
+
+        assertThat(films).containsEntry("state", "Failed").containsEntry("success", false)
+        // The cause, which Neo4j's own message leaves out.
+        assertThat(films["message"] as String).contains("Unable to start", "films", "Exception")
+        for (name in listOf("films", "books")) {
+            assertThat(server.status(name)["currentStatus"])
+                .describedAs(name)
+                .isNotEqualTo("online")
+            assertThat(server.status(name)["statusMessage"] as String)
+                .describedAs(name)
+                .isNotBlank()
+        }
     }
 
     @Test

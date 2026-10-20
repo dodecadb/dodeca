@@ -22,5 +22,8 @@ object MemberMetadata {
      * report the same, members of another one not.
      */
     const val CLUSTER_ID = "dozendb.clusterId"
+
+    /** The databases on the member and their states, for WAIT; see [DatabaseStatesCodec]. */
+    const val DATABASES = "dozendb.databases"
     const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
 }

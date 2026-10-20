@@ -12,8 +12,8 @@
  * and STOP of a missing database succeeding, CREATE OR REPLACE of a missing database failing, and
  * the database limit counting one short. Composite databases, DUMP DATA and WAIT are rejected
  * instead of ignored or failing internally, and so is dropping the default database.
- * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored, and the
- * user commands of UserCommands are added.
+ * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored, the user
+ * commands of UserCommands are added, and WAIT waits for the servers.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -21,7 +21,9 @@
  */
 package org.dozendb.core.cypher
 
+import java.time.Duration
 import org.dozendb.core.DozenDbSettings
+import org.dozendb.core.edition.DatabaseProgress
 import org.neo4j.common.DependencyResolver
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -214,10 +216,14 @@ private class DatabaseCommands(
             is EnsureDatabaseSafeToDelete -> Planner { compile(plan.source(), it) }
             is WaitForCompletion ->
                 Planner { context ->
-                    failure(compile(plan.source(), context)) {
-                        "Failed to wait for the specified database " +
-                            "'${show(plan.databaseName(), it)}': WAIT is not supported."
-                    }
+                    WaitExecutionPlan(
+                        compile(plan.source(), context),
+                        plan.databaseName(),
+                        Duration.ofSeconds(plan.waitForCompletion().timeout()),
+                        { dependencies.resolveDependency(DatabaseProgress::class.java) },
+                        engine,
+                        authorization,
+                    )
                 }
             else -> null
         }

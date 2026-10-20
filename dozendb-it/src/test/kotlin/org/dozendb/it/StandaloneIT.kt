@@ -189,6 +189,19 @@ class StandaloneIT {
 
     @Test
     @Order(ADDITIONS)
+    fun `waits for database commands`() {
+        val rows = dozenDb.rows("CREATE DATABASE waiting WAIT 30 SECONDS", "system")
+
+        assertThat(rows.map { it - "address" })
+            .containsExactly(
+                mapOf("state" to "CaughtUp", "message" to "caught up", "success" to true)
+            )
+        assertThat(rows.single()["address"] as String).endsWith(":7687")
+        assertThat(statuses()).containsEntry("waiting", "online")
+    }
+
+    @Test
+    @Order(ADDITIONS)
     fun `enforces property existence constraints`() {
         val create = "CREATE CONSTRAINT person_born FOR (p:Person) REQUIRE p.born IS NOT NULL"
         refusedByCommunity(create)
@@ -231,10 +244,6 @@ class StandaloneIT {
             .isEqualTo("Neo.ClientError.Database.ExistingDatabaseFound")
         assertThat(failed("STOP DATABASE missing", "system").code)
             .isEqualTo("Neo.ClientError.Database.DatabaseNotFound")
-        assertThat(failed("CREATE DATABASE waiting WAIT", "system").message)
-            .isEqualTo(
-                "Failed to wait for the specified database 'waiting': WAIT is not supported."
-            )
         assertThat(failed("DROP DATABASE neo4j", "system").message)
             .isEqualTo("Not allowed to delete the default database 'neo4j'.")
     }

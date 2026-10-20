@@ -1,7 +1,9 @@
 package org.dozendb.cluster.internal
 
+import kotlinx.coroutines.runBlocking
 import org.dozendb.cluster.ClusterFormation
 import org.dozendb.cluster.ClusterService
+import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.MemberState
@@ -26,11 +28,11 @@ import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.dozendb.core.DozenDb
 import org.dozendb.core.edition.DatabaseHosting
+import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DozenDbEditionModule
+import org.dozendb.core.edition.HostingServer
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
-import org.neo4j.configuration.connectors.BoltConnector
-import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DefaultSystemGraphInitializer
@@ -100,9 +102,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.HAS_STORES to stores.existed.toString(),
                 MemberMetadata.STORES_READY to replicationService.defaultDatabaseStarted.toString(),
                 MemberMetadata.MEMBER_STATE to cluster.state.name,
+                MemberMetadata.DATABASES to DatabaseStatesCodec.encode(databaseStates()),
             ) +
                 listOfNotNull(
-                    boltAddress()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
+                    boltHostPort()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
                     replicationService.defaultDatabaseId?.let {
                         MemberMetadata.CLUSTER_ID to it.toString()
                     },
@@ -195,7 +198,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             MemberDirectory(
                 consensus,
                 systemDatabase,
-                ::boltAddress,
+                ::boltHostPort,
                 logService.getInternalLog(MemberDirectory::class.java),
             )
         cluster =
@@ -361,14 +364,32 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         }
 
     /** This member's advertised Bolt address, with the bound port if the configured one is 0. */
-    private fun boltAddress(): HostPort? {
-        if (!globalModule.globalConfig.get(BoltConnector.enabled)) return null
-        val advertised = globalModule.globalConfig.get(BoltConnector.advertised_address)
-        if (advertised.port > 0) return advertised.toHostPort()
-        val bound =
-            globalModule.connectorPortRegister.getLocalAddress(ConnectorType.BOLT) ?: return null
-        return HostPort(advertised.hostname, bound.port)
-    }
+    private fun boltHostPort(): HostPort? = boltAddress()?.toHostPort()
+
+    /**
+     * The members of the cluster, which WAIT waits for. Each reports its databases when probed;
+     * this member reads its own.
+     */
+    override fun hostingServers(): List<HostingServer> =
+        consensus.members(systemDatabase).map { member ->
+            object : HostingServer {
+                override val address: String =
+                    (directory.boltAddress(member.id) ?: member.raftAddress).toString()
+
+                override fun databases(): List<DatabaseState> {
+                    if (member.id == memberId) return databaseStates()
+                    val peer = runBlocking { consensus.probe(member.raftAddress) }
+                    check(peer.member.id == member.id) {
+                        "${member.raftAddress} is ${peer.member.id} now, not ${member.id}"
+                    }
+                    val reported =
+                        checkNotNull(peer.metadata[MemberMetadata.DATABASES]) {
+                            "it does not report its databases"
+                        }
+                    return DatabaseStatesCodec.decode(reported)
+                }
+            }
+        }
 
     /**
      * Neo4j Community's routing service, with routing tables of replicated databases taken from

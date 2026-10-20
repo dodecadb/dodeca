@@ -20,6 +20,9 @@ import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityModule
 import org.dozendb.core.security.SystemGraphUsers
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.configuration.connectors.ConnectorType
+import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.CommunityDatabaseStateService
 import org.neo4j.dbms.CommunityKernelPanicListener
 import org.neo4j.dbms.database.DatabaseContextProvider
@@ -147,7 +150,34 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         databaseRepository = repository
         databaseIdCache = idCache
         defaultDatabaseStarter = manager.defaultDatabaseStarter()
+        // For WAIT; asks the servers only when a command waits.
+        globalModule.globalDependencies.satisfyDependency(DatabaseProgress(::hostingServers))
         return repository
+    }
+
+    /** The servers that host the databases, which WAIT waits for: without clustering, this one. */
+    protected open fun hostingServers(): List<HostingServer> =
+        listOf(
+            object : HostingServer {
+                override val address: String = boltAddress()?.toString() ?: "localhost"
+
+                override fun databases(): List<DatabaseState> = databaseStates()
+            }
+        )
+
+    /** The databases of this server; none before they are created. */
+    protected fun databaseStates(): List<DatabaseState> =
+        if (::databaseRepository.isInitialized) databaseRepository.databaseStates() else emptyList()
+
+    /** This server's advertised Bolt address, with the bound port if the configured one is 0. */
+    protected fun boltAddress(): SocketAddress? {
+        val config = globalModule.globalConfig
+        if (!config.get(BoltConnector.enabled)) return null
+        val advertised = config.get(BoltConnector.advertised_address)
+        if (advertised.port > 0) return advertised
+        val bound =
+            globalModule.connectorPortRegister.getLocalAddress(ConnectorType.BOLT) ?: return null
+        return SocketAddress(advertised.hostname, bound.port)
     }
 
     /** Caches the references to the databases the system graph names. */

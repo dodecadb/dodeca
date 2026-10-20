@@ -257,6 +257,57 @@ class MultiDatabaseTest {
         }
     }
 
+    /** The rows of [command], run on the system leader. */
+    private fun ClusterHarness.waited(command: String): List<Map<String, Any?>> =
+        awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command, emptyMap()) { result ->
+            result.asSequence().map { it.toMap() }.toList()
+        }
+
+    @Test
+    fun `WAIT returns once every member did what a database command asks`() {
+        val cluster = cluster()
+
+        val created = cluster.waited("CREATE DATABASE $FILMS WAIT")
+
+        assertThat(created).hasSize(3).allSatisfy {
+            assertThat(it).containsEntry("state", "CaughtUp").containsEntry("success", true)
+        }
+        assertThat(created.map { it["address"] }).doesNotHaveDuplicates()
+        // At once, without waiting any further.
+        assertThat(cluster.members).allSatisfy {
+            assertThat(it.registered(FILMS)?.isStarted).isTrue()
+        }
+
+        assertThat(cluster.waited("STOP DATABASE $FILMS WAIT")).allSatisfy {
+            assertThat(it).containsEntry("state", "CaughtUp")
+        }
+        assertThat(cluster.members).allSatisfy {
+            assertThat(it.registered(FILMS)?.isStarted).isFalse()
+        }
+        assertThat(cluster.waited("DROP DATABASE $FILMS WAIT")).allSatisfy {
+            assertThat(it).containsEntry("state", "CaughtUp")
+        }
+        assertThat(cluster.members).allSatisfy { assertThat(it.registered(FILMS)).isNull() }
+    }
+
+    @Test
+    fun `WAIT reports a member that did not catch up in time`() {
+        val cluster = cluster()
+        val down = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        down.stop()
+
+        val rows = cluster.waited("CREATE DATABASE $FILMS WAIT 2 SECONDS")
+
+        val (missing, others) = rows.partition { it["address"] == "127.0.0.1:${down.raftPort}" }
+        assertThat(missing.single())
+            .containsEntry("state", "TimedOut")
+            .containsEntry("success", false)
+        assertThat(missing.single()["message"] as String).startsWith("could not be asked")
+        assertThat(others).hasSize(2).allSatisfy {
+            assertThat(it).containsEntry("state", "CaughtUp").containsEntry("success", false)
+        }
+    }
+
     @Test
     fun `a member that was down creates and drops the databases it missed`() {
         val cluster = cluster()

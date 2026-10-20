@@ -52,10 +52,20 @@ DozenDB took over the code.
   `film.archive`, work in every command; `CREATE OR REPLACE DATABASE` also
   creates a database that does not exist yet; `CREATE COMPOSITE DATABASE`,
   `CREATE DATABASE ... TOPOLOGY`, `CREATE DATABASE ... OPTIONS` with any
-  option (such as `seedURI`, which would otherwise create an empty database),
-  `DROP DATABASE ... DUMP DATA` and `WAIT` fail instead of being ignored or
-  failing with an internal error; and `dbms.max_databases` counts every
-  database including `system`, where DozerDB allows one fewer.
+  option (such as `seedURI`, which would otherwise create an empty database)
+  and `DROP DATABASE ... DUMP DATA` fail instead of being ignored or failing
+  with an internal error; and `dbms.max_databases` counts every database
+  including `system`, where DozerDB allows one fewer.
+- **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
+  Neo4j Enterprise. The command commits its transaction, then returns once
+  every server, with clustering every member, has the database running,
+  stopped or dropped as asked, or failed to, or once the time limit passed:
+  300 seconds for `WAIT`, n for `WAIT n SECONDS`. It returns a row per server
+  with `address` (its Bolt address), `state` (`CaughtUp`, `Failed` or
+  `TimedOut`), `message`, and `success`, true only if every server caught up.
+  Without `WAIT` a command returns once committed: without clustering the
+  database has then started or failed to, and `SHOW DATABASES` shows why in
+  `statusMessage`; with clustering the members follow in the background.
 - **The default database** cannot be dropped or replaced. DozerDB removes it
   from the system graph but keeps it running, until a restart adds it back;
   with clustering, a member could then no longer start.
@@ -91,10 +101,10 @@ What clustering does not do yet.
   member that was down applies the ones it missed when it returns.
 - **New databases.** The system leader creates the store of a new database and
   the other members copy it, which takes a moment: until then the database is
-  not available on them. Stores are copied only while a database is online, so
-  a member that lacks a stopped database gets it once it is started again. If
-  the creating member fails before it created the store, the others wait until
-  it returns.
+  not available on them. `CREATE DATABASE ... WAIT` returns once it is. Stores
+  are copied only while a database is online, so a member that lacks a stopped
+  database gets it once it is started again. If the creating member fails
+  before it created the store, the others wait until it returns.
 - **Default database.** The default database (`initial_default_database`)
   exists from the first start on and cannot be dropped or replaced;
   `STOP DATABASE` and `START DATABASE` apply to it.
