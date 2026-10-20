@@ -26,8 +26,14 @@ enum class MemberState {
  *
  * @property formation the members this member formed the cluster with, if it is one of them: the
  *   initial members of the groups of `system` and the default database.
+ * @property formatLevel the cluster's format level, as this member last saw it: it refuses to start
+ *   with a DozenDB version that does not support it.
  */
-data class MembershipRecord(val state: MemberState, val formation: List<Member> = emptyList())
+data class MembershipRecord(
+    val state: MemberState,
+    val formation: List<Member> = emptyList(),
+    val formatLevel: Int = FormatLevels.INITIAL,
+)
 
 /** Keeps this member's [MembershipRecord]. */
 interface MembershipStore {
@@ -62,7 +68,11 @@ class MembershipFile(private val path: Path) : MembershipStore {
             } catch (e: IllegalArgumentException) {
                 throw IOException("$path: invalid formation: ${e.message}", e)
             }
-        return MembershipRecord(state, formation)
+        val formatLevel =
+            fields[FORMAT_LEVEL]?.let {
+                it.toIntOrNull() ?: throw IOException("$path: invalid format level $it")
+            } ?: FormatLevels.INITIAL
+        return MembershipRecord(state, formation, formatLevel)
     }
 
     override fun write(record: MembershipRecord) {
@@ -70,6 +80,7 @@ class MembershipFile(private val path: Path) : MembershipStore {
             appendLine("$VERSION=$CURRENT_VERSION")
             appendLine("$STATE=${record.state.name}")
             appendLine("$FORMATION=${record.formation.joinToString(",") { it.toText() }}")
+            appendLine("$FORMAT_LEVEL=${record.formatLevel}")
         }
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         Files.createDirectories(path.parent)
@@ -98,5 +109,6 @@ class MembershipFile(private val path: Path) : MembershipStore {
         const val CURRENT_VERSION = "1"
         const val STATE = "state"
         const val FORMATION = "formation"
+        const val FORMAT_LEVEL = "formatLevel"
     }
 }

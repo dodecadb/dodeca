@@ -25,5 +25,11 @@ object MemberMetadata {
 
     /** The databases on the member and their states, for WAIT; see [DatabaseStatesCodec]. */
     const val DATABASES = "dozendb.databases"
+
+    /** The [FormatLevels] the member's DozenDB version supports. */
+    const val FORMAT_LEVELS = "dozendb.formatLevels"
+
+    /** The cluster's format level, as the member last saw it. */
+    const val FORMAT_LEVEL = "dozendb.formatLevel"
     const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
 }

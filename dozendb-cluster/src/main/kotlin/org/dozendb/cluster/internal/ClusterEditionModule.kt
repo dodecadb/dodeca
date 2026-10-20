@@ -4,6 +4,8 @@ import kotlinx.coroutines.runBlocking
 import org.dozendb.cluster.ClusterFormation
 import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.DatabaseStatesCodec
+import org.dozendb.cluster.FormatLevelStore
+import org.dozendb.cluster.FormatLevels
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.MemberState
@@ -46,6 +48,8 @@ import org.neo4j.dbms.routing.RoutingService
 import org.neo4j.dbms.routing.RoutingTableTTLProvider
 import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
+import org.neo4j.graphdb.event.DatabaseEventContext
+import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.kernel.api.procedure.GlobalProcedures
@@ -94,6 +98,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         val neo4jVersion = Version.getNeo4jVersion()
         lateinit var stores: Neo4jLocalStores
         lateinit var replicationService: ReplicationService
+        val formatLevels =
+            FormatLevels(
+                FormatLevels.SUPPORTED.oldest,
+                config.get(ClusterSettings.newestFormatLevel),
+            )
         // What this member reports when probed; read once consensus runs.
         val metadata = {
             mapOf(
@@ -103,6 +112,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.STORES_READY to replicationService.defaultDatabaseStarted.toString(),
                 MemberMetadata.MEMBER_STATE to cluster.state.name,
                 MemberMetadata.DATABASES to DatabaseStatesCodec.encode(databaseStates()),
+                MemberMetadata.FORMAT_LEVELS to formatLevels.toString(),
+                MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
             ) +
                 listOfNotNull(
                     boltHostPort()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
@@ -218,8 +229,26 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 metadata = metadata,
                 replicatedDatabases = { replication.running().map { it.ref } },
                 directory = directory,
+                formatLevels = formatLevels,
+                // The system graph, once the system database runs.
+                formatLevelStore =
+                    object : FormatLevelStore {
+                        override fun formatLevel(): Int = systemGraph.formatLevel()
+
+                        override fun recordFormatLevel(level: Int) =
+                            systemGraph.recordFormatLevel(level)
+                    },
             )
         globalModule.globalDependencies.satisfyDependency(cluster)
+        globalModule.databaseEventListeners.registerDatabaseEventListener(
+            object : DatabaseEventListenerAdapter() {
+                override fun databaseStart(eventContext: DatabaseEventContext) {
+                    if (eventContext.databaseName == systemDatabase.name) {
+                        cluster.requestFormatLevelRefresh()
+                    }
+                }
+            }
+        )
         membership =
             MembershipReconciler(
                 consensus,
@@ -279,6 +308,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             reconciler.request()
             // A new database may need members added since its initial members were recorded.
             membership.request()
+            cluster.requestFormatLevelRefresh()
         }
         return provider
     }

@@ -2,6 +2,7 @@ package org.dozendb.cluster.internal
 
 import java.nio.file.Path
 import java.time.Duration
+import org.dozendb.cluster.FormatLevels
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -13,6 +14,7 @@ import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BOOL
 import org.neo4j.configuration.SettingValueParsers.BYTES
 import org.neo4j.configuration.SettingValueParsers.DURATION
+import org.neo4j.configuration.SettingValueParsers.INT
 import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
 import org.neo4j.configuration.SettingValueParsers.listOf
@@ -162,6 +164,23 @@ class ClusterSettings : SettingsDeclaration {
                     RatisConsensusConfig.DEFAULT_LOG_SEGMENT_SIZE,
                 )
                 .addConstraint(min(1L))
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Internal
+        @field:Description(
+            "For tests: the newest format level this member supports, above that of this " +
+                "DozenDB version to act as a newer version. The formats of all levels are the " +
+                "same so far."
+        )
+        val newestFormatLevel: Setting<Int> =
+            newBuilder(
+                    "internal.dbms.dozendb.cluster.newest_format_level",
+                    INT,
+                    FormatLevels.SUPPORTED.newest,
+                )
+                .addConstraint(min(FormatLevels.SUPPORTED.newest))
                 .immutable()
                 .build()
 

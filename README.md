@@ -24,7 +24,7 @@ Under development. Not ready for production use.
 | `dozendb-cluster/` | Clustering on top of `dozendb-core`: commit interception, routing, reads, snapshots and membership. |
 | `dozendb-plugin/` | The entry point, and the build of the single jar installed into Neo4j's `lib/`. |
 | `dozendb-it/` | Integration, fault, crash and benchmark tests. |
-| `doc/` | Compatibility matrix, upstream touchpoints and operator documentation. |
+| `doc/` | Compatibility matrix, upstream touchpoints, operator documentation, and the formats between members. |
 
 ## Building
 

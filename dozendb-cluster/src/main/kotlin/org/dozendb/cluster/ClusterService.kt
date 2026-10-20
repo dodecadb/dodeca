@@ -1,6 +1,12 @@
 package org.dozendb.cluster
 
 import java.time.Duration
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
@@ -25,7 +31,12 @@ data class MemberView(
     val isSelf: Boolean,
     val boltAddress: HostPort? = null,
     val databases: List<String> = emptyList(),
+    val dozenDbVersion: String? = null,
+    val formatLevels: FormatLevels? = null,
 )
+
+/** The cluster's format level before and after [ClusterService.finishUpgrade]. */
+data class FormatUpgrade(val previous: Int, val current: Int)
 
 /** A change of the cluster's members that cannot be made; the message tells the operator why. */
 class MembershipChangeException(message: String, cause: Throwable? = null) :
@@ -43,9 +54,17 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
  * in the cluster any more; to be added again it needs its data directory deleted, after which it
  * joins as a new member.
  *
+ * A member runs one DozenDB version, which supports [formatLevels]; the cluster's format level says
+ * which formats members write. It rises when an administrator finishes an upgrade with
+ * [finishUpgrade]. A member refuses to start, to rejoin or to be added when it does not support the
+ * cluster's format level, or runs another Neo4j version than the members it reaches.
+ *
  * @property metadata what this member reports when probed, compared with a member being added.
  * @property replicatedDatabases the replicated databases running on this member.
  * @property directory the members' Bolt addresses, if this member serves Bolt.
+ * @property formatLevelStore where the cluster records its format level, once `system` runs.
+ * @property upgradeConfirmation how long [finishUpgrade] waits for every member to record the
+ *   cluster's format level.
  */
 class ClusterService(
     private val consensus: ConsensusLog,
@@ -57,8 +76,15 @@ class ClusterService(
     private val metadata: () -> Map<String, String> = { emptyMap() },
     private val replicatedDatabases: () -> List<DatabaseRef> = { emptyList() },
     val directory: MemberDirectory? = null,
+    val formatLevels: FormatLevels = FormatLevels.SUPPORTED,
+    private val formatLevelStore: FormatLevelStore? = null,
+    private val upgradeConfirmation: Duration = Duration.ofSeconds(30),
 ) {
     private var statusListener: AutoCloseable? = null
+    private val levelRefresh: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "dozendb-format-level").apply { isDaemon = true }
+    }
+    private val levelRefreshRequested = AtomicBoolean(false)
 
     @Volatile private var record: MembershipRecord? = null
 
@@ -73,6 +99,10 @@ class ClusterService(
     val state: MemberState
         get() = record?.state ?: MemberState.JOINING
 
+    /** The cluster's format level, as this member last saw it. */
+    val formatLevel: Int
+        get() = record?.formatLevel ?: FormatLevels.INITIAL
+
     /** Runs once this member learns that it was removed from the cluster, on an internal thread. */
     @Volatile var onRemoved: () -> Unit = {}
 
@@ -81,21 +111,23 @@ class ClusterService(
      * databases it lacks copied from another member. Runs before any database starts.
      */
     fun start() {
-        consensus.start()
         record = membershipStore.read()
+        requireSupported(formatLevel, "as this member last saw it")
+        consensus.start()
         val joined =
             if (systemDatabase.id in consensus.localGroups()) {
                 userLog.info("Rejoining the cluster from local Raft state")
+                checkRejoin()
                 null
             } else {
                 formation.awaitFormation(systemDatabase.id).also { found ->
-                    remember(
-                        if (found.members.any { it.id == self.id }) {
-                            MembershipRecord(MemberState.MEMBER, found.members)
+                    remember {
+                        if (found.members.any { member -> member.id == self.id }) {
+                            it.copy(state = MemberState.MEMBER, formation = found.members)
                         } else {
-                            MembershipRecord(MemberState.JOINING)
+                            it.copy(state = MemberState.JOINING)
                         }
-                    )
+                    }
                 }
             }
         val missing = stores.missing()
@@ -144,22 +176,224 @@ class ClusterService(
             }
         val included = membership.members.any { it.id == self.id }
         if (state == MemberState.JOINING && membership.settled && included) {
-            remember(MembershipRecord(MemberState.MEMBER, record?.formation.orEmpty()))
+            remember { it.copy(state = MemberState.MEMBER) }
             userLog.info(
                 "This member is now one of the cluster's members; it joins the group of each " +
                     "database once it has copied it"
             )
         }
         if (state == MemberState.MEMBER && membership.removed) {
-            remember(MembershipRecord(MemberState.REMOVED, record?.formation.orEmpty()))
+            remember { it.copy(state = MemberState.REMOVED) }
             userLog.error(REMOVED_MESSAGE)
             onRemoved()
         }
     }
 
-    private fun remember(update: MembershipRecord) {
+    /** Changes this member's record with [change] and keeps the result. */
+    @Synchronized
+    private fun remember(change: (MembershipRecord) -> MembershipRecord) {
+        val update = change(record ?: MembershipRecord(MemberState.JOINING))
         membershipStore.write(update)
         record = update
+    }
+
+    /**
+     * Before a member that has Raft state rejoins: refuses if a member it reaches runs another
+     * Neo4j version, or says that the cluster uses a format level this member does not support, as
+     * after an upgrade was finished without it. Members it does not reach are not checked.
+     */
+    private fun checkRejoin() {
+        val others =
+            try {
+                consensus.members(systemDatabase).filter { it.id != self.id }
+            } catch (_: ConsensusUnavailableException) {
+                return
+            }
+        val neo4jVersion = metadata()[MemberMetadata.NEO4J_VERSION]
+        for ((member, answer) in probeAll(others)) {
+            val peer = answer.getOrNull()?.takeIf { it.member.id == member.id } ?: continue
+            val version = peer.metadata[MemberMetadata.NEO4J_VERSION]
+            if (version != neo4jVersion) {
+                throw IncompatibleVersionException(
+                    "Member ${peer.member} runs Neo4j $version, but this member runs Neo4j " +
+                        "$neo4jVersion. All members must run the same Neo4j version: to upgrade " +
+                        "Neo4j, shut down every member first."
+                )
+            }
+            val level = peer.metadata[MemberMetadata.FORMAT_LEVEL]?.toIntOrNull() ?: continue
+            requireSupported(level, "as member ${peer.member} reports")
+        }
+    }
+
+    private fun requireSupported(level: Int, source: String) {
+        if (level !in formatLevels) throw IncompatibleVersionException(unsupported(level, source))
+    }
+
+    private fun unsupported(level: Int, source: String): String =
+        "The cluster uses format level $level, $source, but this member's DozenDB version " +
+            "${metadata()[MemberMetadata.DOZENDB_VERSION]} supports format levels $formatLevels. " +
+            "Run a DozenDB version that supports format level $level."
+
+    /** The format levels [peer] supports; [invalid] tells why they cannot be read. */
+    private fun reportedLevels(
+        peer: PeerInfo,
+        invalid: (String) -> RuntimeException,
+    ): FormatLevels =
+        try {
+            FormatLevels.parse(peer.metadata[MemberMetadata.FORMAT_LEVELS])
+        } catch (e: IllegalArgumentException) {
+            throw invalid(e.message.orEmpty())
+        }
+
+    private fun probeAll(members: List<Member>): List<Pair<Member, Result<PeerInfo>>> =
+        runBlocking {
+            members
+                .map { member ->
+                    async { member to runCatching { consensus.probe(member.raftAddress) } }
+                }
+                .awaitAll()
+        }
+
+    /**
+     * Asks for [refreshFormatLevel] in the background, as when `system` starts or applies a
+     * transaction; requests made while one waits are merged.
+     */
+    fun requestFormatLevelRefresh() {
+        if (!levelRefreshRequested.compareAndSet(false, true)) return
+        try {
+            levelRefresh.execute {
+                levelRefreshRequested.set(false)
+                try {
+                    refreshFormatLevel()
+                } catch (e: Exception) {
+                    // `system` stopped meanwhile; it asks again when it runs.
+                    userLog.debug("Reading the cluster's format level failed: %s", e.toString())
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Stopping.
+        }
+    }
+
+    /**
+     * Reads the cluster's format level from the system graph and keeps it in this member's record,
+     * so that this member refuses to start, later, with a version that does not support it.
+     */
+    fun refreshFormatLevel() {
+        val level = formatLevelStore?.formatLevel() ?: return
+        if (level == formatLevel) return
+        remember { it.copy(formatLevel = level) }
+        if (level in formatLevels) {
+            userLog.info("The cluster uses format level %d", level)
+        } else {
+            userLog.error(unsupported(level, "as this member's system database records it"))
+        }
+    }
+
+    /**
+     * Finishes a rolling upgrade: raises the cluster's format level to the newest level a voting
+     * member supports, so that members write the formats it names, once every voting member
+     * supports it. Returns once every member recorded the level: from then on none starts with a
+     * DozenDB version that does not support it. Runs on the leader of `system`.
+     *
+     * @throws UpgradeException if a member does not answer, does not support that level yet, or
+     *   does not record it in time.
+     */
+    fun finishUpgrade(): FormatUpgrade {
+        val store = checkNotNull(formatLevelStore) { "the cluster's format level is not known" }
+        if (consensus.status(systemDatabase).role != Role.Leader) {
+            val leader = consensus.status(systemDatabase).leader
+            throw UpgradeException(
+                "This member is not the leader of the system database; finish the upgrade on " +
+                    "the leader${leader?.let { ", member $it" }.orEmpty()}."
+            )
+        }
+        val current = store.formatLevel()
+        val others = consensus.members(systemDatabase).filter { it.id != self.id }
+        val supported =
+            mapOf(self to formatLevels) +
+                probeAll(others).associate { (member, answer) ->
+                    val peer = answer.getOrElse { e ->
+                        throw UpgradeException(
+                            "Member $member did not tell the format levels it supports " +
+                                "(${e.message}). Every member must answer to finish an upgrade.",
+                            e,
+                        )
+                    }
+                    member to
+                        reportedLevels(peer) { UpgradeException("Member $member reports $it.") }
+                }
+        val target = maxOf(current, supported.values.maxOf { it.newest })
+        val behind = supported.filterValues { current !in it || target !in it }
+        if (behind.isNotEmpty()) {
+            throw UpgradeException(
+                "Upgrade every member to a DozenDB version that supports format level $target " +
+                    "first: " +
+                    behind.entries.joinToString { (member, levels) ->
+                        "member $member supports format levels $levels"
+                    } +
+                    "."
+            )
+        }
+        if (target <= current) {
+            awaitRecorded(current, others)
+            userLog.info(
+                "The cluster already uses format level %d, the newest any member supports",
+                current,
+            )
+            return FormatUpgrade(current, current)
+        }
+        try {
+            store.recordFormatLevel(target)
+        } catch (e: Exception) {
+            throw UpgradeException("Recording format level $target failed: ${e.message}", e)
+        }
+        awaitRecorded(target, others)
+        userLog.info(
+            "Finished the upgrade: the cluster uses format level %d, after %d. Members can no " +
+                "longer return to DozenDB versions that do not support it.",
+            target,
+            current,
+        )
+        return FormatUpgrade(current, target)
+    }
+
+    /**
+     * Waits until this member and [others] recorded format [level], which they do once they applied
+     * the transaction that raised it; they report the level they recorded when probed.
+     */
+    private fun awaitRecorded(level: Int, others: List<Member>) {
+        refreshFormatLevel()
+        val deadline = System.nanoTime() + upgradeConfirmation.toNanos()
+        while (true) {
+            val pending =
+                probeAll(others).mapNotNull { (member, answer) ->
+                    val reported =
+                        answer
+                            .getOrNull()
+                            ?.metadata
+                            ?.get(MemberMetadata.FORMAT_LEVEL)
+                            ?.toIntOrNull()
+                    member.takeIf { reported == null || reported < level }
+                }
+            if (pending.isEmpty()) return
+            if (System.nanoTime() - deadline >= 0) {
+                val waited =
+                    if (upgradeConfirmation.toMillis() % 1000 == 0L) {
+                        "${upgradeConfirmation.toSeconds()} seconds"
+                    } else {
+                        "${upgradeConfirmation.toMillis()} ms"
+                    }
+                throw UpgradeException(
+                    "The cluster uses format level $level, but " +
+                        pending.joinToString { "member $it" } +
+                        " did not record it within $waited: until they do, they may still start " +
+                        "with a DozenDB version that does not support it. Call finishUpgrade " +
+                        "again once they answer."
+                )
+            }
+            Thread.sleep(CONFIRMATION_POLL_MILLIS)
+        }
     }
 
     private fun copyStores(source: Member?, databases: List<String>) {
@@ -187,6 +421,7 @@ class ClusterService(
     }
 
     fun stop() {
+        levelRefresh.shutdownNow()
         directory?.stop()
         statusListener?.close()
         statusListener = null
@@ -220,11 +455,19 @@ class ClusterService(
                     }
                 }
         return consensus.members(systemDatabase).map { member ->
+            val reported =
+                if (member.id == consensus.self.id) metadata()
+                else directory?.reported(member.id).orEmpty()
             MemberView(
                 member,
                 isLeader = member.id == leader,
                 isSelf = member.id == consensus.self.id,
                 boltAddress = directory?.boltAddress(member.id),
+                dozenDbVersion = reported[MemberMetadata.DOZENDB_VERSION],
+                formatLevels =
+                    reported[MemberMetadata.FORMAT_LEVELS]?.let {
+                        runCatching { FormatLevels.parse(it) }.getOrNull()
+                    },
                 databases =
                     listOf(systemDatabase.name) +
                         groups.filterValues { member.id in it }.keys.map { it.name }.sorted(),
@@ -311,6 +554,15 @@ class ClusterService(
                     "${own[MemberMetadata.NEO4J_VERSION]}. All members must run the same version."
             )
         }
+        val level = formatLevelStore?.formatLevel() ?: formatLevel
+        val levels = reportedLevels(peer) { MembershipChangeException("$candidate reports $it.") }
+        if (level !in levels) {
+            throw MembershipChangeException(
+                "$candidate runs DozenDB ${peer.metadata[MemberMetadata.DOZENDB_VERSION]}, which " +
+                    "supports format levels $levels, but this cluster uses format level $level. " +
+                    "Run a DozenDB version that supports format level $level on it."
+            )
+        }
         when (peer.metadata[MemberMetadata.MEMBER_STATE]) {
             MemberState.JOINING.name -> {}
             MemberState.REMOVED.name ->
@@ -338,6 +590,8 @@ class ClusterService(
     private companion object {
         /** How long a change of members may take: bringing a new member up to date included. */
         val CHANGE_TIMEOUT: Duration = Duration.ofMinutes(10)
+
+        const val CONFIRMATION_POLL_MILLIS = 200L
 
         const val REMOVED_MESSAGE =
             "This member was removed from the cluster: it takes no part in it any more and its " +

@@ -167,3 +167,46 @@ old authority from `trusted/`, restarting each.
 Members with TLS and members without cannot reach each other. Shut down every
 member, change `dbms.ssl.policy.cluster.enabled` on each, and start them all
 again.
+
+## Upgrading DozenDB
+
+DozenDB is upgraded one member at a time while the cluster keeps serving.
+Every member must keep running the same Neo4j version: members refuse to form
+a cluster with, add, or rejoin a member that runs another one. To upgrade
+Neo4j, shut down every member, upgrade them all, and start them again.
+
+A cluster mixes at most two DozenDB versions, the one it ran and the next.
+Each version supports a range of format levels: the formats members send each
+other and keep, such as the entries of the Raft log. The cluster's format
+level says which formats members write. A newer version can read the formats
+of the cluster's level, so it can run next to the previous version; it writes
+newer formats only once the upgrade is finished.
+
+1. On one member at a time: shut it down, replace the DozenDB jar in Neo4j's
+   `lib/`, and start it. Before the next member, wait until it has started
+   (Neo4j logs `Started.`) and `CALL dozendb.cluster.status()` on it shows the
+   group of every database with the role `FOLLOWER` or `LEADER`. With one
+   member down at a time, a cluster of three or more members keeps a majority
+   and goes on serving writes.
+2. Check that every member runs the new version: `CALL
+   dozendb.cluster.members()` shows each member's `dozendbVersion` and the
+   `formatLevels` it supports.
+3. Finish the upgrade, as an administrator, on the leader of the `system`
+   database:
+
+   ```
+   CALL dozendb.cluster.finishUpgrade()
+   ```
+
+   It raises the cluster's format level to the newest level any member
+   supports, and returns `previousFormatLevel` and `formatLevel`. It refuses
+   while a member runs a version that does not support that level, naming the
+   member, or does not answer.
+
+Until the upgrade is finished, any member can return to the previous version
+the same way. Afterwards none can: a member refuses to start with a version
+that does not support the cluster's format level, and so does a new member
+added to the cluster. `CALL dozendb.cluster.formatLevel()` shows the cluster's
+format level and the levels the member asked supports. When a new version
+supports no newer format level, `finishUpgrade` changes nothing; calling it
+after every upgrade is harmless.

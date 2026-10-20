@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.util.stream.Stream
 import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.MembershipChangeException
+import org.dozendb.cluster.UpgradeException
 import org.dozendb.cluster.displayName
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
@@ -62,8 +63,44 @@ class ClusterProcedures {
                 role = if (it.isLeader) "LEADER" else "FOLLOWER",
                 self = it.isSelf,
                 databases = it.databases,
+                dozendbVersion = it.dozenDbVersion,
+                formatLevels = it.formatLevels?.toString(),
             )
         }
+
+    @SystemProcedure
+    @Procedure(name = "dozendb.cluster.formatLevel", mode = Mode.DBMS)
+    @Description(
+        "The cluster's format level, which says what formats members write, as this member " +
+            "knows it, and the format levels this member's DozenDB version supports."
+    )
+    fun formatLevel(): Stream<FormatLevelRow> {
+        val service = requireCluster()
+        service.refreshFormatLevel()
+        return Stream.of(
+            FormatLevelRow(service.formatLevel.toLong(), service.formatLevels.toString())
+        )
+    }
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dozendb.cluster.finishUpgrade", mode = Mode.DBMS)
+    @Description(
+        "Finishes a rolling upgrade of DozenDB once every member runs the new version: raises " +
+            "the cluster's format level to the newest a member supports, once every member " +
+            "supports it, so that members write its formats. Returns once every member recorded " +
+            "it; from then on no member starts with a DozenDB version that does not support it. " +
+            "Runs on the leader of the system database."
+    )
+    fun finishUpgrade(): Stream<UpgradeRow> {
+        val upgrade =
+            try {
+                requireCluster().finishUpgrade()
+            } catch (e: UpgradeException) {
+                throw ProcedureFailure(e.message.orEmpty(), e)
+            }
+        return Stream.of(UpgradeRow(upgrade.previous.toLong(), upgrade.current.toLong()))
+    }
 
     @Admin
     @SystemProcedure
@@ -145,7 +182,15 @@ class ClusterProcedures {
         val self: Boolean,
         /** The databases whose groups the member votes in, as this member knows them. */
         val databases: List<String>,
+        /** The member's DozenDB version, once it reported it. */
+        val dozendbVersion: String?,
+        /** The format levels the member's DozenDB version supports, once it reported them. */
+        val formatLevels: String?,
     )
+
+    @JvmRecord data class FormatLevelRow(val formatLevel: Long, val supportedFormatLevels: String)
+
+    @JvmRecord data class UpgradeRow(val previousFormatLevel: Long, val formatLevel: Long)
 
     @JvmRecord data class AddedMemberRow(val memberId: String, val raftAddress: String)
 }

@@ -1,6 +1,8 @@
 package org.dozendb.cluster.internal
 
 import java.util.UUID
+import org.dozendb.cluster.FormatLevelStore
+import org.dozendb.cluster.FormatLevels
 import org.dozendb.cluster.internal.replication.DesiredDatabase
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.replication.SystemGraph
@@ -9,6 +11,7 @@ import org.dozendb.consensus.MemberId
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.GraphDatabaseService
+import org.neo4j.graphdb.Label
 import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.DatabaseIdFactory
@@ -18,12 +21,13 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * The databases in this member's copy of the system graph: its `Database` nodes, with a
  * `dozendb_creator` property that names the member creating the database's store, and a
  * `dozendb_initial_members` property that lists the initial members of its group, each as
- * `id@host:port`.
+ * `id@host:port`. A `DozenDB` node holds the cluster's format level in `dozendb_format_level`, once
+ * an upgrade raised it.
  */
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
     private val replication: ReplicationService,
-) : SystemGraph {
+) : SystemGraph, FormatLevelStore {
     override fun databases(): List<DesiredDatabase> = replication.readingSystem {
         system().beginTx().use { tx ->
             tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
@@ -74,6 +78,29 @@ internal class Neo4jSystemGraph(
         }
     }
 
+    override fun formatLevel(): Int = replication.readingSystem {
+        system().beginTx().use { tx ->
+            tx.findNodes(DOZENDB_LABEL).use { nodes ->
+                nodes
+                    .asSequence()
+                    .mapNotNull {
+                        (it.getProperty(FORMAT_LEVEL_PROPERTY, null) as? Number)?.toInt()
+                    }
+                    .maxOrNull() ?: FormatLevels.INITIAL
+            }
+        }
+    }
+
+    override fun recordFormatLevel(level: Int) = replication.readingSystem {
+        system().beginTx().use { tx ->
+            val node =
+                tx.findNodes(DOZENDB_LABEL).use { it.asSequence().firstOrNull() }
+                    ?: tx.createNode(DOZENDB_LABEL)
+            node.setProperty(FORMAT_LEVEL_PROPERTY, level.toLong())
+            tx.commit()
+        }
+    }
+
     /** The initial members of the group of [database], or null if none are recorded. */
     fun initialMembers(database: NamedDatabaseId): List<Member>? = replication.readingSystem {
         system().beginTx().use { tx ->
@@ -92,5 +119,7 @@ internal class Neo4jSystemGraph(
     private companion object {
         const val CREATOR_PROPERTY = "dozendb_creator"
         const val INITIAL_MEMBERS_PROPERTY = "dozendb_initial_members"
+        const val FORMAT_LEVEL_PROPERTY = "dozendb_format_level"
+        val DOZENDB_LABEL: Label = Label.label("DozenDB")
     }
 }

@@ -40,6 +40,20 @@ class MembershipFileTest {
     }
 
     @Test
+    fun `the record keeps the cluster's format level, which older records lack`() {
+        file.write(MembershipRecord(MemberState.MEMBER, formatLevel = 2))
+
+        assertThat(file.read()!!.formatLevel).isEqualTo(2)
+
+        Files.writeString(
+            directory.resolve("raft").resolve("membership"),
+            "version=1\nstate=MEMBER\nformation=\n",
+        )
+
+        assertThat(file.read()!!.formatLevel).isEqualTo(FormatLevels.INITIAL)
+    }
+
+    @Test
     fun `a damaged record is reported`() {
         Files.createDirectories(directory.resolve("raft"))
         Files.writeString(

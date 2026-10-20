@@ -1,6 +1,7 @@
 package org.dozendb.cluster
 
 import java.io.IOException
+import java.time.Duration
 import java.util.UUID
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
@@ -23,7 +24,23 @@ class ClusterServiceTest {
     private val stores = List(3) { FakeStores() }
     private val memberships = List(3) { InMemoryMembershipStore() }
     private val ownMetadata =
-        mapOf(MemberMetadata.NEO4J_VERSION to "5.26.27", MemberMetadata.CLUSTER_ID to CLUSTER)
+        mapOf(
+            MemberMetadata.NEO4J_VERSION to "5.26.27",
+            MemberMetadata.DOZENDB_VERSION to "0.9.0",
+            MemberMetadata.CLUSTER_ID to CLUSTER,
+        )
+
+    /** The format level in the system graph, which every member shares. */
+    private class SharedFormatLevel(@Volatile var level: Int = FormatLevels.INITIAL) :
+        FormatLevelStore {
+        override fun formatLevel(): Int = level
+
+        override fun recordFormatLevel(level: Int) {
+            this.level = level
+        }
+    }
+
+    private val clusterLevel = SharedFormatLevel()
 
     /** What a member that waits to join this cluster reports. */
     private val joiningMetadata =
@@ -61,7 +78,11 @@ class ClusterServiceTest {
         }
     }
 
-    private fun service(index: Int, localStores: LocalStores = stores[index]) =
+    private fun service(
+        index: Int,
+        localStores: LocalStores = stores[index],
+        formatLevels: FormatLevels = FormatLevels.SUPPORTED,
+    ) =
         ClusterService(
             logs[index],
             system,
@@ -70,6 +91,9 @@ class ClusterServiceTest {
             memberships[index],
             log,
             metadata = { ownMetadata },
+            formatLevels = formatLevels,
+            formatLevelStore = clusterLevel,
+            upgradeConfirmation = Duration.ofMillis(500),
         )
 
     @Test
@@ -339,6 +363,112 @@ class ClusterServiceTest {
 
         assertThat(partly.copied).containsExactly("neo4j")
         assertThat(logs[2].status(system).role).isEqualTo(Role.Follower)
+    }
+
+    @Test
+    fun `a rejoining member refuses members that run another Neo4j version`() {
+        val services = logs.indices.map { service(it, FakeStores(existed = true)) }
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+        services[2].stop()
+        logs[0].metadata = metadata + (MemberMetadata.NEO4J_VERSION to "5.26.32")
+
+        assertThatThrownBy { service(2, FakeStores(existed = true)).start() }
+            .isInstanceOf(IncompatibleVersionException::class.java)
+            .hasMessageContaining("Member ${logs[0].self} runs Neo4j 5.26.32")
+            .hasMessageContaining("shut down every member first")
+    }
+
+    @Test
+    fun `a member does not start with a version that lacks the cluster's format level`() {
+        val services = logs.indices.map { service(it, FakeStores(existed = true)) }
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+        services[2].stop()
+        val record = checkNotNull(memberships[2].record)
+
+        memberships[2].record = record.copy(formatLevel = 2)
+        assertThatThrownBy { service(2, FakeStores(existed = true)).start() }
+            .isInstanceOf(IncompatibleVersionException::class.java)
+            .hasMessageContaining("format level 2, as this member last saw it")
+            .hasMessageContaining("DozenDB version 0.9.0 supports format levels 1.")
+        memberships[2].record = record
+        logs[0].metadata = metadata + (MemberMetadata.FORMAT_LEVEL to "2")
+        assertThatThrownBy { service(2, FakeStores(existed = true)).start() }
+            .isInstanceOf(IncompatibleVersionException::class.java)
+            .hasMessageContaining("format level 2, as member ${logs[0].self} reports")
+
+        service(2, FakeStores(existed = true), FormatLevels(1, 2)).start()
+        assertThat(logs[2].status(system).role).isEqualTo(Role.Follower)
+    }
+
+    @Test
+    fun `a member is added only if it supports the cluster's format level`() {
+        val services = formCluster()
+        clusterLevel.level = 2
+        fun candidate(levels: String?): HostPort {
+            val reported =
+                joiningMetadata + listOfNotNull(levels?.let { MemberMetadata.FORMAT_LEVELS to it })
+            val candidate = consensus.newMember(metadata = reported).apply { start() }
+            candidate.joinGroup(system, logs.map { it.self })
+            return candidate.self.raftAddress
+        }
+
+        assertThatThrownBy { services[0].addMember(candidate("1")) }
+            .isInstanceOf(MembershipChangeException::class.java)
+            .hasMessageContaining("supports format levels 1, but this cluster uses format level 2")
+        // A version older than format levels.
+        assertThatThrownBy { services[0].addMember(candidate(null)) }
+            .hasMessageContaining("supports format levels 1, but this cluster uses format level 2")
+        services[0].addMember(candidate("1-2"))
+        assertThat(services[0].members()).hasSize(4)
+    }
+
+    @Test
+    fun `an upgrade finishes on the leader once every member supports the new format level`() {
+        val services = logs.indices.map { service(it, formatLevels = FormatLevels(1, 2)) }
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+        consensus.electLeader(system, logs[0].self.id)
+        logs[1].metadata = metadata + (MemberMetadata.FORMAT_LEVELS to "1-2")
+
+        // The last member still runs a version older than format levels.
+        assertThatThrownBy { services[0].finishUpgrade() }
+            .isInstanceOf(UpgradeException::class.java)
+            .hasMessageContaining("member ${logs[2].self} supports format levels 1.")
+        assertThat(clusterLevel.level).isEqualTo(1)
+        logs[2].metadata = metadata + (MemberMetadata.FORMAT_LEVELS to "1-2")
+        assertThatThrownBy { services[1].finishUpgrade() }
+            .isInstanceOf(UpgradeException::class.java)
+            .hasMessageContaining("not the leader of the system database")
+
+        // Recorded, but the others do not report that they recorded it yet.
+        assertThatThrownBy { services[0].finishUpgrade() }
+            .isInstanceOf(UpgradeException::class.java)
+            .hasMessageContaining("The cluster uses format level 2, but member")
+            .hasMessageContaining("member ${logs[1].self}")
+            .hasMessageContaining("member ${logs[2].self}")
+            .hasMessageContaining("within 500 ms")
+        assertThat(clusterLevel.level).isEqualTo(2)
+        for (index in 1..2) {
+            logs[index].metadata = logs[index].metadata + (MemberMetadata.FORMAT_LEVEL to "2")
+        }
+
+        assertThat(services[0].finishUpgrade()).isEqualTo(FormatUpgrade(2, 2))
+        services.forEach { it.refreshFormatLevel() }
+        assertThat(services.map { it.formatLevel }).containsOnly(2)
+        assertThat(memberships.map { it.record?.formatLevel }).containsOnly(2)
+    }
+
+    @Test
+    fun `an upgrade does not finish while a member does not answer`() {
+        val services = formCluster()
+        logs[2].close()
+
+        assertThatThrownBy { services[0].finishUpgrade() }
+            .isInstanceOf(UpgradeException::class.java)
+            .hasMessageContaining("Member ${logs[2].self} did not tell")
+        assertThat(clusterLevel.level).isEqualTo(1)
     }
 
     @Test

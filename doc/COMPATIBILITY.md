@@ -1,7 +1,7 @@
 # Compatibility
 
-Each DozenDB build is pinned to exactly one Neo4j version. A node refuses to
-join a cluster whose members run a different Neo4j version.
+Each DozenDB build is pinned to exactly one Neo4j version. A member refuses to
+form, join or rejoin a cluster whose members run a different Neo4j version.
 
 ## Pinned versions
 
@@ -136,6 +136,11 @@ What clustering does not do yet.
   group follows. See `OPERATOR_GUIDE.md`. A removed member cannot rejoin with
   its data: its data directory must be deleted first. A database that is
   offline while a member is added gets the member once it is started again.
+- **Upgrades.** DozenDB is upgraded one member at a time, mixing at most two
+  versions; formats that the previous version cannot read are used only once
+  an administrator calls `dozendb.cluster.finishUpgrade()`, after which no
+  member can return to it. Neo4j is upgraded with every member shut down. See
+  `OPERATOR_GUIDE.md`.
 - **Traffic between members.** A clustered member does not start until
   `dbms.ssl.policy.cluster.enabled` is set: `true` for mutual TLS, configured
   with Neo4j's SSL policy settings of the `cluster` scope as in Neo4j

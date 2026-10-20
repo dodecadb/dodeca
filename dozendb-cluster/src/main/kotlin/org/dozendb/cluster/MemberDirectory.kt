@@ -16,10 +16,10 @@ import org.dozendb.consensus.MemberId
 import org.neo4j.logging.Log
 
 /**
- * The Bolt addresses of the cluster's members, for routing. Every member reports its advertised
- * Bolt address when probed; the directory probes the members of the `system` group periodically,
- * and soon after someone asks for a member it does not know yet. A member that does not answer
- * keeps its last known address.
+ * The Bolt addresses of the cluster's members, for routing, and what else they report about
+ * themselves. Every member reports its advertised Bolt address when probed; the directory probes
+ * the members of the `system` group periodically, and soon after someone asks for a member it does
+ * not know yet. A member that does not answer keeps its last known address and report.
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
@@ -29,6 +29,7 @@ class MemberDirectory(
     private val refreshInterval: Duration = Duration.ofSeconds(10),
 ) {
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
+    private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
     private val refreshPending = AtomicBoolean()
     private var scheduler: ScheduledExecutorService? = null
 
@@ -41,6 +42,9 @@ class MemberDirectory(
                 null
             }
     }
+
+    /** What [member] reported when it last answered, such as its versions; see [MemberMetadata]. */
+    fun reported(member: MemberId): Map<String, String>? = reports[member]
 
     /** Probes every member once and records the addresses they report. */
     fun refresh() {
@@ -55,6 +59,7 @@ class MemberDirectory(
         for ((member, answer) in answers) {
             val peer = answer.getOrNull() ?: continue
             if (peer.member.id != member.id) continue
+            reports[member.id] = peer.metadata
             val reported = peer.metadata[MemberMetadata.BOLT_ADDRESS] ?: continue
             val address = runCatching { HostPort.parse(reported) }.getOrNull()
             if (address == null) {
