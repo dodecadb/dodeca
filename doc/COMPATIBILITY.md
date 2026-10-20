@@ -136,6 +136,12 @@ What clustering does not do yet.
   group follows. See `OPERATOR_GUIDE.md`. A removed member cannot rejoin with
   its data: its data directory must be deleted first. A database that is
   offline while a member is added gets the member once it is started again.
+- **Traffic between members.** A clustered member does not start until
+  `dbms.ssl.policy.cluster.enabled` is set: `true` for mutual TLS, configured
+  with Neo4j's SSL policy settings of the `cluster` scope as in Neo4j
+  Enterprise, or `false` for plaintext. `client_auth=OPTIONAL` is refused.
+  Certificates are read at start, and members accept any certificate from a
+  trusted authority, whichever member presents it. See `OPERATOR_GUIDE.md`.
 - **ID reuse.** IDs freed while a member is a follower are reused only after a
   restart, as in Neo4j's own clustering.
 - **Durability (single fsync).** A commit to a replicated database is

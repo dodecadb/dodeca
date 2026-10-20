@@ -24,6 +24,7 @@ changes over.
 | `StandardConstraintSemantics` | `DozenDbConstraintSemantics` | Subclass, registered as a service with a higher priority. |
 | `TopologyGraphDbmsModel` | `Neo4jSystemGraph`, `StandaloneDatabases`, `WaitExecutionPlan` | The `Database` nodes (`name`, `uuid`, `status`) that the database commands write and that the databases follow. `Neo4jSystemGraph` adds a `dozendb_creator` property. |
 | `KnownCommunitySecurityComponentVersion` | `SystemGraphUsers` | The `User` nodes' `suspended` and `homeDatabase` properties, which the user commands write and DozenDB reads. |
+| `SslPolicyLoader`, `SslPolicy`, `SslPolicyConfig`, `SslPolicyScope.CLUSTER` | `ClusterTls` | The cluster scope's SSL policy, which `CommunityEditionModule` loads into its protected `sslPolicyLoader`, configures TLS between members. `ClusterTls` reads its key, certificate chain, trust manager factory (trusted and revoked certificates), TLS versions, ciphers, client authentication and hostname verification. |
 
 ## Code ported from DozerDB
 

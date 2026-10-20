@@ -60,6 +60,12 @@
       <artifactId>awaitility-kotlin</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- TestCertificates in the consensus-api test-jar uses it. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <scope>test</scope>
+    </dependency>
     <!-- With its own Netty shaded: Neo4j's Netty is on the same classpath. -->
     <dependency>
       <groupId>org.neo4j.driver</groupId>

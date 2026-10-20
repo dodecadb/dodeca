@@ -93,6 +93,16 @@ class ClusterFormationIT {
 
     @Test
     @Order(2)
+    fun `members talk to each other over mutual TLS with hostname verification`() {
+        for (member in members) {
+            assertThat(member.debugLog())
+                .describedAs(member.alias)
+                .contains("(TLS, client certificates required, hostnames verified)")
+        }
+    }
+
+    @Test
+    @Order(2)
     fun `one member forms the group and the others form it too or adopt it`() {
         val formed = "All 3 initial cluster members are reachable"
         val adopted = "Joining the already formed cluster"

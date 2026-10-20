@@ -10,6 +10,7 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.consensus.testing.TestAuthority
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
@@ -21,6 +22,7 @@ import org.testcontainers.containers.Network
 import org.testcontainers.containers.startupcheck.OneShotStartupCheckStrategy
 import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.images.builder.ImageFromDockerfile
+import org.testcontainers.images.builder.Transferable
 import org.testcontainers.utility.DockerImageName
 
 /** The outcome of one query, comparable across servers. */
@@ -51,12 +53,29 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
 
     fun inNetwork(network: Network): DozenDbContainer = withNetwork(network)
 
-    fun clusterMember(initialMembers: List<String>): DozenDbContainer =
+    /**
+     * Makes this server a cluster member that forms a cluster with [initialMembers]. Members talk
+     * to each other over mutual TLS with hostname verification, with a certificate for [alias] that
+     * [authority] issued, or in plaintext if it is null.
+     */
+    fun clusterMember(
+        initialMembers: List<String>,
+        authority: TestAuthority? = clusterAuthority,
+    ): DozenDbContainer {
         withEnv("NEO4J_dbms_dozendb_cluster_enabled", "true")
-            .withEnv(
-                "NEO4J_dbms_dozendb_cluster_initial__members",
-                initialMembers.joinToString(","),
-            )
+        withEnv("NEO4J_dbms_dozendb_cluster_initial__members", initialMembers.joinToString(","))
+        withEnv("NEO4J_dbms_ssl_policy_cluster_enabled", (authority != null).toString())
+        if (authority != null) {
+            withEnv("NEO4J_dbms_ssl_policy_cluster_verify__hostname", "true")
+            authority.issue(names = listOf(alias)).files().forEach { (path, text) ->
+                withCopyToContainer(
+                    Transferable.of(text.toByteArray(), READABLE),
+                    "$CLUSTER_CERTIFICATES/$path",
+                )
+            }
+        }
+        return this
+    }
 
     /**
      * Publishes Bolt on [hostPort] of this machine and advertises it there, so routing tables lead
@@ -200,6 +219,15 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         const val PASSWORD = "dozendb-it-secret"
         private const val SHUTDOWN_SECONDS = 120
         private val DATA = Volume("/data")
+
+        /** Where Neo4j's image looks for the cluster SSL policy's certificates. */
+        private const val CLUSTER_CERTIFICATES = "/var/lib/neo4j/certificates/cluster"
+
+        /** File mode 0644. */
+        private const val READABLE = 420
+
+        /** Issues the certificates of cluster members. */
+        val clusterAuthority = TestAuthority("DozenDB IT CA")
 
         /** Removes the Docker volume [name], once no container uses it. */
         fun removeVolume(name: String) {

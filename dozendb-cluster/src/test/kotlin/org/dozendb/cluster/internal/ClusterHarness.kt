@@ -14,6 +14,7 @@ import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.internal.durability.withSingleFsync
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.Role
+import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestPorts
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
@@ -24,6 +25,8 @@ import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.connectors.HttpConnector
 import org.neo4j.configuration.connectors.HttpsConnector
 import org.neo4j.configuration.helpers.SocketAddress
+import org.neo4j.configuration.ssl.SslPolicyConfig
+import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.graphdb.config.Setting
@@ -42,17 +45,25 @@ import org.neo4j.kernel.internal.GraphDatabaseAPI
  * configuration; [fileSystem] supplies the file system a member's DBMS runs on, below DozenDB's
  * single-fsync file system, each time it starts. The logging of Ratis and DozenDB's consensus,
  * which the members' debug logs lack, goes to `raft.log` in [root].
+ *
+ * Members talk to each other over mutual TLS, with certificates that [authority] issued for
+ * loopback, or in plaintext if it is null.
  */
 internal class ClusterHarness(
     private val root: Path,
     private val size: Int,
     private val fileSystem: ((Member) -> FileSystemAbstraction)? = null,
     private val settings: Map<Setting<*>, Any> = emptyMap(),
+    val authority: TestAuthority? = TestAuthority(),
     private val tuning: ConsensusTuning? = null,
 ) : AutoCloseable {
     inner class Member(val index: Int) {
         val home: Path = Files.createDirectories(root.resolve("member-$index"))
         val raftPort: Int = TestPorts.free()
+
+        init {
+            authority?.issue()?.writeTo(home.resolve(CERTIFICATES))
+        }
 
         @Volatile
         var dbms: DatabaseManagementService? = null
@@ -150,6 +161,7 @@ internal class ClusterHarness(
                     )
                     .set(ClusterSettings.electionTimeoutMin, Duration.ofMillis(300))
                     .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
+                    .set(CLUSTER_TLS.enabled, authority != null)
             @Suppress("UNCHECKED_CAST")
             settings.forEach { (setting, value) -> builder.set(setting as Setting<Any>, value) }
             return builder.build()
@@ -238,5 +250,11 @@ internal class ClusterHarness(
         val START_TIMEOUT: Duration = Duration.ofMinutes(2)
 
         private val SEGMENT = Regex("""log_(?:inprogress_)?(\d+)(?:-\d+)?""")
+
+        /** Neo4j's SSL policy of the cluster scope. */
+        val CLUSTER_TLS: SslPolicyConfig = SslPolicyConfig.forScope(SslPolicyScope.CLUSTER)
+
+        /** Where Neo4j looks for the cluster policy's certificates, under a member's home. */
+        const val CERTIFICATES = "certificates/cluster"
     }
 }

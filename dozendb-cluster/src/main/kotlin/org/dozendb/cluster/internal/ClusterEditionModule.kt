@@ -133,6 +133,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         maxEntrySize = config.get(ClusterSettings.raftMaxEntrySize).toInt(),
                         logSegmentSize = config.get(ClusterSettings.raftLogSegmentSize),
                         metadata = metadata,
+                        tls =
+                            ClusterTls.of(
+                                config,
+                                sslPolicyLoader,
+                                logService.getUserLog(ClusterTls::class.java),
+                            ),
                     )
                 )
             )
