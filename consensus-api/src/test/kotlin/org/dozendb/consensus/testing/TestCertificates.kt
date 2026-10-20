@@ -190,14 +190,19 @@ class TestCertificate(
                 "revoked/revoked-$i.crl" to pem("X509 CRL", it.encoded)
             }
 
-    /** Writes the [files] into [directory], which gets `trusted` and `revoked` even if empty. */
+    /**
+     * Writes the [files] into [directory], in place of those there: `trusted` and `revoked` hold
+     * only the given authorities and revocations, and exist even if empty.
+     */
     fun writeTo(
         directory: Path,
         trusted: List<TestAuthority> = listOf(authority),
         revocations: List<X509CRL> = emptyList(),
     ): Path {
-        Files.createDirectories(directory.resolve("trusted"))
-        Files.createDirectories(directory.resolve("revoked"))
+        for (name in listOf("trusted", "revoked")) {
+            val subdirectory = Files.createDirectories(directory.resolve(name))
+            Files.list(subdirectory).use { files -> files.forEach(Files::delete) }
+        }
         files(trusted, revocations).forEach { (path, text) ->
             Files.writeString(directory.resolve(path), text)
         }

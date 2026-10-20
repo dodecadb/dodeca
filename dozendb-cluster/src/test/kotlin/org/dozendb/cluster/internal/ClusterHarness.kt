@@ -61,8 +61,12 @@ internal class ClusterHarness(
         val home: Path = Files.createDirectories(root.resolve("member-$index"))
         val raftPort: Int = TestPorts.free()
 
+        /** The directory of the cluster SSL policy's certificates. */
+        val certificates: Path
+            get() = home.resolve(CERTIFICATES)
+
         init {
-            authority?.issue()?.writeTo(home.resolve(CERTIFICATES))
+            authority?.issue()?.writeTo(certificates)
         }
 
         @Volatile
@@ -74,6 +78,9 @@ internal class ClusterHarness(
 
         /** Listeners the DBMS calls before DozenDB's own, from its next start on. */
         @Volatile var databaseEventListeners: List<DatabaseEventListener> = emptyList()
+
+        /** Settings of this member alone, over the cluster's, from its next start on. */
+        @Volatile var settings: Map<Setting<*>, Any> = emptyMap()
 
         /** Starts the DBMS; blocks until its databases run, which may wait for other members. */
         fun start() {
@@ -163,7 +170,9 @@ internal class ClusterHarness(
                     .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
                     .set(CLUSTER_TLS.enabled, authority != null)
             @Suppress("UNCHECKED_CAST")
-            settings.forEach { (setting, value) -> builder.set(setting as Setting<Any>, value) }
+            (this@ClusterHarness.settings + settings).forEach { (setting, value) ->
+                builder.set(setting as Setting<Any>, value)
+            }
             return builder.build()
         }
 

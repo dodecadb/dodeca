@@ -1,7 +1,9 @@
 package org.dozendb.cluster.internal
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.UUID
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -59,10 +61,12 @@ class TlsMembersTest {
             }
     }
 
+    /** Writes on the leader and waits until every running member has the write. */
     private fun ClusterHarness.replicates() {
+        val title = mapOf("title" to UUID.randomUUID().toString())
         awaitLeader(ClusterHarness.DEFAULT_DATABASE)
             .database()
-            .executeTransactionally("CREATE (:Film {title: 'Alien'})")
+            .executeTransactionally("CREATE (:Film {title: ${'$'}title})", title)
         await withPollInterval
             Duration.ofMillis(200) atMost
             ClusterHarness.AWAIT untilAsserted
@@ -70,12 +74,13 @@ class TlsMembersTest {
                 for (member in running()) {
                     assertThat(
                             member.database().executeTransactionally(
-                                "MATCH (f:Film) RETURN count(f) AS films",
-                                emptyMap(),
+                                "MATCH (f:Film {title: ${'$'}title}) RETURN count(f) AS films",
+                                title,
                             ) {
                                 it.next()["films"]
                             }
                         )
+                        .describedAs("$member")
                         .isEqualTo(1L)
                 }
             }
@@ -87,6 +92,58 @@ class TlsMembersTest {
         cluster.start()
 
         cluster.replicates()
+    }
+
+    @Test
+    fun `members move to another authority's certificates, restarting one at a time`() {
+        val old = TestAuthority("Old CA")
+        val new = TestAuthority("New CA")
+        val cluster = ClusterHarness(root, 3, authority = old).also { harness = it }
+        cluster.start()
+        cluster.replicates()
+
+        // Restarts each member in turn with a certificate of [issuer], trusting [trusted].
+        fun restartEach(issuer: TestAuthority, trusted: List<TestAuthority>) {
+            for (member in cluster.members) {
+                member.stop()
+                issuer.issue().writeTo(member.certificates, trusted)
+                member.start()
+                cluster.replicates()
+            }
+        }
+
+        // As the operator guide says: trust the new authority, then take certificates from it,
+        // then stop trusting the old one.
+        restartEach(old, trusted = listOf(old, new))
+        restartEach(new, trusted = listOf(old, new))
+        restartEach(new, trusted = listOf(new))
+
+        // The members no longer accept a certificate of the old authority.
+        val candidate = cluster.newMember()
+        starting(candidate) { cluster.refusesToAdd(candidate, "certification path") }
+    }
+
+    @Test
+    fun `members switch between TLS and plaintext when all restart together`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        cluster.replicates()
+        val raftLog = root.resolve("raft.log")
+
+        for (tls in listOf(false, true)) {
+            val started = Files.readString(raftLog).length
+            cluster.members.forEach { it.stop() }
+            cluster.members.forEach {
+                it.settings = mapOf(ClusterHarness.CLUSTER_TLS.enabled to tls)
+            }
+            cluster.start()
+
+            cluster.replicates()
+            val transport = if (tls) "(TLS, " else "(plaintext)"
+            assertThat(Files.readString(raftLog).substring(started).split(transport))
+                .describedAs("members starting with $transport")
+                .hasSize(4)
+        }
     }
 
     @Test
