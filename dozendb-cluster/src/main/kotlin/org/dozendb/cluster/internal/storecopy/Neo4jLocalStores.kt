@@ -8,6 +8,7 @@ import org.dozendb.consensus.BulkTransfer
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Snapshot
+import org.dozendb.core.store.StoreArchive
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -64,7 +65,7 @@ internal class Neo4jLocalStores(
         val name = database.name
         val staged = fetch(source, name, database.id, minimumIndex)
         val snapshot =
-            staged.summary.snapshot
+            staged.snapshot
                 ?: throw IOException("$source sent a copy of $name without a Raft snapshot")
         if (snapshot.position.index < minimumIndex) {
             throw IOException(
@@ -86,7 +87,7 @@ internal class Neo4jLocalStores(
     }
 
     private fun leaveSeed(copy: Staged) {
-        val snapshot = copy.summary.snapshot ?: return
+        val snapshot = copy.snapshot ?: return
         seed(DatabaseRef(copy.name, copy.summary.databaseId), snapshot)
     }
 
@@ -130,7 +131,9 @@ internal class Neo4jLocalStores(
         val layout: DatabaseLayout,
         val summary: StoreArchive.Summary,
         val source: HostPort,
-    )
+    ) {
+        val snapshot = CopySnapshot.decode(summary.metadata)
+    }
 
     private fun fetch(source: HostPort, name: String, id: UUID?, minimumIndex: Long): Staged {
         val staged = placement.stage(name, "copy")
@@ -162,7 +165,7 @@ internal class Neo4jLocalStores(
             copy.summary.files,
             copy.summary.bytes,
             copy.summary.description,
-            copy.summary.snapshot,
+            copy.snapshot,
         )
     }
 

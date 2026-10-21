@@ -9,6 +9,7 @@ import java.time.Duration
 import java.util.UUID
 import org.dozendb.consensus.BulkSource
 import org.dozendb.consensus.Snapshot
+import org.dozendb.core.store.StoreArchive
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
@@ -79,7 +80,7 @@ internal class StoreCopySource(
                 database.namedDatabaseId.databaseId().uuid(),
                 "store ${storeSnapshot.storeId()}, " +
                     "checkpoint ${storeSnapshot.lastAppliedTransactionId()}",
-                snapshot,
+                CopySnapshot.encode(snapshot),
             )
             storeSnapshot.unrecoverableFiles().forEach { resource ->
                 archive.file(

@@ -1,4 +1,4 @@
-package org.dozendb.cluster.internal.storecopy
+package org.dozendb.core.store
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -10,8 +10,6 @@ import java.util.UUID
 import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.dozendb.consensus.LogPosition
-import org.dozendb.consensus.Snapshot
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
@@ -26,15 +24,12 @@ class StoreArchiveTest {
             Files.write(it, Random(relative.hashCode()).nextBytes(size))
         }
 
-    private val snapshot = Snapshot(LogPosition(42, 3), 40)
+    private val metadata = byteArrayOf(4, 2)
 
-    private fun archive(
-        snapshot: Snapshot? = this.snapshot,
-        build: StoreArchive.Writer.() -> Unit,
-    ): ByteArray {
+    private fun archive(build: StoreArchive.Writer.() -> Unit): ByteArray {
         val bytes = ByteArrayOutputStream()
         StoreArchive.Writer(bytes, fs).apply {
-            header("neo4j", DATABASE_ID, "test copy", snapshot)
+            header("neo4j", DATABASE_ID, "test copy", metadata)
             build()
         }
         return bytes.toByteArray()
@@ -68,14 +63,17 @@ class StoreArchiveTest {
                         Path.of("neostore.transaction.db.0"),
                         log,
                     )
-                    end()
+                    end(byteArrayOf(7))
                 }
             )
 
-        assertThat(summary)
-            .isEqualTo(
-                StoreArchive.Summary("neo4j", DATABASE_ID, "test copy", snapshot, 4, 3_080_000)
-            )
+        assertThat(summary.database).isEqualTo("neo4j")
+        assertThat(summary.databaseId).isEqualTo(DATABASE_ID)
+        assertThat(summary.description).isEqualTo("test copy")
+        assertThat(summary.metadata).containsExactly(4, 2)
+        assertThat(summary.trailer).containsExactly(7)
+        assertThat(summary.files).isEqualTo(4)
+        assertThat(summary.bytes).isEqualTo(3_080_000)
         assertThat(root.resolve("target/database/neostore")).hasSameBinaryContentAs(store)
         assertThat(root.resolve("target/database/schema/index/1/index-1"))
             .hasSameBinaryContentAs(index)
@@ -155,8 +153,26 @@ class StoreArchiveTest {
     }
 
     @Test
-    fun `a copy of a database that is not replicated has no snapshot`() {
-        assertThat(extract(archive(snapshot = null) { end() }).snapshot).isNull()
+    fun `sends the first bytes of a file, as a transaction log cut at a transaction`() {
+        val log = sourceFile("neostore.transaction.db.3", 50_000)
+
+        val summary =
+            extract(
+                archive {
+                    file(
+                        StoreArchive.Root.TRANSACTION_LOGS,
+                        Path.of("neostore.transaction.db.3"),
+                        log,
+                        1234,
+                    )
+                    end()
+                }
+            )
+
+        assertThat(summary.bytes).isEqualTo(1234)
+        assertThat(root.resolve("target/logs/neostore.transaction.db.3"))
+            .hasBinaryContent(Files.readAllBytes(log).copyOf(1234))
+        assertThat(summary.trailer).isEmpty()
     }
 
     private companion object {

@@ -15,7 +15,7 @@ Format level 1 is every format below at the version shown.
 | Database states, for `WAIT` | `DatabaseStatesCodec` | none | Sent, as one of those keys. |
 | Bulk transfer | `BulkService` | 1 | Sent; carries database copies. |
 | Database copy request | `StoreCopySource` | 2 | Sent. |
-| Database copy | `StoreArchive` | 4 | Sent, and unpacked into the database's files. |
+| Database copy | `StoreArchive` | 5 | Sent, and unpacked into the database's files. A member's copy holds its Raft snapshot in the metadata (`CopySnapshot`). |
 | Snapshot record | `SnapshotRecord` | 1 | Kept by each member, also as a joining member's seed. |
 | Membership record | `MembershipFile` | 1 | Kept by each member. |
 | System graph properties and nodes | `Neo4jSystemGraph` | none | Replicated in `system`. |
