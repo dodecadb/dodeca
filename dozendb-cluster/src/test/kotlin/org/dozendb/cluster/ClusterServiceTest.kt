@@ -64,6 +64,8 @@ class ClusterServiceTest {
 
         override fun missing(): List<String> = missing - copied.toSet()
 
+        override fun present(): List<String> = ALL_DATABASES - missing().toSet()
+
         override fun copyFrom(source: HostPort, databases: List<String>) {
             if (failures > 0) {
                 failures--
@@ -128,6 +130,49 @@ class ClusterServiceTest {
             assertThat(services[index].foundingMembers)
                 .isEqualTo(memberships[index].record!!.formation)
         }
+    }
+
+    @Test
+    fun `the member whose databases a new cluster starts from detaches them`() {
+        // Not the first member to form the group, which then names no store source to the others.
+        val owner = logs.indices.first { it != source }
+        val services =
+            logs.indices.map { index ->
+                service(index, if (index == owner) FakeStores(existed = true) else stores[index])
+            }
+        logs.forEach { it.start() }
+        services.forEach { it.start() }
+
+        assertThat(memberships[owner].record!!.storesToDetach)
+            .containsExactlyInAnyOrder("system", "neo4j")
+        for (index in logs.indices - owner) {
+            assertThat(services[index].mustDetach("neo4j"))
+                .describedAs("member $index, which copied the databases")
+                .isFalse
+        }
+        services[owner].detached("neo4j")
+        assertThat(services[owner].mustDetach("neo4j")).isFalse
+        assertThat(services[owner].mustDetach("system")).isTrue
+        assertThat(memberships[owner].record!!.storesToDetach).containsExactly("system")
+    }
+
+    @Test
+    fun `a member that copied the databases and restarts before joining does not detach them`() {
+        val copier = logs.indices.last()
+        val others = (logs.indices - copier).map(::service)
+        logs.forEach { it.start() }
+        others.forEach { it.start() }
+        // Its first start recorded the formation; it then copied the databases and stopped before
+        // taking part in the system group.
+        memberships[copier].write(
+            MembershipRecord(MemberState.MEMBER, memberships[0].record!!.formation)
+        )
+        val restarted = service(copier, FakeStores(existed = true))
+
+        restarted.start()
+
+        assertThat(restarted.mustDetach("neo4j")).isFalse
+        assertThat(memberships[copier].record!!.storesToDetach).isEmpty()
     }
 
     /** Forms the cluster of the three initial members, with the first one leading. */

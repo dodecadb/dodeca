@@ -130,7 +130,11 @@ What clustering does not do yet.
 - **Starting databases.** All members must start from identical databases. A
   new cluster starts from the databases of at most one member, or of the member
   with the lowest id if none has any; the others copy them during formation.
-  Members with databases of their own refuse to form a cluster together.
+  Members with databases of their own refuse to form a cluster together. That
+  member's databases may come from another cluster, as a dump loaded with
+  `neo4j-admin database load` or a copy of the database's files: on its first
+  start, before the others copy them, the member ends their history in the
+  other cluster's Raft groups with an empty transaction.
 - **Members.** Members are added with `dozendb.cluster.addMember` and removed
   with `dozendb.cluster.removeMember`, one at a time; every database's Raft
   group follows. See `OPERATOR_GUIDE.md`. A removed member cannot rejoin with

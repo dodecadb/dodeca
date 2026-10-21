@@ -47,9 +47,10 @@ rejoin or be added with a version that does not support it.
 4. Test it with the previous release: a rolling upgrade under load, a return
    to the previous version before `finishUpgrade`, and its refusal after.
 
-Probe metadata keys and system graph properties change without a level: add
-new ones, never change what an existing one means, and read a missing one as
-what a version without it means, as `FormatLevels.parse(null)` does.
+Probe metadata keys, membership record keys and system graph properties
+change without a level: add new ones, never change what an existing one means,
+and read a missing one as what a version without it means, as
+`FormatLevels.parse(null)` does.
 
 A new cluster starts at level 1. Once a newer level exists, form new clusters
 at the newest level all initial members support instead, so that they do not

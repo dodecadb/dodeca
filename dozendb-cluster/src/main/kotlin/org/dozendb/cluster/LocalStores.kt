@@ -13,6 +13,9 @@ interface LocalStores {
     /** The databases this member lacks or that an interrupted copy left behind. */
     fun missing(): List<String>
 
+    /** The databases this member has, complete. */
+    fun present(): List<String>
+
     /**
      * Replaces [databases] with copies from the member at [source]. Called before any database
      * starts. Throws if a copy fails; databases not yet moved into place are then unchanged.

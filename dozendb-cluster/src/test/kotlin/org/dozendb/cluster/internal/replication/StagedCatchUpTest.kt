@@ -82,12 +82,15 @@ class StagedCatchUpTest {
             id,
             self,
             { error("not used") },
-            Proxy.newProxyInstance(
-                javaClass.classLoader,
-                arrayOf(IdGeneratorFactory::class.java),
-            ) { _, _, _ ->
-                error("not used")
-            } as IdGeneratorFactory,
+            mustDetach = { false },
+            detached = {},
+            idGeneratorFactory =
+                Proxy.newProxyInstance(
+                    javaClass.classLoader,
+                    arrayOf(IdGeneratorFactory::class.java),
+                ) { _, _, _ ->
+                    error("not used")
+                } as IdGeneratorFactory,
             storeExists = true,
             scheduler,
             NullLog.getInstance(),

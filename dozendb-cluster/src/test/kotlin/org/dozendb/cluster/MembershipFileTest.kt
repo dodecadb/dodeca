@@ -54,6 +54,20 @@ class MembershipFileTest {
     }
 
     @Test
+    fun `the record keeps the stores still to detach, which older records lack`() {
+        file.write(MembershipRecord(MemberState.MEMBER, storesToDetach = setOf("system", "a.b")))
+
+        assertThat(file.read()!!.storesToDetach).containsExactlyInAnyOrder("system", "a.b")
+
+        Files.writeString(
+            directory.resolve("raft").resolve("membership"),
+            "version=1\nstate=MEMBER\nformation=\n",
+        )
+
+        assertThat(file.read()!!.storesToDetach).isEmpty()
+    }
+
+    @Test
     fun `a damaged record is reported`() {
         Files.createDirectories(directory.resolve("raft"))
         Files.writeString(

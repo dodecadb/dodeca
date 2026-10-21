@@ -31,6 +31,8 @@ class ConsistentBoltDatabasesTest {
             ),
             NullLogProvider.getInstance(),
             { error("not used") },
+            mustDetach = { false },
+            detached = {},
         )
     private val unused = BoltGraphDatabaseManagementServiceSPI { _, _ -> error("not used") }
 

@@ -179,6 +179,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 catchUp,
                 logService.internalLogProvider,
                 ::initialMembers,
+                mustDetach = { cluster.mustDetach(it) },
+                detached = { cluster.detached(it) },
             )
         replication = replicationService
         val fileSystem = globalModule.fileSystem

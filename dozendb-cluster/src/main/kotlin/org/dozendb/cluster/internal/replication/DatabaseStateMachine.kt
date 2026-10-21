@@ -3,12 +3,16 @@ package org.dozendb.cluster.internal.replication
 import org.dozendb.consensus.LogEntry
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.ReplicatedStateMachine
+import org.neo4j.common.Subject
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.impl.api.CompleteTransaction
+import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.api.TransactionCommitProcess
 import org.neo4j.kernel.impl.api.txid.IdStoreTransactionIdGenerator
+import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
 import org.neo4j.kernel.impl.transaction.log.TransactionCommitmentFactory
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
+import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.kernel.impl.transaction.tracing.TransactionWriteEvent
 import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.TransactionApplicationMode
@@ -60,6 +64,48 @@ internal class DatabaseStateMachine(
             lastAppliedIndex(),
         )
 
+    /**
+     * Makes this store the start of a new Raft group's history if its last transaction was
+     * replicated in another group, as in a dump or copy of a clustered database: the new group's
+     * entries up to that transaction's index would otherwise count as applied. Commits an empty
+     * transaction without an index, and forces a checkpoint so that [durableIndex] does not report
+     * the old index either. Only before the group starts and before the store is copied, while
+     * nothing else commits. Returns the old group's index, or null if the store had none.
+     */
+    fun detachFromPreviousGroup(): Long? {
+        val last = transactionIdStore.lastCommittedTransaction
+        if (last.consensusIndex() < 0) return null
+        val now = System.currentTimeMillis()
+        val marker =
+            CompleteCommandBatch(
+                emptyList(),
+                TransactionIdStore.UNKNOWN_CONSENSUS_INDEX,
+                now,
+                last.id(),
+                now,
+                LeaseService.NO_LEASE,
+                last.kernelVersion(),
+                Subject.SYSTEM,
+            )
+        contexts.create(DETACH_TAG).use { cursorContext ->
+            storageEngine.createStorageCursors(cursorContext).use { cursors ->
+                applyProcess.commit(
+                    CompleteTransaction(
+                        marker,
+                        cursorContext,
+                        cursors,
+                        commitments.newCommitment(),
+                        transactionIds,
+                    ),
+                    TransactionWriteEvent.NULL,
+                    TransactionApplicationMode.EXTERNAL,
+                )
+            }
+        }
+        checkPointer.forceCheckPoint(SimpleTriggerInfo("Start of a new Raft group"))
+        return last.consensusIndex()
+    }
+
     override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {
         onSnapshotNeeded.invoke(leader, minimumIndex)
     }
@@ -97,5 +143,6 @@ internal class DatabaseStateMachine(
 
     private companion object {
         const val APPLY_TAG = "dozendbRaftApply"
+        const val DETACH_TAG = "dozendbDetachFromPreviousGroup"
     }
 }

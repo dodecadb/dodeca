@@ -38,12 +38,16 @@ import org.neo4j.storageengine.api.CommandBatch
  *
  * @property initialMembers the initial members of the database's group, which this member creates
  *   with them if it has no local state for it.
+ * @property mustDetach whether this member brought the database's store to the cluster it formed
+ *   and has yet to detach it from the Raft group it may come from; [detached] records that it has.
  * @property onSnapshotNeeded called when the group's log no longer holds entries this member needs.
  */
 internal class ReplicatedDatabase(
     val namedDatabaseId: NamedDatabaseId,
     private val consensus: ConsensusLog,
     private val initialMembers: () -> List<Member>,
+    private val mustDetach: () -> Boolean,
+    private val detached: () -> Unit,
     private val idGeneratorFactory: IdGeneratorFactory,
     storeExists: Boolean,
     private val scheduler: ScheduledExecutorService,
@@ -113,6 +117,18 @@ internal class ReplicatedDatabase(
                 ) { leader, minimumIndex ->
                     onSnapshotNeeded(this, leader, minimumIndex)
                 }
+            if (mustDetach()) {
+                // Before the group applies anything and before other members copy the store.
+                stateMachine.detachFromPreviousGroup()?.let { previous ->
+                    log.info(
+                        "Database %s holds transactions replicated in another Raft group, up to " +
+                            "index %d there; its new group starts from it",
+                        ref.name,
+                        previous,
+                    )
+                }
+                detached()
+            }
             val bootstrap = if (ref.id in consensus.localGroups()) emptyList() else initialMembers()
             // From now on every transaction goes through Raft.
             bootstrapping = false

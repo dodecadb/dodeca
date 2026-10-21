@@ -99,6 +99,18 @@ class ClusterService(
     val state: MemberState
         get() = record?.state ?: MemberState.JOINING
 
+    /**
+     * Whether this member brought the store of [database] to the cluster it formed, and has not yet
+     * detached it from the Raft group it may have been replicated in before: a dump or copy of a
+     * clustered database holds the Raft indexes of that group.
+     */
+    fun mustDetach(database: String): Boolean = database in record?.storesToDetach.orEmpty()
+
+    /** Records that the store of [database] no longer refers to a Raft group it came from. */
+    fun detached(database: String) {
+        remember { it.copy(storesToDetach = it.storesToDetach - database) }
+    }
+
     /** The cluster's format level, as this member last saw it. */
     val formatLevel: Int
         get() = record?.formatLevel ?: FormatLevels.INITIAL
@@ -112,6 +124,7 @@ class ClusterService(
      */
     fun start() {
         record = membershipStore.read()
+        val firstStart = record == null
         requireSupported(formatLevel, "as this member last saw it")
         consensus.start()
         val joined =
@@ -123,7 +136,15 @@ class ClusterService(
                 formation.awaitFormation(systemDatabase.id).also { found ->
                     remember {
                         if (found.members.any { member -> member.id == self.id }) {
-                            it.copy(state = MemberState.MEMBER, formation = found.members)
+                            it.copy(
+                                state = MemberState.MEMBER,
+                                formation = found.members,
+                                // Only the member whose databases the cluster starts from has any
+                                // before copying, and only on its first start: decided before any
+                                // copy, and kept if it crashes before detaching them.
+                                storesToDetach =
+                                    if (firstStart) stores.present().toSet() else it.storesToDetach,
+                            )
                         } else {
                             it.copy(state = MemberState.JOINING)
                         }

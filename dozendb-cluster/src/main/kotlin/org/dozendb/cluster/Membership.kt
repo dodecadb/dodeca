@@ -28,11 +28,14 @@ enum class MemberState {
  *   initial members of the groups of `system` and the default database.
  * @property formatLevel the cluster's format level, as this member last saw it: it refuses to start
  *   with a DozenDB version that does not support it.
+ * @property storesToDetach the databases whose stores this member brought to the cluster it formed
+ *   and has not yet detached from the Raft groups they may have been replicated in before.
  */
 data class MembershipRecord(
     val state: MemberState,
     val formation: List<Member> = emptyList(),
     val formatLevel: Int = FormatLevels.INITIAL,
+    val storesToDetach: Set<String> = emptySet(),
 )
 
 /** Keeps this member's [MembershipRecord]. */
@@ -72,7 +75,9 @@ class MembershipFile(private val path: Path) : MembershipStore {
             fields[FORMAT_LEVEL]?.let {
                 it.toIntOrNull() ?: throw IOException("$path: invalid format level $it")
             } ?: FormatLevels.INITIAL
-        return MembershipRecord(state, formation, formatLevel)
+        val storesToDetach =
+            fields[STORES_TO_DETACH].orEmpty().split(',').filter { it.isNotEmpty() }.toSet()
+        return MembershipRecord(state, formation, formatLevel, storesToDetach)
     }
 
     override fun write(record: MembershipRecord) {
@@ -81,6 +86,7 @@ class MembershipFile(private val path: Path) : MembershipStore {
             appendLine("$STATE=${record.state.name}")
             appendLine("$FORMATION=${record.formation.joinToString(",") { it.toText() }}")
             appendLine("$FORMAT_LEVEL=${record.formatLevel}")
+            appendLine("$STORES_TO_DETACH=${record.storesToDetach.sorted().joinToString(",")}")
         }
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         Files.createDirectories(path.parent)
@@ -110,5 +116,6 @@ class MembershipFile(private val path: Path) : MembershipStore {
         const val STATE = "state"
         const val FORMATION = "formation"
         const val FORMAT_LEVEL = "formatLevel"
+        const val STORES_TO_DETACH = "storesToDetach"
     }
 }

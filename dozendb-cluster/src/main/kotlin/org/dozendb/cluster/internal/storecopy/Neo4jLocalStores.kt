@@ -44,6 +44,8 @@ internal class Neo4jLocalStores(
         incomplete(it) || !storageExists(it)
     }
 
+    override fun present(): List<String> = databaseNames.filter(::complete)
+
     override fun copyFrom(source: HostPort, databases: List<String>) {
         require(databases.all { it in databaseNames }) { "unknown databases in $databases" }
         val staged = databases.map { fetch(source, it, null, NO_MINIMUM) }
