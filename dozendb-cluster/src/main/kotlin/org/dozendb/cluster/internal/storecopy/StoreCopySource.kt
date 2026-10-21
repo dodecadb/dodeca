@@ -10,20 +10,18 @@ import java.util.UUID
 import org.dozendb.consensus.BulkSource
 import org.dozendb.consensus.Snapshot
 import org.dozendb.core.store.StoreArchive
+import org.dozendb.core.store.StoreSnapshots
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.NamedDatabaseId
-import org.neo4j.kernel.impl.store.DefaultStoreSnapshotFactory
 import org.neo4j.logging.InternalLog
 
 /**
  * Serves copies of replicating databases to members that have none or fell behind.
  *
- * A copy is a crash image that Neo4j recovery completes: Neo4j's own store snapshot checkpoints the
- * database and holds off further checkpoints, then the files that recovery cannot rebuild are sent,
- * then the store files, and last the transaction logs, which contain every transaction since the
- * checkpoint up to at least the moment the store files were read.
+ * A copy is a crash image that Neo4j recovery completes ([StoreSnapshots]), with every transaction
+ * log file whole.
  *
  * Only a database whose transactions go through Raft here is copied: a new database is not, until
  * its creator has initialised it. A request may name the database's id, which a database of that
@@ -60,13 +58,7 @@ internal class StoreCopySource(
             } else {
                 awaitSnapshot(name, minimumIndex, deadline)
             }
-        val storeSnapshot =
-            DefaultStoreSnapshotFactory(database, fs).createStoreSnapshot().orElseThrow {
-                IllegalStateException("database $name is unavailable")
-            }
-        val layout = database.databaseLayout
-        val databaseDirectory = layout.databaseDirectory()
-        val transactionLogs = layout.transactionLogsDirectory
+        val storeSnapshot = StoreSnapshots.take(database, fs)
         log.info(
             "Sending a copy of database %s, checkpoint at %s, holding Raft snapshot %s",
             name,
@@ -82,23 +74,8 @@ internal class StoreCopySource(
                     "checkpoint ${storeSnapshot.lastAppliedTransactionId()}",
                 CopySnapshot.encode(snapshot),
             )
-            storeSnapshot.unrecoverableFiles().forEach { resource ->
-                archive.file(
-                    StoreArchive.Root.DATABASE,
-                    databaseDirectory.relativize(resource.path()),
-                    resource.path(),
-                )
-            }
-            for (path in storeSnapshot.recoverableFiles()) {
-                archive.file(StoreArchive.Root.DATABASE, databaseDirectory.relativize(path), path)
-            }
-            for (path in fs.listFiles(transactionLogs).filterNot(fs::isDirectory).sorted()) {
-                archive.file(
-                    StoreArchive.Root.TRANSACTION_LOGS,
-                    transactionLogs.relativize(path),
-                    path,
-                )
-            }
+            StoreSnapshots.writeStoreFiles(storeSnapshot, database, archive)
+            StoreSnapshots.writeAllLogs(database, fs, archive)
             archive.end()
         }
         log.info("Sent a copy of database %s", name)
