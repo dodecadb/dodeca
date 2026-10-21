@@ -1,0 +1,83 @@
+package org.dozendb.consensus.ratis
+
+import java.io.InputStream
+import java.net.InetSocketAddress
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import org.apache.ratis.thirdparty.io.grpc.Server
+import org.apache.ratis.thirdparty.io.grpc.netty.NettyServerBuilder
+import org.dozendb.consensus.BulkSource
+import org.dozendb.consensus.HostPort
+
+/**
+ * Serves [BulkSource]s on an address of its own, to clients outside the cluster such as backups, as
+ * members serve each other on the Raft port: over TLS with a [TlsConfig], or in plaintext.
+ */
+class BulkServer
+private constructor(
+    private val server: Server,
+    private val executor: ExecutorService,
+) : AutoCloseable {
+    /** The port it listens on: the one asked for, or the one the system chose for port 0. */
+    val port: Int
+        get() = server.port
+
+    /** Stops listening and cancels the transfers under way. */
+    override fun close() {
+        server.shutdownNow()
+        executor.shutdownNow()
+        server.awaitTermination(SHUTDOWN_SECONDS, TimeUnit.SECONDS)
+    }
+
+    companion object {
+        private const val SHUTDOWN_SECONDS = 10L
+
+        /**
+         * Starts serving the sources that [sources] finds by name on [address], over TLS with [tls]
+         * or in plaintext if it is null. The sources run on threads named after [name].
+         *
+         * @throws java.io.IOException if it cannot listen on [address].
+         */
+        fun start(
+            address: InetSocketAddress,
+            tls: TlsConfig?,
+            name: String,
+            sources: (String) -> BulkSource?,
+        ): BulkServer {
+            val executor = Executors.newCachedThreadPool { runnable ->
+                Thread(runnable, "$name-source").apply { isDaemon = true }
+            }
+            val server =
+                NettyServerBuilder.forAddress(address)
+                    .addService(BulkService.definition(sources, executor))
+                    // Clients send keep-alive pings to detect dead servers.
+                    .permitKeepAliveTime(BulkService.KEEP_ALIVE_SECONDS, TimeUnit.SECONDS)
+                    .apply { if (tls != null) sslContext(TlsContexts(tls).server) }
+                    .build()
+            try {
+                server.start()
+            } catch (e: Exception) {
+                executor.shutdownNow()
+                throw e
+            }
+            return BulkServer(server, executor)
+        }
+
+        /**
+         * Asks the [BulkServer] at [address] for [name] with [request] and passes the response to
+         * [consume] on the calling thread, over TLS with [tls] or in plaintext if it is null.
+         *
+         * @throws org.dozendb.consensus.ConsensusUnavailableException if the server cannot be
+         *   reached, does not serve [name], or fails while streaming.
+         */
+        fun <T> fetch(
+            address: HostPort,
+            tls: TlsConfig?,
+            name: String,
+            request: ByteArray,
+            consume: (InputStream) -> T,
+        ): T =
+            BulkService.fetch(address, name, request, tls?.let { TlsContexts(it).client }, consume)
+    }
+}

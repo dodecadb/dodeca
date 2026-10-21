@@ -30,9 +30,9 @@ import org.dozendb.consensus.HostPort
 import org.slf4j.LoggerFactory
 
 /**
- * Server-streaming gRPC method on the Raft port that carries [BulkSource] output in chunks, with
- * flow control: the source blocks while the receiver is not ready, so a large store copy never
- * piles up in memory.
+ * Server-streaming gRPC method, on the Raft port and on a [BulkServer]'s, that carries [BulkSource]
+ * output in chunks, with flow control: the source blocks while the receiver is not ready, so a
+ * large store copy never piles up in memory.
  */
 internal object BulkService {
     private val log = LoggerFactory.getLogger(BulkService::class.java)

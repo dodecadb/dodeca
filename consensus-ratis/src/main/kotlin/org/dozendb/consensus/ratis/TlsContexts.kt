@@ -10,6 +10,7 @@ import org.apache.ratis.grpc.GrpcTlsConfig
 import org.apache.ratis.security.TlsConf.CertificatesConf
 import org.apache.ratis.security.TlsConf.PrivateKeyConf
 import org.apache.ratis.thirdparty.io.grpc.netty.GrpcSslContexts
+import org.apache.ratis.thirdparty.io.netty.handler.ssl.ClientAuth
 import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContext
 import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContextBuilder
 
@@ -42,6 +43,20 @@ internal class TlsContexts(config: TlsConfig) {
             .protocols(config.protocols)
             .ciphers(config.cipherSuites)
             .build()
+
+    /** For a [BulkServer]. */
+    val server: SslContext by lazy {
+        GrpcSslContexts.configure(
+                SslContextBuilder.forServer(config.privateKey, config.certificateChain)
+            )
+            .trustManager(trustManager)
+            .clientAuth(
+                if (config.requireClientCertificates) ClientAuth.REQUIRE else ClientAuth.NONE
+            )
+            .protocols(config.protocols)
+            .ciphers(config.cipherSuites)
+            .build()
+    }
 
     /**
      * Trusts what [delegate] trusts, without checking that a server's certificate names the address
