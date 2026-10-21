@@ -159,6 +159,12 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         return repository
     }
 
+    /** What creates databases from seeds: DozenDB's backup module, once Neo4j created it. */
+    protected fun seeder(): DatabaseSeeder? =
+        globalModule.globalDependencies
+            .resolveTypeDependencies(DatabaseSeeder::class.java)
+            .firstOrNull()
+
     /** Waits until this server holds the writes acknowledged before: without clustering, none. */
     protected open fun latestWrites(): LatestWrites = LatestWrites.LOCAL
 
@@ -245,6 +251,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 databaseManager,
                 databaseRepository,
                 defaultDatabase,
+                ::seeder,
                 globalModule.logService.internalLogProvider,
             )
         globalModule.transactionEventListeners.registerTransactionEventListener(

@@ -1,16 +1,21 @@
 package org.dozendb.backup
 
+import org.dozendb.backup.seed.SeedProvider
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.SettingConstraint
 import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BOOL
 import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
+import org.neo4j.configuration.SettingValueParsers.STRING
+import org.neo4j.configuration.SettingValueParsers.listOf
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.configuration.helpers.SocketAddress
+import org.neo4j.graphdb.config.Configuration
 import org.neo4j.graphdb.config.Setting
 
 /**
- * Settings of the server side of backups, named as Neo4j Enterprise's. Registered in
+ * Settings of the server side of backups and of seeds, named as Neo4j Enterprise's. Registered in
  * `META-INF/services`.
  */
 class BackupSettings : SettingsDeclaration {
@@ -37,6 +42,34 @@ class BackupSettings : SettingsDeclaration {
                 )
                 .setDependency(GraphDatabaseSettings.default_listen_address)
                 .immutable()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The providers of the seeds that CREATE DATABASE ... OPTIONS {seedURI: ...} reads, " +
+                "the first one for a URI's scheme first: FileSeedProvider for file: URIs, and " +
+                "URLConnectionSeedProvider for http:, https: and ftp: URIs. Empty disables seeds."
+        )
+        val seedProviders: Setting<List<String>> =
+            newBuilder(
+                    "dbms.databases.seed_from_uri_providers",
+                    listOf(STRING),
+                    listOf(SeedProvider.File.name),
+                )
+                .addConstraint(
+                    object : SettingConstraint<List<String>>() {
+                        override fun validate(value: List<String>, config: Configuration?) {
+                            val unknown = value.filter { SeedProvider.named(it) == null }
+                            require(unknown.isEmpty()) {
+                                "DozenDB has no seed provider ${unknown.joinToString()}: it has " +
+                                    SeedProvider.ALL.joinToString { it.name }
+                            }
+                        }
+
+                        override fun getDescription() =
+                            "is a list of ${SeedProvider.ALL.joinToString { it.name }}"
+                    }
+                )
                 .build()
     }
 }

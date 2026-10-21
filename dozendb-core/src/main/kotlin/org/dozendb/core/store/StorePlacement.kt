@@ -8,6 +8,7 @@ import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
+import org.neo4j.storageengine.api.StorageEngineFactory
 
 /**
  * Puts the files of a database's store in place: they are first written to a staging place next to
@@ -60,6 +61,10 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
         fs.deleteRecursively(staged.transactionLogsDirectory.parent)
         fs.deleteRecursively(staged.databaseDirectory().parent)
     }
+
+    /** Whether database [name] has a store in place. */
+    fun holdsStore(name: String): Boolean =
+        StorageEngineFactory.selectStorageEngine(fs, layout.databaseLayout(name)).isPresent
 
     /** Whether the files of database [name] were left half-moved. */
     fun incomplete(name: String): Boolean = fs.fileExists(marker(name))

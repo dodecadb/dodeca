@@ -24,6 +24,8 @@ package org.dozendb.core.cypher
 import java.time.Duration
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.DatabaseProgress
+import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.store.StorePlacement
 import org.neo4j.common.DependencyResolver
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -31,6 +33,7 @@ import org.neo4j.configuration.helpers.DatabaseNameValidator
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.CommunityAdministrationCommandRuntime
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.LogicalQuery
@@ -38,9 +41,11 @@ import org.neo4j.cypher.internal.RuntimeContext
 import org.neo4j.cypher.internal.ast.AdministrationAction
 import org.neo4j.cypher.internal.ast.DatabaseName
 import org.neo4j.cypher.internal.ast.`DumpData$`
+import org.neo4j.cypher.internal.ast.`IfExistsReplace$`
 import org.neo4j.cypher.internal.ast.Options
 import org.neo4j.cypher.internal.ast.OptionsMap
 import org.neo4j.cypher.internal.ast.OptionsParam
+import org.neo4j.cypher.internal.evaluator.Evaluator
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AssertCanDropDatabase
 import org.neo4j.cypher.internal.logical.plans.AssertManagementActionNotBlocked
@@ -55,6 +60,10 @@ import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.StartDatabase
 import org.neo4j.cypher.internal.logical.plans.StopDatabase
 import org.neo4j.cypher.internal.logical.plans.WaitForCompletion
+import org.neo4j.cypher.internal.optionsmap.`ExistingDataOption$`
+import org.neo4j.cypher.internal.optionsmap.`ExistingSeedServerOption$`
+import org.neo4j.cypher.internal.optionsmap.`SeedURIOption$`
+import org.neo4j.cypher.internal.optionsmap.StringOptionValidator
 import org.neo4j.cypher.internal.procs.ActionMapper
 import org.neo4j.cypher.internal.procs.AuthorizationAndPredicateExecutionPlan
 import org.neo4j.cypher.internal.procs.`Continue$`
@@ -72,12 +81,15 @@ import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseStatus
 import org.neo4j.exceptions.CantCompileQueryException
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.AdminActionOnResource
 import org.neo4j.internal.kernel.api.security.PermissionState
 import org.neo4j.internal.kernel.api.security.SecurityAuthorizationHandler
 import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.internal.kernel.api.security.Segment
+import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.query.TransactionalContext
@@ -85,6 +97,7 @@ import org.neo4j.values.storable.LongValue
 import org.neo4j.values.storable.TextValue
 import org.neo4j.values.storable.Values
 import org.neo4j.values.virtual.MapValue
+import org.neo4j.values.virtual.MapValueBuilder
 import org.neo4j.values.virtual.VirtualValues
 import scala.Function1
 import scala.Function2
@@ -171,6 +184,7 @@ private class DatabaseCommands(
     lateinit var compile: (LogicalPlan, AdministrationCommandRuntimeContext) -> ExecutionPlan
 
     private val config = dependencies.resolveDependency(Config::class.java)
+    private val fs = dependencies.resolveDependency(FileSystemAbstraction::class.java)
 
     // Resolved on first use, like Community's runtime does.
     private val authorization by lazy {
@@ -247,9 +261,15 @@ private class DatabaseCommands(
                     "TOPOLOGY is not supported."
             }
         }
-        val checked = refuseOptions(plan.options(), source) { show(databaseName, it) }
         val name = admin.getNameFields("databaseName", databaseName, Function1(::validName))
         val key = parameter(name.nameKey())
+        val version = context.runtimeContext().cypherVersion()
+        val seed =
+            Function2<Transaction, MapValue, MapValue> { _, params ->
+                val database = show(databaseName, params)
+                val seedUri = seedOptions(plan, database, params, version)
+                params.updatedWith(SEED_URI, seedUri?.let(Values::utf8Value) ?: Values.NO_VALUE)
+            }
         return updating(
             "CreateDatabase",
             """
@@ -260,7 +280,8 @@ private class DatabaseCommands(
                 database.default = false,
                 database.name = $key,
                 database.status = ${'$'}status,
-                database.uuid = randomUUID()
+                database.uuid = randomUUID(),
+                database.${TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY} = ${parameter(SEED_URI)}
             RETURN database.name AS name
             """
                 .trimIndent(),
@@ -284,37 +305,104 @@ private class DatabaseCommands(
                     }
                 }
             ),
-            checked,
-            transformer().convert(name.nameConverter()),
+            source,
+            transformer().convert(name.nameConverter()).convert(seed),
         )
     }
 
     /**
-     * Refuses [options] unless they are empty: DozenDB supports none of them, and ignoring one such
-     * as `seedURI` would create an empty database instead of the expected data.
+     * The seed URI of the database [name] that [plan] creates, null for none, from its options,
+     * which it checks: DozenDB takes `existingData`, `seedURI` and, with clustering,
+     * `existingDataSeedServer`, and refuses every other option rather than ignore it. Ignoring one
+     * such as a seed would create an empty database instead of the expected data.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for unsupported features.
-    private fun refuseOptions(
-        options: Options,
-        source: ExecutionPlan,
-        name: (MapValue) -> String,
-    ): ExecutionPlan {
-        val message = { params: MapValue ->
-            "Failed to create the specified database '${name(params)}': OPTIONS are not supported."
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for unsupported options.
+    private fun seedOptions(
+        plan: CreateDatabase,
+        name: String,
+        params: MapValue,
+        version: CypherVersion,
+    ): String? {
+        val options = evaluate(plan.options(), params, version)
+        if (options.isEmpty) return null
+        val failed = "Failed to create the specified database '$name'"
+        val keys = options.keySet().toList()
+        val unsupported = keys.filter { key -> SUPPORTED_OPTIONS.none { it.equals(key, true) } }
+        if (unsupported.isNotEmpty()) {
+            throw InvalidArgumentException(
+                "$failed: unsupported option(s) ${unsupported.joinToString { "'$it'" }}. " +
+                    "DozenDB supports ${SUPPORTED_OPTIONS.joinToString { "'$it'" }}."
+            )
         }
-        return when (options) {
-            is OptionsMap -> if (options.map().isEmpty) source else failure(source, message)
-            is OptionsParam ->
-                PredicateExecutionPlan.apply(
-                    Function2 { params, _ ->
-                        (params.get(options.parameter().name()) as? MapValue)?.isEmpty == true
-                    },
-                    Option.apply(source),
-                    Function3 { params, _, _ -> InvalidArgumentException(message(params)) },
+        val existingData = find(`ExistingDataOption$`.`MODULE$`, options) != null
+        val seedUri = find(`SeedURIOption$`.`MODULE$`, options)
+        val seedServer = find(`ExistingSeedServerOption$`.`MODULE$`, options)
+        if (plan.ifExistsDo() is `IfExistsReplace$`) {
+            throw InvalidArgumentException(
+                "$failed: OR REPLACE cannot be combined with existingData, seedURI or " +
+                    "existingDataSeedServer. Drop the database first."
+            )
+        }
+        if (seedServer != null && !config.get(DozenDbSettings.clusterEnabled)) {
+            throw InvalidArgumentException(
+                "$failed: existingDataSeedServer needs clustering. Without it, restore the " +
+                    "database with 'neo4j-admin database restore' and create it without options."
+            )
+        }
+        val placement = StorePlacement(fs, Neo4jLayout.of(config))
+        val normalized = NormalizedDatabaseName(name).name()
+        when {
+            seedUri != null -> {
+                if (placement.holdsStore(normalized)) {
+                    throw InvalidArgumentException(
+                        "$failed: its files are in place already. Create it without seedURI to " +
+                            "use them, or delete them first."
+                    )
+                }
+                val seeder =
+                    dependencies.resolveTypeDependencies(DatabaseSeeder::class.java).firstOrNull()
+                        ?: throw InvalidArgumentException(
+                            "$failed: this server cannot create databases from seeds."
+                        )
+                try {
+                    seeder.check(seedUri)
+                } catch (e: IllegalArgumentException) {
+                    throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
+                }
+            }
+            existingData && seedServer == null && !placement.holdsStore(normalized) ->
+                throw InvalidArgumentException(
+                    "$failed: existingData 'use' needs its files in place, as 'neo4j-admin " +
+                        "database restore' puts them, or a seedURI. There are no files."
                 )
-            else -> source
         }
+        return seedUri
     }
+
+    /** The value of [option] in [options], checked as Neo4j checks it; null if absent. */
+    private fun find(option: StringOptionValidator, options: MapValue): String? =
+        option.findIn(options, Option.apply(config), CREATE_DATABASE).getOrElse { null }
+
+    /** The values of [options], evaluated as Neo4j evaluates the options of its commands. */
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for this.
+    private fun evaluate(options: Options, params: MapValue, version: CypherVersion): MapValue =
+        when (options) {
+            is OptionsMap -> {
+                val evaluator = Evaluator.expressionEvaluator(version)
+                val builder = MapValueBuilder()
+                CollectionConverters.asJava(options.map()).forEach { (key, expression) ->
+                    builder.add(key, evaluator.evaluate(expression, params))
+                }
+                builder.build()
+            }
+            is OptionsParam ->
+                params.get(options.parameter().name()) as? MapValue
+                    ?: throw InvalidArgumentException(
+                        "Could not $CREATE_DATABASE with options " +
+                            "'${params.get(options.parameter().name())}'. Expected a map value."
+                    )
+            else -> MapValue.EMPTY
+        }
 
     @Suppress("DEPRECATION") // Like Neo4j's own name validation.
     private fun validName(name: String): String {
@@ -584,4 +672,18 @@ private class DatabaseCommands(
 
     private fun <T> seqOf(vararg items: T): Seq<T> =
         CollectionConverters.asScala(items.toList()).toSeq()
+
+    private companion object {
+        const val CREATE_DATABASE = "create database"
+
+        /** The parameter of the seed URI the `Database` node keeps. */
+        const val SEED_URI = "__dozendb_seedURI"
+
+        val SUPPORTED_OPTIONS =
+            listOf(
+                `ExistingDataOption$`.`MODULE$`.KEY(),
+                `SeedURIOption$`.`MODULE$`.KEY(),
+                `ExistingSeedServerOption$`.`MODULE$`.KEY(),
+            )
+    }
 }

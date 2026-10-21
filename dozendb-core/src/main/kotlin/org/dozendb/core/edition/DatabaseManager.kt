@@ -68,8 +68,34 @@ class DatabaseManager(
         startDatabase(context.get())
     }
 
-    fun startDatabase(context: StandaloneDatabaseContext) {
+    /** A seed that a database without a store is created from: a backup or dump at [uri]. */
+    class Seed(val uri: String, val seeder: () -> DatabaseSeeder?)
+
+    /**
+     * Starts the database of [context]; first, if it has no store and a [seed], puts the seed's
+     * store in place. A seed that fails fails the database.
+     */
+    fun startDatabase(context: StandaloneDatabaseContext, seed: Seed? = null) {
         val id = context.database().namedDatabaseId
+        if (seed != null && !placement.holdsStore(id.name()) && !placement.incomplete(id.name())) {
+            try {
+                val seeder =
+                    seed.seeder()
+                        ?: throw IllegalStateException(
+                            "this server cannot create databases from seeds"
+                        )
+                log.info("Creating the store of '%s' from %s.", id, seed.uri)
+                seeder.seed(id, seed.uri)
+            } catch (e: Exception) {
+                val message =
+                    "Unable to create `${id.name()}` from its seed ${seed.uri}: ${e.message}"
+                log.error(message, e)
+                // Without the cause, whose message the message holds; the log has its trace.
+                context.fail(DatabaseManagementException(message))
+                counts.increaseFailedCount()
+                return
+            }
+        }
         if (placement.incomplete(id.name())) {
             val message =
                 "Unable to start `${id.name()}`: its files were left half-moved into place, as " +

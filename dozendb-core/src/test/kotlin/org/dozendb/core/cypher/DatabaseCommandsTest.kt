@@ -108,14 +108,13 @@ class DatabaseCommandsTest {
     }
 
     @Test
-    fun `refuses options and topologies instead of ignoring them`() {
+    fun `refuses options and topologies it does not support instead of ignoring them`() {
         val server = start()
-        val refusal = { option: String ->
-            "Failed to create the specified database 'films': $option not supported."
-        }
+        val failed = "Failed to create the specified database 'films'"
 
+        // Seeds need DozenDB's backup module, which this server lacks.
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 's3://bucket/films'}"))
-            .hasMessage(refusal("OPTIONS are"))
+            .hasMessage("$failed: this server cannot create databases from seeds.")
         assertThat(
                 catchThrowable {
                     server.administer(
@@ -124,9 +123,12 @@ class DatabaseCommandsTest {
                     )
                 }
             )
-            .hasMessage(refusal("OPTIONS are"))
+            .hasMessage(
+                "$failed: unsupported option(s) 'storeFormat'. DozenDB supports 'existingData', " +
+                    "'seedURI', 'existingDataSeedServer'."
+            )
         assertThat(server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY"))
-            .hasMessage(refusal("TOPOLOGY is"))
+            .hasMessage("$failed: TOPOLOGY is not supported.")
         assertThat(server.names()).doesNotContain("films")
 
         server.administer("CREATE DATABASE films OPTIONS {}")

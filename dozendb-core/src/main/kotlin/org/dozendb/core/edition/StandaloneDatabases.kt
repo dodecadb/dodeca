@@ -30,6 +30,7 @@ internal class StandaloneDatabases(
     private val manager: DatabaseManager,
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
     private val defaultDatabase: String,
+    private val seeder: () -> DatabaseSeeder?,
     logProvider: InternalLogProvider,
 ) : TransactionEventListenerAdapter<Any?>() {
     private val log = logProvider.getLog(javaClass)
@@ -38,6 +39,9 @@ internal class StandaloneDatabases(
 
     /** The status each database was last asked to have, guarded by `this`. */
     private val requested = HashMap<NamedDatabaseId, Boolean>()
+
+    /** What the system graph asks of a database: whether it is online, and its seed if any. */
+    private data class Desired(val online: Boolean, val seedUri: String?)
 
     /** Follows the system graph from when it starts, once `system` and the default database run. */
     fun starter(): Lifecycle =
@@ -72,21 +76,23 @@ internal class StandaloneDatabases(
             .filter { !it.isSystemDatabase && it.name() != defaultDatabase && it !in desired }
             .forEach { id -> attempt("drop", id) { manager.dropDatabase(id) } }
         requested.keys.retainAll(desired.keys)
-        desired.forEach { (id, online) -> attempt("follow", id) { follow(id, online) } }
+        desired.forEach { (id, wanted) -> attempt("follow", id) { follow(id, wanted) } }
     }
 
-    private fun follow(id: NamedDatabaseId, online: Boolean) {
+    private fun follow(id: NamedDatabaseId, desired: Desired) {
+        val online = desired.online
         val changed = requested.put(id, online) != online
         val context = repository.getDatabaseContext(id).orElse(null)
+        val seed = desired.seedUri?.let { DatabaseManager.Seed(it, seeder) }
         when {
             context == null && id.name() == defaultDatabase -> Unit
             context == null -> {
                 val created = manager.createDatabase(id)
-                if (online) manager.startDatabase(created)
+                if (online) manager.startDatabase(created, seed)
             }
             online -> {
                 if (!context.database().isStarted && (changed || !context.isFailed)) {
-                    manager.startDatabase(context)
+                    manager.startDatabase(context, seed)
                 }
             }
             context.database().isStarted || changed -> manager.stopDatabase(context)
@@ -101,8 +107,8 @@ internal class StandaloneDatabases(
         }
     }
 
-    /** The databases the system graph names other than `system`, and whether they are online. */
-    private fun desired(): Map<NamedDatabaseId, Boolean> {
+    /** The databases the system graph names other than `system`, and what it asks of them. */
+    private fun desired(): Map<NamedDatabaseId, Desired> {
         val system =
             repository
                 .getDatabaseContext(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
@@ -122,8 +128,16 @@ internal class StandaloneDatabases(
                         if (name == null || uuid == null) return@mapNotNull null
                         val status =
                             node.getProperty(TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY, null)
+                        val seedUri =
+                            node.getProperty(
+                                TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY,
+                                null,
+                            ) as? String
                         DatabaseIdFactory.from(name, UUID.fromString(uuid)) to
-                            (status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName())
+                            Desired(
+                                status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
+                                seedUri,
+                            )
                     }
                     .filter { (id, _) -> !id.isSystemDatabase }
                     .toMap()

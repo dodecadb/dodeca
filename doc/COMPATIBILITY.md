@@ -51,11 +51,23 @@ DozenDB took over the code.
   `DatabaseManagementService` methods work; names with a dot, such as
   `film.archive`, work in every command; `CREATE OR REPLACE DATABASE` also
   creates a database that does not exist yet; `CREATE COMPOSITE DATABASE`,
-  `CREATE DATABASE ... TOPOLOGY`, `CREATE DATABASE ... OPTIONS` with any
-  option (such as `seedURI`, which would otherwise create an empty database)
-  and `DROP DATABASE ... DUMP DATA` fail instead of being ignored or failing
-  with an internal error; and `dbms.max_databases` counts every database
-  including `system`, where DozerDB allows one fewer.
+  `CREATE DATABASE ... TOPOLOGY`, `CREATE DATABASE ... OPTIONS` with an
+  option other than `existingData`, `seedURI` and, with clustering,
+  `existingDataSeedServer` (such as `seedCredentials`, `storeFormat` or a
+  misspelt key), and `DROP DATABASE ... DUMP DATA` fail instead of being
+  ignored or failing with an internal error; and `dbms.max_databases` counts
+  every database including `system`, where DozerDB allows one fewer.
+- **Creating a database from a seed**, `CREATE DATABASE ... OPTIONS
+  {existingData: 'use', seedURI: '...'}`, works as in Neo4j Enterprise with a
+  dump or a full backup as the seed. `dbms.databases.seed_from_uri_providers`
+  enables `FileSeedProvider` (`file:`, the default) and
+  `URLConnectionSeedProvider` (`http:`, `https:`, `ftp:`); there are no cloud
+  providers, and other names fail the server's start. A URI whose scheme no
+  enabled provider reads fails the command; a seed that cannot be read fails
+  the database, which `WAIT` and `SHOW DATABASES` show, and the next start of
+  the server tries it again. `existingData: 'use'` without a seed uses the
+  files that `neo4j-admin database restore` put in place, and fails the
+  command if there are none. A seed is never combined with `OR REPLACE`.
 - **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
   Neo4j Enterprise. The command commits its transaction, then returns once
   every server, with clustering every member, has the database running,
@@ -86,8 +98,8 @@ Community, such as many databases. Of what Neo4j Enterprise adds, DozenDB
 supports many databases, property existence, key and type constraints, user
 status and home databases, and clustering of its own. It refuses, with an
 error, the other Enterprise features that reach it, such as roles and
-privileges, composite databases, aliases, `CREATE DATABASE` options and
-topologies, and external authentication.
+privileges, composite databases, aliases, `CREATE DATABASE` options other
+than seeds, topologies, and external authentication.
 
 ## Clustering limitations
 
