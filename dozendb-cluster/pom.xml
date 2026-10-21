@@ -50,6 +50,12 @@
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
+    <!-- Backups of clustered databases, and members that serve them as in the plugin. -->
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-backup</artifactId>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>com.tngtech.archunit</groupId>
       <artifactId>archunit-junit5</artifactId>

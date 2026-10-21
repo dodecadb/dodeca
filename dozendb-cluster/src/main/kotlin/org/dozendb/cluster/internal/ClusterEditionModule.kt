@@ -1,6 +1,9 @@
 package org.dozendb.cluster.internal
 
+import java.io.IOException
+import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.ClusterFormation
 import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.DatabaseStatesCodec
@@ -22,6 +25,7 @@ import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
 import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
@@ -33,6 +37,7 @@ import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DozenDbEditionModule
 import org.dozendb.core.edition.HostingServer
+import org.dozendb.core.edition.LatestWrites
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.helpers.SocketAddress
@@ -428,6 +433,34 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 }
             }
         }
+
+    /**
+     * Waits until this member has applied what its database's Raft group had committed: a Raft
+     * ReadIndex, as for linearizable reads, on the leader or a follower.
+     */
+    override fun latestWrites(): LatestWrites = LatestWrites { database, timeout ->
+        val replica =
+            replication.replica(database)
+                ?: throw IllegalStateException(
+                    "database '${database.name()}' is not replicated on this member"
+                )
+        val confirmed =
+            try {
+                runBlocking {
+                    withTimeoutOrNull(timeout.toMillis()) { consensus.readIndex(replica.ref) }
+                }
+            } catch (e: ConsensusUnavailableException) {
+                throw IOException(
+                    "its Raft group did not confirm what it committed: ${(e.cause ?: e).message}",
+                    e,
+                )
+            }
+        if (confirmed == null) {
+            throw TimeoutException(
+                "its Raft group did not confirm what it committed within $timeout"
+            )
+        }
+    }
 
     /**
      * Neo4j Community's routing service, with routing tables of replicated databases taken from

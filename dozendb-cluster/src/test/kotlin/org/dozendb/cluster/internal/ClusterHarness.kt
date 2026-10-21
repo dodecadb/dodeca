@@ -10,6 +10,7 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.backup.BackupSettings
 import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.internal.durability.withSingleFsync
 import org.dozendb.consensus.GroupStatus
@@ -170,11 +171,24 @@ internal class ClusterHarness(
                     .set(ClusterSettings.electionTimeoutMin, Duration.ofMillis(300))
                     .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
                     .set(CLUSTER_TLS.enabled, authority != null)
+                    .set(BackupSettings.listenAddress, SocketAddress("127.0.0.1", 0))
             @Suppress("UNCHECKED_CAST")
             (this@ClusterHarness.settings + settings).forEach { (setting, value) ->
                 builder.set(setting as Setting<Any>, value)
             }
             return builder.build()
+        }
+
+        /** The port this member serves backups on. */
+        fun backupPort(): Int {
+            val register =
+                database("system")
+                    .dependencyResolver
+                    .resolveDependency(ConnectorPortRegister::class.java)
+            return checkNotNull(register.getLocalAddress(ConnectorType.BACKUP)) {
+                    "backups are off"
+                }
+                .port
         }
 
         /** The address Bolt listens on, when enabled in the settings. */
