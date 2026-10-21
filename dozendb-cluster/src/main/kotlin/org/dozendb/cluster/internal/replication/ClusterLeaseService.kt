@@ -13,10 +13,11 @@ import org.neo4j.kernel.impl.api.LeaseService
  * lease is invalid. The state machine applies a transaction only if its lease equals the term of
  * its log entry, which every member decides identically.
  *
- * While [bootstrapping] holds, transactions may write without a lease. That covers only the
- * transaction in which Neo4j initialises a store it has just created, before the Raft group exists.
+ * While [local] holds, transactions may write without a lease. That covers only transactions that
+ * commit locally before the Raft group starts: Neo4j initialising a store it has just created, and
+ * adapting a store this member brought to the cluster it formed.
  */
-internal class ClusterLeaseService(private val bootstrapping: () -> Boolean) : LeaseService {
+internal class ClusterLeaseService(private val local: () -> Boolean) : LeaseService {
     @Volatile private var current: Int = LeaseService.NO_LEASE
 
     /** The lease new transactions get, or [LeaseService.NO_LEASE] when not writable. */
@@ -43,7 +44,7 @@ internal class ClusterLeaseService(private val bootstrapping: () -> Boolean) : L
             val lease = current
             if (leaseId == LeaseService.NO_LEASE) {
                 if (lease == LeaseService.NO_LEASE) {
-                    if (bootstrapping()) return
+                    if (local()) return
                     throw LeaseException.notOnALeader()
                 }
                 leaseId = lease

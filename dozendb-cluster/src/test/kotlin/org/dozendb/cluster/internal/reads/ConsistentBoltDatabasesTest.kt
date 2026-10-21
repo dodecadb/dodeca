@@ -33,6 +33,7 @@ class ConsistentBoltDatabasesTest {
             { error("not used") },
             mustDetach = { false },
             detached = {},
+            adoptDatabases = {},
         )
     private val unused = BoltGraphDatabaseManagementServiceSPI { _, _ -> error("not used") }
 

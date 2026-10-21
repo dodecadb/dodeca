@@ -187,6 +187,21 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ::initialMembers,
                 mustDetach = { cluster.mustDetach(it) },
                 detached = { cluster.detached(it) },
+                adoptDatabases = {
+                    val members =
+                        checkNotNull(cluster.foundingMembers) { "this member formed no cluster" }
+                    val databases = systemGraph.adopt(memberId, members)
+                    // A store counts only together with its group, which the creator starts.
+                    for (id in databases.filter { stores.complete(it.name()) }) {
+                        consensus.joinGroup(DatabaseRef(id.name(), id.databaseId().uuid()), members)
+                    }
+                    userLog.info(
+                        "This member formed the cluster with a system database of its own: it " +
+                            "creates the databases listed there, %s, and the other members copy " +
+                            "them",
+                        databases.joinToString { it.name() },
+                    )
+                },
             )
         replication = replicationService
         val fileSystem = globalModule.fileSystem

@@ -40,6 +40,8 @@ import org.neo4j.storageengine.api.CommandBatch
  *   with them if it has no local state for it.
  * @property mustDetach whether this member brought the database's store to the cluster it formed
  *   and has yet to detach it from the Raft group it may come from; [detached] records that it has.
+ * @property adopt runs once such a store is detached, before the group starts and before other
+ *   members copy the store, and may commit to the database locally.
  * @property onSnapshotNeeded called when the group's log no longer holds entries this member needs.
  */
 internal class ReplicatedDatabase(
@@ -48,6 +50,7 @@ internal class ReplicatedDatabase(
     private val initialMembers: () -> List<Member>,
     private val mustDetach: () -> Boolean,
     private val detached: () -> Unit,
+    private val adopt: () -> Unit,
     private val idGeneratorFactory: IdGeneratorFactory,
     storeExists: Boolean,
     private val scheduler: ScheduledExecutorService,
@@ -65,7 +68,17 @@ internal class ReplicatedDatabase(
     var bootstrapping: Boolean = !storeExists
         private set
 
-    override val leaseService = ClusterLeaseService { bootstrapping }
+    /** True while [adopt] runs. */
+    @Volatile private var adopting: Boolean = false
+
+    /**
+     * Whether transactions commit locally, without a lease, before the group starts: while Neo4j
+     * initialises a new store, and while [adopt] runs.
+     */
+    val commitsLocally: Boolean
+        get() = bootstrapping || adopting
+
+    override val leaseService = ClusterLeaseService { commitsLocally }
 
     /**
      * True while the database's transactions go through Raft and its committed entries are applied,
@@ -126,6 +139,12 @@ internal class ReplicatedDatabase(
                         ref.name,
                         previous,
                     )
+                }
+                adopting = true
+                try {
+                    adopt()
+                } finally {
+                    adopting = false
                 }
                 detached()
             }

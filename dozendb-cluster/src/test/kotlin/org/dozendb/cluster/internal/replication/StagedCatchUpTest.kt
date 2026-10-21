@@ -84,6 +84,7 @@ class StagedCatchUpTest {
             { error("not used") },
             mustDetach = { false },
             detached = {},
+            adopt = {},
             idGeneratorFactory =
                 Proxy.newProxyInstance(
                     javaClass.classLoader,

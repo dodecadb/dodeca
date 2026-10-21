@@ -46,7 +46,18 @@ internal class Neo4jLocalStores(
         incomplete(it) || !storageExists(it)
     }
 
-    override fun present(): List<String> = databaseNames.filter(::complete)
+    override fun present(): List<String> =
+        (databaseNames + storedDatabases()).distinct().filter(::complete)
+
+    /** The databases with a directory of their own, staging places left out. */
+    private fun storedDatabases(): List<String> {
+        val directory = layout.databasesDirectory()
+        if (!fs.isDirectory(directory)) return emptyList()
+        return fs.listFiles(directory)
+            .filter { fs.isDirectory(it) }
+            .map { it.fileName.toString() }
+            .filterNot { it.startsWith(".") }
+    }
 
     override fun copyFrom(source: HostPort, databases: List<String>) {
         require(databases.all { it in databaseNames }) { "unknown databases in $databases" }

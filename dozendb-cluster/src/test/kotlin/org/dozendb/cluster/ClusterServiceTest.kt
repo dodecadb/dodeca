@@ -54,17 +54,19 @@ class ClusterServiceTest {
     /** The member every other one copies from when no member has databases. */
     private val source = logs.indices.minBy { logs[it].self.id }
 
+    /** [others] are databases besides those the cluster needs to form. */
     private class FakeStores(
         override val existed: Boolean = false,
         var failures: Int = 0,
         private val missing: List<String> = if (existed) emptyList() else ALL_DATABASES,
+        private val others: List<String> = emptyList(),
     ) : LocalStores {
         val copies = mutableListOf<HostPort>()
         val copied = mutableListOf<String>()
 
         override fun missing(): List<String> = missing - copied.toSet()
 
-        override fun present(): List<String> = ALL_DATABASES - missing().toSet()
+        override fun present(): List<String> = ALL_DATABASES - missing().toSet() + others
 
         override fun copyFrom(source: HostPort, databases: List<String>) {
             if (failures > 0) {
@@ -138,22 +140,28 @@ class ClusterServiceTest {
         val owner = logs.indices.first { it != source }
         val services =
             logs.indices.map { index ->
-                service(index, if (index == owner) FakeStores(existed = true) else stores[index])
+                service(
+                    index,
+                    if (index == owner) FakeStores(existed = true, others = listOf("films"))
+                    else FakeStores(others = listOf("leftover")),
+                )
             }
         logs.forEach { it.start() }
         services.forEach { it.start() }
 
+        // Every database it holds, as from a restore of another cluster's databases.
         assertThat(memberships[owner].record!!.storesToDetach)
-            .containsExactlyInAnyOrder("system", "neo4j")
+            .containsExactlyInAnyOrder("system", "neo4j", "films")
         for (index in logs.indices - owner) {
-            assertThat(services[index].mustDetach("neo4j"))
+            assertThat(memberships[index].record!!.storesToDetach)
                 .describedAs("member $index, which copied the databases")
-                .isFalse
+                .isEmpty()
         }
         services[owner].detached("neo4j")
         assertThat(services[owner].mustDetach("neo4j")).isFalse
         assertThat(services[owner].mustDetach("system")).isTrue
-        assertThat(memberships[owner].record!!.storesToDetach).containsExactly("system")
+        assertThat(memberships[owner].record!!.storesToDetach)
+            .containsExactlyInAnyOrder("system", "films")
     }
 
     @Test

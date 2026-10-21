@@ -63,8 +63,9 @@ internal class RaftTransactionCommitProcess(
             throw CommitFailure.COMMIT_FAILED.exception("Chunked transactions cannot be replicated")
         }
         readOnlyChecker.check()
-        if (replica.bootstrapping && batch.commandBatch().leaseId == LeaseService.NO_LEASE) {
-            // Neo4j initialising a store it just created, before replication starts.
+        if (replica.commitsLocally && batch.commandBatch().leaseId == LeaseService.NO_LEASE) {
+            // Before replication starts: Neo4j initialising a store it just created, or adapting
+            // one this member brought to the cluster it formed.
             return checkNotNull(replica.applyProcess).commit(batch, transactionWriteEvent, mode)
         }
         return replica.replicate(batch.commandBatch())

@@ -13,7 +13,10 @@ interface LocalStores {
     /** The databases this member lacks or that an interrupted copy left behind. */
     fun missing(): List<String>
 
-    /** The databases this member has, complete. */
+    /**
+     * The databases this member has, complete: those it needs to form a cluster, and any other in
+     * its databases directory.
+     */
     fun present(): List<String>
 
     /**

@@ -86,6 +86,31 @@ internal class Neo4jSystemGraph(
         }
     }
 
+    /**
+     * Makes [creator] the creator of every database, with [initialMembers] as the initial members
+     * of its group, replacing what another cluster recorded, and returns the databases. Only for
+     * the member that forms a cluster with a system database of its own, before `system`
+     * replicates: it holds the databases' stores, or creates them.
+     */
+    fun adopt(creator: MemberId, initialMembers: List<Member>): List<NamedDatabaseId> =
+        system().beginTx().use { tx ->
+            val members = initialMembers.map { it.toText() }.toTypedArray()
+            val databases =
+                tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
+                    nodes
+                        .asSequence()
+                        .mapNotNull { node ->
+                            desired(node)?.id?.also {
+                                node.setProperty(CREATOR_PROPERTY, creator.toString())
+                                node.setProperty(INITIAL_MEMBERS_PROPERTY, members)
+                            }
+                        }
+                        .toList()
+                }
+            tx.commit()
+            databases.sortedBy { it.name() }
+        }
+
     override fun formatLevel(): Int = replication.readingSystem {
         system().beginTx().use { tx ->
             tx.findNodes(DOZENDB_LABEL).use { nodes ->

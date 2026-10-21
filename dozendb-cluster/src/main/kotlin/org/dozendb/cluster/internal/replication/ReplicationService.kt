@@ -27,7 +27,9 @@ import org.neo4j.logging.InternalLogProvider
  * Runs the Raft group of every database alongside it. [initialMembers] tells the initial members of
  * a database's group, which a member that has no local state for it creates it with. [mustDetach]
  * tells whether this member brought a database's store to the cluster it formed and has yet to
- * detach it from the Raft group it may come from; [detached] records that it has.
+ * detach it from the Raft group it may come from; [detached] records that it has. [adoptDatabases]
+ * runs once this member detached the system database it brought, in local transactions on it: it
+ * makes the databases that `system` lists the new cluster's.
  */
 internal class ReplicationService(
     private val consensus: ConsensusLog,
@@ -38,6 +40,7 @@ internal class ReplicationService(
     private val initialMembers: (NamedDatabaseId) -> List<Member>,
     private val mustDetach: (String) -> Boolean,
     private val detached: (String) -> Unit,
+    private val adoptDatabases: () -> Unit,
 ) : DatabaseEventListenerAdapter(), DatabaseHosting {
     override val hostedOnMode: HostedOnMode = HostedOnMode.RAFT
 
@@ -152,6 +155,7 @@ internal class ReplicationService(
                 { initialMembers(namedDatabaseId) },
                 { mustDetach(namedDatabaseId.name()) },
                 { detached(namedDatabaseId.name()) },
+                if (namedDatabaseId.isSystemDatabase) adoptDatabases else ({}),
                 idGeneratorFactory,
                 storeExists,
                 scheduler,

@@ -120,9 +120,11 @@ internal interface LocalDatabases {
  *
  * A local store counts only together with the Raft group of its database. A store without one is a
  * leftover: of a database dropped while this member was down that has the same name, or of a copy
- * or creation that did not finish. Such stores, Raft groups and databases the system graph lacks
- * are deleted, but only once the system leader confirmed that this member's copy of the system
- * graph is current: after a restart it may lack transactions this member already acted on.
+ * or creation that did not finish. The member that forms a cluster with databases of its own starts
+ * their groups as it forms it, so that their stores count. Such stores, Raft groups and databases
+ * the system graph lacks are deleted, but only once the system leader confirmed that this member's
+ * copy of the system graph is current: after a restart it may lack transactions this member already
+ * acted on.
  *
  * The default database is created at startup, and like without clustering the reconciler never
  * creates or drops it; it starts and stops it like any other.

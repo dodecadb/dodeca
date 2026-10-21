@@ -139,11 +139,12 @@ class ClusterService(
                             it.copy(
                                 state = MemberState.MEMBER,
                                 formation = found.members,
-                                // Only the member whose databases the cluster starts from has any
-                                // before copying, and only on its first start: decided before any
-                                // copy, and kept if it crashes before detaching them.
+                                // Only the member whose databases the cluster starts from, all of
+                                // them, and only on its first start: decided before any copy, and
+                                // kept if it crashes before detaching them.
                                 storesToDetach =
-                                    if (firstStart) stores.present().toSet() else it.storesToDetach,
+                                    if (firstStart && stores.existed) stores.present().toSet()
+                                    else it.storesToDetach,
                             )
                         } else {
                             it.copy(state = MemberState.JOINING)
