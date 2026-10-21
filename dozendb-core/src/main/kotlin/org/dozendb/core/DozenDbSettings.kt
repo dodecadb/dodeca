@@ -3,6 +3,7 @@ package org.dozendb.core
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.SettingConstraints.min
 import org.neo4j.configuration.SettingImpl.newBuilder
+import org.neo4j.configuration.SettingValueParsers.BOOL
 import org.neo4j.configuration.SettingValueParsers.INT
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.graphdb.config.Setting
@@ -20,5 +21,12 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val maxDatabases: Setting<Int> =
             newBuilder("dbms.max_databases", INT, 100).addConstraint(min(2)).dynamic().build()
+
+        @JvmField
+        @field:Description(
+            "Enables DozenDB clustering. When false, DozenDB runs as a single server."
+        )
+        val clusterEnabled: Setting<Boolean> =
+            newBuilder("dbms.dozendb.cluster.enabled", BOOL, false).immutable().build()
     }
 }

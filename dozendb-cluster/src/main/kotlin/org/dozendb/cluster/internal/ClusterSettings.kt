@@ -24,8 +24,9 @@ import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.graphdb.config.Setting
 
 /**
- * DozenDB's clustering settings. Declared even when clustering is disabled, so that a configuration
- * that names them passes Neo4j's strict validation. Registered in `META-INF/services`.
+ * DozenDB's clustering settings, which `DozenDbSettings.clusterEnabled` enables. Declared even when
+ * clustering is disabled, so that a configuration that names them passes Neo4j's strict validation.
+ * Registered in `META-INF/services`.
  *
  * Neo4j only accepts setting names in a fixed set of namespaces. Following Neo4j's convention,
  * settings that must agree across the cluster live under `dbms.dozendb.`, settings specific to one
@@ -34,13 +35,6 @@ import org.neo4j.graphdb.config.Setting
 class ClusterSettings : SettingsDeclaration {
     companion object {
         const val DEFAULT_RAFT_PORT = 7700
-
-        @JvmField
-        @field:Description(
-            "Enables DozenDB clustering. When false, DozenDB runs as a single server."
-        )
-        val clusterEnabled: Setting<Boolean> =
-            newBuilder("dbms.dozendb.cluster.enabled", BOOL, false).immutable().build()
 
         @JvmField
         @field:Description(

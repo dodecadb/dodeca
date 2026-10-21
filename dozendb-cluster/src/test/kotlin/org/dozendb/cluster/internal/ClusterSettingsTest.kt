@@ -5,6 +5,7 @@ import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.consensus.ratis.RatisConsensusConfig
+import org.dozendb.core.DozenDbSettings
 import org.junit.jupiter.api.Test
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -21,7 +22,7 @@ class ClusterSettingsTest {
     fun `defaults keep clustering off`() {
         val config = config()
 
-        assertThat(config.get(ClusterSettings.clusterEnabled)).isFalse()
+        assertThat(config.get(DozenDbSettings.clusterEnabled)).isFalse()
         assertThat(config.get(ClusterSettings.initialMembers)).isEmpty()
         assertThat(config.get(ClusterSettings.raftDirectory)).isEqualTo(Path.of("/neo4j/data/raft"))
         assertThat(config.get(ClusterSettings.electionTimeoutMin)).isEqualTo(Duration.ofSeconds(1))

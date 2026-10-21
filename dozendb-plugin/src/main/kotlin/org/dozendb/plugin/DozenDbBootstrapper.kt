@@ -1,9 +1,9 @@
 package org.dozendb.plugin
 
 import java.nio.file.Path
-import org.dozendb.cluster.internal.ClusterSettings
 import org.dozendb.cluster.internal.ClusteredDbms
 import org.dozendb.core.DozenDb
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.DozenDbEditionModule
 import org.neo4j.configuration.Config
 import org.neo4j.dbms.api.DatabaseManagementService
@@ -25,7 +25,7 @@ class DozenDbBootstrapper : NeoBootstrapper() {
         daemonMode: Boolean,
         dependencies: GraphDatabaseDependencies,
     ): DatabaseManagementService {
-        if (!config.get(ClusterSettings.clusterEnabled)) {
+        if (!config.get(DozenDbSettings.clusterEnabled)) {
             log.info("DozenDB %s: clustering is disabled", DozenDb.version)
             return DatabaseManagementServiceFactory(DbmsInfo.ENTERPRISE, ::DozenDbEditionModule)
                 .build(config, daemonMode, dependencies)

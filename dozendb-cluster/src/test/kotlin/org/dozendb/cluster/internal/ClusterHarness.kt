@@ -16,6 +16,7 @@ import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.Role
 import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestPorts
+import org.dozendb.core.DozenDbSettings
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -159,7 +160,7 @@ internal class ClusterHarness(
                     )
                     .set(HttpConnector.enabled, false)
                     .set(HttpsConnector.enabled, false)
-                    .set(ClusterSettings.clusterEnabled, true)
+                    .set(DozenDbSettings.clusterEnabled, true)
                     .set(ClusterSettings.listenAddress, SocketAddress("127.0.0.1", raftPort))
                     .set(ClusterSettings.advertisedAddress, SocketAddress("127.0.0.1", raftPort))
                     .set(
