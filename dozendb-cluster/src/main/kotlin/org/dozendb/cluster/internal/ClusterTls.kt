@@ -1,6 +1,6 @@
 package org.dozendb.cluster.internal
 
-import org.dozendb.consensus.ratis.RatisTlsConfig
+import org.dozendb.consensus.ratis.TlsConfig
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.ssl.ClientAuth
 import org.neo4j.configuration.ssl.SslPolicyConfig
@@ -21,7 +21,7 @@ internal object ClusterTls {
      * plaintext. Warns in [log] about choices that let any host that reaches the Raft port act as a
      * member.
      */
-    fun of(config: Config, policies: SslPolicyLoader, log: Log): RatisTlsConfig? {
+    fun of(config: Config, policies: SslPolicyLoader, log: Log): TlsConfig? {
         val enabled = policy.enabled.name()
         require(config.isExplicitlySet(policy.enabled)) {
             "Clustering needs a choice for the traffic between members: set $enabled=true to " +
@@ -47,7 +47,7 @@ internal object ClusterTls {
                     "($clientAuth=NONE): any host that reaches the Raft port can act as a member."
             )
         }
-        return RatisTlsConfig(
+        return TlsConfig(
             privateKey = loaded.privateKey(),
             certificateChain = loaded.certificateChain().toList(),
             trustManagers = loaded.trustManagerFactory.trustManagers.toList(),

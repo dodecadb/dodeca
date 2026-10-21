@@ -14,7 +14,7 @@ import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContext
 import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContextBuilder
 
 /** What [config] means to Ratis, and to the channels DozenDB opens itself. */
-internal class TlsContexts(config: RatisTlsConfig) {
+internal class TlsContexts(config: TlsConfig) {
     private val trustManager: TrustManager =
         config.trustManagers.filterIsInstance<X509TrustManager>().firstOrNull()?.let {
             // gRPC clients always check the name in a server's certificate.

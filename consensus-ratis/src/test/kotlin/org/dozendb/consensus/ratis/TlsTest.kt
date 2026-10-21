@@ -35,7 +35,7 @@ class TlsTest {
         requireClientCertificates: Boolean = true,
         verifyHostname: Boolean = false,
     ) =
-        RatisTlsConfig(
+        TlsConfig(
             privateKey = certificate.privateKey,
             certificateChain = listOf(certificate.certificate),
             trustManagers = TestAuthority.trusting(*trusted.toTypedArray()).trustManagers.toList(),
@@ -44,8 +44,8 @@ class TlsTest {
         )
 
     /** A running cluster whose members use [tls], in order; null for plaintext. */
-    private fun cluster(vararg tls: RatisTlsConfig?): RatisTestCluster {
-        val byMember = mutableMapOf<MemberId, RatisTlsConfig?>()
+    private fun cluster(vararg tls: TlsConfig?): RatisTestCluster {
+        val byMember = mutableMapOf<MemberId, TlsConfig?>()
         val cluster = RatisTestCluster(root, tls.size) { it.copy(tls = byMember[it.memberId]) }
         cluster.nodes.zip(tls).forEach { (node, config) -> byMember[node.id] = config }
         clusters += cluster

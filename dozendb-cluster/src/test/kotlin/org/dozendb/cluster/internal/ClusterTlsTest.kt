@@ -4,7 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
-import org.dozendb.consensus.ratis.RatisTlsConfig
+import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.consensus.testing.TestAuthority
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -23,7 +23,7 @@ class ClusterTlsTest {
     private val output = ByteArrayOutputStream()
     private val policy = ClusterHarness.CLUSTER_TLS
 
-    private fun tls(vararg settings: Pair<Setting<*>, Any>): RatisTlsConfig? {
+    private fun tls(vararg settings: Pair<Setting<*>, Any>): TlsConfig? {
         certificate.writeTo(home.resolve(ClusterHarness.CERTIFICATES))
         val builder = Config.newBuilder().set(GraphDatabaseSettings.neo4j_home, home)
         @Suppress("UNCHECKED_CAST")

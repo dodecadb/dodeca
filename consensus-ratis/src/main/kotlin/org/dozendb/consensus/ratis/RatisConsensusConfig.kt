@@ -40,7 +40,7 @@ data class RatisConsensusConfig(
     val maxEntrySize: Int = DEFAULT_MAX_ENTRY_SIZE,
     val snapshotInterval: Duration = Duration.ofSeconds(10),
     val logSegmentSize: Long = DEFAULT_LOG_SEGMENT_SIZE,
-    val tls: RatisTlsConfig? = null,
+    val tls: TlsConfig? = null,
 ) {
     init {
         require(listenPort in 0..65535) { "listen port must be in 0..65535, was $listenPort" }
