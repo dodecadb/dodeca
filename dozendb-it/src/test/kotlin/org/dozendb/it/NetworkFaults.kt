@@ -7,12 +7,12 @@ import org.testcontainers.utility.DockerImageName
 /**
  * Network faults of one member: a sidecar container shares the member's network stack and changes
  * it with iptables and tc. Raft traffic can be cut both ways while Bolt keeps working, and what the
- * member sends to another member can be delayed, limited or lost.
+ * member sends to another container can be delayed, limited or lost.
  *
  * A restarted member gets a new network stack: close its faults before restarting it and create new
  * ones afterwards.
  */
-class NetworkFaults(private val member: DozenDbContainer) : AutoCloseable {
+class NetworkFaults(private val member: GenericContainer<*>) : AutoCloseable {
     private val sidecar: GenericContainer<*> =
         GenericContainer(DockerImageName.parse(IMAGE))
             .withCreateContainerCmdModifier {
@@ -40,7 +40,7 @@ class NetworkFaults(private val member: DozenDbContainer) : AutoCloseable {
      * Applies netem [arguments], such as `rate 10mbit`, to what the member sends to [target]; other
      * traffic is unaffected. Replaces earlier shaping.
      */
-    fun shapeTo(target: DozenDbContainer, vararg arguments: String) {
+    fun shapeTo(target: GenericContainer<*>, vararg arguments: String) {
         clearShaping()
         exec("tc", "qdisc", "add", "dev", "eth0", "root", "handle", "1:", "prio")
         exec(
@@ -97,9 +97,11 @@ class NetworkFaults(private val member: DozenDbContainer) : AutoCloseable {
         const val IMAGE = "nicolaka/netshoot:v0.13"
         private const val RAFT_PORT = "7700"
 
-        fun ipOf(member: DozenDbContainer): String =
-            checkNotNull(member.containerInfo.networkSettings.networks.values.first().ipAddress) {
-                "${member.alias} has no IP address"
+        fun ipOf(container: GenericContainer<*>): String =
+            checkNotNull(
+                container.containerInfo.networkSettings.networks.values.first().ipAddress
+            ) {
+                "${container.networkAliases.firstOrNull() ?: container.containerName} has no IP address"
             }
     }
 }

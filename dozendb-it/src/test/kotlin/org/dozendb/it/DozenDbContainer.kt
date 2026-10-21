@@ -78,6 +78,22 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     }
 
     /**
+     * Serves backups on every interface over TLS, with a certificate for [alias] that [authority]
+     * issued; clients need a certificate from it too.
+     */
+    fun backupServer(authority: TestAuthority): DozenDbContainer {
+        withEnv("NEO4J_server_backup_listen__address", "0.0.0.0:$BACKUP_PORT")
+        withEnv("NEO4J_dbms_ssl_policy_backup_enabled", "true")
+        authority.issue(names = listOf(alias)).files().forEach { (path, text) ->
+            withCopyToContainer(
+                Transferable.of(text.toByteArray(), READABLE),
+                "$BACKUP_CERTIFICATES/$path",
+            )
+        }
+        return this
+    }
+
+    /**
      * Publishes Bolt on [hostPort] of this machine and advertises it there, so routing tables lead
      * drivers outside the Docker network to this member.
      */
@@ -154,11 +170,23 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     }
 
     private var dataVolume: String? = null
+    private val binds = mutableListOf<Bind>()
+
+    init {
+        withCreateContainerCmdModifier { it.hostConfig!!.withBinds(binds) }
+    }
 
     /** Keeps `/data` in the Docker volume [name], so that it survives restarts and can be wiped. */
     fun withDataVolume(name: String): DozenDbContainer {
         dataVolume = name
-        return withCreateContainerCmdModifier { it.hostConfig!!.withBinds(Bind(name, DATA)) }
+        binds += Bind(name, DATA)
+        return this
+    }
+
+    /** Mounts the Docker volume [name] at [path]. */
+    fun withVolume(name: String, path: String): DozenDbContainer {
+        binds += Bind(name, Volume(path))
+        return this
     }
 
     /** Kills the container's process abruptly, keeping the container for its logs. */
@@ -217,6 +245,7 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
 
     companion object {
         const val BOLT_PORT = 7687
+        const val BACKUP_PORT = 6362
         const val PASSWORD = "dozendb-it-secret"
         private const val SHUTDOWN_SECONDS = 120
         private val DATA = Volume("/data")
@@ -224,8 +253,11 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         /** Where Neo4j's image looks for the cluster SSL policy's certificates. */
         private const val CLUSTER_CERTIFICATES = "/var/lib/neo4j/certificates/cluster"
 
+        /** Where Neo4j's image looks for the backup SSL policy's certificates. */
+        const val BACKUP_CERTIFICATES = "/var/lib/neo4j/certificates/backup"
+
         /** File mode 0644. */
-        private const val READABLE = 420
+        const val READABLE = 420
 
         /** Issues the certificates of cluster members. */
         val clusterAuthority = TestAuthority("DozenDB IT CA")
