@@ -8,7 +8,8 @@ import java.io.OutputStream
  * Serves one kind of bulk data, such as a store copy, to other members.
  *
  * [serve] runs on a dedicated thread and may block. Writes to `out` block while the receiver is not
- * ready for more data, and fail with an [IOException] once the receiver has gone away.
+ * ready for more data, and fail with an [IOException] once the receiver has gone away. An
+ * [IllegalStateException] refuses the request: the receiver's failure gives its message.
  */
 public fun interface BulkSource {
     public fun serve(request: ByteArray, out: OutputStream)

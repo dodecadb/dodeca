@@ -89,7 +89,7 @@ internal class StoreCopySource(
             val namedDatabaseId = database?.namedDatabaseId
             val refusal =
                 when {
-                    database == null -> "no database $name"
+                    database == null -> "there is no database $name here"
                     id != null && namedDatabaseId?.databaseId()?.uuid() != id ->
                         "database $name is $namedDatabaseId here, not the requested $id"
                     !database.isStarted || !replicating(database.namedDatabaseId) ->

@@ -118,6 +118,17 @@ class BulkTransferTest {
     }
 
     @Test
+    fun `a source refusing a request tells why`() {
+        source.consensus.registerBulkSource("refusing") { _, _ ->
+            throw IllegalStateException("there is no database films here")
+        }
+
+        assertThatThrownBy { fetch("refusing") { it.readAllBytes() } }
+            .isInstanceOf(ConsensusUnavailableException::class.java)
+            .hasMessageEndingWith("failed: FAILED_PRECONDITION: there is no database films here")
+    }
+
+    @Test
     fun `an unreachable member fails cleanly`() {
         val address = source.consensus.self.raftAddress
         source.stop()

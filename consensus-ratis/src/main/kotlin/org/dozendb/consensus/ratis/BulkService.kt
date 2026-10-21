@@ -131,6 +131,12 @@ internal object BulkService {
                 } catch (e: Exception) {
                     if (out.cancelled) {
                         log.info("Receiver of bulk source {} went away: {}", name, e.toString())
+                    } else if (e is IllegalStateException) {
+                        log.info("Bulk source {} refused a request: {}", name, e.message)
+                        responses.onError(
+                            Status.FAILED_PRECONDITION.withDescription(e.message)
+                                .asRuntimeException()
+                        )
                     } else {
                         log.warn("Bulk source {} failed", name, e)
                         responses.onError(
