@@ -4,6 +4,9 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Path
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import org.neo4j.dbms.archive.Dumper
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -15,6 +18,23 @@ import org.neo4j.storageengine.api.CommandReaderFactory
  */
 object Artifacts {
     const val EXTENSION = ".backup"
+    private val TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH-mm-ss").withZone(ZoneOffset.UTC)
+
+    /**
+     * The name of a backup of [database] taken at [time]:
+     * `<database>-<yyyy-MM-ddTHH-mm-ss>.backup`, the time in UTC, and for the [n]th backup of that
+     * second `-<n>` before the extension.
+     */
+    fun fileName(database: String, time: Instant, n: Int = 1): String {
+        val name = "$database-${TIME.format(time)}"
+        return if (n == 1) "$name$EXTENSION" else "$name-$n$EXTENSION"
+    }
+
+    /** A file in [directory] for a new backup of [database] taken at [time]. */
+    fun newFile(directory: Path, database: String, time: Instant, fs: FileSystemAbstraction): Path =
+        generateSequence(1) { it + 1 }
+            .map { directory.resolve(fileName(database, time, it)) }
+            .first { !fs.fileExists(it) }
 
     /**
      * Writes a full backup of the store in [layout], which must be stopped and recovered, to [out]

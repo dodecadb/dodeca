@@ -17,6 +17,7 @@
 package org.dozendb.core.edition
 
 import java.util.Optional
+import org.dozendb.core.store.StorePlacement
 import org.neo4j.dbms.api.DatabaseManagementException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
 import org.neo4j.dbms.database.DatabaseContextFactory
@@ -31,7 +32,8 @@ import org.neo4j.logging.InternalLogProvider
 
 /**
  * This server's databases: creates, starts, stops and drops them, and keeps the created ones in
- * [repository]. A database that fails to start or stop is marked failed rather than throwing.
+ * [repository]. A database that fails to start or stop is marked failed rather than throwing. A
+ * database whose files [placement] left half-moved, as by an interrupted restore, fails to start.
  *
  * Like Neo4j's own database lifecycles, it throws database management exceptions without a GQL
  * status, which Neo4j 5.26 has none for.
@@ -42,6 +44,7 @@ class DatabaseManager(
     private val contextFactory: DatabaseContextFactory<StandaloneDatabaseContext, Optional<*>>,
     private val defaultDatabase: String,
     private val counts: DatabaseOperationCounts.Counter,
+    private val placement: StorePlacement,
     logProvider: InternalLogProvider,
 ) {
     private val log = logProvider.getLog(javaClass)
@@ -67,6 +70,15 @@ class DatabaseManager(
 
     fun startDatabase(context: StandaloneDatabaseContext) {
         val id = context.database().namedDatabaseId
+        if (placement.incomplete(id.name())) {
+            val message =
+                "Unable to start `${id.name()}`: its files were left half-moved into place, as " +
+                    "by an interrupted 'neo4j-admin database restore'. Restore it again."
+            log.error(message)
+            context.fail(DatabaseManagementException(message))
+            counts.increaseFailedCount()
+            return
+        }
         try {
             log.info("Starting '%s'.", id)
             context.database().start()

@@ -1,8 +1,5 @@
 package org.dozendb.backup
 
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
-import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
@@ -11,10 +8,8 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
-import org.neo4j.cli.ExecutionContext
 import org.neo4j.commandline.dbms.LoadCommand
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
-import picocli.CommandLine
 
 /**
  * Community's `neo4j-admin database load` loads DozenDB's full backups and refuses differential
@@ -25,26 +20,8 @@ class CommunityLoadTest {
     @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path
     private val fs = DefaultFileSystemAbstraction()
 
-    private class Loaded(val exitCode: Int, val out: String, val err: String)
-
-    private fun load(home: Path, input: InputStream, vararg arguments: String): Loaded {
-        val out = ByteArrayOutputStream()
-        val err = ByteArrayOutputStream()
-        val context =
-            ExecutionContext(
-                home,
-                home.resolve("conf"),
-                PrintStream(out, true),
-                PrintStream(err, true),
-                input,
-                fs,
-            )
-        val exitCode = CommandLine(LoadCommand(context)).execute(*arguments)
-        return Loaded(exitCode, out.toString(), err.toString())
-    }
-
     private fun load(home: Path, vararg arguments: String) =
-        load(home, InputStream.nullInputStream(), *arguments)
+        Admin.run(home, ::LoadCommand, *arguments)
 
     private fun artifact(): Path =
         Files.createDirectories(root.resolve("backups"))
@@ -102,7 +79,9 @@ class CommunityLoadTest {
         assertThat(fromPath.exitCode).isNotZero
         assertThat(fromPath.err).contains("No matching archives found")
         val fromStdin =
-            Files.newInputStream(artifact).use { load(target.home, it, "--from-stdin", "neo4j") }
+            Files.newInputStream(artifact).use {
+                Admin.run(target.home, ::LoadCommand, "--from-stdin", "neo4j", input = it)
+            }
         assertThat(fromStdin.exitCode).isNotZero
         assertThat(fromStdin.err)
             .contains(

@@ -1,5 +1,6 @@
 package org.dozendb.core.edition
 
+import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.core.StandaloneServer
@@ -50,6 +51,32 @@ class StandaloneDatabasesTest {
         server.administer("DROP DATABASE films")
         assertThat(statuses()).doesNotContainKey("films")
         assertThat(storeOf("films")).doesNotExist()
+    }
+
+    @Test
+    fun `a database left half-moved by an interrupted restore does not start`() {
+        server.administer("CREATE DATABASE films")
+        server.administer("STOP DATABASE films")
+        val marker = server.home.resolve("data/databases/.dozendb-incomplete-films")
+        Files.createFile(marker)
+
+        server.administer("START DATABASE films")
+
+        val films =
+            server
+                .rows(
+                    "SHOW DATABASE films YIELD currentStatus, statusMessage",
+                    StandaloneServer.SYSTEM,
+                )
+                .single()
+        assertThat(films["currentStatus"]).isNotEqualTo("online")
+        assertThat(films["statusMessage"] as String)
+            .contains("its files were left half-moved into place")
+        Files.delete(marker)
+        // As for any database that failed to start.
+        server.administer("STOP DATABASE films")
+        server.administer("START DATABASE films")
+        assertThat(statuses()).containsEntry("films", "online")
     }
 
     @Test

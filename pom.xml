@@ -89,6 +89,11 @@
       </dependency>
       <dependency>
         <groupId>org.dozendb</groupId>
+        <artifactId>dozendb-backup</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dozendb</groupId>
         <artifactId>dozendb-cluster</artifactId>
         <version>${project.version}</version>
       </dependency>

@@ -19,6 +19,7 @@ package org.dozendb.core.edition
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityModule
 import org.dozendb.core.security.SystemGraphUsers
+import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.ConnectorType
@@ -130,6 +131,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 globalModule.globalDependencies.resolveDependency(
                     DatabaseOperationCounts.Counter::class.java
                 ),
+                StorePlacement(globalModule.fileSystem, globalModule.neo4jLayout),
                 globalModule.logService.internalLogProvider,
             )
         databaseStateService = CommunityDatabaseStateService(repository)

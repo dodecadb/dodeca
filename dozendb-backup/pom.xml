@@ -12,6 +12,11 @@
   <name>DozenDB backup</name>
   <description>Online backup and restore of a database, on any server, clustered or not.</description>
   <dependencies>
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-core</artifactId>
+    </dependency>
+
     <!-- On the Neo4j classpath at runtime. -->
     <dependency>
       <groupId>org.neo4j</groupId>

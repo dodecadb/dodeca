@@ -57,6 +57,14 @@ class PluginJarIT {
             )
         assertThat(services("org.neo4j.kernel.impl.constraints.ConstraintSemantics"))
             .containsExactly("org.dozendb.core.constraints.DozenDbConstraintSemantics")
+        assertThat(services("org.neo4j.cli.CommandProvider"))
+            .containsExactlyInAnyOrder(
+                "org.dozendb.backup.cli.RestoreCommandProvider",
+                "org.dozendb.backup.cli.InspectBackupCommandProvider",
+                "org.dozendb.backup.cli.AggregateBackupCommandProvider",
+            )
+        assertThat(services("org.neo4j.dbms.archive.CheckDatabase"))
+            .containsExactly("org.dozendb.backup.cli.CheckBackup")
     }
 
     @Test
