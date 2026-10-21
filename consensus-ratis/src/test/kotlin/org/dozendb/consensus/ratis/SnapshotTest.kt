@@ -12,6 +12,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
+import org.awaitility.kotlin.during
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.dozendb.consensus.CommitResult
@@ -167,6 +168,54 @@ class SnapshotTest {
         }
 
     @Test
+    fun `a member awaiting a copy applies nothing from its own log meanwhile`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val behind = cluster.nodes.first { it != leader }
+            // No snapshot of its own: its whole log is applied again when it restarts.
+            behind.machine.durable = -1
+            val before = (1..3).map { leader.write("before-$it") }.last()
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(behind.machine.lastAppliedIndex()).isEqualTo(before)
+                }
+            behind.stop()
+            cluster.discardLogBeyond(leader, before)
+            behind.start()
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(behind.consensus.awaitingCopy(cluster.database)).isTrue
+                }
+
+            // Ratis truncates the log of a member awaiting a copy; applying it meanwhile once
+            // closed the group there.
+            val empty = RecordingStateMachine()
+            behind.consensus.startGroup(cluster.database, empty, emptyList())
+            assertThat(empty.snapshotRequests).hasSize(1)
+            await during
+                Duration.ofSeconds(1) atMost
+                Duration.ofSeconds(2) untilAsserted
+                {
+                    assertThat(empty.entries()).isEmpty()
+                }
+
+            behind.consensus.detachGroup(cluster.database)
+            val snapshot = checkNotNull(leader.consensus.currentSnapshot(cluster.database))
+            empty.replaceWith(leader.machine)
+            assertThat(behind.consensus.installSnapshot(cluster.database, snapshot)).isTrue()
+            behind.consensus.startGroup(cluster.database, empty, emptyList())
+            leader.write("after")
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(empty.payloads()).isEqualTo(leader.machine.payloads())
+                }
+        }
+
+    @Test
     fun `a member whose log ends just before the leader's installs a copy and catches up`() =
         runBlocking<Unit> {
             val cluster = formCluster()
@@ -191,8 +240,7 @@ class SnapshotTest {
             val leader = cluster.awaitLeaderOtherThan(previous)
             previous.consensus.startGroup(cluster.database, previous.machine, emptyList())
             // Writes until the leader discards that segment, with a snapshot beyond the entry
-            // before
-            // its log.
+            // before its log.
             var written = 0
             await atMost
                 RatisTestCluster.AWAIT untilAsserted

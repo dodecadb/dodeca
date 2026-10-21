@@ -299,6 +299,10 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     private fun groupDirectory(groupId: UUID) = config.storageDirectory.resolve(groupId.toString())
 
+    /** Whether this member waits for a copy of [database], which the leader asked it to install. */
+    internal fun awaitingCopy(database: DatabaseRef): Boolean =
+        stateMachines[database.id]?.awaitingCopy == true
+
     override fun detachGroup(database: DatabaseRef, handOverLeadership: Boolean) {
         val stateMachine = stateMachines[database.id] ?: return
         stateMachine.detach(handOverLeadership)

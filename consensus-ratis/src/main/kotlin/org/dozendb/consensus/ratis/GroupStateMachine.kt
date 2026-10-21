@@ -52,7 +52,9 @@ import org.slf4j.LoggerFactory
  * durable index observed by [snapshotDue], so the log keeps at least the entries since then and a
  * member that was down briefly catches up from it. A member behind the start of the leader's log is
  * asked for a copy ([ReplicatedStateMachine.onSnapshotNeeded]); [install] then completes Ratis'
- * snapshot installation, which skips the group's log to the copy.
+ * snapshot installation, which skips the group's log to the copy. Nothing is applied while the copy
+ * is awaited: Ratis meanwhile truncates the member's log and rewrites its configuration file, which
+ * applying a configuration entry would write at the same time.
  *
  * A member being added copies its databases before it runs their groups, and records each copy's
  * position as a seed ([seed]). When the leader then asks for a copy the seed covers, the seed is
@@ -93,7 +95,8 @@ internal class GroupStateMachine(
 
     /** Guards the fields below; held briefly. */
     private val stateLock = ReentrantLock()
-    private val attachedOrReleased = stateLock.newCondition()
+    /** Signalled when the apply thread may go on: attached, a copy installed, or released. */
+    private val mayApply = stateLock.newCondition()
     private var candidate: ReplicatedStateMachine? = null
     private var target: ReplicatedStateMachine? = null
     private var detached = false
@@ -141,6 +144,10 @@ internal class GroupStateMachine(
      */
     val handsOverLeadership: Boolean
         get() = stateLock.withLock { detached && handOverWhileDetached }
+
+    /** Whether this member waits for a copy of the state, which the leader asked it to install. */
+    val awaitingCopy: Boolean
+        get() = stateLock.withLock { pendingInstall != null }
 
     /** Names the group's database before a state machine is attached. */
     fun bind(database: DatabaseRef) {
@@ -240,7 +247,7 @@ internal class GroupStateMachine(
         val pending = stateLock.withLock {
             if (candidate !== attached) return
             target = attached
-            attachedOrReleased.signalAll()
+            mayApply.signalAll()
             pendingInstall
         }
         pending?.let { requestSnapshot(attached, it.leader, it.minimumIndex) }
@@ -310,6 +317,7 @@ internal class GroupStateMachine(
             record = installed
             pendingInstall = null
             seed = null
+            mayApply.signalAll()
         }
         SnapshotRecord.delete(directory, SnapshotRecord.SEED_FILE_NAME)
         log.info(
@@ -370,7 +378,12 @@ internal class GroupStateMachine(
         return try {
             awaitCopy(pending, firstTermIndexInLog)
         } catch (e: Exception) {
-            stateLock.withLock { if (pendingInstall === pending) pendingInstall = null }
+            stateLock.withLock {
+                if (pendingInstall === pending) {
+                    pendingInstall = null
+                    mayApply.signalAll()
+                }
+            }
             log.error("Preparing a copy of {} failed; the leader will ask again", database, e)
             // Ratis expects the future to complete after this returns.
             CompletableFuture<TermIndex>().also {
@@ -451,6 +464,7 @@ internal class GroupStateMachine(
         stateLock.withLock {
             record = installed
             pendingInstall = null
+            mayApply.signalAll()
         }
         dropCoveredSeed()
         log.info("Installed snapshot {} of {}", snapshot, database)
@@ -489,7 +503,7 @@ internal class GroupStateMachine(
     fun release() {
         stateLock.withLock {
             released = true
-            attachedOrReleased.signalAll()
+            mayApply.signalAll()
         }
     }
 
@@ -507,7 +521,9 @@ internal class GroupStateMachine(
                 stateLock.withLock {
                     // Ratis does not interrupt this thread when the group stops; release() wakes
                     // it.
-                    while (target == null && !released) attachedOrReleased.await()
+                    while ((target == null || pendingInstall != null) && !released) {
+                        mayApply.await()
+                    }
                     target
                 } ?: return CompletableFuture.completedFuture(Message.EMPTY)
             applyLock.withLock {
@@ -531,8 +547,14 @@ internal class GroupStateMachine(
         }
     }
 
-    /** Ratis applied an entry that does not reach the state machine, such as a configuration. */
+    /**
+     * Ratis applied an entry that does not reach the state machine, such as a configuration. Waits
+     * while a copy is awaited, so that Ratis applies no later entry meanwhile.
+     */
     override fun notifyTermIndexUpdated(term: Long, index: Long) {
+        stateLock.withLock {
+            while (pendingInstall != null && !released) mayApply.await()
+        }
         applyLock.withLock { advance(term, index) }
     }
 
