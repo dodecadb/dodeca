@@ -210,3 +210,145 @@ added to the cluster. `CALL dozendb.cluster.formatLevel()` shows the cluster's
 format level and the levels the member asked supports. When a new version
 supports no newer format level, `finishUpgrade` changes nothing; calling it
 after every upgrade is harmless.
+
+## Backup and restore
+
+Backups are taken from running servers, standalone or clustered, with
+`neo4j-admin database backup`, and kept as backup artifacts: one file per
+backup. A full backup holds a copy of a database; a differential backup holds
+the transactions committed since the backup before it. A full backup and the
+differential backups after it form a chain, which restores the database as of
+the last of them.
+
+### Serving backups
+
+Every server serves backups of its databases while `server.backup.enabled` is
+`true`, the default, on `server.backup.listen_address`, by default
+`127.0.0.1:6362`. Any member of a cluster can serve any database: before it
+sends one, it waits until it holds every write that the cluster acknowledged
+when the backup started, so a backup from a follower is as recent as one from
+the leader.
+
+The backup port has no user authentication: whoever reaches it can copy every
+database. A server serves backups on an address other than a loopback one only
+once `dbms.ssl.policy.backup.enabled` is set explicitly:
+
+- `true` (recommended): TLS, with Neo4j's SSL policy settings of the `backup`
+  scope, as in Neo4j Enterprise, and certificates in `certificates/backup`
+  laid out as for [TLS between members](#tls-between-members).
+  `dbms.ssl.policy.backup.client_auth` keeps its default, `REQUIRE`, so that
+  only clients with a certificate from a trusted authority can take backups.
+  `NONE` logs a warning; `OPTIONAL` is refused.
+- `false`: plaintext. The server logs a warning at every start. Use it only on
+  a network that nothing but the backup clients can reach.
+
+`neo4j-admin` reads the same settings from the configuration of the server it
+runs on to connect, so the client presents its own certificate and checks the
+server's, its host name too with `dbms.ssl.policy.backup.verify_hostname=true`.
+
+### Taking backups
+
+```
+neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
+```
+
+- The databases are names or patterns in double quotes; the default is
+  `neo4j`. `"*"` backs up every database, `system` included.
+- `--from` lists servers, tried in order until one serves the backup of a
+  database: name several members of a cluster.
+- `--type=AUTO`, the default, takes a differential backup if `--to-path`
+  holds a backup of the database to continue, and a full one otherwise.
+  `DIFF` and `AUTO` take a full backup instead when the server no longer holds
+  the transactions after the latest backup, or when the latest backup is of
+  another database of that name. `FULL` always takes a full backup.
+- Files are named `<database>-<yyyy-MM-ddTHH-mm-ss>.backup`, the time in UTC.
+  A file appears only once the backup is complete and synced to disk.
+- A full backup's copy of the database is recovered and checked before it is
+  kept, in `--temp-path` (default: `--to-path`) with a page cache of
+  `--pagecache`. `--keep-failed=true` keeps the copy of a failed full backup
+  there.
+- `--compress` (default `true`) compresses the artifacts.
+- The command exits with 1 if a database could not be backed up, naming it,
+  or if a server could not be reached although another one served.
+
+### Inspecting and checking backups
+
+- `neo4j-admin backup inspect /backups` lists the backups there.
+  `--show-metadata` adds each one's database and its id, time, whether it is
+  full and compressed, and the range of transactions it holds (by append
+  index). `--latest-backup` and `--latest-chain` narrow the list, `--database`
+  picks a database, `--format=JSON` prints JSON, and `--empty` includes
+  backups that hold no transactions.
+- `neo4j-admin database check --from-path=/backups neo4j` restores the latest
+  chain of `neo4j` in a temporary directory and checks its consistency.
+- `neo4j-admin database aggregate-backup --from-path=/backups neo4j` turns the
+  latest chain into one full backup; the backups after the chain still continue
+  it. `--keep-old-backup=true` keeps the chain's files.
+
+Each differential backup needs every backup of its chain. To keep backups for
+a while, delete whole chains, oldest first, or aggregate them first.
+
+### Restoring a database
+
+With the database stopped (`STOP DATABASE films`), or not created yet:
+
+```
+neo4j-admin database restore --from-path=/backups/films-2026-10-21T13-52-10.backup
+```
+
+- `--from-path` names a backup, which restores the chain ending at it, or a
+  directory, which restores the latest chain of each database in it. Several
+  paths may be given, separated by commas.
+- A name after the options restores a single backup under another name.
+- `--restore-until=123` stops before transaction 123, and
+  `--restore-until="2026-10-21 13:00:00"` restores the transactions committed
+  before that time, in UTC.
+- `--overwrite-destination=true` replaces an existing database.
+
+Then run `START DATABASE films`, or `CREATE DATABASE films` for a database the
+server does not have yet.
+
+In a cluster, a restored database cannot be put in place on every member by
+hand. Restore it on one member, which prepares it there and prints the command
+that creates the database from it:
+
+```
+CREATE DATABASE films OPTIONS {existingData: 'use', existingDataSeedServer: '<member id>'}
+```
+
+That member creates the database from the restored files, and the other
+members copy it from that member. Drop a database before restoring it under
+its old name.
+
+### Creating a database from a backup or a dump
+
+`CREATE DATABASE` can create a database from a full backup, the last backup of
+a chain, or a dump made with `neo4j-admin database dump`:
+
+```
+CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 'file:///backups/films-2026-10-21T13-52-10.backup'}
+```
+
+Without clustering the server reads the seed. In a cluster, one member reads it
+and creates the database, and the others copy it from that member: the leader
+of `system`, or the member that `existingDataSeedServer` names. That member
+must be able to read the seed. `dbms.databases.seed_from_uri_providers` lists
+the kinds of seed URIs servers read: `FileSeedProvider` (`file:`, the default)
+and `URLConnectionSeedProvider` (`http:`, `https:` and `ftp:`). A seed that
+cannot be read fails the database on that server, and `SHOW DATABASES` and
+`WAIT` say why.
+
+### Recovering a whole cluster
+
+When every member of a cluster is lost, recreate it from backups of every
+database, `system` included, taken with `"*"`:
+
+1. On one server with an empty data directory and clustering disabled, restore
+   every database: `neo4j-admin database restore --from-path=/backups`.
+2. Configure that server and the other members for a new cluster, each with an
+   empty data directory but the first, and start them all. The server that
+   holds the restored databases forms the cluster with the others, creates
+   every database that its `system` database lists, and the other members copy
+   them.
+
+Users and whether each database is online come with `system`.

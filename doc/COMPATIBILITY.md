@@ -76,6 +76,24 @@ DozenDB took over the code.
   member, and `existingData: 'use'` needs it or a `seedURI`. Neo4j 5.26 keeps
   the seeding server in the `seeding_servers` property of the `Database` node,
   as DozenDB does; `designated_seeder` is deprecated.
+- **Backups and restores** use Neo4j Enterprise's commands, options and
+  settings: `neo4j-admin database backup`, `restore` and
+  `aggregate-backup`, `neo4j-admin backup inspect`, `neo4j-admin database
+  check --from-path`, `server.backup.enabled`, `server.backup.listen_address`
+  and `dbms.ssl.policy.backup.*`, and work alike on standalone servers and
+  cluster members. A backup artifact is a file of its own format, which
+  Neo4j Community's `neo4j-admin database load` also loads as a dump when it
+  is a full backup. Exchanging backups with Neo4j Enterprise is not promised.
+  The differences: there are no cloud locations (`s3:`, `gs:`, `azb:`);
+  `--parallel-recovery`, `--include-metadata` and `--inspect-path` are not
+  supported; `neo4j-admin backup inspect` without `--show-metadata` lists only
+  the files; backup files are named in UTC; `--temp-path` of `backup`
+  defaults to `--to-path`, and `restore` accepts `--temp-path` without using
+  it; a backup is not restored with another Neo4j kernel version than the
+  one it was taken with; and serving backups on an address that is not a
+  loopback one needs `dbms.ssl.policy.backup.enabled` set explicitly, `true`
+  or `false`, since the backup port has no other authentication. See
+  `OPERATOR_GUIDE.md`.
 - **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
   Neo4j Enterprise. The command commits its transaction, then returns once
   every server, with clustering every member, has the database running,
