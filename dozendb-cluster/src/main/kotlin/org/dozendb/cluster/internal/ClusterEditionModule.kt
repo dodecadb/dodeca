@@ -239,6 +239,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 consensus,
                 systemDatabase,
                 ::boltHostPort,
+                ::databaseStates,
                 logService.getInternalLog(MemberDirectory::class.java),
             )
         cluster =

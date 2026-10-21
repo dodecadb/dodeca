@@ -11,6 +11,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.io.fs.FileUtils
 import org.neo4j.storageengine.api.TransactionIdStore
 
@@ -62,6 +63,19 @@ class ForeignStoreTest {
             it.next().toMap()
         }
 
+    /** The ports of the Bolt addresses in [member]'s routing table for [database], by role. */
+    private fun ClusterHarness.Member.routing(database: String): Map<String, List<String>> =
+        database().executeTransactionally(
+            "CALL dbms.routing.getRoutingTable({}, \$database) YIELD servers",
+            mapOf("database" to database),
+        ) { result ->
+            @Suppress("UNCHECKED_CAST")
+            (result.next()["servers"] as List<Map<String, Any>>).associate { server ->
+                server["role"] as String to
+                    (server["addresses"] as List<String>).map { it.substringAfterLast(':') }
+            }
+        }
+
     private fun ClusterHarness.awaitSame(database: String) {
         await atMost
             AWAIT untilAsserted
@@ -73,7 +87,10 @@ class ForeignStoreTest {
 
     @Test
     fun `a member holding another database's store fails it loudly, and copies it once deleted`() {
-        val cluster = ClusterHarness(root, 3).also { harness = it }
+        val cluster =
+            ClusterHarness(root, 3, settings = mapOf(BoltConnector.enabled to true)).also {
+                harness = it
+            }
         cluster.start()
         cluster.administer("CREATE DATABASE films WAIT")
         cluster.administer("CREATE DATABASE books WAIT")
@@ -115,6 +132,21 @@ class ForeignStoreTest {
             {
                 assertThat(member.shown("films"))
                     .isEqualTo(mapOf("currentStatus" to "offline", "statusMessage" to message))
+            }
+        // Drivers are sent to the others for films, whichever member they ask; it still routes.
+        val refused = member.boltAddress().substringAfterLast(':')
+        val serving = others().map { it.boltAddress().substringAfterLast(':') }
+        await atMost
+            AWAIT untilAsserted
+            {
+                for (router in cluster.running()) {
+                    val table = router.routing("films")
+                    assertThat(table["WRITE"].orEmpty() + table["READ"].orEmpty())
+                        .describedAs("$router's routing table for films: $table")
+                        .doesNotContain(refused)
+                        .containsAll(serving)
+                    assertThat(table["ROUTE"]).describedAs("$router").contains(refused)
+                }
             }
         assertThat(catchThrowable { member.count("films") })
             .hasStackTraceContaining("The database has encountered a critical error")

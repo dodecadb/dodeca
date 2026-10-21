@@ -18,17 +18,21 @@ object ClusterRouting {
      * Writers: the leader. Readers: the followers, plus the leader if [readsOnLeader], or when no
      * follower can be listed. Routers: every member. Members whose Bolt address is not known yet
      * are left out; during an election there is no writer, so drivers retry until there is one.
+     * Members whose copy of the database [failed], such as by a panic, neither write nor read it,
+     * but still route: their routing tables send drivers to the others.
      */
     fun endpoints(
         status: GroupStatus,
         members: List<Member>,
         boltAddress: (MemberId) -> HostPort?,
         readsOnLeader: Boolean,
+        failed: Set<MemberId>,
     ): RoutingEndpoints {
         val ordered = members.sortedBy { it.id }
-        val leader = status.leader?.takeIf { id -> ordered.any { it.id == id } }
+        val serving = ordered.filter { it.id !in failed }
+        val leader = status.leader?.takeIf { id -> serving.any { it.id == id } }
         val leaderAddress = leader?.let(boltAddress)
-        val followers = ordered.filter { it.id != leader }.mapNotNull { boltAddress(it.id) }
+        val followers = serving.filter { it.id != leader }.mapNotNull { boltAddress(it.id) }
         val readers =
             when {
                 leaderAddress == null -> followers

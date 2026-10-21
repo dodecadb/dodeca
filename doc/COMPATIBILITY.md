@@ -249,4 +249,7 @@ What clustering does not do yet.
   Create databases from other files with a seed instead.
 - **Stopped databases.** A member whose replicated database stops, for example
   after a panic, keeps taking part in the database's Raft group but no longer
-  applies entries, and hands leadership to another member.
+  applies entries, and hands leadership to another member. Once a member's
+  copy failed, routing tables, whichever member serves them, no longer list
+  it as a writer or reader of that database, within about 10 seconds;
+  it still serves routing tables, which send drivers to the others.

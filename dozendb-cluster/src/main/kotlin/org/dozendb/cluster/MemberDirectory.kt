@@ -1,6 +1,7 @@
 package org.dozendb.cluster
 
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
@@ -13,18 +14,21 @@ import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.edition.DatabaseState
 import org.neo4j.logging.Log
 
 /**
  * The Bolt addresses of the cluster's members, for routing, and what else they report about
- * themselves. Every member reports its advertised Bolt address when probed; the directory probes
- * the members of the `system` group periodically, and soon after someone asks for a member it does
- * not know yet. A member that does not answer keeps its last known address and report.
+ * themselves. Every member reports its advertised Bolt address and its databases when probed; the
+ * directory probes the members of the `system` group periodically, and soon after someone asks for
+ * a member it does not know yet. A member that does not answer keeps its last known address and
+ * report. This member's own come from [selfBoltAddress] and [selfDatabases].
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
     private val selfBoltAddress: () -> HostPort?,
+    private val selfDatabases: () -> List<DatabaseState>,
     private val log: Log,
     private val refreshInterval: Duration = Duration.ofSeconds(10),
 ) {
@@ -45,6 +49,26 @@ class MemberDirectory(
 
     /** What [member] reported when it last answered, such as its versions; see [MemberMetadata]. */
     fun reported(member: MemberId): Map<String, String>? = reports[member]
+
+    /**
+     * The members whose copy of the database [id] failed, such as by a panic: this member's as it
+     * is now, the others' as they last reported it. A member that has not reported is not one.
+     */
+    fun failedCopies(id: UUID): Set<MemberId> {
+        val failed = mutableSetOf<MemberId>()
+        if (selfDatabases().any { it.id == id && it.status == DatabaseState.Status.FAILED }) {
+            failed += consensus.self.id
+        }
+        for ((member, report) in reports) {
+            val databases = report[MemberMetadata.DATABASES] ?: continue
+            val states =
+                runCatching { DatabaseStatesCodec.decode(databases) }.getOrNull() ?: continue
+            if (states.any { it.id == id && it.status == DatabaseState.Status.FAILED }) {
+                failed += member
+            }
+        }
+        return failed
+    }
 
     /** Probes every member once and records the addresses they report. */
     fun refresh() {

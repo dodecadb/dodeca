@@ -26,7 +26,13 @@ class ClusterRoutingTest {
     @Test
     fun `writes go to the leader and reads to every member`() {
         val endpoints =
-            ClusterRouting.endpoints(status(members[1]), members, bolt::get, readsOnLeader = true)
+            ClusterRouting.endpoints(
+                status(members[1]),
+                members,
+                bolt::get,
+                readsOnLeader = true,
+                failed = emptySet(),
+            )
 
         assertThat(endpoints.writers).containsExactly(address(2))
         assertThat(endpoints.readers).containsExactly(address(1), address(3), address(2))
@@ -36,7 +42,13 @@ class ClusterRoutingTest {
     @Test
     fun `the leader can be kept free of reads`() {
         val endpoints =
-            ClusterRouting.endpoints(status(members[1]), members, bolt::get, readsOnLeader = false)
+            ClusterRouting.endpoints(
+                status(members[1]),
+                members,
+                bolt::get,
+                readsOnLeader = false,
+                failed = emptySet(),
+            )
 
         assertThat(endpoints.readers).containsExactly(address(1), address(3))
     }
@@ -49,6 +61,7 @@ class ClusterRoutingTest {
                 members.take(1),
                 bolt::get,
                 readsOnLeader = false,
+                failed = emptySet(),
             )
 
         assertThat(endpoints.writers).containsExactly(address(1))
@@ -58,10 +71,47 @@ class ClusterRoutingTest {
     @Test
     fun `during an election there is no writer`() {
         val endpoints =
-            ClusterRouting.endpoints(status(null), members, bolt::get, readsOnLeader = true)
+            ClusterRouting.endpoints(
+                status(null),
+                members,
+                bolt::get,
+                readsOnLeader = true,
+                failed = emptySet(),
+            )
 
         assertThat(endpoints.writers).isEmpty()
         assertThat(endpoints.readers).containsExactly(address(1), address(2), address(3))
+    }
+
+    @Test
+    fun `members whose copy failed neither write nor read, but route`() {
+        val endpoints =
+            ClusterRouting.endpoints(
+                status(members[1]),
+                members,
+                bolt::get,
+                readsOnLeader = true,
+                failed = setOf(members[0].id),
+            )
+
+        assertThat(endpoints.writers).containsExactly(address(2))
+        assertThat(endpoints.readers).containsExactly(address(3), address(2))
+        assertThat(endpoints.routers).containsExactly(address(1), address(2), address(3))
+    }
+
+    @Test
+    fun `a leader whose copy failed is no writer`() {
+        val endpoints =
+            ClusterRouting.endpoints(
+                status(members[1]),
+                members,
+                bolt::get,
+                readsOnLeader = true,
+                failed = setOf(members[1].id),
+            )
+
+        assertThat(endpoints.writers).isEmpty()
+        assertThat(endpoints.readers).containsExactly(address(1), address(3))
     }
 
     @Test
@@ -69,7 +119,13 @@ class ClusterRoutingTest {
         val known = bolt - members[2].id
 
         val endpoints =
-            ClusterRouting.endpoints(status(members[2]), members, known::get, readsOnLeader = true)
+            ClusterRouting.endpoints(
+                status(members[2]),
+                members,
+                known::get,
+                readsOnLeader = true,
+                failed = emptySet(),
+            )
 
         assertThat(endpoints.writers).isEmpty()
         assertThat(endpoints.readers).containsExactly(address(1), address(2))
@@ -81,7 +137,13 @@ class ClusterRoutingTest {
         val stranger = Member(MemberId(UUID(0, 9)), HostPort("gone", 7700))
 
         val endpoints =
-            ClusterRouting.endpoints(status(stranger), members, bolt::get, readsOnLeader = true)
+            ClusterRouting.endpoints(
+                status(stranger),
+                members,
+                bolt::get,
+                readsOnLeader = true,
+                failed = emptySet(),
+            )
 
         assertThat(endpoints.writers).isEmpty()
     }

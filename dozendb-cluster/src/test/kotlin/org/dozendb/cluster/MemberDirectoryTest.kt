@@ -11,6 +11,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.fake.InMemoryConsensus
 import org.dozendb.consensus.fake.RecordingStateMachine
+import org.dozendb.core.edition.DatabaseState
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
@@ -22,11 +23,13 @@ class MemberDirectoryTest {
         List(3) { index ->
             consensus.newMember(metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "core$index:7687"))
         }
+    private var selfDatabases = emptyList<DatabaseState>()
     private val directory =
         MemberDirectory(
             logs[0],
             system,
             { HostPort("self", 7687) },
+            { selfDatabases },
             NullLog.getInstance(),
             Duration.ofHours(1),
         )
@@ -62,6 +65,30 @@ class MemberDirectoryTest {
 
         assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("core1", 7687))
         assertThat(directory.boltAddress(logs[2].self.id)).isEqualTo(HostPort("core2", 7687))
+    }
+
+    @Test
+    fun `names the members whose copy of a database failed, this one included`() {
+        val films = UUID(0, 7)
+        val books = UUID(0, 8)
+        fun report(vararg states: DatabaseState) =
+            mapOf(
+                MemberMetadata.BOLT_ADDRESS to "core:7687",
+                MemberMetadata.DATABASES to DatabaseStatesCodec.encode(states.toList()),
+            )
+        logs[1].metadata =
+            report(
+                DatabaseState("films", films, DatabaseState.Status.FAILED, "No space left"),
+                DatabaseState("books", books, DatabaseState.Status.ONLINE),
+            )
+        logs[2].metadata = report(DatabaseState("films", films, DatabaseState.Status.ONLINE))
+        selfDatabases = listOf(DatabaseState("books", books, DatabaseState.Status.FAILED, "Panic"))
+
+        directory.refresh()
+
+        assertThat(directory.failedCopies(films)).containsExactly(logs[1].self.id)
+        assertThat(directory.failedCopies(books)).containsExactly(logs[0].self.id)
+        assertThat(directory.failedCopies(UUID(0, 9))).isEmpty()
     }
 
     @Test

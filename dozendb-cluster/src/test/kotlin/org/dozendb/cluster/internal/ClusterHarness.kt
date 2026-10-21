@@ -155,6 +155,8 @@ internal class ClusterHarness(
                     .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
                     .set(BoltConnector.enabled, false)
                     .set(BoltConnector.listen_address, SocketAddress("127.0.0.1", 0))
+                    // Routing tables then name the port bound.
+                    .set(BoltConnector.advertised_address, SocketAddress("127.0.0.1", 0))
                     .set(
                         GraphDatabaseSettings.routing_listen_address,
                         SocketAddress("127.0.0.1", 0),

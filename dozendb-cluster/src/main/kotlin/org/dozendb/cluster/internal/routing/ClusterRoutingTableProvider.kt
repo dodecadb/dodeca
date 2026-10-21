@@ -4,6 +4,7 @@ import org.dozendb.cluster.ClusterRouting
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.routing.ClientSideRoutingTableProvider
@@ -14,10 +15,10 @@ import org.neo4j.kernel.database.DatabaseReferenceImpl
 import org.neo4j.values.virtual.MapValue
 
 /**
- * Routing tables for drivers that route (`neo4j://`). A database that replicates here is routed by
- * its Raft group: writes to the leader, reads to the followers and optionally the leader. Other
- * databases, such as stopped ones, and server-side routing keep Community's table that names only
- * this member.
+ * Routing tables for drivers that route (`neo4j://`). A database whose Raft group runs here is
+ * routed by it: writes to the leader, reads to the followers and optionally the leader, leaving out
+ * members whose copy failed, this one too. Other databases, such as stopped ones, and server-side
+ * routing keep Community's table that names only this member.
  */
 internal class ClusterRoutingTableProvider(
     private val replication: ReplicationService,
@@ -32,21 +33,26 @@ internal class ClusterRoutingTableProvider(
         databaseReference: DatabaseReferenceImpl.Internal,
         routingContext: MapValue,
     ): RoutingResult {
-        val replica =
-            replication.running().firstOrNull {
-                it.namedDatabaseId == databaseReference.databaseId()
+        // Also when this member stopped replicating the database after its copy panicked.
+        val endpoints =
+            replication.replica(databaseReference.databaseId())?.let { replica ->
+                try {
+                    ClusterRouting.endpoints(
+                        consensus.status(replica.ref),
+                        consensus.members(replica.ref),
+                        directory::boltAddress,
+                        readsOnLeader,
+                        directory.failedCopies(replica.ref.id),
+                    )
+                } catch (_: ConsensusUnavailableException) {
+                    // The group does not run here.
+                    null
+                }
             }
                 ?: return local.getRoutingResultForClientSideRouting(
                     databaseReference,
                     routingContext,
                 )
-        val endpoints =
-            ClusterRouting.endpoints(
-                consensus.status(replica.ref),
-                consensus.members(replica.ref),
-                directory::boltAddress,
-                readsOnLeader,
-            )
         return RoutingResult(
             endpoints.routers.map(::socketAddress),
             endpoints.writers.map(::socketAddress),
