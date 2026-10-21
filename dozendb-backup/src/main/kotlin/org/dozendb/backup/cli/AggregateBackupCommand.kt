@@ -167,11 +167,11 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
                     lastCommitTime = Instant.ofEpochMilli(last.commitTimestamp()),
                     source = expected.source,
                 )
-            val written = temporary.resolve("aggregate${Artifacts.EXTENSION}")
-            Artifacts.writeFull(fs.openAsOutputStream(written, false), header, staged, fs)
             // In place under a new name before the chain goes, so that a crash loses neither.
-            var aggregate = Artifacts.newFile(directory, name, header.time, fs)
-            fs.renameFile(written, aggregate, StandardCopyOption.ATOMIC_MOVE)
+            var aggregate =
+                Artifacts.writeNew(directory, name, header.time, fs) {
+                    Artifacts.writeFull(it, header, staged, fs)
+                }
             if (!keepOld) {
                 chain.artifacts.forEach { fs.deleteFile(it.path) }
                 // The name the chain's last backup most likely had.

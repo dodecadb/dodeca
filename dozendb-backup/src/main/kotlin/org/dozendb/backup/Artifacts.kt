@@ -4,9 +4,11 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 import org.neo4j.dbms.archive.Dumper
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -35,6 +37,31 @@ object Artifacts {
         generateSequence(1) { it + 1 }
             .map { directory.resolve(fileName(database, time, it)) }
             .first { !fs.fileExists(it) }
+
+    /**
+     * Writes a new backup of [database] taken at [time] into [directory] with [write], which must
+     * close the stream it gets: under a hidden temporary name until it is complete and synced, then
+     * under its own ([newFile]), which it returns. What was written is deleted if [write] fails.
+     */
+    fun writeNew(
+        directory: Path,
+        database: String,
+        time: Instant,
+        fs: FileSystemAbstraction,
+        write: (OutputStream) -> Unit,
+    ): Path {
+        val partial = directory.resolve(".$database-${UUID.randomUUID()}$EXTENSION.partial")
+        try {
+            write(fs.openAsOutputStream(partial, false))
+            fs.write(partial).use { it.force(true) }
+            val file = newFile(directory, database, time, fs)
+            fs.renameFile(partial, file, StandardCopyOption.ATOMIC_MOVE)
+            return file
+        } catch (e: Throwable) {
+            fs.deleteFile(partial)
+            throw e
+        }
+    }
 
     /**
      * Writes a full backup of the store in [layout], which must be stopped and recovered, to [out]
