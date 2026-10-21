@@ -54,7 +54,10 @@ class PluginJarIT {
             .containsExactlyInAnyOrder(
                 "org.dozendb.core.DozenDbSettings",
                 "org.dozendb.cluster.internal.ClusterSettings",
+                "org.dozendb.backup.BackupSettings",
             )
+        assertThat(services("org.neo4j.kernel.extension.ExtensionFactory"))
+            .containsExactly("org.dozendb.backup.source.BackupExtensionFactory")
         assertThat(services("org.neo4j.kernel.impl.constraints.ConstraintSemantics"))
             .containsExactly("org.dozendb.core.constraints.DozenDbConstraintSemantics")
         assertThat(services("org.neo4j.cli.CommandProvider"))

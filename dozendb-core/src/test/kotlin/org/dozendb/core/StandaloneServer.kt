@@ -20,7 +20,7 @@ import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 
 /** A DBMS with clustering disabled, in this JVM, for tests. */
-internal class StandaloneServer(
+class StandaloneServer(
     root: Path,
     private val settings: Map<Setting<*>, Any> = emptyMap(),
 ) : AutoCloseable {

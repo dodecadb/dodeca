@@ -16,12 +16,40 @@
       <groupId>org.dozendb</groupId>
       <artifactId>dozendb-core</artifactId>
     </dependency>
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>consensus-api</artifactId>
+    </dependency>
+    <!-- For its bulk transfers, which backups use on an address of their own. -->
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>consensus-ratis</artifactId>
+    </dependency>
 
     <!-- On the Neo4j classpath at runtime. -->
     <dependency>
       <groupId>org.neo4j</groupId>
       <artifactId>neo4j</artifactId>
       <scope>provided</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-core</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>consensus-api</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <!-- TestCertificates in the consensus-api test-jar uses it. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <scope>test</scope>
     </dependency>
   </dependencies>
 </project>

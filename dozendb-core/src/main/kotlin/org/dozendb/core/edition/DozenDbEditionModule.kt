@@ -154,8 +154,13 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         defaultDatabaseStarter = manager.defaultDatabaseStarter()
         // For WAIT; asks the servers only when a command waits.
         globalModule.globalDependencies.satisfyDependency(DatabaseProgress(::hostingServers))
+        // For backups taken from this server.
+        globalModule.globalDependencies.satisfyDependency(latestWrites())
         return repository
     }
+
+    /** Waits until this server holds the writes acknowledged before: without clustering, none. */
+    protected open fun latestWrites(): LatestWrites = LatestWrites.LOCAL
 
     /** The servers that host the databases, which WAIT waits for: without clustering, this one. */
     protected open fun hostingServers(): List<HostingServer> =
