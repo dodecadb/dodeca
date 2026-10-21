@@ -1,5 +1,6 @@
 package org.dozendb.backup
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.temporal.ChronoUnit
@@ -10,6 +11,7 @@ import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder
 import org.neo4j.io.ByteUnit
+import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
@@ -20,12 +22,16 @@ import org.neo4j.storageengine.api.StoreIdProvider
 import org.neo4j.storageengine.api.TransactionId
 import org.neo4j.storageengine.api.TransactionIdStore
 
-/** A Neo4j Community DBMS without DozenDB, in this JVM, for tests. */
-internal class CommunityServer(val home: Path) : AutoCloseable {
+/**
+ * A Neo4j Community DBMS without DozenDB, in this JVM, for tests, serving [databaseName] as its
+ * default database.
+ */
+internal class CommunityServer(val home: Path, val databaseName: String = DATABASE) :
+    AutoCloseable {
     private var dbms: DatabaseManagementService? = null
 
     val layout: DatabaseLayout
-        get() = Neo4jLayout.of(config()).databaseLayout(DATABASE)
+        get() = Neo4jLayout.of(config()).databaseLayout(databaseName)
 
     fun start(): CommunityServer {
         check(dbms == null) { "the server is running" }
@@ -33,6 +39,7 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
             DatabaseManagementServiceBuilder(home)
                 .setConfig(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
                 .setConfig(BoltConnector.enabled, false)
+                .setConfig(GraphDatabaseSettings.initial_default_database, databaseName)
                 .build()
         return this
     }
@@ -46,7 +53,7 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
     }
 
     fun database(): GraphDatabaseAPI =
-        checkNotNull(dbms) { "the server is stopped" }.database(DATABASE) as GraphDatabaseAPI
+        checkNotNull(dbms) { "the server is stopped" }.database(databaseName) as GraphDatabaseAPI
 
     fun rows(cypher: String): List<Map<String, Any?>> =
         database().executeTransactionally(cypher, emptyMap()) { result ->
@@ -59,10 +66,12 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
     fun lastCommitted(): TransactionId = dependency<TransactionIdStore>().lastCommittedTransaction
 
     /** The transactions after append index [after], as Neo4j reads them from its log. */
-    fun transactionsAfter(after: Long): List<ArtifactTransaction> =
-        dependency<LogicalTransactionStore>().getCommandBatches(after + 1).use { cursor ->
+    fun transactionsAfter(after: Long): List<ArtifactTransaction> {
+        if (after == lastCommitted().appendIndex()) return emptyList()
+        return dependency<LogicalTransactionStore>().getCommandBatches(after + 1).use { cursor ->
             buildList { while (cursor.next()) add(ArtifactTransaction.of(cursor.get())) }
         }
+    }
 
     fun commandReaders(): CommandReaderFactory =
         dependency<StorageEngineFactory>().commandReaderFactory()
@@ -106,7 +115,7 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
         lastCommitTime: Instant?,
     ) =
         ArtifactHeader(
-            databaseName = DATABASE,
+            databaseName = databaseName,
             databaseId = database().databaseId().databaseId(),
             storeId = dependency<StoreIdProvider>().storeId,
             time = Instant.now().truncatedTo(ChronoUnit.SECONDS),
@@ -119,6 +128,33 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
             lastCommitTime = lastCommitTime,
             source = "test",
         )
+
+    /** Writes a full backup of the database to [file]; stops the server meanwhile. */
+    fun backupFull(file: Path, compressed: Boolean = true): ArtifactHeader {
+        val header = fullHeader(compressed)
+        stop()
+        DefaultFileSystemAbstraction().use { fs ->
+            Artifacts.writeFull(Files.newOutputStream(file), header, layout, fs)
+        }
+        start()
+        return header
+    }
+
+    /** Writes a differential backup of the transactions after [after] to [file]. */
+    fun backupDifferential(after: Long, file: Path, compressed: Boolean = true): ArtifactHeader {
+        val transactions = transactionsAfter(after)
+        val header = differentialHeader(transactions, compressed)
+        DefaultFileSystemAbstraction().use { fs ->
+            Artifacts.writeDifferential(
+                Files.newOutputStream(file),
+                header,
+                transactions.asSequence(),
+                file.resolveSibling("${file.fileName}.staging"),
+                fs,
+            )
+        }
+        return header
+    }
 
     fun consistent(): Boolean {
         check(dbms == null) { "the server is running" }
