@@ -10,6 +10,7 @@ import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -26,8 +27,11 @@ import org.neo4j.storageengine.api.TransactionIdStore
  * A Neo4j Community DBMS without DozenDB, in this JVM, for tests, serving [databaseName] as its
  * default database.
  */
-internal class CommunityServer(val home: Path, val databaseName: String = DATABASE) :
-    AutoCloseable {
+internal class CommunityServer(
+    val home: Path,
+    val databaseName: String = DATABASE,
+    private val settings: Map<Setting<*>, Any> = emptyMap(),
+) : AutoCloseable {
     private var dbms: DatabaseManagementService? = null
 
     val layout: DatabaseLayout
@@ -40,6 +44,7 @@ internal class CommunityServer(val home: Path, val databaseName: String = DATABA
                 .setConfig(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
                 .setConfig(BoltConnector.enabled, false)
                 .setConfig(GraphDatabaseSettings.initial_default_database, databaseName)
+                .setConfig(settings)
                 .build()
         return this
     }
