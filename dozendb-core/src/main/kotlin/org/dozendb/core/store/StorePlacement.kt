@@ -25,20 +25,29 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
      * earlier staging place for the same purpose held is deleted.
      */
     fun stage(name: String, purpose: String): DatabaseLayout {
-        val roots = stagingRoots(name, purpose)
-        roots.forEach(fs::deleteRecursively)
-        val staged =
-            Neo4jLayout.of(
-                    Config.newBuilder()
-                        .set(GraphDatabaseSettings.neo4j_home, layout.homeDirectory())
-                        .set(GraphDatabaseInternalSettings.databases_root_path, roots[0])
-                        .set(GraphDatabaseSettings.transaction_logs_root_path, roots[1])
-                        .build()
-                )
-                .databaseLayout(name)
+        stagingRoots(name, purpose).forEach(fs::deleteRecursively)
+        val staged = stagingLayout(name, purpose)
         fs.mkdirs(staged.databaseDirectory())
         fs.mkdirs(staged.transactionLogsDirectory)
         return staged
+    }
+
+    /** The store staged for database [name] for [purpose], or null if none is. */
+    fun staged(name: String, purpose: String): DatabaseLayout? =
+        stagingLayout(name, purpose).takeIf {
+            StorageEngineFactory.selectStorageEngine(fs, it).isPresent
+        }
+
+    private fun stagingLayout(name: String, purpose: String): DatabaseLayout {
+        val roots = stagingRoots(name, purpose)
+        return Neo4jLayout.of(
+                Config.newBuilder()
+                    .set(GraphDatabaseSettings.neo4j_home, layout.homeDirectory())
+                    .set(GraphDatabaseInternalSettings.databases_root_path, roots[0])
+                    .set(GraphDatabaseSettings.transaction_logs_root_path, roots[1])
+                    .build()
+            )
+            .databaseLayout(name)
     }
 
     /** Deletes the staging place of database [name] for [purpose], if any. */
@@ -97,7 +106,14 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
         fs.renameFile(staging, target, StandardCopyOption.ATOMIC_MOVE)
     }
 
-    private companion object {
-        const val MARKER_PREFIX = ".dozendb-incomplete-"
+    companion object {
+        /**
+         * The purpose of the store that `neo4j-admin database restore` prepares on a clustered
+         * server, which `CREATE DATABASE ... OPTIONS {existingDataSeedServer: ...}` creates the
+         * database from.
+         */
+        const val RESTORED = "seed"
+
+        private const val MARKER_PREFIX = ".dozendb-incomplete-"
     }
 }

@@ -83,7 +83,7 @@ internal class StandaloneDatabases(
         val online = desired.online
         val changed = requested.put(id, online) != online
         val context = repository.getDatabaseContext(id).orElse(null)
-        val seed = desired.seedUri?.let { DatabaseManager.Seed(it, seeder) }
+        val seed = desired.seedUri?.let { DatabaseManager.Seed.Uri(it, seeder) }
         when {
             context == null && id.name() == defaultDatabase -> Unit
             context == null -> {

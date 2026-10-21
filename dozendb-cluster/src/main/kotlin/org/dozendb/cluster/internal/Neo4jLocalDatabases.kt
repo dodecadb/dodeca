@@ -4,10 +4,12 @@ import java.util.UUID
 import org.dozendb.cluster.internal.replication.LocalDatabase
 import org.dozendb.cluster.internal.replication.LocalDatabases
 import org.dozendb.cluster.internal.replication.ReplicationService
+import org.dozendb.cluster.internal.replication.StoreSeed
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.core.edition.DatabaseManager
+import org.dozendb.core.edition.DatabaseSeeder
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.kernel.database.NamedDatabaseId
@@ -18,6 +20,7 @@ internal class Neo4jLocalDatabases(
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
     private val stores: Neo4jLocalStores,
     private val replication: ReplicationService,
+    private val seeder: () -> DatabaseSeeder?,
 ) : LocalDatabases {
     override fun registered(): Map<NamedDatabaseId, LocalDatabase> =
         repository.registeredDatabases().mapValues { (_, context) ->
@@ -36,9 +39,16 @@ internal class Neo4jLocalDatabases(
         manager.createDatabase(id)
     }
 
-    override fun start(id: NamedDatabaseId) {
+    override fun start(id: NamedDatabaseId, seed: StoreSeed?) {
         replication.replica(id)?.handOverOnStop = true
-        manager.startDatabase(id)
+        manager.startDatabase(
+            id,
+            when (seed) {
+                null -> null
+                is StoreSeed.Uri -> DatabaseManager.Seed.Uri(seed.uri, seeder)
+                StoreSeed.Restored -> DatabaseManager.Seed.Restored
+            },
+        )
     }
 
     override fun stop(id: NamedDatabaseId) {

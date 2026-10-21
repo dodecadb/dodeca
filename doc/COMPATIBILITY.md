@@ -68,6 +68,14 @@ DozenDB took over the code.
   the server tries it again. `existingData: 'use'` without a seed uses the
   files that `neo4j-admin database restore` put in place, and fails the
   command if there are none. A seed is never combined with `OR REPLACE`.
+  With clustering, one member creates the database from the seed and the
+  others copy it from that member: the system leader, which must then be able
+  to read the seed, or the member that `existingDataSeedServer` names, which
+  reads the seed, or without `seedURI` uses the database that `neo4j-admin
+  database restore` prepared on it. `existingDataSeedServer` must name a
+  member, and `existingData: 'use'` needs it or a `seedURI`. Neo4j 5.26 keeps
+  the seeding server in the `seeding_servers` property of the `Database` node,
+  as DozenDB does; `designated_seeder` is deprecated.
 - **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
   Neo4j Enterprise. The command commits its transaction, then returns once
   every server, with clustering every member, has the database running,

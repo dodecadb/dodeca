@@ -156,8 +156,15 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalModule.globalDependencies.satisfyDependency(DatabaseProgress(::hostingServers))
         // For backups taken from this server.
         globalModule.globalDependencies.satisfyDependency(latestWrites())
+        seedServers()?.let { globalModule.globalDependencies.satisfyDependency(it) }
         return repository
     }
+
+    /**
+     * The servers a database can be created from with existingDataSeedServer: without clustering,
+     * none.
+     */
+    protected open fun seedServers(): SeedServers? = null
 
     /** What creates databases from seeds: DozenDB's backup module, once Neo4j created it. */
     protected fun seeder(): DatabaseSeeder? =

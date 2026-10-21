@@ -18,11 +18,11 @@ import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
- * The databases in this member's copy of the system graph: its `Database` nodes, with a
- * `dozendb_creator` property that names the member creating the database's store, and a
- * `dozendb_initial_members` property that lists the initial members of its group, each as
- * `id@host:port`. A `DozenDB` node holds the cluster's format level in `dozendb_format_level`, once
- * an upgrade raised it.
+ * The databases in this member's copy of the system graph: its `Database` nodes, with Neo4j's
+ * `seedURI` and `seeding_servers` properties of a seeded database, a `dozendb_creator` property
+ * that names the member creating the database's store, and a `dozendb_initial_members` property
+ * that lists the initial members of its group, each as `id@host:port`. A `DozenDB` node holds the
+ * cluster's format level in `dozendb_format_level`, once an upgrade raised it.
  */
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
@@ -47,6 +47,14 @@ internal class Neo4jSystemGraph(
             DatabaseIdFactory.from(name, UUID.fromString(uuid)),
             online = status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
             creator = (node.getProperty(CREATOR_PROPERTY, null) as? String)?.let(MemberId::parse),
+            seedUri =
+                node.getProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, null)
+                    as? String,
+            designatedSeeder =
+                (node.getProperty(TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY, null)
+                        as? Array<*>)
+                    ?.firstOrNull()
+                    ?.let { MemberId.parse(it as String) },
         )
     }
 

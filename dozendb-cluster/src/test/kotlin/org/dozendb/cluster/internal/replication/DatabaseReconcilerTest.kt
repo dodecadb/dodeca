@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal.replication
 import java.io.IOException
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.entry
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
@@ -46,7 +47,51 @@ class DatabaseReconcilerTest {
         id: NamedDatabaseId,
         online: Boolean = true,
         creator: MemberId? = null,
-    ) = DesiredDatabase(id, online, creator)
+        seedUri: String? = null,
+        designatedSeeder: MemberId? = null,
+    ) = DesiredDatabase(id, online, creator, seedUri, designatedSeeder)
+
+    @Test
+    fun `the creator of a seeded database creates its store from the seed, the others copy it`() {
+        val seed = "file:///seeds/films.backup"
+        graph.databases = listOf(desired(films, creator = self, seedUri = seed))
+
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.seeds).containsExactly(entry(films, StoreSeed.Uri(seed)))
+
+        val series = database("series")
+        graph.databases = listOf(desired(series, creator = creator, seedUri = seed))
+
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.copies).containsExactly(creatorAddress to series)
+        assertThat(local.seeds).containsEntry(series, null)
+    }
+
+    @Test
+    fun `the system leader names the designated seeder the creator, which uses its restored store`() {
+        graph.leading = true
+        graph.databases = listOf(desired(films, designatedSeeder = creator))
+
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(graph.named).containsExactly(films to creator)
+
+        val series = database("series")
+        graph.databases = listOf(desired(series, creator = self, designatedSeeder = self))
+
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.seeds).containsExactly(entry(series, StoreSeed.Restored))
+    }
+
+    @Test
+    fun `a designated seeder that is not a member is not named the creator`() {
+        graph.leading = true
+        graph.databases = listOf(desired(films, designatedSeeder = MemberId(UUID.randomUUID())))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).isEmpty()
+        assertThat(local.registered).isEmpty()
+    }
 
     @Test
     fun `the system leader names itself the creator of a new database, then creates it`() {
@@ -370,8 +415,12 @@ class DatabaseReconcilerTest {
             registered[id] = LocalDatabase(started = false, failed = false)
         }
 
-        override fun start(id: NamedDatabaseId) {
+        /** The seeds each database was started with. */
+        val seeds = mutableMapOf<NamedDatabaseId, StoreSeed?>()
+
+        override fun start(id: NamedDatabaseId, seed: StoreSeed?) {
             check(registered.getValue(id) == LocalDatabase(started = false, failed = false))
+            seeds[id] = seed
             registered[id] = LocalDatabase(started = true, failed = false)
             stored[id.name()] = true
             groups += id.databaseId().uuid()

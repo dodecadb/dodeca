@@ -38,6 +38,7 @@ import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DozenDbEditionModule
 import org.dozendb.core.edition.HostingServer
 import org.dozendb.core.edition.LatestWrites
+import org.dozendb.core.edition.SeedServers
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.helpers.SocketAddress
@@ -296,7 +297,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         reconciler =
             DatabaseReconciler(
                 systemGraph,
-                Neo4jLocalDatabases(databaseManager, repository, localStores, replication),
+                Neo4jLocalDatabases(
+                    databaseManager,
+                    repository,
+                    localStores,
+                    replication,
+                    ::seeder,
+                ),
                 memberId,
                 defaultDatabase,
                 ::copySources,
@@ -433,6 +440,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 }
             }
         }
+
+    /** The members, which a database can be created from with existingDataSeedServer. */
+    override fun seedServers(): SeedServers = SeedServers { id ->
+        require(consensus.members(systemDatabase).any { it.id.uuid == id }) {
+            "server $id is not a member of this cluster: CALL dozendb.cluster.members() lists " +
+                "the members"
+        }
+    }
 
     /**
      * Waits until this member has applied what its database's Raft group had committed: a Raft

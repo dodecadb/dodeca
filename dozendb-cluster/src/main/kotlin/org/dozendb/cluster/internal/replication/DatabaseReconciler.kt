@@ -19,7 +19,20 @@ internal data class DesiredDatabase(
     val online: Boolean,
     /** The member that creates its store, once the system leader named one. */
     val creator: MemberId?,
+    /** The seed its creator creates its store from, a dump or full backup; null for none. */
+    val seedUri: String? = null,
+    /** The member to name its creator, which may hold its restored store; null for any. */
+    val designatedSeeder: MemberId? = null,
 )
+
+/** What the creator of a database creates its store from, instead of an empty one. */
+internal sealed interface StoreSeed {
+    /** A dump or full backup at [uri]. */
+    data class Uri(val uri: String) : StoreSeed
+
+    /** The store `neo4j-admin database restore` prepared on this member. */
+    data object Restored : StoreSeed
+}
 
 /** The replicated system graph, as far as databases are concerned. */
 internal interface SystemGraph {
@@ -65,7 +78,8 @@ internal interface LocalDatabases {
     /** Registers [id] with the database manager; starting it creates its store if there is none. */
     fun create(id: NamedDatabaseId)
 
-    fun start(id: NamedDatabaseId)
+    /** Starts [id]; first, if it has no store and a [seed], creates its store from the seed. */
+    fun start(id: NamedDatabaseId, seed: StoreSeed?)
 
     /** Stops [id], which stops on every member at once: leadership is not handed over. */
     fun stop(id: NamedDatabaseId)
@@ -295,7 +309,7 @@ internal class DatabaseReconciler(
             state == null -> return id.name() == defaultDatabase || create(database)
             database.online && !state.started && !state.failed -> {
                 log.info("Starting database %s, online in the system graph", id)
-                databases.start(id)
+                databases.start(id, seed(database))
             }
             // Stopping also clears a failure, so that starting it again tries anew.
             !database.online && (state.started || state.failed) -> {
@@ -318,9 +332,18 @@ internal class DatabaseReconciler(
         }
         log.info("Creating database %s", id)
         databases.create(id)
-        if (database.online) databases.start(id)
+        if (database.online) databases.start(id, seed(database))
         return true
     }
+
+    /** What this member creates the store of [database] from: only as its creator. */
+    private fun seed(database: DesiredDatabase): StoreSeed? =
+        when {
+            database.creator != self -> null
+            database.seedUri != null -> StoreSeed.Uri(database.seedUri)
+            database.designatedSeeder == self -> StoreSeed.Restored
+            else -> null
+        }
 
     /**
      * Makes sure that [database] can start here: with a copy of its store, or as its creator.
@@ -332,7 +355,7 @@ internal class DatabaseReconciler(
         return when {
             creator == null -> {
                 // The creator is named in a system transaction, which reconciles again.
-                if (systemGraph.leading()) nameCreator(id)
+                if (systemGraph.leading()) nameCreator(id, database.designatedSeeder ?: self)
                 false
             }
             creator == self && id.uuid !in databases.groups() -> {
@@ -343,18 +366,27 @@ internal class DatabaseReconciler(
         }
     }
 
-    private fun nameCreator(id: NamedDatabaseId) {
+    private fun nameCreator(id: NamedDatabaseId, creator: MemberId) {
         val members = systemMembers()
         if (members == null) {
             log.info("Naming the creator of %s waits until the change of members settles", id)
             return
         }
+        // It starts the database's group, so it must be one of its initial members.
+        if (members.none { it.id == creator }) {
+            log.warn(
+                "Naming %s the creator of %s waits until it is a member of the cluster",
+                creator,
+                id,
+            )
+            return
+        }
         try {
-            systemGraph.nameCreator(id, self, members)
+            systemGraph.nameCreator(id, creator, members)
         } catch (e: InterruptedException) {
             throw e
         } catch (e: Exception) {
-            log.info("Naming this member the creator of %s failed: %s", id, e.message)
+            log.info("Naming %s the creator of %s failed: %s", creator, id, e.message)
         }
     }
 

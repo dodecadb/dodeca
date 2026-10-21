@@ -305,12 +305,12 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
         val fs = ctx.fs()
         val layout = Neo4jLayout.of(config)
         val placement = StorePlacement(fs, layout)
-        val staged = placement.stage(name, "seed")
+        val staged = placement.stage(name, StorePlacement.RESTORED)
         val prepared =
             try {
                 preparer.prepare(chain, until, staged, detach = true)
             } catch (e: Exception) {
-                placement.unstage(name, "seed")
+                placement.unstage(name, StorePlacement.RESTORED)
                 throw e
             }
         ctx.out().println("Prepared database '$name' on this server ${describe(chain, prepared)}.")

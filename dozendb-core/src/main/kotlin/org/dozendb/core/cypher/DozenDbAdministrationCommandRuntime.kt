@@ -22,9 +22,11 @@
 package org.dozendb.core.cypher
 
 import java.time.Duration
+import java.util.UUID
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.edition.SeedServers
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.common.DependencyResolver
 import org.neo4j.configuration.Config
@@ -267,8 +269,13 @@ private class DatabaseCommands(
         val seed =
             Function2<Transaction, MapValue, MapValue> { _, params ->
                 val database = show(databaseName, params)
-                val seedUri = seedOptions(plan, database, params, version)
-                params.updatedWith(SEED_URI, seedUri?.let(Values::utf8Value) ?: Values.NO_VALUE)
+                val seed = seedOptions(plan, database, params, version)
+                params
+                    .updatedWith(SEED_URI, seed.uri?.let(Values::utf8Value) ?: Values.NO_VALUE)
+                    .updatedWith(
+                        SEEDING_SERVERS,
+                        seed.server?.let { Values.stringArray(it) } ?: Values.NO_VALUE,
+                    )
             }
         return updating(
             "CreateDatabase",
@@ -281,7 +288,9 @@ private class DatabaseCommands(
                 database.name = $key,
                 database.status = ${'$'}status,
                 database.uuid = randomUUID(),
-                database.${TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY} = ${parameter(SEED_URI)}
+                database.${TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY} = ${parameter(SEED_URI)},
+                database.${TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY} =
+                    ${parameter(SEEDING_SERVERS)}
             RETURN database.name AS name
             """
                 .trimIndent(),
@@ -322,9 +331,9 @@ private class DatabaseCommands(
         name: String,
         params: MapValue,
         version: CypherVersion,
-    ): String? {
+    ): Seed {
         val options = evaluate(plan.options(), params, version)
-        if (options.isEmpty) return null
+        if (options.isEmpty) return Seed(null, null)
         val failed = "Failed to create the specified database '$name'"
         val keys = options.keySet().toList()
         val unsupported = keys.filter { key -> SUPPORTED_OPTIONS.none { it.equals(key, true) } }
@@ -343,17 +352,28 @@ private class DatabaseCommands(
                     "existingDataSeedServer. Drop the database first."
             )
         }
-        if (seedServer != null && !config.get(DozenDbSettings.clusterEnabled)) {
-            throw InvalidArgumentException(
-                "$failed: existingDataSeedServer needs clustering. Without it, restore the " +
-                    "database with 'neo4j-admin database restore' and create it without options."
-            )
+        val clustered = config.get(DozenDbSettings.clusterEnabled)
+        if (seedServer != null) {
+            if (!clustered) {
+                throw InvalidArgumentException(
+                    "$failed: existingDataSeedServer needs clustering. Without it, restore the " +
+                        "database with 'neo4j-admin database restore' and create it without " +
+                        "options."
+                )
+            }
+            try {
+                dependencies.resolveTypeDependencies(SeedServers::class.java).forEach {
+                    it.check(UUID.fromString(seedServer))
+                }
+            } catch (e: IllegalArgumentException) {
+                throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
+            }
         }
         val placement = StorePlacement(fs, Neo4jLayout.of(config))
         val normalized = NormalizedDatabaseName(name).name()
         when {
             seedUri != null -> {
-                if (placement.holdsStore(normalized)) {
+                if (!clustered && placement.holdsStore(normalized)) {
                     throw InvalidArgumentException(
                         "$failed: its files are in place already. Create it without seedURI to " +
                             "use them, or delete them first."
@@ -370,14 +390,23 @@ private class DatabaseCommands(
                     throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
                 }
             }
-            existingData && seedServer == null && !placement.holdsStore(normalized) ->
+            existingData && seedServer == null && clustered ->
+                throw InvalidArgumentException(
+                    "$failed: with clustering, existingData 'use' needs existingDataSeedServer, " +
+                        "the server where 'neo4j-admin database restore' prepared the database, " +
+                        "or a seedURI."
+                )
+            existingData && !clustered && !placement.holdsStore(normalized) ->
                 throw InvalidArgumentException(
                     "$failed: existingData 'use' needs its files in place, as 'neo4j-admin " +
                         "database restore' puts them, or a seedURI. There are no files."
                 )
         }
-        return seedUri
+        return Seed(seedUri, seedServer?.let { UUID.fromString(it).toString() })
     }
+
+    /** What a database is created from: a [uri], read by the [server] if named. */
+    private class Seed(val uri: String?, val server: String?)
 
     /** The value of [option] in [options], checked as Neo4j checks it; null if absent. */
     private fun find(option: StringOptionValidator, options: MapValue): String? =
@@ -678,6 +707,9 @@ private class DatabaseCommands(
 
         /** The parameter of the seed URI the `Database` node keeps. */
         const val SEED_URI = "__dozendb_seedURI"
+
+        /** The parameter of the servers a clustered database is created on first: one. */
+        const val SEEDING_SERVERS = "__dozendb_seedingServers"
 
         val SUPPORTED_OPTIONS =
             listOf(

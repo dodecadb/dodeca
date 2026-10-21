@@ -59,17 +59,27 @@ class DatabaseManager(
         return context
     }
 
-    fun startDatabase(id: NamedDatabaseId) {
+    fun startDatabase(id: NamedDatabaseId, seed: Seed? = null) {
         val context = repository.getDatabaseContext(id)
         if (context.isEmpty) {
             log.warn("Cannot start '%s': it does not exist.", id)
             return
         }
-        startDatabase(context.get())
+        startDatabase(context.get(), seed)
     }
 
-    /** A seed that a database without a store is created from: a backup or dump at [uri]. */
-    class Seed(val uri: String, val seeder: () -> DatabaseSeeder?)
+    /** What a database without a store is created from. */
+    sealed interface Seed {
+        /** A dump or full backup at [uri], which [seeder] reads. */
+        class Uri(val uri: String, val seeder: () -> DatabaseSeeder?) : Seed {
+            override fun toString() = "its seed $uri"
+        }
+
+        /** The store that `neo4j-admin database restore` prepared on this server. */
+        data object Restored : Seed {
+            override fun toString() = "the store restored on this server"
+        }
+    }
 
     /**
      * Starts the database of [context]; first, if it has no store and a [seed], puts the seed's
@@ -79,16 +89,28 @@ class DatabaseManager(
         val id = context.database().namedDatabaseId
         if (seed != null && !placement.holdsStore(id.name()) && !placement.incomplete(id.name())) {
             try {
-                val seeder =
-                    seed.seeder()
-                        ?: throw IllegalStateException(
-                            "this server cannot create databases from seeds"
-                        )
-                log.info("Creating the store of '%s' from %s.", id, seed.uri)
-                seeder.seed(id, seed.uri)
+                log.info("Creating the store of '%s' from %s.", id, seed)
+                when (seed) {
+                    is Seed.Uri -> {
+                        val seeder =
+                            seed.seeder()
+                                ?: throw IllegalStateException(
+                                    "this server cannot create databases from seeds"
+                                )
+                        seeder.seed(id, seed.uri)
+                    }
+                    Seed.Restored -> {
+                        val staged =
+                            placement.staged(id.name(), StorePlacement.RESTORED)
+                                ?: throw IllegalStateException(
+                                    "there is none. Restore it here with 'neo4j-admin database " +
+                                        "restore' first"
+                                )
+                        placement.moveIntoPlace(staged, id.name())
+                    }
+                }
             } catch (e: Exception) {
-                val message =
-                    "Unable to create `${id.name()}` from its seed ${seed.uri}: ${e.message}"
+                val message = "Unable to create `${id.name()}` from $seed: ${e.message}"
                 log.error(message, e)
                 // Without the cause, whose message the message holds; the log has its trace.
                 context.fail(DatabaseManagementException(message))
