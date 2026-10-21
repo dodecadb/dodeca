@@ -51,6 +51,22 @@ class RecordingStateMachine : ReplicatedStateMachine {
         snapshotRequests += leader to minimumIndex
     }
 
+    /** Whether [entry] is the entry applied last, with the same term and payload. */
+    @Synchronized
+    override fun isLastApplied(entry: LogEntry): Boolean {
+        val last = applied.lastOrNull() ?: return false
+        return last.index == entry.index &&
+            last.term == entry.term &&
+            last.payload.contentEquals(entry.payload)
+    }
+
+    /** The reasons received with [onForeignState]. */
+    val foreignStates: MutableList<String> = CopyOnWriteArrayList()
+
+    override fun onForeignState(reason: String) {
+        foreignStates += reason
+    }
+
     /** Replaces the state with a copy of [other]'s, as a store copy would. */
     @Synchronized
     fun replaceWith(other: RecordingStateMachine) {

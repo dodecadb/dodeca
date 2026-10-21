@@ -73,4 +73,22 @@ public interface ReplicatedStateMachine {
      * @param leader the leader that reported it, if known.
      */
     public fun onSnapshotNeeded(leader: Member?, minimumIndex: Long)
+
+    /**
+     * Whether [entry], the group's entry at [lastAppliedIndex], is the entry this state machine
+     * applied last. Asked before any later entry is applied when the state machine is attached with
+     * a higher applied index than the group reached on this member, as when its state was put in
+     * place by hand: the index alone does not tell another group's state apart. Answers true if
+     * that cannot be told. Called on the apply thread; an exception is treated as from [apply].
+     */
+    public fun isLastApplied(entry: LogEntry): Boolean
+
+    /**
+     * The group's entries do not continue this state machine's state, which holds another group's
+     * entries: [reason] says why. Nothing more is applied to it, as if it was detached with
+     * leadership handover; it should report its state as failed, and is refused again when attached
+     * with the same state, until a copy replaces it. Called at most once per attachment; must not
+     * block.
+     */
+    public fun onForeignState(reason: String)
 }

@@ -36,7 +36,9 @@ import org.dozendb.consensus.Snapshot
  * with [crash] and [failNextSubmit]. Bulk transfers run synchronously on the calling thread.
  *
  * Logs are compacted only by [compact]. A member that then needs discarded entries, beyond its
- * installed snapshot, gets [ReplicatedStateMachine.onSnapshotNeeded] instead of entries.
+ * installed snapshot, gets [ReplicatedStateMachine.onSnapshotNeeded] instead of entries. State
+ * machines attached beyond what their member applied are not checked with
+ * [ReplicatedStateMachine.isLastApplied].
  *
  * All operations are serialised on one lock. State machines must not call back into the fake from
  * [ReplicatedStateMachine.apply] or [ReplicatedStateMachine.onSnapshotNeeded].
@@ -59,6 +61,10 @@ class InMemoryConsensus {
         override fun durableIndex(): Long = -1
 
         override fun onSnapshotNeeded(leader: Member?, minimumIndex: Long) {}
+
+        override fun isLastApplied(entry: LogEntry): Boolean = true
+
+        override fun onForeignState(reason: String) {}
     }
 
     internal class GroupState(val database: DatabaseRef, val initialMembers: List<Member>) {

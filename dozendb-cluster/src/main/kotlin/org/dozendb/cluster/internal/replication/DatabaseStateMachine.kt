@@ -1,19 +1,25 @@
 package org.dozendb.cluster.internal.replication
 
+import java.io.ByteArrayOutputStream
 import org.dozendb.consensus.LogEntry
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.ReplicatedStateMachine
 import org.neo4j.common.Subject
+import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.impl.api.CompleteTransaction
 import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.api.TransactionCommitProcess
 import org.neo4j.kernel.impl.api.txid.IdStoreTransactionIdGenerator
 import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
+import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
+import org.neo4j.kernel.impl.transaction.log.NoSuchLogEntryException
 import org.neo4j.kernel.impl.transaction.log.TransactionCommitmentFactory
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.kernel.impl.transaction.tracing.TransactionWriteEvent
+import org.neo4j.monitoring.DatabaseHealth
+import org.neo4j.storageengine.api.CommandBatch
 import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.TransactionApplicationMode
 import org.neo4j.storageengine.api.TransactionIdStore
@@ -31,7 +37,8 @@ import org.neo4j.storageengine.api.TransactionIdStore
  * without the Raft log, which may then discard them.
  *
  * Any exception propagates: Neo4j has then already panicked the database, and Ratis stops the group
- * on this member instead of skipping the entry.
+ * on this member instead of skipping the entry. A store that holds another group's transactions
+ * panics the database too, with a message saying how to replace it.
  *
  * @property afterApply runs on the apply thread after each applied transaction.
  * @property onSnapshotNeeded replaces the database with a copy; see
@@ -51,6 +58,10 @@ internal class DatabaseStateMachine(
     private val contexts = database.cursorContextFactory
     private val commitments = TransactionCommitmentFactory(transactionIdStore)
     private val transactionIds = IdStoreTransactionIdGenerator(transactionIdStore)
+    private val transactionStore = resolver.resolveDependency(LogicalTransactionStore::class.java)
+    private val health = resolver.resolveDependency(DatabaseHealth::class.java)
+    private val layout = database.databaseLayout
+    private val log = database.internalLogProvider.getLog(javaClass)
 
     override fun lastAppliedIndex(): Long =
         transactionIdStore.lastCommittedTransaction.consensusIndex()
@@ -110,6 +121,71 @@ internal class DatabaseStateMachine(
         onSnapshotNeeded.invoke(leader, minimumIndex)
     }
 
+    /**
+     * Whether the store's last transaction is the one [entry] carries: the same kernel version,
+     * times and commands. True if the transaction log no longer holds it.
+     */
+    override fun isLastApplied(entry: LogEntry): Boolean {
+        val last = transactionIdStore.lastCommittedTransaction
+        check(last.consensusIndex() == entry.index) {
+            "entry ${entry.index} is not the last applied, ${last.consensusIndex()}"
+        }
+        val stored =
+            try {
+                transactionStore.getCommandBatches(last.appendIndex()).use { cursor ->
+                    if (cursor.next()) cursor.get().commandBatch() else null
+                }
+            } catch (_: NoSuchLogEntryException) {
+                null
+            }
+        if (stored == null) {
+            log.warn(
+                "Cannot check that the last transaction of %s, %d, is the Raft group's entry %d: " +
+                    "the transaction log no longer holds it.",
+                layout.databaseName,
+                last.id(),
+                entry.index,
+            )
+            return true
+        }
+        val replicated =
+            try {
+                TransactionEnvelope.decode(entry.payload, entry.index, commandReaders)
+            } catch (_: Exception) {
+                return false
+            }
+        return fingerprint(stored).contentEquals(fingerprint(replicated))
+    }
+
+    /** What [isLastApplied] compares: what the transaction log keeps of a transaction. */
+    private fun fingerprint(batch: CommandBatch): ByteArray {
+        val bytes = ByteArrayOutputStream()
+        val channel = OutputStreamWritableChannel(bytes)
+        channel.put(batch.kernelVersion().version())
+        channel.putLong(batch.timeStarted)
+        channel.putLong(batch.latestCommittedTxWhenStarted)
+        channel.putLong(batch.timeCommitted)
+        channel.putInt(batch.commandCount())
+        batch.accept { command ->
+            command.serialize(channel)
+            false
+        }
+        channel.close()
+        return bytes.toByteArray()
+    }
+
+    /** Panics the database, whose store holds another Raft group's transactions. */
+    override fun onForeignState(reason: String) {
+        val message =
+            "The store of database `${layout.databaseName}` holds transactions that its Raft " +
+                "group does not have: $reason. Its files were probably put in place by hand, " +
+                "from another cluster or database. To copy the database from the other members " +
+                "instead, stop this server, delete ${layout.databaseDirectory()} and " +
+                "${layout.transactionLogsDirectory}, and start it again."
+        log.error(message)
+        health.panic(ForeignStoreException(message))
+    }
+
     override fun apply(entry: LogEntry): ByteArray {
         val batch = TransactionEnvelope.decode(entry.payload, entry.index, commandReaders)
         if (batch.leaseId.toLong() != entry.term) {
@@ -146,3 +222,6 @@ internal class DatabaseStateMachine(
         const val DETACH_TAG = "dozendbDetachFromPreviousGroup"
     }
 }
+
+/** A store holds transactions of another Raft group than its database's. */
+internal class ForeignStoreException(message: String) : RuntimeException(message)

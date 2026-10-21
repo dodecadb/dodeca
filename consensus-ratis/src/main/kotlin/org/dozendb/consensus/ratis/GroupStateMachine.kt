@@ -60,6 +60,14 @@ import org.slf4j.LoggerFactory
  * position as a seed ([seed]). When the leader then asks for a copy the seed covers, the seed is
  * installed instead. A seed never becomes the group's starting snapshot: Ratis learns the group's
  * configuration with the leader's request, which it would otherwise miss.
+ *
+ * A state machine attached with a higher applied index than the group delivered to state machines
+ * on this member or holds a copy up to, as one whose state was put in place by hand, may hold
+ * another group's state. Before any later entry is applied to it, the group's entry at its applied
+ * index must be the one it applied last ([ReplicatedStateMachine.isLastApplied]). Otherwise it is
+ * refused ([ReplicatedStateMachine.onForeignState]) and treated as detached with leadership
+ * handover. A state at or below that index is not checked; one beyond the end of the group's log is
+ * checked once the log reaches its index.
  */
 internal class GroupStateMachine(
     private val groupId: UUID,
@@ -107,6 +115,10 @@ internal class GroupStateMachine(
     private var stateMachineDirectory: Path? = null
     /** A copy of the state made before the group ran here; kept in its file once it runs. */
     private var seed: Snapshot? = null
+    /** The index whose entry the attached state machine must have applied last; null if checked. */
+    private var unverified: Long? = null
+    /** The last entry delivered to state machines on this member; guarded by [applyLock]. */
+    private var lastStateEntry = RaftLog.INVALID_LOG_INDEX
 
     // Guarded by this; used by the snapshot poller and the apply thread.
     private var latestDurable = RaftLog.INVALID_LOG_INDEX
@@ -185,6 +197,7 @@ internal class GroupStateMachine(
             detached = true
             handOverWhileDetached = handOverLeadership
             snapshotRequested = false
+            unverified = null
         }
         // Wait for the entry being applied to the previous state machine.
         applyLock.withLock {}
@@ -233,24 +246,69 @@ internal class GroupStateMachine(
                 val attached = candidate ?: return
                 attached to record?.snapshot
             }
-        if (snapshot != null && attached.lastAppliedIndex() < snapshot.appliedIndex) {
+        // Stable: nothing is applied to it before it becomes the target.
+        val applied = attached.lastAppliedIndex()
+        if (snapshot != null && applied < snapshot.appliedIndex) {
             log.error(
                 "The state of {} is older than the group's snapshot {} (applied index {}); " +
                     "it must be replaced by a copy from another member",
                 database,
                 snapshot,
-                attached.lastAppliedIndex(),
+                applied,
             )
             requestSnapshot(attached, null, snapshot.position.index)
             return
         }
-        val pending = stateLock.withLock {
-            if (candidate !== attached) return
-            target = attached
-            mayApply.signalAll()
-            pendingInstall
+        var foreign = false
+        // Holding applyLock, so that no entry is applied between deciding what to check and
+        // starting to apply.
+        val pending = applyLock.withLock {
+            stateLock.withLock {
+                if (candidate !== attached) return
+                val reached =
+                    maxOf(
+                        lastStateEntry,
+                        record?.snapshot?.position?.index ?: RaftLog.INVALID_LOG_INDEX,
+                        seed?.position?.index ?: RaftLog.INVALID_LOG_INDEX,
+                    )
+                // Ratis applied the entry there while detached: not one for state machines.
+                foreign = applied > reached && applied <= lastAppliedTermIndex.index
+                if (!foreign) {
+                    target = attached
+                    unverified = applied.takeIf { it > reached }
+                    mayApply.signalAll()
+                }
+                pendingInstall
+            }
         }
-        pending?.let { requestSnapshot(attached, it.leader, it.minimumIndex) }
+        if (foreign) refuse(attached, applied)
+        else pending?.let { requestSnapshot(attached, it.leader, it.minimumIndex) }
+    }
+
+    /**
+     * Stops applying to [attached], whose state was applied up to [index] in another group, as if
+     * it was detached with leadership handover, and tells it why.
+     */
+    private fun refuse(attached: ReplicatedStateMachine, index: Long) {
+        stateLock.withLock {
+            if (candidate !== attached) return
+            candidate = null
+            target = null
+            detached = true
+            handOverWhileDetached = true
+            snapshotRequested = false
+            unverified = null
+        }
+        val reason =
+            "it was applied up to Raft index $index, but the group's entry there is a different one"
+        log.error(
+            "The state of {} holds another Raft group's entries: {}. Nothing more is applied to it.",
+            database,
+            reason,
+        )
+        attached.onForeignState(reason)
+        listener.onLeadingDetached(groupId)
+        listener.onGroupChanged(groupId)
     }
 
     private fun requestSnapshot(
@@ -527,20 +585,30 @@ internal class GroupStateMachine(
                     target
                 } ?: return CompletableFuture.completedFuture(Message.EMPTY)
             applyLock.withLock {
+                val (current, unverified) = stateLock.withLock { target to unverified }
                 // Detached while waiting for the lock: wait for the next state machine.
-                if (stateLock.withLock { target } !== attached) return@withLock
+                if (current !== attached) return@withLock
+                fun logEntry() =
+                    LogEntry(
+                        entry.index,
+                        entry.term,
+                        entry.stateMachineLogEntry.logData.toByteArray(),
+                    )
+                if (entry.index == unverified) {
+                    if (!attached.isLastApplied(logEntry())) {
+                        refuse(attached, entry.index)
+                        // Applied by the next state machine attached.
+                        return@withLock
+                    }
+                    stateLock.withLock { this.unverified = null }
+                }
                 val response =
                     if (entry.index > attached.lastAppliedIndex()) {
-                        attached.apply(
-                            LogEntry(
-                                entry.index,
-                                entry.term,
-                                entry.stateMachineLogEntry.logData.toByteArray(),
-                            )
-                        )
+                        attached.apply(logEntry())
                     } else {
                         ByteArray(0)
                     }
+                lastStateEntry = entry.index
                 advance(entry.term, entry.index)
                 return CompletableFuture.completedFuture(replyMessage(entry.term, response))
             }
@@ -555,7 +623,11 @@ internal class GroupStateMachine(
         stateLock.withLock {
             while (pendingInstall != null && !released) mayApply.await()
         }
-        applyLock.withLock { advance(term, index) }
+        applyLock.withLock {
+            // Not an entry that the state machine can have applied last.
+            stateLock.withLock { target?.takeIf { unverified == index } }?.let { refuse(it, index) }
+            advance(term, index)
+        }
     }
 
     private fun advance(term: Long, index: Long) {

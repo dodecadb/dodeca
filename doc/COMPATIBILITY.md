@@ -210,6 +210,15 @@ What clustering does not do yet.
   that keeps its identity (`data/server_id`): Raft would forget its votes. To
   rebuild a member from nothing, remove it from the cluster, delete its whole
   data directory, and add it again as a new member.
+- **Database files put in place by hand.** A member that finds a database's
+  files applied up to a higher Raft index than its group reached there, as
+  after copying another database's or cluster's files into place while it was
+  down, checks the group's entry at that index against the files' last
+  transaction, once the group's log reaches it. If they differ, the database
+  fails on that member with a message saying how to recover: delete the files
+  there and restart the member, which then copies the database. Files applied
+  up to an index the group already reached on that member are not checked.
+  Create databases from other files with a seed instead.
 - **Stopped databases.** A member whose replicated database stops, for example
   after a panic, keeps taking part in the database's Raft group but no longer
   applies entries, and hands leadership to another member.
