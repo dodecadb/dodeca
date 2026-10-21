@@ -201,7 +201,8 @@ internal object BulkService {
 
     /**
      * The client side: streams the response into [consume] on the calling thread, over TLS with
-     * [tls] if not null.
+     * [tls] if not null. A failed call, or an [IOException] of [consume], throws what [failure]
+     * makes of a one-line account of it.
      */
     fun <T> fetch(
         address: HostPort,
@@ -209,6 +210,9 @@ internal object BulkService {
         request: ByteArray,
         tls: SslContext?,
         consume: (InputStream) -> T,
+        failure: (String, Exception) -> Exception = { message, cause ->
+            ConsensusUnavailableException("fetching $name from $address failed: $message", cause)
+        },
     ): T {
         val channel: ManagedChannel =
             NettyChannelBuilder.forAddress(address.host, address.port)
@@ -226,15 +230,9 @@ internal object BulkService {
                 )
             return ChunkInputStream(chunks).use(consume)
         } catch (e: StatusRuntimeException) {
-            throw ConsensusUnavailableException(
-                "fetching $name from $address failed: ${describe(e)}",
-                e,
-            )
+            throw failure(describe(e), e)
         } catch (e: IOException) {
-            throw ConsensusUnavailableException(
-                "fetching $name from $address failed: ${e.message}",
-                e,
-            )
+            throw failure(e.message ?: e.toString(), e)
         } finally {
             // Cancels the call if the consumer stopped early.
             channel.shutdownNow()
@@ -253,7 +251,7 @@ internal object BulkService {
                         if (!chunks.hasNext()) return false
                         chunks.next()
                     } catch (e: StatusRuntimeException) {
-                        throw IOException("bulk transfer failed: ${describe(e)}", e)
+                        throw IOException(describe(e), e)
                     }
                 current = next
                 position = 0

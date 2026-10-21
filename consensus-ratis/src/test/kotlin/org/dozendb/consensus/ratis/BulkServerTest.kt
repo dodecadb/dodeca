@@ -11,7 +11,6 @@ import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.consensus.BulkSource
-import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestCertificate
@@ -115,10 +114,10 @@ class BulkServerTest {
             }
 
         assertThatThrownBy { server.fetch(untrusted) }
-            .isInstanceOf(ConsensusUnavailableException::class.java)
+            .isInstanceOf(IOException::class.java)
             .hasMessageContaining("UNAVAILABLE")
         assertThatThrownBy { server.fetch(null) }
-            .isInstanceOf(ConsensusUnavailableException::class.java)
+            .isInstanceOf(IOException::class.java)
             .hasMessageContaining("UNAVAILABLE")
     }
 
@@ -143,7 +142,7 @@ class BulkServerTest {
         val server = start(null, mapOf(GREETING to greeting))
 
         assertThatThrownBy { server.fetch(null, "other") }
-            .isInstanceOf(ConsensusUnavailableException::class.java)
+            .isInstanceOf(IOException::class.java)
             .hasMessageContaining("NOT_FOUND: no bulk source other")
     }
 
@@ -200,7 +199,7 @@ class BulkServerTest {
         server.close()
 
         assertThat(client.get(30, TimeUnit.SECONDS).exceptionOrNull())
-            .isInstanceOf(ConsensusUnavailableException::class.java)
+            .isInstanceOf(IOException::class.java)
         assertThat(sourceFailure.get(30, TimeUnit.SECONDS)).isNotNull
     }
 

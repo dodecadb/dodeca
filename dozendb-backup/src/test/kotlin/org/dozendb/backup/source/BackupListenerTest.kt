@@ -1,5 +1,6 @@
 package org.dozendb.backup.source
 
+import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.nio.file.Path
@@ -8,7 +9,6 @@ import org.assertj.core.api.Assertions.assertThatCode
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.CommunityServer
-import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.ratis.BulkServer
 import org.dozendb.consensus.ratis.TlsConfig
@@ -52,7 +52,7 @@ class BackupListenerTest {
                 it.readAllBytes()
                 "served"
             }
-        } catch (e: ConsensusUnavailableException) {
+        } catch (e: IOException) {
             e.message!!
         }
 

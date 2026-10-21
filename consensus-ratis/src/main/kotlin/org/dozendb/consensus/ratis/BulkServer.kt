@@ -1,5 +1,6 @@
 package org.dozendb.consensus.ratis
 
+import java.io.IOException
 import java.io.InputStream
 import java.net.InetSocketAddress
 import java.util.concurrent.ExecutorService
@@ -68,8 +69,9 @@ private constructor(
          * Asks the [BulkServer] at [address] for [name] with [request] and passes the response to
          * [consume] on the calling thread, over TLS with [tls] or in plaintext if it is null.
          *
-         * @throws org.dozendb.consensus.ConsensusUnavailableException if the server cannot be
-         *   reached, does not serve [name], or fails while streaming.
+         * @throws IOException if the server cannot be reached, does not serve [name], or fails
+         *   while streaming, or if [consume] throws one; its message tells why in one line, as the
+         *   gRPC status and the innermost cause.
          */
         fun <T> fetch(
             address: HostPort,
@@ -78,6 +80,14 @@ private constructor(
             request: ByteArray,
             consume: (InputStream) -> T,
         ): T =
-            BulkService.fetch(address, name, request, tls?.let { TlsContexts(it).client }, consume)
+            BulkService.fetch(
+                address,
+                name,
+                request,
+                tls?.let { TlsContexts(it).client },
+                consume,
+            ) { message, cause ->
+                IOException(message, cause)
+            }
     }
 }
