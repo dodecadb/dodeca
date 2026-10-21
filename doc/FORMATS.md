@@ -19,6 +19,7 @@ Format level 1 is every format below at the version shown.
 | Snapshot record | `SnapshotRecord` | 1 | Kept by each member, also as a joining member's seed. |
 | Membership record | `MembershipFile` | 1 | Kept by each member. |
 | System graph properties and nodes | `Neo4jSystemGraph` | none | Replicated in `system`. |
+| Backup artifact | `ArtifactContainer`, `DifferentialBody` | 1 | Kept in `.backup` files, in Neo4j's container: `dozendb.format` in its header. Every later version reads it. |
 
 Neo4j's own formats, such as the commands inside a replicated transaction,
 are the same on every member: all members run the same Neo4j version. Ratis's

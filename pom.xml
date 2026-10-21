@@ -22,6 +22,7 @@
     <module>consensus-api</module>
     <module>consensus-ratis</module>
     <module>dozendb-core</module>
+    <module>dozendb-backup</module>
     <module>dozendb-cluster</module>
     <module>dozendb-plugin</module>
     <module>dozendb-it</module>
