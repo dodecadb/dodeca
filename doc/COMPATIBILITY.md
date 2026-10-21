@@ -114,6 +114,12 @@ DozenDB took over the code.
   A stopped default database starts with the server, like in DozerDB, but is
   then stopped again, where DozerDB leaves it running. On shutdown, `system`
   stops after every other database.
+- **Failed databases show as `offline`**, with why in `statusMessage`, as
+  Neo4j documents a database that is not running because of a problem. Neo4j
+  Community and DozerDB show a database that failed while running, such as
+  after a panic on a full disk, as `online`, although it serves nothing. It
+  shows as `online` again once restarted, with `STOP DATABASE` and
+  `START DATABASE` or by restarting the server.
 - **Startup banner.** DozenDB logs its version instead of DozerDB's banner.
 
 ## Edition

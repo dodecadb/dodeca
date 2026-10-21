@@ -113,8 +113,8 @@ class ForeignStoreTest {
         await atMost
             AWAIT untilAsserted
             {
-                // Neo4j Community shows a panicked database as online, with why it failed.
-                assertThat(member.shown("films")["statusMessage"]).isEqualTo(message)
+                assertThat(member.shown("films"))
+                    .isEqualTo(mapOf("currentStatus" to "offline", "statusMessage" to message))
             }
         assertThat(catchThrowable { member.count("films") })
             .hasStackTraceContaining("The database has encountered a critical error")

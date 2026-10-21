@@ -24,7 +24,6 @@ import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
-import org.neo4j.dbms.CommunityDatabaseStateService
 import org.neo4j.dbms.CommunityKernelPanicListener
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DatabaseContextProviderDelegate
@@ -134,7 +133,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 StorePlacement(globalModule.fileSystem, globalModule.neo4jLayout),
                 globalModule.logService.internalLogProvider,
             )
-        databaseStateService = CommunityDatabaseStateService(repository)
+        databaseStateService = DozenDbDatabaseStateService(repository)
         globalModule.globalLife.add(manager.systemDatabaseStarter())
         globalModule.globalLife.add(manager.allDatabaseStopper())
         globalModule.globalDependencies.satisfyDependency(

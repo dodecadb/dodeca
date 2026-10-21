@@ -1,5 +1,6 @@
 package org.dozendb.core.edition
 
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
@@ -9,6 +10,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.monitoring.DatabaseHealth
 
 /** With clustering disabled, databases follow the system graph as soon as a command commits. */
 class StandaloneDatabasesTest {
@@ -77,6 +79,33 @@ class StandaloneDatabasesTest {
         server.administer("STOP DATABASE films")
         server.administer("START DATABASE films")
         assertThat(statuses()).containsEntry("films", "online")
+    }
+
+    /** Neo4j Community shows a panicked database as online; Neo4j documents this as offline. */
+    @Test
+    fun `a panicked database is shown offline with why, until restarted`() {
+        server.administer("CREATE DATABASE films")
+        server
+            .database("films")
+            .dependencyResolver
+            .resolveDependency(DatabaseHealth::class.java)
+            .panic(IOException("No space left on device"))
+
+        val films =
+            server
+                .rows(
+                    "SHOW DATABASE films YIELD currentStatus, statusMessage",
+                    StandaloneServer.SYSTEM,
+                )
+                .single()
+        assertThat(films["currentStatus"]).isEqualTo("offline")
+        assertThat(films["statusMessage"]).isEqualTo("No space left on device")
+        assertThat(statuses()).containsEntry("neo4j", "online")
+
+        server.administer("STOP DATABASE films")
+        server.administer("START DATABASE films")
+        assertThat(statuses()).containsEntry("films", "online")
+        assertThat(films()).isZero
     }
 
     @Test
