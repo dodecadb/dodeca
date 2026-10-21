@@ -94,6 +94,9 @@ class StandaloneIT {
         assertThat(dozenDbSettings - communitySettings)
             .containsExactlyInAnyOrder(
                 "dbms.max_databases",
+                "dbms.databases.seed_from_uri_providers",
+                "server.backup.enabled",
+                "server.backup.listen_address",
                 "dbms.dozendb.cluster.enabled",
                 "dbms.dozendb.cluster.initial_members",
                 "dbms.dozendb.cluster.election_timeout_min",
