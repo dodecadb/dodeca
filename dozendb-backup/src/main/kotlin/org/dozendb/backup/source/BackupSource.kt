@@ -47,11 +47,23 @@ internal class BackupSource(
                 BackupProtocol.writeStatus(out, Status.FAILED, "${e.message}")
                 return
             }
-        when (decoded) {
-            is Request.List -> list(decoded, out)
-            is Request.Full -> database(decoded.database, out)?.let { full(it, out) }
-            is Request.Differential ->
-                database(decoded.database, out)?.let { differential(it, decoded, out) }
+        try {
+            when (decoded) {
+                is Request.List -> list(decoded, out)
+                is Request.Full -> database(decoded.database, out)?.let { full(it, out) }
+                is Request.Differential ->
+                    database(decoded.database, out)?.let { differential(it, decoded, out) }
+            }
+        } catch (e: IOException) {
+            // Typically the client went away; the transport logs nothing that a server shows.
+            val what =
+                when (decoded) {
+                    is Request.List -> "the list of databases"
+                    is Request.Full -> "a full backup of ${decoded.database}"
+                    is Request.Differential -> "a differential backup of ${decoded.database}"
+                }
+            log.warn("Serving %s failed: %s", what, e.message)
+            throw e
         }
     }
 

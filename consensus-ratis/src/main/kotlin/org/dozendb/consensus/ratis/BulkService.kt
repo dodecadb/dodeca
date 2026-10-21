@@ -11,6 +11,8 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
+import java.util.logging.Level
+import java.util.logging.Logger
 import kotlin.concurrent.withLock
 import org.apache.ratis.thirdparty.io.grpc.CallOptions
 import org.apache.ratis.thirdparty.io.grpc.ManagedChannel
@@ -36,6 +38,16 @@ import org.slf4j.LoggerFactory
  */
 internal object BulkService {
     private val log = LoggerFactory.getLogger(BulkService::class.java)
+
+    /**
+     * gRPC logs to java.util.logging, which Neo4j sends to its user log, and warns with a stack
+     * trace of every stream whose receiver went away: [serve] tells that in one line. Held, as
+     * java.util.logging keeps loggers weakly.
+     */
+    val streamErrors: Logger =
+        Logger.getLogger("org.apache.ratis.thirdparty.io.grpc.netty.NettyServerHandler").apply {
+            level = Level.SEVERE
+        }
 
     private const val SERVICE_NAME = "dozendb.cluster.Bulk"
     private const val FORMAT_VERSION: Byte = 1
