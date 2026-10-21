@@ -8,6 +8,14 @@ import org.neo4j.cli.ExecutionContext
 // still differs from the default, as two providers of a type with the same one break neo4j-admin.
 private const val PRIORITY = Int.MAX_VALUE - 1
 
+class BackupCommandProvider : CommandProvider {
+    override fun createCommand(ctx: ExecutionContext) = BackupCommand(ctx)
+
+    override fun commandType() = CommandType.BACKUP
+
+    override fun getPriority() = PRIORITY
+}
+
 class RestoreCommandProvider : CommandProvider {
     override fun createCommand(ctx: ExecutionContext) = RestoreCommand(ctx)
 

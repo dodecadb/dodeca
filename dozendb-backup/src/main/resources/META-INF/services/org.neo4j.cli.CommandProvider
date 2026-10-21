@@ -1,3 +1,4 @@
+org.dozendb.backup.cli.BackupCommandProvider
 org.dozendb.backup.cli.RestoreCommandProvider
 org.dozendb.backup.cli.InspectBackupCommandProvider
 org.dozendb.backup.cli.AggregateBackupCommandProvider

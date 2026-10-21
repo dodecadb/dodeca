@@ -116,6 +116,23 @@ object Artifacts {
         }
     }
 
+    /**
+     * Writes an uncompressed differential backup of [transactions] to [out], as they are read, and
+     * flushes it.
+     */
+    fun writeUncompressedDifferential(
+        out: OutputStream,
+        header: ArtifactHeader,
+        transactions: Sequence<ArtifactTransaction>,
+    ) {
+        require(!header.full && !header.compressed) {
+            "the header is not an uncompressed differential backup's"
+        }
+        val body = ArtifactContainer.open(out, header)
+        DifferentialBody.writeRecords(body, header, transactions)
+        body.flush()
+    }
+
     /** Reads the header of the artifact in [input] and closes it. */
     fun readHeader(input: InputStream): ArtifactHeader = input.use {
         ArtifactContainer.read(it).apply { body.close() }.header

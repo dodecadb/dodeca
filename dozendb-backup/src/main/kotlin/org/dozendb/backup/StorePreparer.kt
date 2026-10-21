@@ -221,6 +221,23 @@ class StorePreparer(
         return Prepared(recovered, lastRestored, restored, previousConsensusIndex)
     }
 
+    /**
+     * Recovers in [target] a copy of a running database's store, which [source] names in errors,
+     * and returns its last transaction.
+     */
+    fun recoverCopy(target: DatabaseLayout, source: Any): TransactionId {
+        checkVersion(source, target)
+        val engine =
+            StorageEngineFactory.selectStorageEngine(fs, target).orElseThrow {
+                IOException("$source holds no store")
+            }
+        val extractor = LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
+        recover(target, extractor.getTailMetadata(target, EmptyMemoryTracker.INSTANCE))
+        return extractor
+            .getTailMetadata(target, EmptyMemoryTracker.INSTANCE)
+            .lastCommittedTransaction
+    }
+
     private fun includes(until: RestorePoint, transaction: TransactionId): Boolean =
         when (until) {
             is RestorePoint.BeforeTransaction -> transaction.id() < until.transactionId
@@ -274,7 +291,7 @@ class StorePreparer(
         }
     }
 
-    private fun checkVersion(archive: Path, target: DatabaseLayout) {
+    private fun checkVersion(archive: Any, target: DatabaseLayout) {
         val result =
             try {
                 StoreVersionLoader(fs, config, CursorContextFactory.NULL_CONTEXT_FACTORY).use {

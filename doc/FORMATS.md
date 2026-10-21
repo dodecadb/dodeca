@@ -13,12 +13,13 @@ Format level 1 is every format below at the version shown.
 | Probe request and answer | `ProbeCodec` | 1 | Sent. |
 | What members report when probed | `MemberMetadata` | keys | Sent, inside probe answers. |
 | Database states, for `WAIT` | `DatabaseStatesCodec` | none | Sent, as one of those keys. |
-| Bulk transfer | `BulkService` | 1 | Sent; carries database copies. |
+| Bulk transfer | `BulkService` | 1 | Sent; carries database copies, and backups on the backup port. |
 | Database copy request | `StoreCopySource` | 2 | Sent. |
 | Database copy | `StoreArchive` | 5 | Sent, and unpacked into the database's files. A member's copy holds its Raft snapshot in the metadata (`CopySnapshot`). |
 | Snapshot record | `SnapshotRecord` | 1 | Kept by each member, also as a joining member's seed. |
 | Membership record | `MembershipFile` | 1 | Kept by each member. |
 | System graph properties and nodes | `Neo4jSystemGraph` | none | Replicated in `system`. |
+| Backup request and response | `BackupProtocol` | 1 | Sent between a server and `neo4j-admin database backup`, which may be of another DozenDB version: each side refuses the other's version if it differs, with a message. Not part of the format levels. A full backup's copy is a database copy (`StoreArchive`). |
 | Backup artifact | `ArtifactContainer`, `DifferentialBody` | 1 | Kept in `.backup` files, in Neo4j's container: `dozendb.format` in its header. Every later version reads it. |
 
 Neo4j's own formats, such as the commands inside a replicated transaction,

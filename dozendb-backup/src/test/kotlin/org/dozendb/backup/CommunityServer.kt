@@ -10,6 +10,7 @@ import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder
+import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
@@ -175,8 +176,9 @@ internal class CommunityServer(
         const val DATABASE = "neo4j"
 
         /** Writes nodes, relationships and every kind of index, in several transactions. */
-        fun populate(server: CommunityServer) {
-            val database = server.database()
+        fun populate(server: CommunityServer) = populate(server.database())
+
+        fun populate(database: GraphDatabaseService) {
             database.executeTransactionally(
                 "CREATE CONSTRAINT person_id FOR (p:Person) REQUIRE p.id IS UNIQUE"
             )
@@ -215,9 +217,11 @@ internal class CommunityServer(
         }
 
         /** What [populate] wrote, as the queries that use its indexes find it. */
-        fun summary(server: CommunityServer): Map<String, Any?> =
-            server
-                .rows(
+        fun summary(server: CommunityServer): Map<String, Any?> = summary(server.database())
+
+        fun summary(database: GraphDatabaseService): Map<String, Any?> =
+            database
+                .executeTransactionally(
                     """
                     MATCH (p:Person) WITH count(p) AS people
                     MATCH ()-[k:KNOWS]->() WITH people, count(k) AS knows
@@ -230,8 +234,11 @@ internal class CommunityServer(
                     CALL { MATCH ()-[k:KNOWS]->() WHERE k.since > 500 RETURN count(k) AS later }
                     RETURN people, knows, one, renamed, bios, near, later
                     """
-                        .trimIndent()
-                )
+                        .trimIndent(),
+                    emptyMap(),
+                ) { result ->
+                    result.asSequence().map { it.toMap() }.toList()
+                }
                 .single()
     }
 }

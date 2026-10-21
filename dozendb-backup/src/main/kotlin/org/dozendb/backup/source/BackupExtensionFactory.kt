@@ -1,10 +1,14 @@
 package org.dozendb.backup.source
 
+import org.dozendb.backup.BackupProtocol
 import org.dozendb.backup.BackupSettings
 import org.dozendb.core.edition.LatestWrites
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.connectors.ConnectorPortRegister
+import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.dbms.identity.ServerIdentity
 import org.neo4j.exceptions.UnsatisfiedDependencyException
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.extension.ExtensionFactory
 import org.neo4j.kernel.extension.ExtensionType
 import org.neo4j.kernel.extension.context.ExtensionContext
@@ -31,25 +35,41 @@ class BackupExtensionFactory :
 
         /** Provided by DozenDB's editions only. */
         fun latestWrites(): LatestWrites
+
+        fun databaseContextProvider(): DatabaseContextProvider<*>
+
+        fun serverIdentity(): ServerIdentity
+
+        fun fileSystemAbstraction(): FileSystemAbstraction
     }
 
     override fun newInstance(context: ExtensionContext, dependencies: Dependencies): Lifecycle {
         val config = dependencies.config()
         if (!config.get(BackupSettings.enabled)) return LifecycleAdapter()
-        try {
-            dependencies.latestWrites()
-        } catch (_: UnsatisfiedDependencyException) {
-            // Not DozenDB's edition, such as Neo4j Community with this jar on its class path in
-            // tests.
-            return LifecycleAdapter()
-        }
+        val latestWrites =
+            try {
+                dependencies.latestWrites()
+            } catch (_: UnsatisfiedDependencyException) {
+                // Not DozenDB's edition, such as Neo4j Community with this jar on its class path in
+                // tests.
+                return LifecycleAdapter()
+            }
+        val logProvider = dependencies.logService().internalLogProvider
+        val source =
+            BackupSource(
+                dependencies.databaseContextProvider(),
+                latestWrites,
+                dependencies.fileSystemAbstraction(),
+                dependencies.serverIdentity().serverId().uuid().toString(),
+                logProvider,
+            )
         return BackupListener(
             config,
             dependencies.sslPolicyLoader(),
             dependencies.connectorPortRegister(),
-            dependencies.logService().internalLogProvider,
-        ) {
-            null
+            logProvider,
+        ) { name ->
+            source.takeIf { name == BackupProtocol.NAME }
         }
     }
 }
