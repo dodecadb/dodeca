@@ -1,8 +1,6 @@
 package org.dozendb.cluster.internal.storecopy
 
 import java.io.IOException
-import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.UUID
 import org.dozendb.cluster.LocalStores
 import org.dozendb.cluster.internal.replication.StagedCopy
@@ -10,7 +8,9 @@ import org.dozendb.consensus.BulkTransfer
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Snapshot
+import org.dozendb.core.store.StorePlacement
 import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.logging.InternalLog
 import org.neo4j.storageengine.api.StorageEngineFactory
@@ -20,10 +20,9 @@ import org.neo4j.storageengine.api.StorageEngineFactory
  * behind. [databaseNames] are the databases a member needs to form a cluster: `system` and the
  * default database.
  *
- * Databases are first copied to staging directories next to their final places and synced. Only
- * then are they moved into place, each with a marker file present while it is moved. A database
- * with a marker was left half-moved by an interrupted copy: it counts as missing and is copied
- * again, and a member with any marker counts as having no databases during formation.
+ * Databases are first copied to a staging place and synced, then moved into place
+ * ([StorePlacement]). A database left half-moved by an interrupted copy counts as missing and is
+ * copied again, and a member with one counts as having no databases during formation.
  *
  * A copy of a database whose group does not run here yet, as at startup or for a new database,
  * leaves its Raft position as the group's seed ([seed]), so that the group does not ask for
@@ -37,6 +36,8 @@ internal class Neo4jLocalStores(
     private val log: InternalLog,
     private val seed: (DatabaseRef, Snapshot) -> Unit,
 ) : LocalStores {
+    private val placement = StorePlacement(fs, layout)
+
     override val existed: Boolean =
         databaseNames.none(::incomplete) && databaseNames.any(::storageExists)
 
@@ -97,10 +98,10 @@ internal class Neo4jLocalStores(
             if (!fs.isDirectory(directory)) continue
             for (path in fs.listFiles(directory)) {
                 val name = path.fileName.toString()
+                val marked = placement.markedDatabase(name)
                 when {
-                    name.startsWith(INCOMPLETE_MARKER_PREFIX) ->
-                        names += name.removePrefix(INCOMPLETE_MARKER_PREFIX)
-                    // Staging directories; database names start with a letter.
+                    marked != null -> names += marked
+                    // Staging places; database names start with a letter.
                     name.startsWith(".") -> {}
                     fs.isDirectory(path) -> names += name
                 }
@@ -115,58 +116,45 @@ internal class Neo4jLocalStores(
     /** Deletes the files of the database [name], which must not be running. */
     fun delete(name: String) {
         require(name !in databaseNames) { "database $name is needed to form a cluster" }
-        val target = layout.databaseLayout(name)
-        fs.deleteRecursively(target.databaseDirectory())
-        fs.deleteRecursively(target.transactionLogsDirectory)
-        fs.deleteFile(marker(name))
+        placement.delete(name)
         log.info("Deleted the files of database %s", name)
     }
 
     private fun storageExists(name: String): Boolean =
         StorageEngineFactory.allAvailableStorageEngines().any { it.storageExists(fs, layout, name) }
 
-    private fun marker(name: String): Path =
-        layout.databasesDirectory().resolve(INCOMPLETE_MARKER_PREFIX + name)
-
-    private fun incomplete(name: String): Boolean = fs.fileExists(marker(name))
+    private fun incomplete(name: String): Boolean = placement.incomplete(name)
 
     private class Staged(
         val name: String,
-        val database: Path,
-        val transactionLogs: Path,
+        val layout: DatabaseLayout,
         val summary: StoreArchive.Summary,
         val source: HostPort,
     )
 
     private fun fetch(source: HostPort, name: String, id: UUID?, minimumIndex: Long): Staged {
-        val database = layout.databasesDirectory().resolve(STAGING_PREFIX + name)
-        val transactionLogs = layout.transactionLogsRootDirectory().resolve(STAGING_PREFIX + name)
-        for (staging in listOf(database, transactionLogs)) {
-            fs.deleteRecursively(staging)
-            fs.mkdirs(staging)
-        }
+        val staged = placement.stage(name, "copy")
         val summary =
             transfer.fetchBulk(
                 source,
                 StoreCopySource.NAME,
                 StoreCopySource.encodeRequest(name, id, minimumIndex),
             ) { input ->
-                StoreArchive.read(input, fs, database, transactionLogs)
+                StoreArchive.read(
+                    input,
+                    fs,
+                    staged.databaseDirectory(),
+                    staged.transactionLogsDirectory,
+                )
             }
         check(summary.database == name) {
             "asked for database $name but received ${summary.database}"
         }
-        return Staged(name, database, transactionLogs, summary, source)
+        return Staged(name, staged, summary, source)
     }
 
     private fun moveIntoPlace(copy: Staged) {
-        val marker = marker(copy.name)
-        fs.mkdirs(marker.parent)
-        fs.write(marker).close()
-        val target = layout.databaseLayout(copy.name)
-        replace(copy.transactionLogs, target.transactionLogsDirectory)
-        replace(copy.database, target.databaseDirectory())
-        fs.deleteFile(marker)
+        placement.moveIntoPlace(copy.layout, copy.name)
         log.info(
             "Copied database %s from %s: %d files, %d bytes, %s, Raft snapshot %s",
             copy.name,
@@ -178,15 +166,7 @@ internal class Neo4jLocalStores(
         )
     }
 
-    private fun replace(staging: Path, target: Path) {
-        fs.deleteRecursively(target)
-        fs.mkdirs(target.parent)
-        fs.renameFile(staging, target, StandardCopyOption.ATOMIC_MOVE)
-    }
-
     private companion object {
-        const val STAGING_PREFIX = ".dozendb-copy-"
-        const val INCOMPLETE_MARKER_PREFIX = ".dozendb-incomplete-"
         const val NO_MINIMUM = -1L
     }
 }
