@@ -10,6 +10,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.ByteBuffer
+import java.time.Instant
 import java.util.zip.CRC32C
 import org.neo4j.common.Subject
 import org.neo4j.io.fs.ByteBufferReadableChannel
@@ -278,6 +279,11 @@ internal object DifferentialBody {
                     throw IOException(
                         "$last has checksum ${last.checksum}, but its header tells " +
                             "${header.lastChecksum}"
+                    )
+                last.batch.timeCommitted != header.lastCommitTime?.toEpochMilli() ->
+                    throw IOException(
+                        "$last committed at ${Instant.ofEpochMilli(last.batch.timeCommitted)}, but " +
+                            "its header tells ${header.lastCommitTime}"
                     )
             }
         }

@@ -70,7 +70,15 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
     /** The header of a full backup of the database as it is now. */
     fun fullHeader(compressed: Boolean): ArtifactHeader {
         val last = lastCommitted()
-        return header(compressed, full = true, 1, last.appendIndex(), null, last.checksum())
+        return header(
+            compressed,
+            full = true,
+            1,
+            last.appendIndex(),
+            null,
+            last.checksum(),
+            Instant.ofEpochMilli(last.commitTimestamp()),
+        )
     }
 
     /** The header of a differential backup of [transactions]. */
@@ -85,6 +93,7 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
             transactions.lastOrNull()?.appendIndex ?: 0,
             transactions.firstOrNull()?.previousChecksum,
             transactions.lastOrNull()?.checksum,
+            transactions.lastOrNull()?.let { Instant.ofEpochMilli(it.batch.timeCommitted) },
         )
 
     private fun header(
@@ -94,6 +103,7 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
         highest: Long,
         previousChecksum: Int?,
         lastChecksum: Int?,
+        lastCommitTime: Instant?,
     ) =
         ArtifactHeader(
             databaseName = DATABASE,
@@ -106,6 +116,7 @@ internal class CommunityServer(val home: Path) : AutoCloseable {
             highestAppendIndex = highest,
             previousChecksum = previousChecksum,
             lastChecksum = lastChecksum,
+            lastCommitTime = lastCommitTime,
             source = "test",
         )
 

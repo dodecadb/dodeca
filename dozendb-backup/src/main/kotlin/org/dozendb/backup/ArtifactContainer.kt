@@ -4,6 +4,7 @@ import java.io.DataOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.time.Instant
 import java.time.ZoneOffset.UTC
 import java.util.BitSet
 import org.neo4j.dbms.archive.ArchiveFormat
@@ -33,6 +34,7 @@ internal object ArtifactContainer {
     private const val KEY_SOURCE = "dozendb.source"
     private const val KEY_PREVIOUS_CHECKSUM = "dozendb.previousChecksum"
     private const val KEY_LAST_CHECKSUM = "dozendb.lastChecksum"
+    private const val KEY_LAST_COMMIT_TIME = "dozendb.lastCommitTime"
 
     /** The container for Neo4j's dumper: compressing a stream first writes [header] to it. */
     fun format(header: ArtifactHeader): CompressionFormat =
@@ -104,6 +106,7 @@ internal object ArtifactContainer {
         put(KEY_SOURCE, header.source)
         header.previousChecksum?.let { put(KEY_PREVIOUS_CHECKSUM, it.toString()) }
         header.lastChecksum?.let { put(KEY_LAST_CHECKSUM, it.toString()) }
+        header.lastCommitTime?.let { put(KEY_LAST_COMMIT_TIME, it.toEpochMilli().toString()) }
     }
 
     private fun header(metadata: BackupMetadataV2, compressed: Boolean): ArtifactHeader {
@@ -126,12 +129,17 @@ internal object ArtifactContainer {
             highestAppendIndex = metadata.highestAppendIndex,
             previousChecksum = fields[KEY_PREVIOUS_CHECKSUM]?.let { checksum(it) },
             lastChecksum = fields[KEY_LAST_CHECKSUM]?.let { checksum(it) },
+            lastCommitTime = fields[KEY_LAST_COMMIT_TIME]?.let { commitTime(it) },
             source = fields[KEY_SOURCE] ?: throw IOException("the source of the backup is missing"),
         )
     }
 
     private fun checksum(text: String): Int =
         text.toIntOrNull() ?: throw IOException("invalid checksum $text")
+
+    private fun commitTime(text: String): Instant =
+        text.toLongOrNull()?.let(Instant::ofEpochMilli)
+            ?: throw IOException("invalid commit time $text")
 
     // The layout of Community's BackupMetadataV1 and V2, byte for byte.
     private fun writeMetadata(

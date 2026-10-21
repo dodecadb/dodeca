@@ -15,6 +15,7 @@ import org.neo4j.storageengine.api.StoreId
  *
  * @property time when the backup was taken, in whole seconds.
  * @property lastChecksum the checksum of the transaction at [highestAppendIndex], null if empty.
+ * @property lastCommitTime when that transaction committed, in milliseconds, null if empty.
  * @property source the server that served the backup.
  */
 data class ArtifactHeader(
@@ -28,14 +29,15 @@ data class ArtifactHeader(
     val highestAppendIndex: Long,
     val previousChecksum: Int?,
     val lastChecksum: Int?,
+    val lastCommitTime: Instant?,
     val source: String,
 ) {
     init {
         require(time.nano == 0) { "time $time is not in whole seconds" }
         if (empty) {
             require(!full) { "a full backup holds at least one transaction" }
-            require(previousChecksum == null && lastChecksum == null) {
-                "an empty backup has no checksums"
+            require(previousChecksum == null && lastChecksum == null && lastCommitTime == null) {
+                "an empty backup has no checksums and no last commit time"
             }
         } else {
             require(lowestAppendIndex in 1..highestAppendIndex) {
@@ -46,6 +48,7 @@ data class ArtifactHeader(
                 "a differential backup, and only one, follows a previous checksum"
             }
             requireNotNull(lastChecksum) { "the last checksum is missing" }
+            requireNotNull(lastCommitTime) { "the last commit time is missing" }
         }
     }
 

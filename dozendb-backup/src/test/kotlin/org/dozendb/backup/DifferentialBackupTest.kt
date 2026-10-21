@@ -183,6 +183,13 @@ class DifferentialBackupTest {
                 write(header.copy(lastChecksum = header.lastChecksum!! + 1), transactions)
             }
             .hasMessageContaining("${transactions.last()} has checksum")
+        assertThatThrownBy {
+                write(
+                    header.copy(lastCommitTime = header.lastCommitTime!!.plusMillis(1)),
+                    transactions,
+                )
+            }
+            .hasMessageContaining("${transactions.last()} committed at")
         assertThatThrownBy { write(header(emptyList()), transactions) }
             .hasMessage("an empty backup holds ${transactions.first()}")
     }

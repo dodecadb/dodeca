@@ -34,6 +34,7 @@ class ArtifactContainerTest {
             highestAppendIndex = 250,
             previousChecksum = if (full) null else -123456789,
             lastChecksum = 987654321,
+            lastCommitTime = Instant.parse("2026-10-21T10:15:29.123Z"),
             source = "member-2",
         )
 
@@ -166,6 +167,6 @@ class ArtifactContainerTest {
         assertThatThrownBy {
                 header().copy(lowestAppendIndex = 0, highestAppendIndex = 0, lastChecksum = null)
             }
-            .hasMessage("an empty backup has no checksums")
+            .hasMessage("an empty backup has no checksums and no last commit time")
     }
 }
