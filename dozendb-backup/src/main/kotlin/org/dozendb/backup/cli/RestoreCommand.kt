@@ -16,7 +16,6 @@ import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.Converters.DatabaseNameConverter
 import org.neo4j.cli.ExecutionContext
-import org.neo4j.commandline.Util
 import org.neo4j.commandline.dbms.LockChecker
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
@@ -164,7 +163,7 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
         }
         val restores = restores(until)
         val failures = mutableListOf<Pair<String, Exception>>()
-        Util.configuredLogProvider(ctx.out(), verbose).use { logProvider ->
+        commandLogProvider(ctx.out(), verbose).use { logProvider ->
             AdminResources(fs, config, logProvider).use { resources ->
                 for ((name, chain) in restores) {
                     try {

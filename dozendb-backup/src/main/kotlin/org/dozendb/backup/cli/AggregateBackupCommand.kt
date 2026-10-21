@@ -13,7 +13,6 @@ import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.Converters.DatabaseNamePatternConverter
 import org.neo4j.cli.ExecutionContext
-import org.neo4j.commandline.Util
 import org.neo4j.configuration.helpers.DatabaseNamePattern
 import org.neo4j.io.layout.Neo4jLayout
 import picocli.CommandLine.Command
@@ -121,7 +120,7 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
                 throw CommandFailedException("${e.message}", e)
             }
         val config = createPrefilledConfigBuilder().build()
-        Util.configuredLogProvider(ctx.out(), verbose).use { logProvider ->
+        commandLogProvider(ctx.out(), verbose).use { logProvider ->
             AdminResources(fs, config, logProvider).use { resources ->
                 for (chain in chains) aggregate(chain, directory, resources)
             }

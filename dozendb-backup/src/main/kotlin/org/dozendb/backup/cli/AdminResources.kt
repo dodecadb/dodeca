@@ -1,6 +1,8 @@
 package org.dozendb.backup.cli
 
+import java.io.OutputStream
 import org.dozendb.backup.StorePreparer
+import org.neo4j.commandline.Util
 import org.neo4j.configuration.Config
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.pagecache.PageCache
@@ -8,7 +10,9 @@ import org.neo4j.io.pagecache.tracing.PageCacheTracer
 import org.neo4j.kernel.impl.pagecache.ConfiguringPageCacheFactory
 import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory
 import org.neo4j.logging.InternalLogProvider
+import org.neo4j.logging.Level
 import org.neo4j.logging.NullLog
+import org.neo4j.logging.log4j.Log4jLogProvider
 import org.neo4j.memory.MemoryPools
 import org.neo4j.scheduler.JobScheduler
 import org.neo4j.time.Clocks
@@ -50,3 +54,10 @@ internal class AdminResources(
         }
     }
 }
+
+/**
+ * Where Neo4j logs what a command does, such as recovery's progress: only warnings and errors, or
+ * with --verbose everything.
+ */
+internal fun commandLogProvider(out: OutputStream, verbose: Boolean): Log4jLogProvider =
+    if (verbose) Util.configuredLogProvider(out, true) else Log4jLogProvider(out, Level.WARN)
