@@ -42,6 +42,11 @@ class SystemReplicationTest {
             it.stream().map { row -> row["user"] as String }.toList()
         }
 
+    private fun ClusterHarness.Member.rolesWithUsers(): List<Pair<String, String?>> =
+        database(SYSTEM).executeTransactionally("SHOW ROLES WITH USERS", emptyMap()) {
+            it.stream().map { row -> row["role"] as String to row["member"] as String? }.toList()
+        }
+
     private fun ClusterHarness.Member.lastSystemTransaction(): Pair<Long, Long> {
         val transaction =
             database(SYSTEM)
@@ -109,20 +114,30 @@ class SystemReplicationTest {
         val leader = cluster.awaitLeader(SYSTEM)
         val follower = cluster.members.first { it != leader }
 
-        assertThatThrownBy {
-                follower
-                    .database(SYSTEM)
-                    .executeTransactionally(
-                        "CREATE USER bob SET PASSWORD 'bob-secret' CHANGE NOT REQUIRED"
-                    )
-            }
-            .isInstanceOf(QueryExecutionException::class.java)
-            .hasMessageContaining("must be executed on the LEADER")
-            .matches {
-                (it as QueryExecutionException).statusCode ==
-                    Status.Cluster.NotALeader.code().serialize()
-            }
+        for (command in
+            listOf(
+                "CREATE USER bob SET PASSWORD 'bob-secret' CHANGE NOT REQUIRED",
+                "CREATE ROLE curator",
+                "DROP ROLE reader",
+                "GRANT ROLE reader TO neo4j",
+                "REVOKE ROLE admin FROM neo4j",
+            )) {
+            assertThatThrownBy { follower.database(SYSTEM).executeTransactionally(command) }
+                .describedAs(command)
+                .isInstanceOf(QueryExecutionException::class.java)
+                .hasMessageContaining("must be executed on the LEADER")
+                .matches {
+                    (it as QueryExecutionException).statusCode ==
+                        Status.Cluster.NotALeader.code().serialize()
+                }
+        }
         assertThat(follower.users()).doesNotContain("bob")
+        assertThat(follower.rolesWithUsers())
+            .contains("admin" to "neo4j")
+            .doesNotContain("reader" to "neo4j")
+            .extracting<String> { it.first }
+            .contains("reader")
+            .doesNotContain("curator")
     }
 
     @Test

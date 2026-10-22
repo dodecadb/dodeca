@@ -19,7 +19,7 @@ import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.exceptions.AuthenticationException
 
-/** User status and home databases on every member, which learns of them through Raft. */
+/** User status, home databases and roles on every member, which learns of them through Raft. */
 class UsersTest {
     // Kept when a test fails, for the members' logs.
     @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path
@@ -45,6 +45,11 @@ class UsersTest {
     private fun ClusterHarness.Member.homeOf(user: String, password: String): String =
         driver(user, password).session().use { session ->
             session.run("CALL db.info() YIELD name").single()["name"].asString()
+        }
+
+    private fun ClusterHarness.Member.movies(user: String, password: String): Long =
+        driver(user, password).session().use { session ->
+            session.run("MATCH (m:Movie) RETURN count(m) AS movies").single()["movies"].asLong()
         }
 
     private fun eventually(assertion: () -> Unit) {
@@ -88,6 +93,37 @@ class UsersTest {
                 assertThat(catchThrowable { member.homeOf("alice", "alice-secret-1") })
                     .isInstanceOf(AuthenticationException::class.java)
             }
+        }
+    }
+
+    @Test
+    fun `roles granted and revoked apply on every member`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings =
+                        mapOf(
+                            GraphDatabaseSettings.auth_enabled to true,
+                            BoltConnector.enabled to true,
+                        ),
+                )
+                .also { harness = it }
+        cluster.start()
+        cluster.awaitLeader("neo4j").database("neo4j").executeTransactionally("CREATE (:Movie)")
+        cluster.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+        cluster.administer("CREATE ROLE curator AS COPY OF reader")
+
+        cluster.administer("GRANT ROLE curator TO alice")
+
+        for (member in cluster.members) {
+            eventually { assertThat(member.movies("alice", "alice-secret-1")).isEqualTo(1) }
+        }
+
+        cluster.administer("REVOKE ROLE curator FROM alice")
+
+        for (member in cluster.members) {
+            eventually { assertThat(member.movies("alice", "alice-secret-1")).isZero() }
         }
     }
 

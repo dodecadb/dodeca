@@ -14,6 +14,7 @@
  * instead of ignored or failing internally, and so is dropping the default database.
  * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored, the user
  * commands of UserCommands are added, and WAIT waits for the servers.
+ * 2026-10-23: the role commands of RoleCommands are added.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -114,9 +115,9 @@ import scala.util.Either
 internal typealias Planner = Function1<AdministrationCommandRuntimeContext, ExecutionPlan>
 
 /**
- * Neo4j Community's administration commands, plus CREATE, DROP, START and STOP DATABASE, which
- * Community leaves to Neo4j Enterprise. The commands only change `Database` nodes in `system`; the
- * databases themselves follow those nodes.
+ * Neo4j Community's administration commands, plus CREATE, DROP, START and STOP DATABASE and the
+ * role commands, which Community leaves to Neo4j Enterprise. The database commands only change
+ * `Database` nodes in `system`; the databases themselves follow those nodes.
  */
 internal class DozenDbAdministrationCommandRuntime
 private constructor(
@@ -124,11 +125,12 @@ private constructor(
     dependencies: DependencyResolver,
     private val databaseCommands: DatabaseCommands,
     private val userCommands: UserCommands,
+    private val roleCommands: RoleCommands,
 ) :
     CommunityAdministrationCommandRuntime(
         engine,
         dependencies,
-        databaseCommands.orElse(userCommands),
+        databaseCommands.orElse(userCommands).orElse(roleCommands),
     ) {
     constructor(
         engine: ExecutionEngine,
@@ -138,15 +140,18 @@ private constructor(
         dependencies,
         DatabaseCommands(engine, dependencies),
         UserCommands(engine, dependencies),
+        RoleCommands(engine, dependencies),
     )
 
     // Community compiles nested plans with its commands and ours, but the top-level plan only with
     // its own; this runtime uses both everywhere.
-    private val commands = databaseCommands.orElse(userCommands).orElse(logicalToExecutable())
+    private val commands =
+        databaseCommands.orElse(userCommands).orElse(roleCommands).orElse(logicalToExecutable())
 
     init {
         databaseCommands.compile = ::compile
         userCommands.compile = ::compile
+        roleCommands.compile = ::compile
     }
 
     override fun name(): String = "dozendb administration-commands"
@@ -162,6 +167,7 @@ private constructor(
         val command = if (logicalPlan is LogSystemCommand) logicalPlan.source() else logicalPlan
         return databaseCommands.isDefinedAt(command) ||
             userCommands.isDefinedAt(command) ||
+            roleCommands.isDefinedAt(command) ||
             super.isApplicableAdministrationCommand(logicalPlan)
     }
 
