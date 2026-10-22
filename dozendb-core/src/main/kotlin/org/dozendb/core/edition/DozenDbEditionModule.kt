@@ -257,7 +257,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         defaultDatabaseResolver = resolver
     }
 
-    /** Neo4j Community's, with a realm that refuses suspended users. */
+    /** Neo4j Community's, with logins that have the privileges of their users' roles. */
     override fun createSecurityModule(globalModule: GlobalModule) {
         globalModule.globalDependencies.satisfyDependency(CommunitySecurityLog.NULL_LOG)
         if (!globalModule.globalConfig.get(GraphDatabaseSettings.auth_enabled)) {
@@ -275,7 +275,9 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                     )
                 ),
                 security,
-            )
+            ) {
+                defaultDatabaseResolver.defaultDatabase(it)
+            }
         module.setup()
         setSecurityProvider(module)
     }

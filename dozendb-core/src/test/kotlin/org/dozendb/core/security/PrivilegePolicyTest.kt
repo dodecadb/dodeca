@@ -633,8 +633,9 @@ class PrivilegePolicyTest {
     @Test
     fun `agrees with the reference evaluator on random privileges`() {
         val random = Random(20261023)
+        val generator = PrivilegeGenerator(random, listOf(films, books))
         repeat(3000) { round ->
-            val privileges = List(random.nextInt(1, 7)) { randomPrivilege(random) }
+            val privileges = List(random.nextInt(1, 7)) { generator.next() }
             val home = listOf(films, books, null).random(random)
             val subject = PrivilegePolicy(privileges, home)
             val reference = ReferencePolicy(privileges, home)
@@ -745,151 +746,6 @@ class PrivilegePolicyTest {
         }
     }
 
-    /** A privilege as a command can give it, over a few names that the questions ask about. */
-    private fun randomPrivilege(random: Random): Privilege {
-        val access = Access.entries.random(random)
-        val action = PrivilegeAction.entries.filter { it != PrivilegeAction.ADMIN }.random(random)
-        val databases =
-            listOf(
-                PrivilegeScope.AllDatabases,
-                PrivilegeScope.Home,
-                PrivilegeScope.Database(films),
-                PrivilegeScope.Database(books),
-            )
-        fun <T> pick(vararg options: T): T = options.random(random)
-        fun labelled() =
-            pick(
-                nodes(),
-                nodes("A"),
-                nodes("B"),
-                relationships(),
-                relationships("R"),
-                PrivilegeSegment.Database,
-            )
-        fun properties() =
-            pick(
-                PrivilegeResource.AllProperties,
-                PrivilegeResource.Property("p"),
-                PrivilegeResource.Property("q"),
-            )
-        return when (action) {
-            PrivilegeAction.TRAVERSE ->
-                Privilege(
-                    access,
-                    action,
-                    databases.random(random),
-                    PrivilegeResource.Graph,
-                    pick(labelled(), pattern(random)),
-                )
-            PrivilegeAction.READ,
-            PrivilegeAction.MATCH ->
-                Privilege(
-                    access,
-                    action,
-                    databases.random(random),
-                    properties(),
-                    pick(labelled(), pattern(random)),
-                )
-            PrivilegeAction.SET_PROPERTY,
-            PrivilegeAction.MERGE ->
-                Privilege(access, action, databases.random(random), properties(), labelled())
-            PrivilegeAction.SET_LABEL,
-            PrivilegeAction.REMOVE_LABEL ->
-                Privilege(
-                    access,
-                    action,
-                    databases.random(random),
-                    pick(
-                        PrivilegeResource.AllLabels,
-                        PrivilegeResource.Label("A"),
-                        PrivilegeResource.Label("C"),
-                    ),
-                    nodes(),
-                )
-            PrivilegeAction.CREATE_ELEMENT,
-            PrivilegeAction.DELETE_ELEMENT,
-            PrivilegeAction.WRITE ->
-                Privilege(
-                    access,
-                    action,
-                    databases.random(random),
-                    PrivilegeResource.Graph,
-                    labelled(),
-                )
-            PrivilegeAction.GRAPH_ACTIONS ->
-                Privilege(access, action, databases.random(random), PrivilegeResource.Graph)
-            PrivilegeAction.SHOW_TRANSACTION,
-            PrivilegeAction.TERMINATE_TRANSACTION,
-            PrivilegeAction.TRANSACTION_MANAGEMENT ->
-                Privilege(
-                    access,
-                    action,
-                    databases.random(random),
-                    segment = pick(*SEGMENTS.drop(1).toTypedArray(), PrivilegeSegment.Users(null)),
-                )
-            PrivilegeAction.IMPERSONATE ->
-                Privilege(
-                    access,
-                    action,
-                    PrivilegeScope.Dbms,
-                    segment = pick(*SEGMENTS.drop(1).toTypedArray(), PrivilegeSegment.Users(null)),
-                )
-            PrivilegeAction.EXECUTE,
-            PrivilegeAction.EXECUTE_BOOSTED ->
-                Privilege(
-                    access,
-                    action,
-                    PrivilegeScope.Dbms,
-                    segment =
-                        pick(
-                            PrivilegeSegment.Procedures(pick(*GLOBS)),
-                            PrivilegeSegment.Functions(pick(*GLOBS)),
-                        ),
-                )
-            PrivilegeAction.SHOW_SETTING ->
-                Privilege(
-                    access,
-                    action,
-                    PrivilegeScope.Dbms,
-                    segment = PrivilegeSegment.Settings(pick(*GLOBS)),
-                )
-            PrivilegeAction.LOAD ->
-                Privilege(access, action, PrivilegeScope.Dbms, segment = PrivilegeSegment.AllData)
-            PrivilegeAction.LOAD_CIDR,
-            PrivilegeAction.LOAD_URL ->
-                Privilege(
-                    access,
-                    action,
-                    PrivilegeScope.Dbms,
-                    segment = PrivilegeSegment.Cidr(pick("10.0.0.0/8", "10.1.0.0/16", "::1/128")),
-                )
-            else ->
-                if (ReferencePolicy.COVERS.getValue(action).any { it in DATABASE_ACTIONS }) {
-                    Privilege(access, action, databases.random(random))
-                } else {
-                    Privilege(access, action, PrivilegeScope.Dbms)
-                }
-        }
-    }
-
-    private fun pattern(random: Random): PrivilegeSegment =
-        PrivilegeSegment.NodePattern(
-            if (random.nextBoolean()) {
-                PatternSegment.ValuePatternSegment(
-                    listOf(emptySet(), setOf("A"), setOf("A", "B")).random(random),
-                    "p",
-                    Values.intValue(random.nextInt(0, 3)),
-                    PropertyRule.ComparisonOperator.entries.random(random),
-                )
-            } else {
-                PatternSegment.NullPatternSegment(
-                    listOf(emptySet(), setOf("B")).random(random),
-                    "p",
-                    PropertyRule.NullOperator.entries.random(random),
-                )
-            }
-        )
-
     private companion object {
         val SEGMENTS =
             listOf(
@@ -904,7 +760,6 @@ class PrivilegePolicyTest {
                 "apoc.load.json",
                 "dbms.security.auth_enabled",
             )
-        val GLOBS = arrayOf("*", "db.*", "apoc.load.?son", "dbms.security*", "DB.LABELS")
         val ADDRESSES =
             listOf(
                 InetAddress.getByName("10.1.2.3"),
@@ -926,23 +781,6 @@ class PrivilegePolicyTest {
                 PrivilegeAction.SET_LABEL,
                 PrivilegeAction.REMOVE_LABEL,
                 PrivilegeAction.SET_PROPERTY,
-            )
-        val DATABASE_ACTIONS =
-            setOf(
-                PrivilegeAction.ACCESS,
-                PrivilegeAction.CREATE_LABEL,
-                PrivilegeAction.CREATE_RELTYPE,
-                PrivilegeAction.CREATE_PROPERTYKEY,
-                PrivilegeAction.CREATE_INDEX,
-                PrivilegeAction.DROP_INDEX,
-                PrivilegeAction.SHOW_INDEX,
-                PrivilegeAction.CREATE_CONSTRAINT,
-                PrivilegeAction.DROP_CONSTRAINT,
-                PrivilegeAction.SHOW_CONSTRAINT,
-                PrivilegeAction.START_DATABASE,
-                PrivilegeAction.STOP_DATABASE,
-                PrivilegeAction.SHOW_CONNECTION,
-                PrivilegeAction.TERMINATE_CONNECTION,
             )
     }
 }

@@ -1,6 +1,7 @@
 package org.dozendb.core.security
 
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import org.neo4j.dbms.database.SystemGraphComponent
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.Direction
@@ -36,14 +37,25 @@ class SecurityGraph(
     fun databaseId(name: String): UUID? = databases[name]
 
     /**
-     * The privileges of [user]: those of their roles and of PUBLIC, and none while the user is
-     * suspended or unknown.
+     * The roles whose privileges [user] has: theirs and PUBLIC, or none while the user is suspended
+     * or unknown.
      */
-    fun privileges(user: String): List<Privilege> {
-        val record = users[user] ?: return emptyList()
-        if (record.suspended) return emptyList()
-        return (record.roles + BuiltInRoles.PUBLIC).flatMap { roles[it]?.privileges.orEmpty() }
+    fun roles(user: String): Set<String> {
+        val record = users[user]
+        if (record == null || record.suspended) return emptySet()
+        return record.roles + BuiltInRoles.PUBLIC
     }
+
+    /** The privileges of the roles called [names]. */
+    fun privileges(names: Set<String>): List<Privilege> = names.flatMap {
+        roles[it]?.privileges.orEmpty()
+    }
+
+    /** The access modes compiled for this read of the system graph, which is their lifetime. */
+    internal val accessModes = ConcurrentHashMap<AccessModeKey, DozenDbAccessMode>()
+
+    /** Who an access mode is for: the same roles and home database give the same privileges. */
+    internal data class AccessModeKey(val roles: Set<String>, val home: UUID?, val database: UUID)
 
     companion object {
         /**

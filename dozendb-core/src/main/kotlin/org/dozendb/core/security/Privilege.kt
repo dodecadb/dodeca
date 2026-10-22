@@ -138,3 +138,22 @@ sealed interface PrivilegeSegment {
         override fun toString() = "CIDR('$range')"
     }
 }
+
+/** The actions of graph privileges; the others are about databases and the DBMS. */
+internal val GRAPH_ACTIONS: Set<PrivilegeAction> =
+    setOf(
+        PrivilegeAction.TRAVERSE,
+        PrivilegeAction.READ,
+        PrivilegeAction.MATCH,
+        PrivilegeAction.MERGE,
+        PrivilegeAction.WRITE,
+        PrivilegeAction.GRAPH_ACTIONS,
+        PrivilegeAction.CREATE_ELEMENT,
+        PrivilegeAction.DELETE_ELEMENT,
+        PrivilegeAction.SET_LABEL,
+        PrivilegeAction.REMOVE_LABEL,
+        PrivilegeAction.SET_PROPERTY,
+    )
+
+/** Stands for a database that does not exist: only privileges on all databases reach it. */
+internal val NO_DATABASE: UUID = UUID(0, 0)

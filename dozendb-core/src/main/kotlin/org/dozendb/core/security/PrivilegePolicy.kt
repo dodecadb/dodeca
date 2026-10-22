@@ -5,6 +5,9 @@ import java.net.InetAddress
 import java.util.UUID
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PermissionState
+import org.neo4j.internal.kernel.api.security.PermissionState.EXPLICIT_DENY
+import org.neo4j.internal.kernel.api.security.PermissionState.EXPLICIT_GRANT
+import org.neo4j.internal.kernel.api.security.PermissionState.NOT_GRANTED
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.string.Globbing
 import org.neo4j.values.storable.Value
@@ -87,8 +90,68 @@ class PrivilegePolicy(privileges: Collection<Privilege>, private val home: UUID?
     }
 
     /** What the user may do with the graph of the database [id]. */
-    fun graph(id: UUID): GraphPolicy =
-        GraphPolicy(privileges.filter { it.action in GRAPH_ACTIONS && inScope(it, id) })
+    fun graph(id: UUID): GraphPolicy = GraphPolicy(graphPrivileges(id))
+
+    /** The graph privileges that apply to the database [id]. */
+    fun graphPrivileges(id: UUID): List<Privilege> = privileges.filter {
+        it.action in GRAPH_ACTIONS && inScope(it, id)
+    }
+
+    /**
+     * [procedure] for the procedures by id: [ids] gives the ids of those a glob matches, [admin]
+     * those of @Admin procedures. Procedures missing from the result may not run.
+     */
+    fun procedures(ids: (String) -> IntArray, admin: IntArray): Map<Int, Execution> {
+        val executions = executions(ids, ::procedures)
+        val anyAdmin = dbms(PrivilegeAction.EXECUTE_ADMIN)
+        for (id in admin) {
+            val single = executions[id] ?: Execution(NOT_GRANTED, NOT_GRANTED)
+            val state =
+                when {
+                    EXPLICIT_DENY in listOf(single.execute, single.boost, anyAdmin) -> EXPLICIT_DENY
+                    anyAdmin.allowsAccess() ||
+                        (single.execute.allowsAccess() && single.boost.allowsAccess()) ->
+                        EXPLICIT_GRANT
+                    else -> NOT_GRANTED
+                }
+            executions[id] = Execution(state, state)
+        }
+        return executions
+    }
+
+    /** [function] for the user-defined functions by id, [ids] giving those a glob matches. */
+    fun functions(ids: (String) -> IntArray): Map<Int, Execution> = executions(ids, ::functions)
+
+    /** Whether EXECUTE ADMIN PROCEDURES applies, or ALL DBMS PRIVILEGES. */
+    fun executeAdmin(): PermissionState = dbms(PrivilegeAction.EXECUTE_ADMIN)
+
+    private fun executions(
+        ids: (String) -> IntArray,
+        glob: (PrivilegeSegment) -> String?,
+    ): MutableMap<Int, Execution> {
+        val executions = mutableMapOf<Int, Execution>()
+        for (privilege in privileges) {
+            val matching =
+                when (privilege.action) {
+                    PrivilegeAction.DBMS_ACTIONS -> ids("*")
+                    PrivilegeAction.EXECUTE,
+                    PrivilegeAction.EXECUTE_BOOSTED -> glob(privilege.segment)?.let(ids)
+                    else -> null
+                } ?: continue
+            val state = if (privilege.access == Access.DENIED) EXPLICIT_DENY else EXPLICIT_GRANT
+            val execute = privilege.action != PrivilegeAction.EXECUTE_BOOSTED
+            val boost = privilege.action != PrivilegeAction.EXECUTE
+            for (id in matching) {
+                val current = executions[id] ?: Execution(NOT_GRANTED, NOT_GRANTED)
+                executions[id] =
+                    Execution(
+                        if (execute) current.execute.combine(state) else current.execute,
+                        if (boost) current.boost.combine(state) else current.boost,
+                    )
+            }
+        }
+        return executions
+    }
 
     /** Whether [privilege] applies to [database], or to the DBMS for null. */
     private fun inScope(privilege: Privilege, database: UUID?): Boolean =
@@ -128,24 +191,6 @@ class PrivilegePolicy(privileges: Collection<Privilege>, private val home: UUID?
 
     private inline fun decide(applies: (Privilege) -> Boolean): PermissionState =
         decide(privileges, applies)
-
-    private companion object {
-        /** The actions of graph privileges, the others being about databases and the DBMS. */
-        val GRAPH_ACTIONS =
-            setOf(
-                PrivilegeAction.TRAVERSE,
-                PrivilegeAction.READ,
-                PrivilegeAction.MATCH,
-                PrivilegeAction.MERGE,
-                PrivilegeAction.WRITE,
-                PrivilegeAction.GRAPH_ACTIONS,
-                PrivilegeAction.CREATE_ELEMENT,
-                PrivilegeAction.DELETE_ELEMENT,
-                PrivilegeAction.SET_LABEL,
-                PrivilegeAction.REMOVE_LABEL,
-                PrivilegeAction.SET_PROPERTY,
-            )
-    }
 }
 
 /** Whether a procedure or function may run, and whether boosted, with full access. */
