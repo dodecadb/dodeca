@@ -30,9 +30,14 @@ object PrivilegeRecords {
     const val IMMUTABLE = "immutable"
     const val KEY = "key"
 
+    /**
+     * A privilege on one database has [SCOPE] [ONE_DATABASE] and the database's id as [DATABASE].
+     */
+    const val SCOPE = "scope"
+    const val ONE_DATABASE = "DATABASE"
+    const val DATABASE = "database"
+
     private const val ACTION = "action"
-    private const val SCOPE = "scope"
-    private const val DATABASE = "database"
     private const val RESOURCE = "resource"
     private const val RESOURCE_NAME = "resourceName"
     private const val SEGMENT = "segment"
@@ -47,9 +52,15 @@ object PrivilegeRecords {
 
     /** Writes [privilege] of the role with the id [roleId] into the new [node]. */
     fun write(node: Node, roleId: String, privilege: Privilege) {
+        record(roleId, privilege).forEach { (key, value) -> node.setProperty(key, value) }
+    }
+
+    /**
+     * The properties of the node of [privilege] of the role with the id [roleId], [KEY] included.
+     */
+    fun record(roleId: String, privilege: Privilege): Map<String, Any> {
         val properties = properties(privilege)
-        properties.forEach { (key, value) -> node.setProperty(key, value) }
-        node.setProperty(KEY, key(roleId, privilege.access, properties))
+        return properties + (KEY to key(roleId, privilege.access, properties))
     }
 
     /** The [KEY] of [privilege] of the role with the id [roleId]. */
@@ -70,7 +81,7 @@ object PrivilegeRecords {
                 "DBMS" -> PrivilegeScope.Dbms
                 "ALL" -> PrivilegeScope.AllDatabases
                 "HOME" -> PrivilegeScope.Home
-                "DATABASE" -> PrivilegeScope.Database(UUID.fromString(text(DATABASE)))
+                ONE_DATABASE -> PrivilegeScope.Database(UUID.fromString(text(DATABASE)))
                 else -> throw IllegalArgumentException("unknown scope $scope")
             }
         val resource =
@@ -143,7 +154,7 @@ object PrivilegeRecords {
             PrivilegeScope.AllDatabases -> put(SCOPE, "ALL")
             PrivilegeScope.Home -> put(SCOPE, "HOME")
             is PrivilegeScope.Database -> {
-                put(SCOPE, "DATABASE")
+                put(SCOPE, ONE_DATABASE)
                 put(DATABASE, scope.id.toString())
             }
         }

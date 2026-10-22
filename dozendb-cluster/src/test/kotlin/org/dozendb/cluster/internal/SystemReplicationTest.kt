@@ -121,6 +121,8 @@ class SystemReplicationTest {
                 "DROP ROLE reader",
                 "GRANT ROLE reader TO neo4j",
                 "REVOKE ROLE admin FROM neo4j",
+                "GRANT CREATE ROLE ON DBMS TO reader",
+                "REVOKE ACCESS ON DATABASE * FROM reader",
             )) {
             assertThatThrownBy { follower.database(SYSTEM).executeTransactionally(command) }
                 .describedAs(command)

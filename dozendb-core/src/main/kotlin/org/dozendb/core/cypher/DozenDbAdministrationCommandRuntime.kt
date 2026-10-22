@@ -14,7 +14,8 @@
  * instead of ignored or failing internally, and so is dropping the default database.
  * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored, the user
  * commands of UserCommands are added, and WAIT waits for the servers.
- * 2026-10-23: the role commands of RoleCommands are added.
+ * 2026-10-23: the role commands of RoleCommands and the privilege commands of PrivilegeCommands are
+ * added, and DROP DATABASE drops the privileges on the database.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -28,6 +29,7 @@ import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.SeedServers
+import org.dozendb.core.security.PrivilegeRecords
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.common.DependencyResolver
 import org.neo4j.configuration.Config
@@ -126,11 +128,12 @@ private constructor(
     private val databaseCommands: DatabaseCommands,
     private val userCommands: UserCommands,
     private val roleCommands: RoleCommands,
+    private val privilegeCommands: PrivilegeCommands,
 ) :
     CommunityAdministrationCommandRuntime(
         engine,
         dependencies,
-        databaseCommands.orElse(userCommands).orElse(roleCommands),
+        databaseCommands.orElse(userCommands).orElse(roleCommands).orElse(privilegeCommands),
     ) {
     constructor(
         engine: ExecutionEngine,
@@ -141,17 +144,23 @@ private constructor(
         DatabaseCommands(engine, dependencies),
         UserCommands(engine, dependencies),
         RoleCommands(engine, dependencies),
+        PrivilegeCommands(engine, dependencies),
     )
 
     // Community compiles nested plans with its commands and ours, but the top-level plan only with
     // its own; this runtime uses both everywhere.
     private val commands =
-        databaseCommands.orElse(userCommands).orElse(roleCommands).orElse(logicalToExecutable())
+        databaseCommands
+            .orElse(userCommands)
+            .orElse(roleCommands)
+            .orElse(privilegeCommands)
+            .orElse(logicalToExecutable())
 
     init {
         databaseCommands.compile = ::compile
         userCommands.compile = ::compile
         roleCommands.compile = ::compile
+        privilegeCommands.compile = ::compile
     }
 
     override fun name(): String = "dozendb administration-commands"
@@ -168,6 +177,7 @@ private constructor(
         return databaseCommands.isDefinedAt(command) ||
             userCommands.isDefinedAt(command) ||
             roleCommands.isDefinedAt(command) ||
+            privilegeCommands.isDefinedAt(command) ||
             super.isApplicableAdministrationCommand(logicalPlan)
     }
 
@@ -480,8 +490,9 @@ private class DatabaseCommands(
         )
 
     /**
-     * Refuses the default database: it is created at startup, but only on the member that founds a
-     * cluster, so dropping it would keep every other member from starting.
+     * Drops a database with the privileges on it. Refuses the default database: it is created
+     * at startup, but only on the member that founds a cluster, so dropping it would keep every
+     * other member from starting.
      */
     @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for this.
     private fun dropDatabase(
@@ -515,6 +526,11 @@ private class DatabaseCommands(
             "DropDatabase",
             """
             MATCH (database:Database {name: $key})
+            OPTIONAL MATCH (privilege:${PrivilegeRecords.PRIVILEGE.name()} {
+                ${PrivilegeRecords.SCOPE}: '${PrivilegeRecords.ONE_DATABASE}',
+                ${PrivilegeRecords.DATABASE}: database.uuid})
+            DETACH DELETE privilege
+            WITH DISTINCT database
             OPTIONAL MATCH (database)-[r]-()
             OPTIONAL MATCH (databaseName:DatabaseName {name: $key})
             OPTIONAL MATCH (databaseName)-[r2]-()
