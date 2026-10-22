@@ -14,17 +14,28 @@ import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.PrivilegeGQLCodeEntity
+import org.neo4j.cypher.internal.ast.ActionResource
 import org.neo4j.cypher.internal.ast.AdministrationAction
 import org.neo4j.cypher.internal.ast.AllDatabasesQualifier
+import org.neo4j.cypher.internal.ast.AllLabelResource
+import org.neo4j.cypher.internal.ast.AllPropertyResource
 import org.neo4j.cypher.internal.ast.AllQualifier
 import org.neo4j.cypher.internal.ast.DatabaseName
 import org.neo4j.cypher.internal.ast.FunctionAllQualifier
 import org.neo4j.cypher.internal.ast.FunctionQualifier
+import org.neo4j.cypher.internal.ast.GraphAction
+import org.neo4j.cypher.internal.ast.LabelAllQualifier
+import org.neo4j.cypher.internal.ast.LabelQualifier
+import org.neo4j.cypher.internal.ast.LabelResource
 import org.neo4j.cypher.internal.ast.LoadAllQualifier
 import org.neo4j.cypher.internal.ast.LoadCidrQualifier
+import org.neo4j.cypher.internal.ast.PatternQualifier
 import org.neo4j.cypher.internal.ast.PrivilegeQualifier
 import org.neo4j.cypher.internal.ast.ProcedureAllQualifier
 import org.neo4j.cypher.internal.ast.ProcedureQualifier
+import org.neo4j.cypher.internal.ast.PropertyResource
+import org.neo4j.cypher.internal.ast.RelationshipAllQualifier
+import org.neo4j.cypher.internal.ast.RelationshipQualifier
 import org.neo4j.cypher.internal.ast.SettingAllQualifier
 import org.neo4j.cypher.internal.ast.SettingQualifier
 import org.neo4j.cypher.internal.ast.UnassignableAction
@@ -35,13 +46,16 @@ import org.neo4j.cypher.internal.logical.plans.`AllScope$`
 import org.neo4j.cypher.internal.logical.plans.AssertDatabasePrivilegeCanBeMutated
 import org.neo4j.cypher.internal.logical.plans.AssertDbmsActionIsAssignable
 import org.neo4j.cypher.internal.logical.plans.AssertDbmsPrivilegeCanBeMutated
+import org.neo4j.cypher.internal.logical.plans.AssertGraphPrivilegeCanBeMutated
 import org.neo4j.cypher.internal.logical.plans.AssertLoadPrivilegeCanBeMutated
 import org.neo4j.cypher.internal.logical.plans.AssertMutablePrivilegesCanBeAssignedToRole
 import org.neo4j.cypher.internal.logical.plans.DenyDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.DenyDbmsAction
+import org.neo4j.cypher.internal.logical.plans.DenyGraphAction
 import org.neo4j.cypher.internal.logical.plans.DenyLoadAction
 import org.neo4j.cypher.internal.logical.plans.GrantDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.GrantDbmsAction
+import org.neo4j.cypher.internal.logical.plans.GrantGraphAction
 import org.neo4j.cypher.internal.logical.plans.GrantLoadAction
 import org.neo4j.cypher.internal.logical.plans.`HomeScope$`
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
@@ -49,6 +63,7 @@ import org.neo4j.cypher.internal.logical.plans.NamedScope
 import org.neo4j.cypher.internal.logical.plans.PrivilegeCommandScope
 import org.neo4j.cypher.internal.logical.plans.RevokeDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.RevokeDbmsAction
+import org.neo4j.cypher.internal.logical.plans.RevokeGraphAction
 import org.neo4j.cypher.internal.logical.plans.RevokeLoadAction
 import org.neo4j.cypher.internal.procs.ActionMapper
 import org.neo4j.cypher.internal.procs.`Continue$`
@@ -91,9 +106,9 @@ import scala.collection.immutable.Set
 import scala.util.Either
 
 /**
- * GRANT, DENY and REVOKE of DBMS, database and LOAD privileges, which Neo4j Community plans but
- * refuses to run. Neo4j's planner splits each command into commands of one privilege for one role,
- * which these run on the records of [PrivilegeRecords].
+ * GRANT, DENY and REVOKE of DBMS, database, graph and LOAD privileges, which Neo4j Community plans
+ * but refuses to run. Neo4j's planner splits each command into commands of one privilege for one
+ * role, which these run on the records of [PrivilegeRecords].
  *
  * IMMUTABLE privileges need authentication disabled, as nobody can be granted the privilege to
  * assign or remove them; immutable roles take only immutable privileges.
@@ -247,6 +262,48 @@ internal class PrivilegeCommands(
                         compile(plan.source(), it),
                     )
                 }
+            is GrantGraphAction ->
+                graph(plan.qualifier()) {
+                    assign(
+                        Access.GRANTED,
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        plan.roleName(),
+                        plan.immutable(),
+                        plan.command(),
+                        compile(plan.source(), it),
+                    )
+                }
+            is DenyGraphAction ->
+                graph(plan.qualifier()) {
+                    assign(
+                        Access.DENIED,
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        plan.roleName(),
+                        plan.immutable(),
+                        plan.command(),
+                        compile(plan.source(), it),
+                    )
+                }
+            is RevokeGraphAction ->
+                graph(plan.qualifier()) {
+                    revoke(
+                        access(plan.revokeType()),
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        plan.roleName(),
+                        plan.immutableOnly(),
+                        plan.command(),
+                        compile(plan.source(), it),
+                    )
+                }
+            is AssertGraphPrivilegeCanBeMutated ->
+                graph(plan.qualifier()) {
+                    assertRevocable(
+                        access(plan.revokeType()),
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        plan.roleName(),
+                        compile(plan.source(), it),
+                    )
+                }
             is AssertMutablePrivilegesCanBeAssignedToRole ->
                 Planner { assertMutableRole(plan.roleName(), compile(plan.source(), it)) }
             is AssertDbmsActionIsAssignable ->
@@ -327,6 +384,32 @@ internal class PrivilegeCommands(
             segment(qualifier),
         )
 
+    /**
+     * The planner of a graph privilege; none for a property rule, which Neo4j's own refusal answers
+     * until DozenDB has property rules.
+     */
+    private fun graph(qualifier: PrivilegeQualifier, planner: Planner): Planner? =
+        if (qualifier is PatternQualifier) null else planner
+
+    private fun graph(
+        action: GraphAction,
+        resource: ActionResource,
+        scope: PrivilegeCommandScope,
+        qualifier: PrivilegeQualifier,
+    ) =
+        Template(
+            ActionMapper.asKernelAction(action),
+            when (resource) {
+                is AllPropertyResource -> PrivilegeResource.AllProperties
+                is PropertyResource -> PrivilegeResource.Property(resource.property())
+                is AllLabelResource -> PrivilegeResource.AllLabels
+                is LabelResource -> PrivilegeResource.Label(resource.label())
+                else -> PrivilegeResource.Graph
+            },
+            scope(scope),
+            segment(qualifier),
+        )
+
     /** The databases of [scope]; a named one by its id, as privileges keep it. */
     private fun scope(
         scope: PrivilegeCommandScope
@@ -373,6 +456,18 @@ internal class PrivilegeCommands(
             is AllQualifier,
             is AllDatabasesQualifier -> { _ ->
                 PrivilegeSegment.Database
+            }
+            is LabelAllQualifier -> { _ ->
+                PrivilegeSegment.Nodes(null)
+            }
+            is LabelQualifier -> { _ ->
+                PrivilegeSegment.Nodes(qualifier.label())
+            }
+            is RelationshipAllQualifier -> { _ ->
+                PrivilegeSegment.Relationships(null)
+            }
+            is RelationshipQualifier -> { _ ->
+                PrivilegeSegment.Relationships(qualifier.reltype())
             }
             is UserAllQualifier -> { _ ->
                 PrivilegeSegment.Users(null)
