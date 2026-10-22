@@ -80,7 +80,7 @@ internal constructor(
     override fun databaseAccessMode(): DatabaseAccessMode = user
 
     override fun allowExecuteAdminProcedure(procedureId: Int): PermissionState =
-        user.accessMode.allowsExecuteProcedure(procedureId)
+        user.accessMode.allowExecuteAdminProcedure(procedureId)
 
     override fun allowsAdminAction(action: AdminActionOnResource): PermissionState =
         adminMode.allows(action)

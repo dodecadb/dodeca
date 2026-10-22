@@ -45,18 +45,15 @@ class PrivilegePolicy(privileges: Collection<Privilege>, private val home: UUID?
     }
 
     /** Executing the procedure [name], an @Admin procedure if [admin]. */
-    fun procedure(name: String, admin: Boolean): Execution {
-        val execute = executable(PrivilegeAction.EXECUTE, name, ::procedures)
-        val boost = executable(PrivilegeAction.EXECUTE_BOOSTED, name, ::procedures)
-        if (!admin) return Execution(execute, boost)
-        val anyAdmin = dbms(PrivilegeAction.EXECUTE_ADMIN)
-        if (PermissionState.EXPLICIT_DENY in listOf(execute, boost, anyAdmin)) {
-            return Execution(PermissionState.EXPLICIT_DENY, PermissionState.EXPLICIT_DENY)
-        }
-        val allowed = anyAdmin.allowsAccess() || (execute.allowsAccess() && boost.allowsAccess())
-        val state = PermissionState.fromAllowList(allowed)
-        return Execution(state, state)
-    }
+    fun procedure(name: String, admin: Boolean): Execution =
+        procedure(
+            Execution(
+                executable(PrivilegeAction.EXECUTE, name, ::procedures),
+                executable(PrivilegeAction.EXECUTE_BOOSTED, name, ::procedures),
+            ),
+            dbms(PrivilegeAction.EXECUTE_ADMIN),
+            admin,
+        )
 
     /** Executing the user-defined function [name]; built-in functions need nothing. */
     fun function(name: String): Execution =
@@ -99,24 +96,20 @@ class PrivilegePolicy(privileges: Collection<Privilege>, private val home: UUID?
 
     /**
      * [procedure] for the procedures by id: [ids] gives the ids of those a glob matches, [admin]
-     * those of @Admin procedures. Procedures missing from the result may not run.
+     * those of @Admin procedures.
      */
-    fun procedures(ids: (String) -> IntArray, admin: IntArray): Map<Int, Execution> {
-        val executions = executions(ids, ::procedures)
+    fun procedures(ids: (String) -> IntArray, admin: IntArray): (Int) -> Execution {
         val anyAdmin = dbms(PrivilegeAction.EXECUTE_ADMIN)
-        for (id in admin) {
-            val single = executions[id] ?: Execution(NOT_GRANTED, NOT_GRANTED)
-            val state =
-                when {
-                    EXPLICIT_DENY in listOf(single.execute, single.boost, anyAdmin) -> EXPLICIT_DENY
-                    anyAdmin.allowsAccess() ||
-                        (single.execute.allowsAccess() && single.boost.allowsAccess()) ->
-                        EXPLICIT_GRANT
-                    else -> NOT_GRANTED
-                }
-            executions[id] = Execution(state, state)
-        }
-        return executions
+        val admins = admin.toHashSet()
+        val executions =
+            executions(ids, ::procedures).mapValues { (id, given) ->
+                procedure(given, anyAdmin, id in admins)
+            }
+        // Procedures that no privilege names.
+        val none = Execution(NOT_GRANTED, NOT_GRANTED)
+        val other = procedure(none, anyAdmin, false)
+        val otherAdmin = procedure(none, anyAdmin, true)
+        return { id -> executions[id] ?: if (id in admins) otherAdmin else other }
     }
 
     /** [function] for the user-defined functions by id, [ids] giving those a glob matches. */
@@ -151,6 +144,31 @@ class PrivilegePolicy(privileges: Collection<Privilege>, private val home: UUID?
             }
         }
         return executions
+    }
+
+    /**
+     * A procedure that EXECUTE and EXECUTE BOOSTED on it give [given]. Its caller is an admin with
+     * it with EXECUTE ADMIN PROCEDURES, [anyAdmin], or both, and no DENY of the three; Neo4j asks
+     * so before it shows or ends the connections of other users. An @Admin procedure, if [admin],
+     * runs only so, boosted. EXECUTE alone passes Neo4j's first check of it, so that the second
+     * names the admin procedure it refuses.
+     */
+    private fun procedure(given: Execution, anyAdmin: PermissionState, admin: Boolean): Execution {
+        val asAdmin =
+            when {
+                EXPLICIT_DENY in listOf(given.execute, given.boost, anyAdmin) -> EXPLICIT_DENY
+                anyAdmin.allowsAccess() ||
+                    (given.execute.allowsAccess() && given.boost.allowsAccess()) -> EXPLICIT_GRANT
+                else -> NOT_GRANTED
+            }
+        if (!admin) return given.copy(admin = asAdmin)
+        val execute =
+            if (given.execute == EXPLICIT_DENY) EXPLICIT_DENY
+            else
+                PermissionState.fromAllowList(
+                    given.execute.allowsAccess() || asAdmin.allowsAccess()
+                )
+        return Execution(execute, asAdmin, asAdmin)
     }
 
     /** Whether [privilege] applies to [database], or to the DBMS for null. */
@@ -193,8 +211,15 @@ class PrivilegePolicy(privileges: Collection<Privilege>, private val home: UUID?
         decide(privileges, applies)
 }
 
-/** Whether a procedure or function may run, and whether boosted, with full access. */
-data class Execution(val execute: PermissionState, val boost: PermissionState)
+/**
+ * Whether a procedure or function may run, and whether boosted, with full access; for a procedure,
+ * whether its caller is an admin with it, as @Admin procedures need.
+ */
+data class Execution(
+    val execute: PermissionState,
+    val boost: PermissionState,
+    val admin: PermissionState = NOT_GRANTED,
+)
 
 /**
  * What a user may do with one graph, from the graph privileges that apply to its database. Nodes

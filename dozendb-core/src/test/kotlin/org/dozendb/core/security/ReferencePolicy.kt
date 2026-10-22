@@ -50,9 +50,8 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
     fun procedure(name: String, admin: Boolean): Execution {
         val execute = executable(PrivilegeAction.EXECUTE, name, procedures = true)
         val boost = executable(PrivilegeAction.EXECUTE_BOOSTED, name, procedures = true)
-        if (!admin) return Execution(execute, boost)
         val anyAdmin = answer(facts.filter { it.action == PrivilegeAction.EXECUTE_ADMIN })
-        val state =
+        val asAdmin =
             when {
                 execute == PermissionState.EXPLICIT_DENY ||
                     boost == PermissionState.EXPLICIT_DENY ||
@@ -62,7 +61,15 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
                     boost == PermissionState.EXPLICIT_GRANT -> PermissionState.EXPLICIT_GRANT
                 else -> PermissionState.NOT_GRANTED
             }
-        return Execution(state, state)
+        if (!admin) return Execution(execute, boost, asAdmin)
+        val runs =
+            when {
+                execute == PermissionState.EXPLICIT_DENY -> PermissionState.EXPLICIT_DENY
+                execute == PermissionState.EXPLICIT_GRANT ||
+                    asAdmin == PermissionState.EXPLICIT_GRANT -> PermissionState.EXPLICIT_GRANT
+                else -> PermissionState.NOT_GRANTED
+            }
+        return Execution(runs, asAdmin, asAdmin)
     }
 
     fun function(name: String): Execution =

@@ -178,12 +178,16 @@ class DozenDbAccessMode(
         PropertySelection.NO_PROPERTIES
 
     override fun allowsExecuteProcedure(procedureId: Int): PermissionState =
-        procedures[procedureId]?.execute ?: PermissionState.NOT_GRANTED
+        procedures(procedureId).execute
 
     override fun allowExecuteAdminProcedures(): PermissionState = policy.executeAdmin()
 
+    /** Whether the user is an admin with the procedure [procedureId]. */
+    fun allowExecuteAdminProcedure(procedureId: Int): PermissionState =
+        procedures(procedureId).admin
+
     override fun shouldBoostProcedure(procedureId: Int): PermissionState =
-        procedures[procedureId]?.boost ?: PermissionState.NOT_GRANTED
+        procedures(procedureId).boost
 
     override fun allowsExecuteFunction(id: Int): PermissionState =
         functions[id]?.execute ?: PermissionState.NOT_GRANTED

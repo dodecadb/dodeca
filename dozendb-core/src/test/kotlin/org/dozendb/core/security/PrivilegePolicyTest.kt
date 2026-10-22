@@ -194,7 +194,7 @@ class PrivilegePolicyTest {
             )
             .isEqualTo(EXPLICIT_DENY)
         assertThat(policy(execute("*"), boost("db.labels")).procedure("db.labels", false))
-            .isEqualTo(Execution(EXPLICIT_GRANT, EXPLICIT_GRANT))
+            .isEqualTo(Execution(EXPLICIT_GRANT, EXPLICIT_GRANT, EXPLICIT_GRANT))
         assertThat(
                 policy(
                         execute("*"),
@@ -205,7 +205,7 @@ class PrivilegePolicyTest {
                     )
                     .procedure("db.labels", false)
             )
-            .isEqualTo(Execution(EXPLICIT_GRANT, EXPLICIT_DENY))
+            .isEqualTo(Execution(EXPLICIT_GRANT, EXPLICIT_DENY, EXPLICIT_DENY))
         assertThat(policy(boost("*")).procedure("db.labels", false).execute).isEqualTo(NOT_GRANTED)
     }
 
@@ -240,14 +240,15 @@ class PrivilegePolicyTest {
     @Test
     fun `admin procedures need EXECUTE ADMIN, or EXECUTE and BOOSTED, and no deny`() {
         val admin = dbms(PrivilegeAction.EXECUTE_ADMIN)
-        val allowed = Execution(EXPLICIT_GRANT, EXPLICIT_GRANT)
-        val denied = Execution(EXPLICIT_DENY, EXPLICIT_DENY)
+        val allowed = Execution(EXPLICIT_GRANT, EXPLICIT_GRANT, EXPLICIT_GRANT)
+        val denied = Execution(EXPLICIT_DENY, EXPLICIT_DENY, EXPLICIT_DENY)
 
         assertThat(policy(admin).procedure("apoc.trigger.add", true)).isEqualTo(allowed)
         assertThat(policy(execute("*"), boost("apoc.*")).procedure("apoc.trigger.add", true))
             .isEqualTo(allowed)
-        assertThat(policy(execute("*")).procedure("apoc.trigger.add", true).execute)
-            .isEqualTo(NOT_GRANTED)
+        // EXECUTE alone passes Neo4j's first check, so that its second names the procedure.
+        assertThat(policy(execute("*")).procedure("apoc.trigger.add", true))
+            .isEqualTo(Execution(EXPLICIT_GRANT, NOT_GRANTED, NOT_GRANTED))
         assertThat(policy(boost("*")).procedure("apoc.trigger.add", true).execute)
             .isEqualTo(NOT_GRANTED)
         assertThat(
@@ -262,17 +263,38 @@ class PrivilegePolicyTest {
                 policy(execute("*"), boost("*"), denyDbms(PrivilegeAction.EXECUTE_ADMIN))
                     .procedure("apoc.trigger.add", true)
             )
-            .isEqualTo(denied)
+            .isEqualTo(Execution(EXPLICIT_GRANT, EXPLICIT_DENY, EXPLICIT_DENY))
+    }
+
+    @Test
+    fun `callers are admins with other procedures as with admin ones, without boosting`() {
+        assertThat(policy(execute("*")).procedure("dbms.listConnections", false))
+            .isEqualTo(Execution(EXPLICIT_GRANT, NOT_GRANTED, NOT_GRANTED))
+        assertThat(
+                policy(execute("*"), dbms(PrivilegeAction.EXECUTE_ADMIN))
+                    .procedure("dbms.listConnections", false)
+            )
+            .isEqualTo(Execution(EXPLICIT_GRANT, NOT_GRANTED, EXPLICIT_GRANT))
+        assertThat(
+                policy(
+                        execute("*"),
+                        boost("dbms.*"),
+                        denyDbms(PrivilegeAction.EXECUTE_ADMIN),
+                    )
+                    .procedure("dbms.listConnections", false)
+            )
+            .isEqualTo(Execution(EXPLICIT_GRANT, EXPLICIT_GRANT, EXPLICIT_DENY))
     }
 
     @Test
     fun `ALL DBMS PRIVILEGES executes and boosts everything, its deny blocks all`() {
         val all = policy(dbms(PrivilegeAction.DBMS_ACTIONS))
-        val granted = Execution(EXPLICIT_GRANT, EXPLICIT_GRANT)
+        val granted = Execution(EXPLICIT_GRANT, EXPLICIT_GRANT, EXPLICIT_GRANT)
 
         assertThat(all.procedure("db.labels", false)).isEqualTo(granted)
         assertThat(all.procedure("apoc.trigger.add", true)).isEqualTo(granted)
-        assertThat(all.function("apoc.coll.sum")).isEqualTo(granted)
+        assertThat(all.function("apoc.coll.sum"))
+            .isEqualTo(Execution(EXPLICIT_GRANT, EXPLICIT_GRANT))
         assertThat(all.setting("dbms.security.auth_enabled")).isEqualTo(EXPLICIT_GRANT)
         assertThat(
                 policy(execute("*"), denyDbms(PrivilegeAction.DBMS_ACTIONS))

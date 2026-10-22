@@ -83,7 +83,7 @@ class DozenDbAccessModeTest {
         }
     }
 
-    private fun check(mode: AccessMode, policy: PrivilegePolicy, context: String) {
+    private fun check(mode: DozenDbAccessMode, policy: PrivilegePolicy, context: String) {
         val graph = policy.graph(database)
         val none = { _: String -> Values.NO_VALUE }
         fun expect(question: String, actual: Boolean, expected: Boolean) =
@@ -208,7 +208,13 @@ class DozenDbAccessModeTest {
         }
         for ((id, name) in PROCEDURES.withIndex()) {
             val expected = policy.procedure(name, name in ADMIN)
-            assertThat(Execution(mode.allowsExecuteProcedure(id), mode.shouldBoostProcedure(id)))
+            assertThat(
+                    Execution(
+                        mode.allowsExecuteProcedure(id),
+                        mode.shouldBoostProcedure(id),
+                        mode.allowExecuteAdminProcedure(id),
+                    )
+                )
                 .describedAs("procedure $name, $context")
                 .isEqualTo(expected)
         }
