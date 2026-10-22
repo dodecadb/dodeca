@@ -5,6 +5,7 @@
  * Modifications Copyright (c) DozenDB
  * 2026-10-20: Neo4j Community's planners of CREATE USER, ALTER USER, SHOW USERS and SHOW CURRENT
  * USER, which keep and show the status and home database that Community refuses.
+ * 2026-10-23: SHOW USERS and SHOW CURRENT USER show the roles of the users.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -12,6 +13,8 @@
  */
 package org.dozendb.core.cypher
 
+import org.dozendb.core.security.BuiltInRoles
+import org.dozendb.core.security.PrivilegeRecords
 import org.neo4j.common.DependencyResolver
 import org.neo4j.configuration.Config
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
@@ -223,9 +226,12 @@ internal class UserCommands(
         )
     }
 
-    /** The columns of SHOW USERS; roles stay null, as DozenDB has no roles. */
+    /** The columns of SHOW USERS: the roles are those granted, by name, then PUBLIC. */
     private fun userColumns(user: String): String =
-        "$user.${admin.userNamePropKey()} AS user, null AS roles, " +
+        "$user.${admin.userNamePropKey()} AS user, " +
+            "COLLECT { MATCH ($user)-[:${PrivilegeRecords.HAS_ROLE.name()}]->" +
+            "(role:${PrivilegeRecords.ROLE.name()}) RETURN role.${PrivilegeRecords.ROLE_NAME} " +
+            "ORDER BY role.${PrivilegeRecords.ROLE_NAME} } + ['${BuiltInRoles.PUBLIC}'] AS roles, " +
             "$user.${admin.userPwChangeReqPropKey()} AS passwordChangeRequired, " +
             "coalesce($user.${admin.userSuspendedPropKey()}, false) AS suspended, " +
             "$user.${admin.userHomeDbPropKey()} AS home"

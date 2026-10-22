@@ -4,7 +4,8 @@
  *
  * Modifications Copyright (c) DozenDB
  * 2026-10-20: Neo4j Community's CommunitySecurityModule with a realm that refuses suspended users.
- * 2026-10-23: logins whose transactions have the privileges of their users' roles.
+ * 2026-10-23: logins whose transactions have the privileges of their users' roles, and
+ * `dbms.showCurrentUser()` with their roles.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -35,7 +36,6 @@ import org.neo4j.kernel.impl.security.User
 import org.neo4j.logging.internal.LogService
 import org.neo4j.messages.MessageUtil
 import org.neo4j.server.security.SecureHasher
-import org.neo4j.server.security.auth.AuthProcedures
 import org.neo4j.server.security.auth.AuthenticationStrategy
 import org.neo4j.server.security.auth.BasicLoginContext
 import org.neo4j.server.security.auth.CommunitySecurityModule
@@ -76,7 +76,7 @@ class DozenDbSecurityModule(
         registerProcedure(
             dependencies.resolveDependency(GlobalProcedures::class.java),
             logService.internalLogProvider.getLog(javaClass),
-            AuthProcedures::class.java,
+            DozenDbAuthProcedures::class.java,
         )
     }
 

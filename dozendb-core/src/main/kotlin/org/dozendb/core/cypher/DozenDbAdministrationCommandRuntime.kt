@@ -14,8 +14,8 @@
  * instead of ignored or failing internally, and so is dropping the default database.
  * 2026-10-20: OPTIONS and TOPOLOGY of CREATE DATABASE are rejected instead of ignored, the user
  * commands of UserCommands are added, and WAIT waits for the servers.
- * 2026-10-23: the role commands of RoleCommands and the privilege commands of PrivilegeCommands are
- * added, and DROP DATABASE drops the privileges on the database.
+ * 2026-10-23: the role commands of RoleCommands, the privilege commands of PrivilegeCommands and
+ * ShowPrivilegeCommands are added, and DROP DATABASE drops the privileges on the database.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -129,11 +129,16 @@ private constructor(
     private val userCommands: UserCommands,
     private val roleCommands: RoleCommands,
     private val privilegeCommands: PrivilegeCommands,
+    private val showPrivilegeCommands: ShowPrivilegeCommands,
 ) :
     CommunityAdministrationCommandRuntime(
         engine,
         dependencies,
-        databaseCommands.orElse(userCommands).orElse(roleCommands).orElse(privilegeCommands),
+        databaseCommands
+            .orElse(userCommands)
+            .orElse(roleCommands)
+            .orElse(privilegeCommands)
+            .orElse(showPrivilegeCommands),
     ) {
     constructor(
         engine: ExecutionEngine,
@@ -145,6 +150,7 @@ private constructor(
         UserCommands(engine, dependencies),
         RoleCommands(engine, dependencies),
         PrivilegeCommands(engine, dependencies),
+        ShowPrivilegeCommands(engine, dependencies),
     )
 
     // Community compiles nested plans with its commands and ours, but the top-level plan only with
@@ -154,6 +160,7 @@ private constructor(
             .orElse(userCommands)
             .orElse(roleCommands)
             .orElse(privilegeCommands)
+            .orElse(showPrivilegeCommands)
             .orElse(logicalToExecutable())
 
     init {
@@ -161,6 +168,7 @@ private constructor(
         userCommands.compile = ::compile
         roleCommands.compile = ::compile
         privilegeCommands.compile = ::compile
+        showPrivilegeCommands.compile = ::compile
     }
 
     override fun name(): String = "dozendb administration-commands"
@@ -178,6 +186,7 @@ private constructor(
             userCommands.isDefinedAt(command) ||
             roleCommands.isDefinedAt(command) ||
             privilegeCommands.isDefinedAt(command) ||
+            showPrivilegeCommands.isDefinedAt(command) ||
             super.isApplicableAdministrationCommand(logicalPlan)
     }
 

@@ -1,0 +1,256 @@
+package org.dozendb.core.security
+
+import java.util.UUID
+import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.Test
+import org.neo4j.internal.kernel.api.security.PatternSegment
+import org.neo4j.internal.kernel.api.security.PrivilegeAction
+import org.neo4j.internal.kernel.api.security.PropertyRule
+import org.neo4j.values.storable.Values
+
+/** Privileges are shown as the examples of Neo4j's docs show them. */
+class PrivilegeTextTest {
+    private val neo4j = UUID(0, 1)
+    private val names = mapOf(neo4j to "neo4j", UUID(0, 2) to "remote-db")
+
+    private fun commands(role: String?, vararg privileges: Privilege, revoke: Boolean = false) =
+        privileges
+            .mapNotNull { PrivilegeText.command(it, role, revoke, names::get)?.command }
+            .distinct()
+            .sorted()
+
+    @Test
+    fun `shows the built-in roles as the docs list them`() {
+        fun of(role: String) = commands(role, *BuiltInRoles.ALL.getValue(role).toTypedArray())
+
+        assertThat(of("PUBLIC"))
+            .containsExactly(
+                "GRANT ACCESS ON HOME DATABASE TO `PUBLIC`",
+                "GRANT EXECUTE FUNCTION * ON DBMS TO `PUBLIC`",
+                "GRANT EXECUTE PROCEDURE * ON DBMS TO `PUBLIC`",
+                "GRANT LOAD ON ALL DATA TO `PUBLIC`",
+            )
+        assertThat(of("reader"))
+            .containsExactly(
+                "GRANT ACCESS ON DATABASE * TO `reader`",
+                "GRANT MATCH {*} ON GRAPH * NODE * TO `reader`",
+                "GRANT MATCH {*} ON GRAPH * RELATIONSHIP * TO `reader`",
+                "GRANT SHOW CONSTRAINT ON DATABASE * TO `reader`",
+                "GRANT SHOW INDEX ON DATABASE * TO `reader`",
+            )
+        assertThat(of("editor"))
+            .containsExactly(
+                "GRANT ACCESS ON DATABASE * TO `editor`",
+                "GRANT MATCH {*} ON GRAPH * NODE * TO `editor`",
+                "GRANT MATCH {*} ON GRAPH * RELATIONSHIP * TO `editor`",
+                "GRANT SHOW CONSTRAINT ON DATABASE * TO `editor`",
+                "GRANT SHOW INDEX ON DATABASE * TO `editor`",
+                "GRANT WRITE ON GRAPH * TO `editor`",
+            )
+        assertThat(of("publisher"))
+            .containsExactly(
+                "GRANT ACCESS ON DATABASE * TO `publisher`",
+                "GRANT MATCH {*} ON GRAPH * NODE * TO `publisher`",
+                "GRANT MATCH {*} ON GRAPH * RELATIONSHIP * TO `publisher`",
+                "GRANT NAME MANAGEMENT ON DATABASE * TO `publisher`",
+                "GRANT SHOW CONSTRAINT ON DATABASE * TO `publisher`",
+                "GRANT SHOW INDEX ON DATABASE * TO `publisher`",
+                "GRANT WRITE ON GRAPH * TO `publisher`",
+            )
+        assertThat(of("architect"))
+            .containsExactly(
+                "GRANT ACCESS ON DATABASE * TO `architect`",
+                "GRANT CONSTRAINT MANAGEMENT ON DATABASE * TO `architect`",
+                "GRANT INDEX MANAGEMENT ON DATABASE * TO `architect`",
+                "GRANT MATCH {*} ON GRAPH * NODE * TO `architect`",
+                "GRANT MATCH {*} ON GRAPH * RELATIONSHIP * TO `architect`",
+                "GRANT NAME MANAGEMENT ON DATABASE * TO `architect`",
+                "GRANT SHOW CONSTRAINT ON DATABASE * TO `architect`",
+                "GRANT SHOW INDEX ON DATABASE * TO `architect`",
+                "GRANT WRITE ON GRAPH * TO `architect`",
+            )
+        assertThat(of("admin"))
+            .containsExactly(
+                "GRANT ACCESS ON DATABASE * TO `admin`",
+                "GRANT ALL DBMS PRIVILEGES ON DBMS TO `admin`",
+                "GRANT CONSTRAINT MANAGEMENT ON DATABASE * TO `admin`",
+                "GRANT INDEX MANAGEMENT ON DATABASE * TO `admin`",
+                "GRANT LOAD ON ALL DATA TO `admin`",
+                "GRANT MATCH {*} ON GRAPH * NODE * TO `admin`",
+                "GRANT MATCH {*} ON GRAPH * RELATIONSHIP * TO `admin`",
+                "GRANT NAME MANAGEMENT ON DATABASE * TO `admin`",
+                "GRANT SHOW CONSTRAINT ON DATABASE * TO `admin`",
+                "GRANT SHOW INDEX ON DATABASE * TO `admin`",
+                "GRANT START ON DATABASE * TO `admin`",
+                "GRANT STOP ON DATABASE * TO `admin`",
+                "GRANT TRANSACTION MANAGEMENT (*) ON DATABASE * TO `admin`",
+                "GRANT WRITE ON GRAPH * TO `admin`",
+            )
+    }
+
+    @Test
+    fun `shows the rows of the built-in roles as the docs list them`() {
+        assertThat(
+                BuiltInRoles.ALL.getValue("admin")
+                    .mapNotNull { PrivilegeText.row(it, names::get) }
+                    .map {
+                        listOf(it.access, it.action, it.resource, it.graph, it.segment)
+                            .joinToString("|")
+                    }
+            )
+            .contains(
+                "GRANTED|match|all_properties|*|NODE(*)",
+                "GRANTED|write|graph|*|NODE(*)",
+                "GRANTED|write|graph|*|RELATIONSHIP(*)",
+                "GRANTED|transaction_management|database|*|USER(*)",
+                "GRANTED|access|database|*|database",
+                "GRANTED|dbms_actions|database|*|database",
+                "GRANTED|token|database|*|database",
+                "GRANTED|start_database|database|*|database",
+            )
+        assertThat(
+                BuiltInRoles.ALL.getValue("PUBLIC")
+                    .mapNotNull { PrivilegeText.row(it, names::get) }
+                    .map {
+                        "${it.action}|${it.graph}|${it.segment}"
+                    }
+            )
+            .containsExactlyInAnyOrder(
+                "access|HOME|database",
+                "execute|*|FUNCTION(*)",
+                "execute|*|PROCEDURE(*)",
+                "load|*|ALL DATA",
+            )
+    }
+
+    @Test
+    fun `shows the examples of the docs`() {
+        val access =
+            Privilege(Access.GRANTED, PrivilegeAction.ACCESS, PrivilegeScope.Database(neo4j))
+        val denied =
+            Privilege(Access.DENIED, PrivilegeAction.ACCESS, PrivilegeScope.Database(UUID(0, 2)))
+
+        assertThat(commands("regularUsers", access, denied))
+            .containsExactly(
+                "DENY ACCESS ON DATABASE `remote-db` TO `regularUsers`",
+                "GRANT ACCESS ON DATABASE neo4j TO `regularUsers`",
+            )
+        assertThat(commands("regularUsers", access, denied, revoke = true))
+            .containsExactly(
+                "REVOKE DENY ACCESS ON DATABASE `remote-db` FROM `regularUsers`",
+                "REVOKE GRANT ACCESS ON DATABASE neo4j FROM `regularUsers`",
+            )
+        assertThat(commands(null, access, *BuiltInRoles.ALL.getValue("PUBLIC").toTypedArray()))
+            .contains(
+                "GRANT ACCESS ON DATABASE neo4j TO \$role",
+                "GRANT EXECUTE PROCEDURE * ON DBMS TO \$role",
+            )
+        assertThat(
+                commands(
+                    "roleLoadCidr",
+                    Privilege(
+                        Access.DENIED,
+                        PrivilegeAction.LOAD_CIDR,
+                        PrivilegeScope.Dbms,
+                        segment = PrivilegeSegment.Cidr("127.0.0.1/32"),
+                    ),
+                )
+            )
+            .containsExactly("DENY LOAD ON CIDR \"127.0.0.1/32\" TO `roleLoadCidr`")
+        assertThat(
+                commands(
+                    "databaseAdminUsers",
+                    Privilege(
+                        Access.GRANTED,
+                        PrivilegeAction.DATABASE_ACTIONS,
+                        PrivilegeScope.Database(neo4j),
+                    ),
+                )
+            )
+            .containsExactly(
+                "GRANT ALL DATABASE PRIVILEGES ON DATABASE neo4j TO `databaseAdminUsers`"
+            )
+    }
+
+    @Test
+    fun `shows qualifiers, immutability and names that need backticks`() {
+        fun dbms(action: PrivilegeAction, segment: PrivilegeSegment) =
+            Privilege(Access.GRANTED, action, PrivilegeScope.Dbms, segment = segment)
+
+        assertThat(
+                commands(
+                    "odd `role`",
+                    dbms(
+                        PrivilegeAction.EXECUTE_BOOSTED,
+                        PrivilegeSegment.Procedures("apoc.load.*"),
+                    ),
+                    dbms(
+                        PrivilegeAction.SHOW_SETTING,
+                        PrivilegeSegment.Settings("dbms.security.*"),
+                    ),
+                    dbms(PrivilegeAction.IMPERSONATE, PrivilegeSegment.Users("bob-1")),
+                    dbms(PrivilegeAction.EXECUTE_ADMIN, PrivilegeSegment.Database),
+                    Privilege(
+                        Access.DENIED,
+                        PrivilegeAction.TRAVERSE,
+                        PrivilegeScope.Home,
+                        PrivilegeResource.Graph,
+                        PrivilegeSegment.Relationships("KNOWS"),
+                        immutable = true,
+                    ),
+                    Privilege(
+                        Access.GRANTED,
+                        PrivilegeAction.READ,
+                        PrivilegeScope.Database(neo4j),
+                        PrivilegeResource.Property("first name"),
+                        PrivilegeSegment.Nodes("Person"),
+                    ),
+                    Privilege(
+                        Access.GRANTED,
+                        PrivilegeAction.SET_LABEL,
+                        PrivilegeScope.AllDatabases,
+                        PrivilegeResource.Label("Draft"),
+                        PrivilegeSegment.Nodes(null),
+                    ),
+                    Privilege(
+                        Access.GRANTED,
+                        PrivilegeAction.MATCH,
+                        PrivilegeScope.AllDatabases,
+                        PrivilegeResource.AllProperties,
+                        PrivilegeSegment.NodePattern(
+                            PatternSegment.ValuePatternSegment(
+                                setOf("Person", "Admin"),
+                                "age",
+                                Values.longValue(18),
+                                PropertyRule.ComparisonOperator.GREATER_THAN_OR_EQUAL,
+                            )
+                        ),
+                    ),
+                )
+            )
+            .containsExactly(
+                "DENY IMMUTABLE TRAVERSE ON HOME GRAPH RELATIONSHIP KNOWS TO `odd ``role```",
+                "GRANT EXECUTE ADMIN PROCEDURES ON DBMS TO `odd ``role```",
+                "GRANT EXECUTE BOOSTED PROCEDURE apoc.load.* ON DBMS TO `odd ``role```",
+                "GRANT IMPERSONATE (`bob-1`) ON DBMS TO `odd ``role```",
+                "GRANT MATCH {*} ON GRAPH * FOR (n:Admin|Person) WHERE n.age >= 18 TO `odd ``role```",
+                "GRANT READ {`first name`} ON GRAPH neo4j NODE Person TO `odd ``role```",
+                "GRANT SET LABEL Draft ON GRAPH * TO `odd ``role```",
+                "GRANT SHOW SETTING dbms.security.* ON DBMS TO `odd ``role```",
+            )
+    }
+
+    @Test
+    fun `has a command for every privilege`() {
+        val generator = PrivilegeGenerator(kotlin.random.Random(20261023), listOf(neo4j))
+        repeat(2000) {
+            val privilege = generator.next()
+            assertThat(PrivilegeText.command(privilege, "r", false, names::get))
+                .describedAs("$privilege")
+                .isNotNull()
+            assertThat(PrivilegeText.row(privilege, names::get))
+                .describedAs("$privilege")
+                .isNotNull()
+        }
+    }
+}

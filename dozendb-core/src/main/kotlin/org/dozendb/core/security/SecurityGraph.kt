@@ -36,6 +36,13 @@ class SecurityGraph(
     /** The id of the database [name], or null if there is none. */
     fun databaseId(name: String): UUID? = databases[name]
 
+    private val names: Map<UUID, String> by lazy {
+        databases.entries.associate { (name, id) -> id to name }
+    }
+
+    /** The name of the database with the id [id], or null if there is none. */
+    fun databaseName(id: UUID): String? = names[id]
+
     /**
      * The roles whose privileges [user] has: theirs and PUBLIC, or none while the user is suspended
      * or unknown.

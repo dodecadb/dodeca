@@ -116,13 +116,13 @@ class StandaloneIT {
                 "SHOW DATABASES YIELD name, type, aliases, access, role, writer, requestedStatus, " +
                     "currentStatus, statusMessage, default, home, constituents RETURN * ORDER BY name",
                 "SHOW DEFAULT DATABASE YIELD name, currentStatus",
-                // DozenDB also shows the status and home database, where Community shows null.
-                "SHOW USERS YIELD user, roles, passwordChangeRequired",
-                "SHOW ROLES",
+                // DozenDB also shows the roles, status and home database, where Community shows
+                // null,
+                // and answers SHOW ROLES and SHOW PRIVILEGES, which Community refuses (RbacIT).
+                "SHOW USERS YIELD user, passwordChangeRequired",
                 "SHOW SERVERS",
                 "SHOW ALIASES FOR DATABASE",
-                "SHOW PRIVILEGES",
-                "SHOW CURRENT USER YIELD user, roles, passwordChangeRequired",
+                "SHOW CURRENT USER YIELD user, passwordChangeRequired",
             )
             .forEach { assertSame(it, "system") }
     }

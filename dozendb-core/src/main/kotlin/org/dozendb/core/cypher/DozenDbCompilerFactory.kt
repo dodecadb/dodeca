@@ -15,7 +15,6 @@
 package org.dozendb.core.cypher
 
 import org.neo4j.cypher.internal.CommunityRuntimeContext
-import org.neo4j.cypher.internal.CommunityRuntimeContextManager
 import org.neo4j.cypher.internal.CommunityRuntimeFactory
 import org.neo4j.cypher.internal.Compiler
 import org.neo4j.cypher.internal.CompilerFactory
@@ -92,7 +91,7 @@ internal class DozenDbCompilerFactory(
         return CypherCurrentCompiler(
             planner,
             runtime as CypherRuntime<CommunityRuntimeContext>,
-            CommunityRuntimeContextManager(log, runtimeConfig),
+            DozenDbRuntimeContextManager(log, runtimeConfig),
             kernelMonitors,
             queryCaches,
         )
