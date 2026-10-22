@@ -45,7 +45,7 @@ class DozenDbSecurityModule(
     private val config: Config,
     private val dependencies: Dependencies,
     private val securityLog: AbstractSecurityLog,
-    private val users: SystemGraphUsers,
+    private val security: SystemGraphSecurity,
 ) : CommunitySecurityModule(logService, config, dependencies, securityLog) {
     private lateinit var realm: AuthManager
 
@@ -62,7 +62,7 @@ class DozenDbSecurityModule(
             Realm(
                 SecurityGraphHelper(system, SecureHasher(), securityLog),
                 createAuthenticationStrategy(config),
-                users,
+                security,
             )
         registerProcedure(
             dependencies.resolveDependency(GlobalProcedures::class.java),
@@ -76,7 +76,7 @@ class DozenDbSecurityModule(
     private class Realm(
         helper: SecurityGraphHelper,
         strategy: AuthenticationStrategy,
-        private val users: SystemGraphUsers,
+        private val security: SystemGraphSecurity,
     ) : BasicSystemGraphRealm(helper, strategy) {
         override fun login(
             authToken: MutableMap<String, Any>,
@@ -90,21 +90,21 @@ class DozenDbSecurityModule(
             ) {
                 return login
             }
-            if (users.isSuspended(login.subject().executingUser())) {
+            if (security.isSuspended(login.subject().executingUser())) {
                 return BasicLoginContext(
                     null as User?,
                     AuthenticationResult.FAILURE,
                     connectionInfo,
                 )
             }
-            return ActiveUserLogin(login, users)
+            return ActiveUserLogin(login, security)
         }
     }
 
     /** A login that loses access once its user is suspended. */
     private class ActiveUserLogin(
         private val login: LoginContext,
-        private val users: SystemGraphUsers,
+        private val security: SystemGraphSecurity,
     ) : LoginContext(login.subject(), login.connectionInfo()) {
         override fun authorize(
             idLookup: IdLookup,
@@ -112,7 +112,7 @@ class DozenDbSecurityModule(
             securityLog: AbstractSecurityLog,
         ): SecurityContext {
             val user = subject().executingUser()
-            if (users.isSuspended(user)) {
+            if (security.isSuspended(user)) {
                 throw AuthorizationViolationException.authorizationViolation(
                     "Database access is not allowed for user '$user': the user is suspended."
                 )

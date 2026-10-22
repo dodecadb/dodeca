@@ -1,0 +1,118 @@
+package org.dozendb.core.security
+
+import java.util.UUID
+import org.neo4j.dbms.database.SystemGraphComponent
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.graphdb.Direction
+import org.neo4j.graphdb.Node
+import org.neo4j.graphdb.Transaction
+import org.neo4j.logging.InternalLog
+import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_HOME_DB
+import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_LABEL
+import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_NAME
+import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_SUSPENDED
+
+/**
+ * The users, roles and privileges of the system graph as one transaction read them. [initialized]
+ * tells whether the roles exist yet: in a cluster formed before DozenDB had roles, not until its
+ * leader created them.
+ */
+class SecurityGraph(
+    val initialized: Boolean,
+    val users: Map<String, User>,
+    val roles: Map<String, Role>,
+    private val databases: Map<String, UUID>,
+) {
+    class User(val suspended: Boolean, val home: String?, val roles: Set<String>)
+
+    class Role(val immutable: Boolean, val privileges: List<Privilege>)
+
+    fun isSuspended(user: String): Boolean = users[user]?.suspended == true
+
+    /** The home database of [user], or null for the DBMS default database. */
+    fun homeDatabase(user: String): String? = users[user]?.home
+
+    /** The id of the database [name], or null if there is none. */
+    fun databaseId(name: String): UUID? = databases[name]
+
+    /**
+     * The privileges of [user]: those of their roles and of PUBLIC, and none while the user is
+     * suspended or unknown.
+     */
+    fun privileges(user: String): List<Privilege> {
+        val record = users[user] ?: return emptyList()
+        if (record.suspended) return emptyList()
+        return (record.roles + BuiltInRoles.PUBLIC).flatMap { roles[it]?.privileges.orEmpty() }
+    }
+
+    companion object {
+        /**
+         * Reads the system graph. A privilege that cannot be read is logged to [log]; if denied, it
+         * stands for everything it could deny.
+         */
+        fun read(tx: Transaction, log: InternalLog): SecurityGraph {
+            val initialized =
+                SystemGraphComponent.getVersionNumber(tx, DozenDbSecurityComponent.NAME) != null
+            val users =
+                tx.findNodes(USER_LABEL).use { nodes ->
+                    nodes.asSequence().associate { node ->
+                        val roles =
+                            node
+                                .getRelationships(Direction.OUTGOING, PrivilegeRecords.HAS_ROLE)
+                                .map {
+                                    it.endNode.getProperty(PrivilegeRecords.ROLE_NAME) as String
+                                }
+                        node.getProperty(USER_NAME) as String to
+                            User(
+                                node.getProperty(USER_SUSPENDED, false) == true,
+                                node.getProperty(USER_HOME_DB, null) as String?,
+                                roles.toSet(),
+                            )
+                    }
+                }
+            val roles =
+                tx.findNodes(PrivilegeRecords.ROLE).use { nodes ->
+                    nodes.asSequence().associate { node ->
+                        val name = node.getProperty(PrivilegeRecords.ROLE_NAME) as String
+                        name to
+                            Role(
+                                node.getProperty(PrivilegeRecords.IMMUTABLE, false) == true,
+                                privileges(node, name, log),
+                            )
+                    }
+                }
+            val databases =
+                tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
+                    nodes.asSequence().associate { node ->
+                        node.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY) as String to
+                            UUID.fromString(
+                                node.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY)
+                                    as String
+                            )
+                    }
+                }
+            return SecurityGraph(initialized, users, roles, databases)
+        }
+
+        private fun privileges(role: Node, name: String, log: InternalLog): List<Privilege> =
+            Access.entries.flatMap { access ->
+                role
+                    .getRelationships(Direction.OUTGOING, PrivilegeRecords.relationship(access))
+                    .flatMap { relationship ->
+                        val node = relationship.endNode
+                        try {
+                            listOf(PrivilegeRecords.read(node, access))
+                        } catch (e: RuntimeException) {
+                            val denied = access == Access.DENIED
+                            log.error(
+                                "A privilege of the role '$name' cannot be read: " +
+                                    "${node.allProperties}. It is " +
+                                    (if (denied) "taken to deny everything." else "ignored."),
+                                e,
+                            )
+                            if (denied) PrivilegeRecords.DENY_ALL else emptyList()
+                        }
+                    }
+            }
+    }
+}

@@ -17,8 +17,9 @@
 package org.dozendb.core.edition
 
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
+import org.dozendb.core.security.DozenDbSecurityComponent
 import org.dozendb.core.security.DozenDbSecurityModule
-import org.dozendb.core.security.SystemGraphUsers
+import org.dozendb.core.security.SystemGraphSecurity
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
@@ -31,6 +32,7 @@ import org.neo4j.dbms.database.DatabaseOperationCounts
 import org.neo4j.dbms.database.DatabaseReferenceCacheClearingListener
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
+import org.neo4j.dbms.database.SystemGraphComponent
 import org.neo4j.dbms.database.SystemGraphComponents
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.graphdb.factory.module.GlobalModule
@@ -205,19 +207,48 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         get() = databaseReferenceRepo as MapCachingDatabaseReferenceRepository
 
     /**
-     * Which users are suspended and their home databases, which the login realm and the default
+     * The users, roles and privileges of the system graph, which the login realm and the default
      * database resolver read.
      */
-    private lateinit var users: SystemGraphUsers
+    private lateinit var security: SystemGraphSecurity
+
+    /** Neo4j Community's system graph components, then DozenDB's roles and privileges. */
+    override fun registerSystemGraphComponents(
+        builder: SystemGraphComponents.Builder,
+        globalModule: GlobalModule,
+    ) {
+        val roles =
+            DozenDbSecurityComponent(
+                globalModule.globalConfig,
+                globalModule.fileSystem,
+                globalModule.logService.internalLogProvider,
+            )
+        // After Community's users, which the roles are given to.
+        super.registerSystemGraphComponents(
+            object : SystemGraphComponents.Builder() {
+                override fun register(component: SystemGraphComponent) = builder.register(component)
+
+                override fun build(): SystemGraphComponents {
+                    builder.register(roles)
+                    return builder.build()
+                }
+            },
+            globalModule,
+        )
+    }
 
     /** Resolves a user's home database before the DBMS default database. */
     override fun createDefaultDatabaseResolver(systemDatabaseProvider: SystemDatabaseProvider) {
-        users = SystemGraphUsers(systemDatabaseProvider)
+        security =
+            SystemGraphSecurity(
+                systemDatabaseProvider,
+                globalModule.logService.internalLogProvider,
+            )
         val resolver =
             DozenDbDefaultDatabaseResolver(
                 globalModule.globalConfig,
                 systemDatabaseProvider,
-                users,
+                security,
             )
         globalModule.transactionEventListeners.registerTransactionEventListener(
             GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
@@ -243,7 +274,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                         CommunitySecurityModule::class.java
                     )
                 ),
-                users,
+                security,
             )
         module.setup()
         setSecurityProvider(module)

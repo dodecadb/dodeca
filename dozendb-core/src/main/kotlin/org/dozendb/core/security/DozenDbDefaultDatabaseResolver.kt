@@ -12,15 +12,15 @@ import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
 class DozenDbDefaultDatabaseResolver(
     config: Config,
     systemDatabase: SystemDatabaseProvider,
-    private val users: SystemGraphUsers,
+    private val security: SystemGraphSecurity,
 ) : CommunityDefaultDatabaseResolver(config, systemDatabase) {
     override fun defaultDatabase(username: String?): String =
-        username?.takeIf { it.isNotEmpty() }?.let(users::homeDatabase)
+        username?.takeIf { it.isNotEmpty() }?.let(security::homeDatabase)
             ?: super.defaultDatabase(username)
 
-    /** Also forgets the users' home databases and status: the system graph changed. */
+    /** Also forgets the users, roles and privileges: the system graph changed. */
     override fun clearCache() {
         super.clearCache()
-        users.clear()
+        security.clear()
     }
 }
