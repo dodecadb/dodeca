@@ -268,6 +268,12 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   `--pagecache`. `--keep-failed=true` keeps the copy of a failed full backup
   there.
 - `--compress` (default `true`) compresses the artifacts.
+- `--include-metadata=all` (the default) keeps with each backup the Cypher that
+  gives a DBMS back the users, roles and privileges of the database: `roles`
+  the roles with privileges on it, on every database or on the home database,
+  and those privileges; `users` the users who can access it, with their
+  encrypted passwords, status, home database and roles among those; `all`
+  both; `none` nothing. Backups of `system` keep none: `system` holds them all.
 - The command exits with 1 if a database could not be backed up, naming it,
   or if a server could not be reached although another one served.
 
@@ -307,6 +313,19 @@ neo4j-admin database restore --from-path=/backups/films-2026-10-21T13-52-10.back
 
 Then run `START DATABASE films`, or `CREATE DATABASE films` for a database the
 server does not have yet.
+
+A backup taken with `--include-metadata` makes the restore write the users,
+roles and privileges of the database to
+`data/scripts/films/restore_metadata.cypher`, under the name it is restored
+as. Once the database exists, run the script on `system`, as the restore
+prints:
+
+```
+cat data/scripts/films/restore_metadata.cypher | bin/cypher-shell -d system --param "database => 'films'"
+```
+
+The script only adds what is missing: users that exist keep their passwords,
+status and home database, and running it twice does no harm.
 
 In a cluster, a restored database cannot be put in place on every member by
 hand. Restore it on one member, which prepares it there and prints the command
@@ -351,4 +370,93 @@ database, `system` included, taken with `"*"`:
    every database that its `system` database lists, and the other members copy
    them.
 
-Users and whether each database is online come with `system`.
+Users, roles, privileges and whether each database is online come with
+`system`.
+
+## Roles and privileges
+
+Roles and privileges work as Neo4j Enterprise's operations manual describes,
+with the differences listed in `COMPATIBILITY.md`. With clustering, run their
+commands on the system leader, or through a routing driver or Cypher Shell
+(`neo4j://`), which sends them there.
+
+### The first admin
+
+The first start of a DozenDB version with roles, on a new or an existing
+store, creates the built-in roles and gives `admin` to one user: the user
+chosen with `neo4j-admin dbms set-default-admin <user>` before that start,
+else `neo4j`, else the only user. Every other user has only `PUBLIC`: give
+them roles before they need more, for example
+`GRANT ROLE reader TO alice`. With several users, none of them called
+`neo4j` and none chosen, the server refuses to start until one is chosen.
+The log names the user that got `admin`.
+
+### Recovering admin access
+
+When no user who can still log in has `admin`, start every server with
+authentication disabled, give the role back, and enable authentication
+again:
+
+1. Stop every member. Set `dbms.security.auth_enabled=false` on each, and
+   make sure that only trusted clients reach Bolt meanwhile, for example with
+   `server.bolt.listen_address=127.0.0.1:7687`.
+2. Start every member. On the member where `CALL dozendb.cluster.status()`
+   shows `system` with the role `LEADER`, give the role back; the other
+   members refuse the command with `NotALeader`:
+   `bin/cypher-shell -a bolt://localhost:7687 -d system "GRANT ROLE admin TO neo4j"`.
+   With authentication disabled, every command is allowed, including those
+   about `IMMUTABLE` roles and privileges. A user whose password is lost gets
+   a new one the same way:
+   `ALTER USER neo4j SET PASSWORD 'new-password' CHANGE REQUIRED`.
+3. Stop every member, remove the setting, and start them again.
+
+A server with clustering disabled is recovered the same way.
+
+### Impersonation
+
+`GRANT IMPERSONATE (bob) ON DBMS TO support` lets the users with the role
+`support` run queries as `bob`, with bob's privileges and home database: in
+Cypher Shell with `--impersonate bob`, in drivers with the session's
+impersonated user. Impersonating users does not allow administration
+commands that change anything.
+
+### Procedures and plugins such as APOC
+
+`PUBLIC` may execute every procedure and function (`EXECUTE PROCEDURE *` and
+`EXECUTE FUNCTION *`), which then read and write only what the user may. As
+in Neo4j Enterprise, some can do more: procedures a role may run with
+`EXECUTE BOOSTED` run with full access, and procedures listed in
+`dbms.security.procedures.unrestricted`, which plugins such as APOC ask for,
+can reach Neo4j's internals, for example to open transactions of their own,
+as APOC triggers do. Limit who may run such procedures by narrowing what
+`PUBLIC` may execute, for example:
+
+```
+REVOKE EXECUTE PROCEDURE * ON DBMS FROM PUBLIC
+GRANT EXECUTE PROCEDURE db.*, dbms.*, tx.* ON DBMS TO PUBLIC
+GRANT EXECUTE PROCEDURE apoc.* ON DBMS TO developer
+```
+
+A `DENY` to `PUBLIC` would not do: it applies to every user, whatever their
+other roles grant.
+
+### Moving roles from or to Neo4j Enterprise
+
+DozenDB keeps roles and privileges in the system graph in nodes of its own,
+and refuses to start on a system database that holds Neo4j Enterprise's.
+Move them as commands instead, in either direction:
+
+1. On the server that has them, save the output of `SHOW ROLES WITH USERS`
+   and `SHOW PRIVILEGES AS COMMANDS`, and the users from `SHOW USERS`.
+2. Move the databases other than `system` as dumps
+   (`neo4j-admin database dump`), and create them on the new servers from
+   those ([Creating a database from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
+   Neo4j Community, and so DozenDB, reads only the `aligned` and `standard`
+   store formats: migrate a database in another format with
+   `neo4j-admin database migrate --to-format=aligned` first.
+3. On the new servers, create the users (`CREATE USER`, with new passwords:
+   no command shows the old ones) and the roles (`CREATE ROLE`), give the
+   users their roles (`GRANT ROLE`), and run the saved privilege commands.
+   Commands about databases or features the new servers lack fail and can
+   be left out.
+

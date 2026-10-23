@@ -41,8 +41,10 @@ DozenDB took over the code.
   `SHOW USERS` and `SHOW CURRENT USER` show both. DozerDB stores both but acts
   on neither: a suspended user still logs in, and a user's home database is
   ignored. Neo4j Community refuses both. `SET AUTH` with another provider than
-  native and `REMOVE AUTH` fail, since only native authentication exists, and
-  `roles` is null, since there are no roles.
+  native and `REMOVE AUTH` fail, since only native authentication exists.
+- **Roles and privileges** work as in Neo4j Enterprise, see "Roles and
+  privileges" below. DozerDB and Neo4j Community refuse them, and every user
+  can do everything.
 - **Database commands** fail with Neo4j's messages and status codes, such as
   `Neo.ClientError.Database.ExistingDatabaseFound` and
   `Neo.ClientError.Database.DatabaseNotFound`. Unlike in DozerDB:
@@ -85,9 +87,11 @@ DozenDB took over the code.
   Neo4j Community's `neo4j-admin database load` also loads as a dump when it
   is a full backup. Exchanging backups with Neo4j Enterprise is not promised.
   The differences: there are no cloud locations (`s3:`, `gs:`, `azb:`);
-  `--parallel-recovery`, `--include-metadata` and `--inspect-path` are not
-  supported; `neo4j-admin backup inspect` without `--show-metadata` lists only
-  the files; backup files are named in UTC; `--temp-path` of `backup`
+  `--parallel-recovery` and `--inspect-path` are not supported; the script
+  that `--include-metadata` keeps, and `restore` writes to
+  `data/scripts/<database>/restore_metadata.cypher`, is DozenDB's own;
+  `neo4j-admin backup inspect` without `--show-metadata` lists only the
+  files; backup files are named in UTC; `--temp-path` of `backup`
   defaults to `--to-path`, and `restore` accepts `--temp-path` without using
   it; a backup is not restored with another Neo4j kernel version than the
   one it was taken with; and serving backups on an address that is not a
@@ -128,10 +132,78 @@ DozenDB reports the Enterprise edition, in `CALL dbms.components()` for
 example, as DozerDB did, so that tools offer what DozenDB adds to Neo4j
 Community, such as many databases. Of what Neo4j Enterprise adds, DozenDB
 supports many databases, property existence, key and type constraints, user
-status and home databases, and clustering of its own. It refuses, with an
-error, the other Enterprise features that reach it, such as roles and
-privileges, composite databases, aliases, `CREATE DATABASE` options other
-than seeds, topologies, and external authentication.
+status and home databases, roles and privileges, impersonation, and
+clustering of its own. It refuses, with an error, the other Enterprise
+features that reach it, such as composite databases, aliases,
+`ALTER DATABASE`, the server commands (`SHOW SERVERS` and the like; the
+`dozendb.cluster` procedures manage members instead), `CREATE DATABASE`
+options other than seeds, topologies, and external authentication.
+
+## Roles and privileges
+
+DozenDB implements roles and privileges as Neo4j Enterprise's operations
+manual describes them, from that documentation alone: the built-in roles
+(`PUBLIC`, `reader`, `editor`, `publisher`, `architect`, `admin`), role
+commands, `GRANT`, `DENY` and `REVOKE` of DBMS, database and graph
+privileges, label, relationship type and property qualifiers, property-based
+rules (`FOR (n:Label) WHERE n.p = value`), procedure, function, setting and
+`LOAD` privileges, `IMMUTABLE` roles and privileges, impersonation
+(`IMPERSONATE`, the drivers' impersonated user), `SHOW PRIVILEGES` with
+`AS COMMANDS`, and `SHOW SUPPORTED PRIVILEGES`. Restrictions are enforced by
+Neo4j's kernel for Cypher, procedures, counts and indexes alike. Messages
+and status codes are Neo4j's where its documentation or code gives them.
+
+- **The first start with roles** creates the built-in roles, gives `admin` to
+  one user and leaves every other user with `PUBLIC` alone, as Neo4j
+  Enterprise does: the user chosen with `neo4j-admin dbms set-default-admin`,
+  else `neo4j`, else the only user. With none of them the server refuses to
+  start with Neo4j's message. This applies to stores of Neo4j Community,
+  DozerDB and earlier DozenDB builds alike; the log names the user that got
+  `admin`. A cluster formed by an earlier DozenDB build gets its roles from
+  its system leader, once; meanwhile logins are refused with "this server
+  does not have the roles of the cluster yet".
+- **Stores of Neo4j Enterprise with roles** are refused: DozenDB keeps roles
+  and privileges in its own nodes of the system graph and cannot read
+  Enterprise's. See `OPERATOR_GUIDE.md` for moving roles in either
+  direction.
+- **Auth disabled** allows everything, `IMMUTABLE` commands included, as in
+  Neo4j; this is also how a locked-out admin recovers.
+- **Where the documentation is silent**, DozenDB takes the stricter answer: a
+  node without labels is found, created and deleted only through privileges
+  on all labels (`NODES *`); creating or deleting a node, and setting its
+  properties, needs the privilege on all labels or on each of the node's
+  labels; a privilege DozenDB cannot read applies to nothing when granted and
+  to everything in its scope when denied, and is logged; `SHOW SETTINGS`
+  lists nothing without `SHOW SETTING`; any applying `DENY LOAD` blocks
+  `LOAD CSV`; `GRANT` and `DENY` on a database that does not exist, or with a
+  database parameter of `*`, fail, where `REVOKE` only warns; and
+  impersonating oneself needs `IMPERSONATE` too.
+- **Property-based rules** are evaluated when granted: `date()` is the date
+  of the `GRANT`. A negated rule is kept as the opposite comparison
+  (`NOT n.p > 1` as `n.p <= 1`), which differs only for NaN values. A `DENY`
+  rule applies only to nodes whose value satisfies it, so it does not apply
+  to nodes without the property, as documented. A null or NaN value, a list
+  of mixed types and `IN` without a list are refused, parameters included.
+  Rules cost a read of the property for each node: in a benchmark, scanning a
+  million nodes took 2.5 times as long with a rule, 1.8 times with a label
+  denied.
+- **`SHOW PRIVILEGES`** names the home database graph `HOME`, a `LOAD`
+  privilege's segment `ALL DATA` or `CIDR('range')`, and keeps `IMMUTABLE` in
+  `AS COMMANDS`. `SHOW SUPPORTED PRIVILEGES` gives the documented rows
+  verbatim and describes the others in DozenDB's words. `DROP ROLE` removes
+  the role from its users.
+- **With clustering**, roles and privileges reach every member through Raft;
+  a follower applies a change a moment after the leader. Transactions keep
+  the privileges they started with. Administration commands that change
+  nothing, such as a `GRANT` of a privilege the role has, may answer on a
+  follower from its copy instead of failing with `NotALeader`.
+- **No security log yet.** Refused impersonations and privileges that cannot
+  be read are logged in `debug.log`; other refusals only reach the client.
+- **What bypasses privileges in Neo4j Enterprise bypasses them here too**:
+  procedures listed in `dbms.security.procedures.unrestricted` or run with
+  `EXECUTE BOOSTED`, APOC triggers and other code that opens its own
+  transactions, constraint violation messages that name existing values, and
+  query plans estimated from counts.
 
 ## Clustering limitations
 
