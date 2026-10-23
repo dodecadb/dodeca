@@ -2,10 +2,6 @@ package org.dozendb.core.monitoring
 
 import java.io.ByteArrayInputStream
 import java.lang.management.ManagementFactory
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse.BodyHandlers
 import java.nio.file.Path
 import java.util.zip.GZIPInputStream
 import javax.management.ObjectName
@@ -23,8 +19,6 @@ import org.neo4j.graphdb.config.Setting
 class MetricsTest {
     @TempDir lateinit var root: Path
 
-    private val http = HttpClient.newHttpClient()
-
     private fun server(vararg settings: Pair<Setting<*>, Any>) =
         StandaloneServer(
             root,
@@ -34,28 +28,12 @@ class MetricsTest {
             ) + settings,
         )
 
-    private fun StandaloneServer.metrics(): MetricsService? =
-        database(SYSTEM)
-            .dependencyResolver
-            .resolveTypeDependencies(MetricsService::class.java)
-            .firstOrNull()
-
-    private fun StandaloneServer.get(path: String, gzip: Boolean = false) =
-        http.send(
-            HttpRequest.newBuilder(
-                    URI("http://localhost:${metrics()!!.prometheus!!.boundAddress!!.port}$path")
-                )
-                .apply { if (gzip) header("Accept-Encoding", "gzip") }
-                .build(),
-            BodyHandlers.ofByteArray(),
-        )
-
     @Test
     fun `serves the metrics to Prometheus and JMX`() {
         server().use { server ->
             server.start()
 
-            val response = server.get("/metrics")
+            val response = server.scrape("/metrics")
             assertThat(response.statusCode()).isEqualTo(200)
             assertThat(response.headers().firstValue("Content-Type"))
                 .hasValue(PrometheusText.CONTENT_TYPE)
@@ -72,7 +50,7 @@ class MetricsTest {
                 // Not in the default filter.
                 .doesNotContain("neo4j_dbms_vm_heap_max")
 
-            val gzipped = server.get("/", gzip = true)
+            val gzipped = server.scrape("/", gzip = true)
             assertThat(gzipped.headers().firstValue("Content-Encoding")).hasValue("gzip")
             val unzipped =
                 GZIPInputStream(ByteArrayInputStream(gzipped.body()))
@@ -80,7 +58,7 @@ class MetricsTest {
                     .decodeToString()
             assertThat(unzipped).contains("# TYPE neo4j_dbms_vm_heap_used gauge")
 
-            assertThat(server.get("/other").statusCode()).isEqualTo(404)
+            assertThat(server.scrape("/other").statusCode()).isEqualTo(404)
 
             val beans =
                 server.rows("CALL dbms.queryJmx('neo4j.metrics:*') YIELD name, attributes", SYSTEM)
@@ -106,7 +84,7 @@ class MetricsTest {
             .use { server ->
                 server.start()
 
-                val body = server.get("/metrics").body().decodeToString()
+                val body = server.scrape("/metrics").body().decodeToString()
                 assertThat(body.lines().filter { it.isNotEmpty() && !it.startsWith("#") })
                     .singleElement()
                     .asString()

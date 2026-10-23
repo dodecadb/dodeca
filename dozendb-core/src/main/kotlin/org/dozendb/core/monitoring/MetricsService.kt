@@ -2,11 +2,20 @@ package org.dozendb.core.monitoring
 
 import com.codahale.metrics.jmx.JmxReporter
 import java.util.concurrent.ConcurrentHashMap
+import org.dozendb.core.monitoring.sources.BoltMetrics
+import org.dozendb.core.monitoring.sources.DatabaseMetrics
+import org.dozendb.core.monitoring.sources.DatabaseOperationMetrics
 import org.dozendb.core.monitoring.sources.JvmMetrics
+import org.dozendb.core.monitoring.sources.MemoryPoolMetrics
+import org.dozendb.core.monitoring.sources.PageCacheMetrics
+import org.dozendb.core.monitoring.sources.RoutingMetrics
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.dbms.database.DatabaseOperationCounts
+import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.factory.module.GlobalModule
+import org.neo4j.kernel.api.database.DatabaseSizeService
 import org.neo4j.kernel.database.AbstractDatabase
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.kernel.monitoring.DefaultDatabaseEvent
@@ -22,7 +31,7 @@ import org.neo4j.kernel.monitoring.DefaultDatabaseEvent
 class MetricsService
 private constructor(
     private val globalModule: GlobalModule,
-    private val databases: DatabaseContextProvider<*>,
+    private val databases: DatabaseContextProvider<StandaloneDatabaseContext>,
 ) : LifecycleAdapter(), DatabaseEventListener {
     private val config = globalModule.globalConfig
     private val log = globalModule.logService.internalLogProvider.getLog(javaClass)
@@ -47,7 +56,18 @@ private constructor(
 
     private var dbms: MetricRegistry.MetricGroup? = null
     private val listeners = mutableListOf<Any>()
-    private val databaseMetrics = ConcurrentHashMap<String, MetricRegistry.MetricGroup>()
+    private val databaseMetrics = ConcurrentHashMap<String, DatabaseMetricGroup>()
+
+    /** A database's metrics, and what undoes the changes registering them made to it. */
+    private class DatabaseMetricGroup(
+        val metrics: MetricRegistry.MetricGroup,
+        val undo: () -> Unit,
+    ) {
+        fun close() {
+            metrics.close()
+            undo()
+        }
+    }
 
     override fun init() {
         globalModule.databaseEventListeners.registerDatabaseEventListener(this)
@@ -57,6 +77,19 @@ private constructor(
         val dbms = registry.dbms().also { dbms = it }
         JvmMetrics.register(dbms)
         JvmMetrics.pauses(dbms)?.let(::listen)
+        PageCacheMetrics.register(
+            dbms,
+            globalModule.tracers.pageCacheTracer,
+            globalModule.pageCache,
+        )
+        MemoryPoolMetrics.register(dbms, globalModule.memoryPools)
+        listen(BoltMetrics.register(dbms))
+        listen(RoutingMetrics(dbms))
+        DatabaseOperationMetrics.register(
+            dbms,
+            globalModule.globalDependencies.resolveDependency(DatabaseOperationCounts::class.java),
+            databases,
+        )
         for (contributor in contributors()) contributor.dbms(dbms)
         jmx?.start()
         prometheus?.start()
@@ -67,7 +100,7 @@ private constructor(
         jmx?.stop()
         listeners.forEach(globalModule.globalMonitors::removeMonitorListener)
         listeners.clear()
-        databaseMetrics.values.forEach(MetricRegistry.MetricGroup::close)
+        databaseMetrics.values.forEach(DatabaseMetricGroup::close)
         databaseMetrics.clear()
         dbms?.close()
         dbms = null
@@ -95,13 +128,30 @@ private constructor(
                 is DefaultDatabaseEvent -> databases.getDatabaseContext(eventContext.databaseId)
                 else -> databases.getDatabaseContext(name)
             }.orElse(null) ?: return
+        databaseMetrics.remove(name)?.close()
         val metrics = registry.database(name)
-        databaseMetrics.put(name, metrics)?.close()
-        register(context.database(), metrics)
+        try {
+            databaseMetrics[name] = register(context.database(), metrics)
+        } catch (e: RuntimeException) {
+            metrics.close()
+            log.warn("The metrics of database '$name' are not reported.", e)
+        }
     }
 
-    private fun register(database: AbstractDatabase, metrics: MetricRegistry.MetricGroup) {
+    private fun register(
+        database: AbstractDatabase,
+        metrics: MetricRegistry.MetricGroup,
+    ): DatabaseMetricGroup {
+        val sizes =
+            globalModule.globalDependencies.resolveDependency(DatabaseSizeService::class.java)
+        val undo = DatabaseMetrics.register(metrics, database, sizes)
+        MemoryPoolMetrics.register(
+            metrics,
+            globalModule.memoryPools,
+            database.namedDatabaseId.name(),
+        )
         for (contributor in contributors()) contributor.database(database, metrics)
+        return DatabaseMetricGroup(metrics, undo)
     }
 
     override fun databaseShutdown(eventContext: DatabaseEventContext) = remove(eventContext)
@@ -126,7 +176,7 @@ private constructor(
          */
         fun create(
             globalModule: GlobalModule,
-            databases: DatabaseContextProvider<*>,
+            databases: DatabaseContextProvider<StandaloneDatabaseContext>,
         ): MetricsService? {
             val config = globalModule.globalConfig
             val exported =

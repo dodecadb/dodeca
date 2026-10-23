@@ -28,6 +28,11 @@
       <artifactId>metrics-jmx</artifactId>
     </dependency>
 
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility-kotlin</artifactId>
+      <scope>test</scope>
+    </dependency>
     <!-- With its own Netty shaded: Neo4j's Netty is on the same classpath. -->
     <dependency>
       <groupId>org.neo4j.driver</groupId>
