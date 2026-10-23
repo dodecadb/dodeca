@@ -1,5 +1,6 @@
 package org.dozendb.core.cypher
 
+import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowableOfType
@@ -264,9 +265,9 @@ class AliasCommandsTest {
             assertThat(error)
                 .describedAs(command)
                 .hasMessage(
-                    "Failed to delete the specified database 'films': Database has aliases " +
-                        "'classics', 'movies'. Drop them before the database, or drop the " +
-                        "database with CASCADE ALIASES."
+                    "Failed to delete the specified database 'films': Database 'films' has " +
+                        "aliases 'classics', 'movies'. Drop them before the database, or drop " +
+                        "the database with CASCADE ALIASES."
                 )
             assertThat(error.code()).isEqualTo("Neo.ClientError.Database.ExistingAliasFound")
             assertThat(error.gqlStatus()).isEqualTo("42N82")
@@ -294,6 +295,85 @@ class AliasCommandsTest {
         admin.run("CREATE DATABASE films WAIT")
         admin.run("CREATE ALIAS movies FOR DATABASE films")
         assertThat(admin.run(titles, database = "movies")).isEmpty()
+    }
+
+    @Test
+    fun `takes an alias for its database in database commands`() {
+        admin.run("CREATE ALIAS movies FOR DATABASE films")
+        admin.run("CREATE ALIAS main FOR DATABASE neo4j")
+
+        assertThat(admin.run("STOP DATABASE movies WAIT").map { it["success"] }).containsOnly(true)
+        assertThat(admin.run("SHOW DATABASE films YIELD currentStatus"))
+            .containsExactly(mapOf("currentStatus" to "offline"))
+        // Where the store would be opened: the database cannot start, which WAIT reports only if
+        // it waits for the database, not for one called like the alias.
+        val store = server.home.resolve("data/databases/films")
+        store.toFile().deleteRecursively()
+        Files.createFile(store)
+        val started = admin.run("START DATABASE movies WAIT").single()
+        assertThat(started).containsEntry("state", "Failed").containsEntry("success", false)
+        assertThat(started["message"] as String).contains("Unable to start", "films")
+
+        // The alias itself targets the database.
+        assertThat(admin.refused("DROP DATABASE movies"))
+            .hasMessage(
+                "Failed to delete the specified database 'movies': Database 'films' has " +
+                    "aliases 'movies'. Drop them before the database, or drop the database with " +
+                    "CASCADE ALIASES."
+            )
+        assertThat(admin.refused("DROP DATABASE main CASCADE ALIASES"))
+            .hasMessage("Not allowed to delete the default database 'neo4j'.")
+        assertThat(admin.refused("STOP DATABASE missing"))
+            .hasMessage("Failed to stop the specified database 'missing': Database does not exist.")
+
+        assertThat(admin.run("DROP DATABASE movies CASCADE ALIASES WAIT").map { it["success"] })
+            .containsOnly(true)
+        assertThat(admin.run("SHOW DATABASES YIELD name").map { it["name"] })
+            .containsExactlyInAnyOrder("neo4j", "system")
+        assertThat(aliases().map { it["name"] }).containsExactly("main")
+    }
+
+    @Test
+    fun `checks the privileges of the database of an alias, not of its name`() {
+        admin.run("CREATE ALIAS movies FOR DATABASE films")
+        admin.run("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+        admin.run("CREATE ROLE operator")
+        admin.run("GRANT ROLE operator TO alice")
+        val alice = driver("alice", "alice-secret-1")
+
+        assertThat(alice.refused("STOP DATABASE movies"))
+            .hasMessageStartingWith("Permission has not been granted for STOP DATABASE.")
+        admin.run("GRANT STOP ON DATABASE films TO operator")
+        alice.run("STOP DATABASE movies")
+        assertThat(admin.run("SHOW DATABASE films YIELD requestedStatus"))
+            .containsExactly(mapOf("requestedStatus" to "offline"))
+        assertThat(alice.refused("START DATABASE movies"))
+            .hasMessageStartingWith("Permission has not been granted for START DATABASE.")
+    }
+
+    @Test
+    fun `resolves a home database set to an alias`() {
+        admin.run("CREATE ALIAS movies FOR DATABASE films")
+        admin.run(
+            "CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED " +
+                "SET HOME DATABASE movies"
+        )
+        val alice = driver("alice", "alice-secret-1")
+        fun home() =
+            alice.session().use { session ->
+                session.run("CALL db.info() YIELD name").single()["name"].asString()
+            }
+
+        // PUBLIC has access to the home database.
+        assertThat(home()).isEqualTo("films")
+        assertThat(alice.run("SHOW HOME DATABASE YIELD name"))
+            .containsExactly(mapOf("name" to "films"))
+        assertThat(admin.run("SHOW USERS YIELD user, home WHERE user = 'alice'"))
+            .containsExactly(mapOf("user" to "alice", "home" to "movies"))
+
+        admin.run("ALTER ALIAS movies SET DATABASE TARGET neo4j")
+
+        assertThat(home()).isEqualTo("neo4j")
     }
 
     @Test

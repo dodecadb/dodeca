@@ -19,6 +19,7 @@
  * 2026-10-24: the alias commands of AliasCommands are added, and the targets of aliases checked.
  * DROP DATABASE refuses to drop a database that local aliases target unless CASCADE ALIASES drops
  * them too, and drops only the names of the database, not those of other databases or aliases.
+ * START, STOP and DROP DATABASE take the name of a local alias for its database.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -264,7 +265,7 @@ private class DatabaseCommands(
         when (plan) {
             is CreateDatabase -> Planner { createDatabase(plan, it) }
             is EnsureValidNumberOfDatabases -> Planner { ensureValidNumberOfDatabases(plan, it) }
-            is DropDatabase -> Planner { dropDatabase(plan, it) }
+            is DropDatabase -> Planner { dropDatabase(plan, it, aliases = true) }
             is StartDatabase ->
                 Planner {
                     setStatus(plan.source(), plan.databaseName(), DatabaseStatus.ONLINE, it)
@@ -286,7 +287,8 @@ private class DatabaseCommands(
                 }
             // There are no composite databases that could make a name ambiguous.
             is EnsureNameIsNotAmbiguous -> Planner { compile(plan.source(), it) }
-            is EnsureDatabaseSafeToDelete -> Planner { ensureSafeToDelete(plan, it) }
+            // DROP DATABASE checks for aliases, where it knows which database the name means.
+            is EnsureDatabaseSafeToDelete -> Planner { compile(plan.source(), it) }
             is WaitForCompletion ->
                 Planner { context ->
                     WaitExecutionPlan(
@@ -305,7 +307,7 @@ private class DatabaseCommands(
         plan: CreateDatabase,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
-        val source = compile(plan.source(), context)
+        val source = replacing(plan.source(), context)
         val databaseName = plan.databaseName()
         if (plan.isComposite) {
             return failure(source, "Composite databases") {
@@ -387,6 +389,21 @@ private class DatabaseCommands(
             transformer().convert(name.nameConverter()).convert(seed),
         )
     }
+
+    /**
+     * Compiles the plans before CREATE DATABASE: with OR REPLACE, they drop the database of the
+     * name, never the database of an alias with the name, which the name check then refuses.
+     */
+    private fun replacing(
+        plan: LogicalPlan,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan =
+        when (plan) {
+            // Checks nothing here: there are no composite databases.
+            is EnsureNameIsNotAmbiguous -> replacing(plan.source(), context)
+            is DropDatabase -> dropDatabase(plan, context, aliases = false)
+            else -> compile(plan, context)
+        }
 
     /**
      * The seed URI of the database [name] that [plan] creates, null for none, from its options,
@@ -559,64 +576,120 @@ private class DatabaseCommands(
         )
 
     /**
-     * Drops a database with the privileges on it and its names: its own and, with CASCADE
-     * ALIASES, its local aliases, which the plans before refused otherwise. Refuses the default
-     * database: it is created at startup, but only on the member that founds a cluster, so dropping
-     * it would keep every other member from starting.
+     * Drops a database with the privileges on it and its names: its own and, with CASCADE ALIASES,
+     * its local aliases. Without, it refuses to drop a database that local aliases target, naming
+     * them; remote aliases never stop a drop, they no longer resolve once it is gone. With
+     * [aliases], the name may be a local alias's, which stands for its database. Refuses the
+     * default database: it is created at startup, but only on the member that founds a cluster, so
+     * dropping it would keep every other member from starting.
      */
     @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for dropping the default database.
     private fun dropDatabase(
         plan: DropDatabase,
         context: AdministrationCommandRuntimeContext,
+        aliases: Boolean,
     ): ExecutionPlan {
         val databaseName = plan.databaseName()
+        val source = compile(plan.source(), context)
         if (plan.additionalAction() == `DumpData$`.`MODULE$`) {
-            return failure(compile(plan.source(), context), "DUMP DATA") {
+            return failure(source, "DUMP DATA") {
                 "Failed to delete the specified database '${show(databaseName, it)}': " +
                     "DUMP DATA is not supported."
             }
         }
-        val defaultDatabase = config.get(GraphDatabaseSettings.initial_default_database)
-        val source =
-            PredicateExecutionPlan.apply(
-                Function2 { params, _ ->
-                    NormalizedDatabaseName(show(databaseName, params)).name() != defaultDatabase
-                },
-                Option.apply(compile(plan.source(), context)),
-                Function3 { params, _, _ ->
-                    InvalidArgumentException(
-                        "Not allowed to delete the default database " +
-                            "'${show(databaseName, params)}'."
-                    )
-                },
-            )
         val name = admin.getDatabaseNameFields("databaseName", databaseName)
         val key = parameter(name.displayNameKey())
+        val defaultDatabase = config.get(GraphDatabaseSettings.initial_default_database)
+        val restrict = plan.aliasAction() !is `CascadeAliases$`
+        val droppable =
+            updating(
+                "EnsureDatabaseCanBeDropped",
+                """
+                ${database(key, aliases)}
+                OPTIONAL MATCH (database)<-[:TARGETS]-(alias:DatabaseName {primary: false})
+                WITH database, alias.displayName AS alias ORDER BY alias
+                WITH database.name AS name, collect(alias) AS aliases
+                RETURN {name: name, aliases: aliases} AS database
+                """
+                    .trimIndent(),
+                VirtualValues.map(name.keys(), name.values()),
+                QueryHandler.handleResult(
+                        Function3 { _, value, params ->
+                            val database = value as MapValue
+                            val target = (database.get("name") as TextValue).stringValue()
+                            val targeting =
+                                (database.get("aliases") as ListValue).map {
+                                    (it as TextValue).stringValue()
+                                }
+                            when {
+                                target == defaultDatabase ->
+                                    ThrowException(
+                                        InvalidArgumentException(
+                                            "Not allowed to delete the default database " +
+                                                "'$target'."
+                                        )
+                                    )
+                                restrict && targeting.isNotEmpty() ->
+                                    ThrowException(
+                                        aliasesExist(
+                                            show(databaseName, params),
+                                            target,
+                                            targeting,
+                                        )
+                                    )
+                                else -> `Continue$`.`MODULE$`
+                            }
+                        }
+                    )
+                    .handleError(errors("DROP DATABASE", "delete", databaseName)),
+                source,
+                transformer().convert(name.nameConverter()),
+            )
         return updating(
             "DropDatabase",
             """
-            MATCH (database:Database {name: $key})
+            ${database(key, aliases)}
+            WITH database, database.name AS droppedName
             OPTIONAL MATCH (privilege:${PrivilegeRecords.PRIVILEGE.name()} {
                 ${PrivilegeRecords.SCOPE}: '${PrivilegeRecords.ONE_DATABASE}',
                 ${PrivilegeRecords.DATABASE}: database.uuid})
             DETACH DELETE privilege
-            WITH DISTINCT database
+            WITH DISTINCT database, droppedName
             OPTIONAL MATCH (database)<-[:TARGETS]-(name:DatabaseName)
             OPTIONAL MATCH (name)-[:PROPERTIES|CONNECTS_WITH]->(attached)
             DETACH DELETE attached, name
-            WITH DISTINCT database
+            WITH DISTINCT database, droppedName
             DETACH DELETE database
-            WITH DISTINCT $key AS droppedName
+            WITH DISTINCT droppedName
             CREATE (:DeletedDatabase {name: droppedName, timestamp: timestamp()})
             RETURN droppedName
             """
                 .trimIndent(),
             VirtualValues.map(name.keys(), name.values()),
             QueryHandler.handleError(errors("DROP DATABASE", "delete", databaseName)),
-            source,
+            droppable,
             transformer().convert(name.nameConverter()),
         )
     }
+
+    /**
+     * Binds `database` to the database named at the parameter [key], or with [aliases] also to the
+     * database of the local alias of that name. Database names and alias names never clash.
+     */
+    private fun database(key: String, aliases: Boolean = true): String =
+        if (aliases) {
+            """
+            CALL {
+                MATCH (database:Database {name: $key}) RETURN database
+                UNION
+                MATCH (:DatabaseName {name: $key, namespace: '${TopologyGraphDbmsModel.DEFAULT_NAMESPACE}',
+                    primary: false})-[:TARGETS]->(database:Database)
+                RETURN database
+            }
+            """
+        } else {
+            "MATCH (database:Database {name: $key})"
+        }
 
     private fun setStatus(
         sourcePlan: LogicalPlan,
@@ -631,7 +704,7 @@ private class DatabaseCommands(
         return updating(
             if (online) "StartDatabase" else "StopDatabase",
             """
-            MATCH (database:Database {name: ${parameter(name.displayNameKey())}})
+            ${database(parameter(name.displayNameKey()))}
             SET database.status = ${'$'}status,
                 database.started_at = ${if (online) "datetime()" else "null"},
                 database.stopped_at = ${if (online) "null" else "datetime()"},
@@ -660,8 +733,7 @@ private class DatabaseCommands(
         val name = admin.getDatabaseNameFields("databaseName", databaseName)
         return updating(
             "EnsureValidNonSystemDatabase",
-            "MATCH (database:Database {name: ${parameter(name.displayNameKey())}}) " +
-                "RETURN database.name AS name",
+            "${database(parameter(name.displayNameKey()))} RETURN database.name AS name",
             VirtualValues.map(name.keys(), name.values()),
             QueryHandler.handleNoResult(notFound(plan.action(), databaseName))
                 .handleResult(
@@ -691,56 +763,20 @@ private class DatabaseCommands(
         )
     }
 
-    /**
-     * Refuses to drop a database that local aliases target, naming them, unless CASCADE ALIASES
-     * drops them too. Remote aliases never stop a drop: they no longer resolve once it is gone.
-     */
-    private fun ensureSafeToDelete(
-        plan: EnsureDatabaseSafeToDelete,
-        context: AdministrationCommandRuntimeContext,
-    ): ExecutionPlan {
-        val source = compile(plan.source(), context)
-        if (plan.aliasAction() is `CascadeAliases$`) return source
-        val databaseName = plan.databaseName()
-        val name = admin.getDatabaseNameFields("databaseName", databaseName)
-        return updating(
-            "EnsureDatabaseSafeToDelete",
-            """
-            MATCH (database:Database {name: ${parameter(name.displayNameKey())}})
-                <-[:TARGETS]-(alias:DatabaseName {primary: false})
-            WITH alias.displayName AS alias ORDER BY alias
-            RETURN collect(alias) AS aliases
-            """
-                .trimIndent(),
-            VirtualValues.map(name.keys(), name.values()),
-            QueryHandler.handleResult(
-                    Function3 { _, aliases, params ->
-                        val names = (aliases as ListValue).map { (it as TextValue).stringValue() }
-                        if (names.isEmpty()) {
-                            `Continue$`.`MODULE$`
-                        } else {
-                            ThrowException(aliasesExist(show(databaseName, params), names))
-                        }
-                    }
-                )
-                .handleError(errors("DROP DATABASE", "delete", databaseName)),
-            source,
-            transformer().convert(name.nameConverter()),
-        )
-    }
-
+    /** That the database [target], given as [name], cannot be dropped while [aliases] exist. */
     private fun aliasesExist(
-        database: String,
+        name: String,
+        target: String,
         aliases: List<String>,
     ): DatabaseAliasExistsException {
         val listed = aliases.joinToString(", ") { "'$it'" }
         return DatabaseAliasExistsException(
             ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42N82)
-                .withParam(GqlParams.StringParam.db1, database)
+                .withParam(GqlParams.StringParam.db1, target)
                 .withParam(GqlParams.StringParam.db2, listed)
                 .build(),
-            "Failed to delete the specified database '$database': Database has aliases $listed. " +
-                "Drop them before the database, or drop the database with CASCADE ALIASES.",
+            "Failed to delete the specified database '$name': Database '$target' has aliases " +
+                "$listed. Drop them before the database, or drop the database with CASCADE ALIASES.",
         )
     }
 

@@ -7,6 +7,7 @@ import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.Transaction
+import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLog
 import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_HOME_DB
 import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_LABEL
@@ -23,6 +24,7 @@ class SecurityGraph(
     val users: Map<String, User>,
     val roles: Map<String, Role>,
     private val databases: Map<String, UUID>,
+    private val aliases: Map<String, UUID> = emptyMap(),
 ) {
     class User(val suspended: Boolean, val home: String?, val roles: Set<String>)
 
@@ -30,11 +32,20 @@ class SecurityGraph(
 
     fun isSuspended(user: String): Boolean = users[user]?.suspended == true
 
-    /** The home database of [user], or null for the DBMS default database. */
-    fun homeDatabase(user: String): String? = users[user]?.home
+    /**
+     * The home database of [user], or null for the DBMS default database. A local alias stands for
+     * its database, as Neo4j Enterprise resolves home databases set to aliases.
+     */
+    fun homeDatabase(user: String): String? =
+        users[user]?.home?.let { home ->
+            aliases[NormalizedDatabaseName(home).name()]?.let(names::get) ?: home
+        }
 
-    /** The id of the database [name], or null if there is none. */
-    fun databaseId(name: String): UUID? = databases[name]
+    /**
+     * The id of the database [name], or of the target of the local alias [name], whose privileges
+     * are those of its database; null if there is neither.
+     */
+    fun databaseId(name: String): UUID? = databases[name] ?: aliases[name]
 
     private val names: Map<UUID, String> by lazy {
         databases.entries.associate { (name, id) -> id to name }
@@ -110,7 +121,38 @@ class SecurityGraph(
                             )
                     }
                 }
-            return SecurityGraph(initialized, users, roles, databases)
+            val ids = databases.values.toSet()
+            val aliases =
+                tx.findNodes(TopologyGraphDbmsModel.DATABASE_NAME_LABEL).use { nodes ->
+                    nodes
+                        .asSequence()
+                        .filter {
+                            it.getProperty(TopologyGraphDbmsModel.PRIMARY_PROPERTY, true) ==
+                                false &&
+                                it.getProperty(TopologyGraphDbmsModel.NAMESPACE_PROPERTY, null) ==
+                                    TopologyGraphDbmsModel.DEFAULT_NAMESPACE
+                        }
+                        .mapNotNull { alias ->
+                            val database =
+                                alias
+                                    .getSingleRelationship(
+                                        TopologyGraphDbmsModel.TARGETS_RELATIONSHIP,
+                                        Direction.OUTGOING,
+                                    )
+                                    ?.endNode
+                                    ?.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY)
+                                    as String?
+                            database
+                                ?.let(UUID::fromString)
+                                ?.takeIf { it in ids }
+                                ?.let {
+                                    alias.getProperty(TopologyGraphDbmsModel.NAME_PROPERTY)
+                                        as String to it
+                                }
+                        }
+                        .toMap()
+                }
+            return SecurityGraph(initialized, users, roles, databases, aliases)
         }
 
         private fun privileges(role: Node, name: String, log: InternalLog): List<Privilege> =
