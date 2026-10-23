@@ -74,6 +74,17 @@ class StandaloneServer(
         return "${address.host}:${address.port}"
     }
 
+    /** The address the routing connector listens on, when Bolt is enabled. */
+    fun routingAddress(): String {
+        val register =
+            database(SYSTEM).dependencyResolver.resolveDependency(ConnectorPortRegister::class.java)
+        val address =
+            checkNotNull(register.getLocalAddress(ConnectorType.INTRA_BOLT)) {
+                "there is no routing connector"
+            }
+        return "${address.host}:${address.port}"
+    }
+
     override fun close() = stop()
 
     private fun config(): Config {

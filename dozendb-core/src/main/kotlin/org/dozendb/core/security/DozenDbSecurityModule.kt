@@ -19,6 +19,7 @@ import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.fabric.bookmark.LocalGraphTransactionIdTracker
 import org.neo4j.function.Suppliers
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
@@ -61,9 +62,11 @@ class DozenDbSecurityModule(
     private val dependencies: Dependencies,
     private val securityLog: SecurityLog,
     private val security: SystemGraphSecurity,
+    private val memberLogins: MemberLogins,
     private val defaultDatabase: (String) -> String,
 ) : CommunitySecurityModule(logService, config, dependencies, securityLog) {
     private lateinit var realm: AuthManager
+    private lateinit var members: AuthManager
 
     override fun setup() {
         val system =
@@ -74,9 +77,26 @@ class DozenDbSecurityModule(
                     .orElseThrow { IllegalStateException("No database called `system` was found.") }
                     .databaseFacade()
             }
+        val helper = SecurityGraphHelper(system, SecureHasher(), securityLog)
+        members =
+            when (memberLogins) {
+                MemberLogins.Allowed ->
+                    MemberRealm(
+                        UserLogins(
+                            { user, connection -> loginAs(helper, user, connection) },
+                            { transaction ->
+                                dependencies
+                                    .resolveDependency(LocalGraphTransactionIdTracker::class.java)
+                                    .awaitSystemGraphUpToDate(transaction)
+                            },
+                            securityLog,
+                        )
+                    )
+                is MemberLogins.Refused -> RefusingMemberRealm(memberLogins.reason)
+            }
         realm =
             Realm(
-                SecurityGraphHelper(system, SecureHasher(), securityLog),
+                helper,
                 createAuthenticationStrategy(config),
                 security,
                 securityLog,
@@ -90,6 +110,34 @@ class DozenDbSecurityModule(
     }
 
     override fun authManager(): AuthManager = realm
+
+    override fun inClusterAuthManager(): AuthManager = members
+
+    /**
+     * The login of [name] from [connection], as [Realm] gives it once their password is checked:
+     * refused if they do not exist or are suspended.
+     */
+    private fun loginAs(
+        helper: SecurityGraphHelper,
+        name: String,
+        connection: ClientConnectionInfo,
+    ): LoginContext {
+        val user =
+            helper.getUserByName(name)?.takeUnless { security.isSuspended(name) }
+                ?: return BasicLoginContext(
+                    null as User?,
+                    AuthenticationResult.FAILURE,
+                    connection,
+                )
+        val result =
+            if (user.passwordChangeRequired()) AuthenticationResult.PASSWORD_CHANGE_REQUIRED
+            else AuthenticationResult.SUCCESS
+        return DozenDbLoginContext(
+            BasicLoginContext(user, result, connection),
+            security,
+            defaultDatabase,
+        )
+    }
 
     private class Realm(
         helper: SecurityGraphHelper,

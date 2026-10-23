@@ -41,6 +41,7 @@ import org.dozendb.core.edition.DozenDbEditionModule
 import org.dozendb.core.edition.HostingServer
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
+import org.dozendb.core.security.MemberLogins
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.connectors.ConnectorType
@@ -473,6 +474,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     .orElse(false)
             }
         }
+
+    /** Members log in on the routing connector only if they can forward writes to this member. */
+    override fun memberLogins(): MemberLogins =
+        forwardingRefusal?.let { MemberLogins.Refused(it) } ?: MemberLogins.Allowed
 
     /** This member's advertised Bolt address, with the bound port if the configured one is 0. */
     private fun boltHostPort(): HostPort? = boltAddress()?.toHostPort()

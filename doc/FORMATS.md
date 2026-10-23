@@ -13,6 +13,7 @@ Format level 1 is every format below at the version shown.
 | Probe request and answer | `ProbeCodec` | 1 | Sent. |
 | What members report when probed | `MemberMetadata` | keys | Sent, inside probe answers. |
 | Database states, for `WAIT` | `DatabaseStatesCodec` | none | Sent, as one of those keys. |
+| Member login on the routing connector | `MemberLogins` | 1 | Sent: a Bolt auth token of the scheme `dozendb-member` naming the user whose transaction a member forwards, and the last transaction of `system` the member has (`system_transaction`). Only to members that report `dozendb.routingAddress`. |
 | Bulk transfer | `BulkService` | 1 | Sent; carries database copies, and backups on the backup port. |
 | Database copy request | `StoreCopySource` | 2 | Sent. |
 | Database copy | `StoreArchive` | 5 | Sent, and unpacked into the database's files. A member's copy holds its Raft snapshot in the metadata (`CopySnapshot`). |

@@ -24,6 +24,9 @@ import org.dozendb.core.monitoring.MetricsService
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityComponent
 import org.dozendb.core.security.DozenDbSecurityModule
+import org.dozendb.core.security.MemberLogins
+import org.dozendb.core.security.MemberRealm
+import org.dozendb.core.security.RefusingMemberRealm
 import org.dozendb.core.security.SystemGraphSecurity
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -47,7 +50,9 @@ import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule
 import org.neo4j.internal.kernel.api.security.CommunitySecurityLog
 import org.neo4j.io.device.DeviceMapper
 import org.neo4j.kernel.api.procedure.GlobalProcedures
+import org.neo4j.kernel.api.security.AuthManager
 import org.neo4j.kernel.api.security.provider.NoAuthSecurityProvider
+import org.neo4j.kernel.api.security.provider.SecurityProvider
 import org.neo4j.kernel.database.DatabaseId
 import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.DatabaseReferenceRepository
@@ -301,7 +306,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         // For authorization failures; Community gives a log that writes nothing.
         globalModule.globalDependencies.satisfyDependency(log ?: CommunitySecurityLog.NULL_LOG)
         if (log == null) {
-            setSecurityProvider(NoAuthSecurityProvider.INSTANCE)
+            setSecurityProvider(NoAuthProvider(memberLogins()))
             return
         }
         globalModule.databaseEventListeners.registerDatabaseEventListener(
@@ -314,11 +319,39 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 globalModule.globalDependencies,
                 log,
                 security,
+                memberLogins(),
             ) {
                 defaultDatabaseResolver.defaultDatabase(it)
             }
         module.setup()
         setSecurityProvider(module)
+    }
+
+    /**
+     * Whether other members of a cluster may log in on this server's routing connector as the users
+     * whose transactions they forward; a server outside a cluster refuses them.
+     */
+    protected open fun memberLogins(): MemberLogins =
+        MemberLogins.Refused("it is not a member of a cluster")
+
+    /**
+     * Neo4j's security provider with authentication disabled, with logins on the routing connector
+     * that [memberLogins] allows or refuses.
+     */
+    private class NoAuthProvider(memberLogins: MemberLogins) :
+        LifecycleAdapter(), SecurityProvider {
+        private val members =
+            when (memberLogins) {
+                MemberLogins.Allowed -> MemberRealm(null)
+                is MemberLogins.Refused -> RefusingMemberRealm(memberLogins.reason)
+            }
+
+        override fun authManager(): AuthManager = NoAuthSecurityProvider.INSTANCE.authManager()
+
+        override fun inClusterAuthManager(): AuthManager = members
+
+        override fun loopbackAuthManager(): AuthManager =
+            NoAuthSecurityProvider.INSTANCE.loopbackAuthManager()
     }
 
     /** Neo4j Community's query router, whose authorization failures go to the security log. */
