@@ -12,14 +12,17 @@ import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.cluster.internal.ClusterHarness
+import org.dozendb.cluster.internal.ClusterSettings
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.driver.AccessMode
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
@@ -370,8 +373,18 @@ class ServerSideRoutingTest {
 
     @Test
     fun `bolt clients write on a follower only when the setting forwards them`() {
-        val follower = follower()
+        // A member that leads neither database: its write transactions on both are forwarded.
+        val follower =
+            cluster.members.first {
+                it != cluster.awaitLeader(NEO4J) && it != cluster.awaitLeader(SYSTEM)
+            }
         val admin = direct(follower, "neo4j")
+        fun forwards() =
+            follower
+                .database(SYSTEM)
+                .dependencyResolver
+                .resolveDependency(Config::class.java)
+                .get(ClusterSettings.forwardBoltWrites)
         fun write() =
             direct(follower).session(SessionConfig.forDatabase(NEO4J)).use {
                 it.run("CREATE (:Bolt)").consume()
@@ -384,21 +397,31 @@ class ServerSideRoutingTest {
             .contains("Bolt clients (bolt://) write on the leader, or through any member with")
             .contains("dbms.dozendb.routing.forward_bolt_writes=true")
 
-        admin.session(SessionConfig.forDatabase(SYSTEM)).use {
-            it.run("CALL dbms.setConfigValue('dbms.dozendb.routing.forward_bolt_writes', 'true')")
-                .consume()
-        }
+        // In read transactions, which run where they reach, as the setting changes only there.
+        fun configure(value: Boolean) =
+            admin
+                .session(
+                    SessionConfig.builder()
+                        .withDatabase(SYSTEM)
+                        .withDefaultAccessMode(AccessMode.READ)
+                        .build()
+                )
+                .use {
+                    it.run(
+                            "CALL dbms.setConfigValue(" +
+                                "'dbms.dozendb.routing.forward_bolt_writes', '$value')"
+                        )
+                        .consume()
+                }
+        configure(true)
+        assertThat(forwards()).isTrue()
         try {
             write()
             assertThat(count(cluster.awaitLeader(), "MATCH (b:Bolt) RETURN count(b)")).isEqualTo(1)
         } finally {
-            admin.session(SessionConfig.forDatabase(SYSTEM)).use {
-                it.run(
-                        "CALL dbms.setConfigValue('dbms.dozendb.routing.forward_bolt_writes', 'false')"
-                    )
-                    .consume()
-            }
+            configure(false)
         }
+        assertThat(forwards()).describedAs("the setting on the member it was changed on").isFalse()
     }
 
     @Test
