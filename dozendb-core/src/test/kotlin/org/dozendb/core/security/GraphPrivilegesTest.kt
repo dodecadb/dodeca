@@ -150,6 +150,12 @@ class GraphPrivilegesTest {
         // Properties of a new node need SET PROPERTY, and each label CREATE.
         assertThat(alice.refused("CREATE (:A {p: 10})")).startsWith("Set property for property 'p'")
         assertThat(alice.refused("CREATE (:A:B)")).startsWith("Create node with labels")
+        // A node without labels needs CREATE on all nodes.
+        assertThat(alice.refused("CREATE ()"))
+            .isEqualTo(
+                "Create node with labels '' on database 'neo4j' is not allowed for user 'alice' " +
+                    "with roles [PUBLIC, r]."
+            )
         assertThat(alice.refused("MATCH (n:A {p: 1}) SET n.q = 20"))
             .startsWith("Set property for property 'q' on database 'neo4j' is not allowed")
 

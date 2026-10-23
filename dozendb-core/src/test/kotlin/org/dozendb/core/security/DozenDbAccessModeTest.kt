@@ -92,6 +92,8 @@ class DozenDbAccessModeTest {
             if (shortcut) assertThat(truth).describedAs("$question, $context").isTrue
         }
 
+        // Neo4j asks about a node without labels with null.
+        expect("create without labels", mode.allowsCreateNode(null), graph.createNode(emptySet()))
         for (labels in LABEL_SETS) {
             val ids = tokens(labels)
             expect(

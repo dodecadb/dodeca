@@ -208,7 +208,9 @@ class DozenDbAccessMode(
     override fun allowsRemoveLabel(labelId: Int): Boolean =
         removeLabels.allowsAny(intArrayOf(labelId))
 
-    override fun allowsCreateNode(labelIds: IntArray): Boolean = createNodes.allowsEvery(labelIds)
+    /** Creating a node with [labelIds], none if null, as Neo4j asks for a node without labels. */
+    override fun allowsCreateNode(labelIds: IntArray?): Boolean =
+        createNodes.allowsEvery(labelIds ?: IntArray(0))
 
     override fun allowsDeleteNode(labelSupplier: Supplier<TokenSet>): Boolean =
         deleteNodes.allowsEvery(labelSupplier.get().all())
