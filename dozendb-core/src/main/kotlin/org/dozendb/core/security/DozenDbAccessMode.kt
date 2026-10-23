@@ -4,26 +4,31 @@ import java.net.InetAddress
 import java.net.URI
 import java.util.UUID
 import java.util.function.Supplier
+import org.eclipse.collections.api.map.primitive.IntObjectMap
 import org.eclipse.collections.api.set.primitive.IntSet
 import org.eclipse.collections.impl.factory.primitive.IntSets
 import org.neo4j.internal.kernel.api.RelTypeSupplier
 import org.neo4j.internal.kernel.api.TokenSet
 import org.neo4j.internal.kernel.api.security.AccessMode
 import org.neo4j.internal.kernel.api.security.LoginContext.IdLookup
+import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PermissionState
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.internal.kernel.api.security.ReadSecurityPropertyProvider
 import org.neo4j.messages.MessageUtil
 import org.neo4j.storageengine.api.PropertySelection
 import org.neo4j.token.api.TokenConstants
+import org.neo4j.values.storable.Value
+import org.neo4j.values.storable.Values
 
 /**
  * What a user may do in the database [database], from [policy], for Neo4j's kernel, which names
  * labels, relationship types, properties, procedures and functions by the ids [lookup] gives them.
  * Names that do not exist yet are left out, as nothing has them; [stale] tells when they do.
  *
- * Property rules are not evaluated yet: a GRANT rule grants nothing, and a DENY rule denies every
- * node with one of its labels, or every node if it names none.
+ * Property rules decide with the values of the properties they ask about, which Neo4j reads for the
+ * nodes they may apply to; without the values, a DENY rule that may apply denies and a GRANT rule
+ * grants nothing.
  */
 class DozenDbAccessMode(
     private val policy: PrivilegePolicy,
@@ -101,17 +106,22 @@ class DozenDbAccessMode(
         if (labels.size == 1 && labels[0] == TokenConstants.ANY_LABEL) allowsTraverseAllLabels()
         else traverseNodes.allowsAny(labels)
 
-    override fun getTraverseSecurityProperties(labels: IntArray): IntSet = IntSets.immutable.empty()
+    override fun getTraverseSecurityProperties(labels: IntArray): IntSet =
+        traverseNodes.keysFor(labels)
 
-    override fun hasApplicableTraverseAllowPropertyRules(label: Int): Boolean = false
+    override fun hasApplicableTraverseAllowPropertyRules(label: Int): Boolean =
+        !traverseNodes.denied.reaches(label) &&
+            traverseNodes.patterns.granted.any { it.appliesTo(intArrayOf(label)) }
 
     // Neo4j passes no property provider when no property rule applies.
     override fun allowsTraverseNodeWithPropertyRules(
         propertyProvider: ReadSecurityPropertyProvider?,
         vararg labels: Int,
-    ): Boolean = allowsTraverseNode(*labels)
+    ): Boolean =
+        if (propertyProvider == null) allowsTraverseNode(*labels)
+        else traverseNodes.allowsAny(labels, propertyProvider.securityProperties)
 
-    override fun hasTraversePropertyRules(): Boolean = false
+    override fun hasTraversePropertyRules(): Boolean = traverseNodes.patterns.any()
 
     override fun allowsTraverseAllRelTypes(): Boolean = traverseRelationships.everything()
 
@@ -127,13 +137,13 @@ class DozenDbAccessMode(
         readNodes.of(propertyKey).everything()
 
     override fun disallowsReadPropertyForSomeLabel(propertyKey: Int): Boolean =
-        readNodes.of(propertyKey).denied.any()
+        readNodes.of(propertyKey).let { it.denied.any() || it.patterns.denied.isNotEmpty() }
 
     override fun allowsReadNodeProperties(
         labels: Supplier<TokenSet>,
         propertyKeys: IntArray,
         propertyProvider: ReadSecurityPropertyProvider?,
-    ): Boolean = allowsReadNodeProperties(labels, propertyKeys)
+    ): Boolean = propertyKeys.all { allowsReadNodeProperty(labels, it, propertyProvider) }
 
     override fun allowsReadNodeProperties(
         labels: Supplier<TokenSet>,
@@ -147,7 +157,14 @@ class DozenDbAccessMode(
         labels: Supplier<TokenSet>,
         propertyKey: Int,
         propertyProvider: ReadSecurityPropertyProvider?,
-    ): Boolean = allowsReadNodeProperty(labels, propertyKey)
+    ): Boolean {
+        val rule = readNodes.of(propertyKey)
+        return if (propertyProvider == null || !rule.patterns.any()) {
+            rule.allowsAny { labels.get().all() }
+        } else {
+            rule.allowsAny(labels.get().all(), propertyProvider.securityProperties)
+        }
+    }
 
     override fun allowsReadNodeProperty(labels: Supplier<TokenSet>, propertyKey: Int): Boolean =
         readNodes.of(propertyKey).allowsAny { labels.get().all() }
@@ -163,19 +180,33 @@ class DozenDbAccessMode(
     /** Lists a property key that some element could have read. */
     override fun allowsSeePropertyKeyToken(propertyKey: Int): Boolean =
         listOf(readNodes.of(propertyKey), readRelationships.of(propertyKey)).any {
-            it.granted.any() && !it.denied.all
+            (it.granted.any() || it.patterns.granted.isNotEmpty()) && !it.denied.all
         }
 
-    override fun hasPropertyReadRules(): Boolean = false
+    override fun hasPropertyReadRules(): Boolean = readNodes.all().any { it.patterns.any() }
 
-    override fun hasPropertyReadRules(vararg propertyKeys: Int): Boolean = false
+    override fun hasPropertyReadRules(vararg propertyKeys: Int): Boolean = propertyKeys.any {
+        readNodes.of(it).patterns.any()
+    }
 
-    override fun getReadSecurityProperties(propertyKey: Int): IntSet = IntSets.immutable.empty()
+    override fun getReadSecurityProperties(propertyKey: Int): IntSet =
+        readNodes.of(propertyKey).patterns.keys()
 
-    override fun getAllReadSecurityProperties(): IntSet = IntSets.immutable.empty()
+    override fun getAllReadSecurityProperties(): IntSet =
+        IntSets.mutable.empty().also { keys ->
+            readNodes.all().forEach { keys.addAll(it.patterns.keys()) }
+        }
 
-    override fun getSecurityPropertySelection(selection: PropertySelection): PropertySelection =
-        PropertySelection.NO_PROPERTIES
+    /**
+     * The properties whose values decide whether those of [selection] can be read: none without
+     * property rules, null if the rules are about other properties. A selection may not know its
+     * keys, as one of all properties but some: the rules' properties are asked about instead.
+     */
+    override fun getSecurityPropertySelection(selection: PropertySelection): PropertySelection? {
+        if (!hasPropertyReadRules()) return PropertySelection.NO_PROPERTIES
+        val keys = readNodes.securityKeys(selection::test)
+        return if (keys.isEmpty) null else PropertySelection.selection(*keys.toArray())
+    }
 
     override fun allowsExecuteProcedure(procedureId: Int): PermissionState =
         procedures(procedureId).execute
@@ -242,22 +273,50 @@ class DozenDbAccessMode(
 
     override fun toString(): String = "DozenDbAccessMode{${name()}}"
 
-    /** Nodes by their labels, from privileges about nodes or every element. */
+    /**
+     * Nodes by their labels, from privileges about nodes or every element, and by the value of a
+     * property for property rules.
+     */
     private fun nodeRule(privileges: List<Privilege>): Rule =
         rule(privileges) { privilege ->
             when (val segment = privilege.segment) {
                 PrivilegeSegment.Database -> ALL
                 is PrivilegeSegment.Nodes ->
                     if (segment.label == null) ALL else labels.id(segment.label)
-                is PrivilegeSegment.NodePattern ->
-                    when {
-                        privilege.access == Access.GRANTED -> null
-                        segment.pattern.labels().isEmpty() -> ALL
-                        else -> segment.pattern.labels().mapNotNull { labels.id(it) }
-                    }
+                is PrivilegeSegment.NodePattern -> pattern(segment.pattern)
                 else -> null
             }
         }
+
+    /**
+     * The rule [pattern] compiled for nodes with the labels that exist. A property that does not
+     * exist has no value on any node: the rule then applies by labels alone, or not at all.
+     */
+    private fun pattern(pattern: PatternSegment): Any? {
+        val ids =
+            if (pattern.labels().isEmpty()) null
+            else
+                pattern
+                    .labels()
+                    .mapNotNull { labels.id(it) }
+                    .ifEmpty {
+                        return null
+                    }
+        val holds: (Value) -> Boolean =
+            when (pattern) {
+                is PatternSegment.ValuePatternSegment -> { value ->
+                    pattern.operator().test(value, pattern.value())
+                }
+                is PatternSegment.NullPatternSegment -> pattern.operator()::test
+                else -> return null
+            }
+        val key = keys.id(pattern.property())
+        return when {
+            key != null -> Pattern(ids?.let { IntSets.immutable.of(*it.toIntArray()) }, key, holds)
+            !holds(Values.NO_VALUE) -> null
+            else -> ids ?: ALL
+        }
+    }
 
     /** Relationships by their type, from privileges about them or every element. */
     private fun relationshipRule(privileges: List<Privilege>): Rule =
@@ -324,9 +383,14 @@ class DozenDbAccessMode(
                 ALL -> builder.all = true
                 is Int -> builder.ids.add(reached)
                 is Collection<*> -> reached.forEach { builder.ids.add(it as Int) }
+                is Pattern -> builder.patterns += reached
             }
         }
-        return Rule(granted.build(), denied.build())
+        return Rule(
+            granted.build(),
+            denied.build(),
+            Patterns(granted.patterns.toList(), denied.patterns.toList()),
+        )
     }
 
     private fun Privilege.traverses(): Boolean =
@@ -338,6 +402,7 @@ class DozenDbAccessMode(
     private class Builder {
         var all = false
         val ids = IntSets.mutable.empty()
+        val patterns = mutableListOf<Pattern>()
 
         fun build() = Reach(all, ids.toImmutable())
     }
@@ -351,24 +416,74 @@ class DozenDbAccessMode(
         fun any(): Boolean = all || ids.notEmpty()
     }
 
-    /** What the privileges about one action grant and deny. */
-    class Rule(val granted: Reach, val denied: Reach) {
+    /**
+     * A property rule compiled: it applies to nodes with one of [labels], or to every node for
+     * null, whose value of the property [key] [holds].
+     */
+    class Pattern(
+        private val labels: IntSet?,
+        val key: Int,
+        private val holds: (Value) -> Boolean,
+    ) {
+        fun appliesTo(ids: IntArray): Boolean = labels == null || ids.any(labels::contains)
+
+        /** Whether it applies to a node with [ids] and the property values [values]. */
+        fun holdsFor(ids: IntArray, values: IntObjectMap<Value>): Boolean =
+            appliesTo(ids) && holds(values.get(key) ?: Values.NO_VALUE)
+    }
+
+    /** The property rules of one action that grant and that deny. */
+    class Patterns(val granted: List<Pattern>, val denied: List<Pattern>) {
+        fun any(): Boolean = granted.isNotEmpty() || denied.isNotEmpty()
+
+        /** The properties all the rules ask about. */
+        fun keys(): IntSet = IntSets.immutable.of(*(granted + denied).map { it.key }.toIntArray())
+    }
+
+    /** What the privileges about one action grant and deny, by name and by property rules. */
+    class Rule(val granted: Reach, val denied: Reach, val patterns: Patterns) {
         /** Every element, whatever its labels or type. */
-        fun everything(): Boolean = granted.all && !denied.any()
+        fun everything(): Boolean = granted.all && !denied.any() && patterns.denied.isEmpty()
 
         /** Every node with [label], whatever its other labels. */
-        fun everythingWith(label: Int): Boolean = granted.reaches(label) && !denied.any()
+        fun everythingWith(label: Int): Boolean =
+            granted.reaches(label) && !denied.any() && patterns.denied.isEmpty()
 
-        /** An element with [ids]: granted for one of them, and denied for none. */
-        fun allowsAny(ids: IntArray): Boolean = !denied.reachesAny(ids) && granted.reachesAny(ids)
+        /**
+         * An element with [ids]: granted for one of them, and denied for none. Without the values
+         * of properties, a DENY rule that may apply denies and GRANT rules grant nothing.
+         */
+        fun allowsAny(ids: IntArray): Boolean =
+            !denied.reachesAny(ids) &&
+                patterns.denied.none { it.appliesTo(ids) } &&
+                granted.reachesAny(ids)
 
         /** [allowsAny], asking for the ids only when they matter. */
         fun allowsAny(ids: () -> IntArray): Boolean =
             when {
                 denied.all -> false
-                granted.all && denied.ids.isEmpty -> true
+                granted.all && denied.ids.isEmpty && patterns.denied.isEmpty() -> true
                 else -> allowsAny(ids())
             }
+
+        /** A node with [ids] whose properties have [values], those its rules ask about. */
+        fun allowsAny(ids: IntArray, values: IntObjectMap<Value>): Boolean =
+            !denied.reachesAny(ids) &&
+                patterns.denied.none { it.holdsFor(ids, values) } &&
+                (granted.reachesAny(ids) || patterns.granted.any { it.holdsFor(ids, values) })
+
+        /**
+         * The properties whose values decide for a node with [ids]: those of the rules that may
+         * apply to it, unless its labels decide.
+         */
+        fun keysFor(ids: IntArray): IntSet {
+            if (!patterns.any() || denied.reachesAny(ids)) return IntSets.immutable.empty()
+            val deciding =
+                patterns.denied.filter { it.appliesTo(ids) } +
+                    if (granted.reachesAny(ids)) emptyList()
+                    else patterns.granted.filter { it.appliesTo(ids) }
+            return IntSets.immutable.of(*deciding.map { it.key }.toIntArray())
+        }
 
         /** A node with [labels]: granted for every node or each label, denied for none. */
         fun allowsEvery(labels: IntArray): Boolean =
@@ -379,6 +494,17 @@ class DozenDbAccessMode(
     /** The rules of each property, and of those no privilege names. */
     private class PropertyRules(private val other: Rule, private val named: Map<Int, Rule>) {
         fun of(key: Int): Rule = named[key] ?: other
+
+        fun all(): List<Rule> = named.values + other
+
+        /** The properties the rules about those [selected] ask about, every property's included. */
+        fun securityKeys(selected: (Int) -> Boolean): IntSet =
+            IntSets.mutable.empty().also { keys ->
+                keys.addAll(other.patterns.keys())
+                named.forEach { (key, rule) ->
+                    if (selected(key)) keys.addAll(rule.patterns.keys())
+                }
+            }
     }
 
     /** Names resolved to ids, remembering those that did not exist. */

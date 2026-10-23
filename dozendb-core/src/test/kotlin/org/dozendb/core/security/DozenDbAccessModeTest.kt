@@ -4,14 +4,18 @@ import java.util.UUID
 import java.util.function.Supplier
 import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
+import org.eclipse.collections.impl.factory.primitive.IntObjectMaps
 import org.junit.jupiter.api.Test
 import org.neo4j.internal.kernel.api.RelTypeSupplier
 import org.neo4j.internal.kernel.api.TokenSet
 import org.neo4j.internal.kernel.api.security.AccessMode
 import org.neo4j.internal.kernel.api.security.LoginContext.IdLookup
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
+import org.neo4j.internal.kernel.api.security.ReadSecurityPropertyProvider
+import org.neo4j.storageengine.api.PropertySelection
 import org.neo4j.string.Globbing
 import org.neo4j.token.api.TokenConstants
+import org.neo4j.values.storable.Value
 import org.neo4j.values.storable.Values
 
 /** [DozenDbAccessMode] answers as [PrivilegePolicy] for Neo4j's kernel, which knows ids. */
@@ -242,6 +246,124 @@ class DozenDbAccessModeTest {
     }
 
     @Test
+    fun `answers as the policy on random property rules, as Neo4j's kernel asks`() {
+        val random = Random(20261024)
+        val generator = PrivilegeGenerator(random, listOf(database, UUID(0, 2)))
+        val values = listOf(null, Values.intValue(0), Values.intValue(1), Values.intValue(2))
+        val nodes = LABEL_SETS.flatMap { labels ->
+            values.flatMap { p -> values.map { q -> labels to mapOf("p" to p, "q" to q) } }
+        }
+        repeat(500) { round ->
+            val privileges = List(random.nextInt(1, 7)) { generator.next(patterns = true) }
+            val policy = PrivilegePolicy(privileges, database)
+            val graph = policy.graph(database)
+            val mode = DozenDbAccessMode(policy, database, Lookup(), setOf("PUBLIC"))
+            val context = "round $round: $privileges"
+            for ((labels, properties) in nodes) {
+                val ids = tokens(labels)
+                val known = { key: String -> properties[key] ?: Values.NO_VALUE }
+                assertThat(traverses(mode, ids, properties))
+                    .describedAs("traverse $labels $properties, $context")
+                    .isEqualTo(graph.traverseNode(labels, known))
+                for (key in KEYS) {
+                    for (selection in SELECTIONS) {
+                        assertThat(reads(mode, ids, key, properties, selection))
+                            .describedAs("read $key of $labels $properties, $context")
+                            .isEqualTo(graph.readNodeProperty(labels, key, known))
+                    }
+                }
+            }
+            // The shortcuts that skip looking at nodes must not let through what rules deny.
+            if (mode.allowsTraverseAllLabels()) {
+                assertThat(
+                        nodes.all { (labels, p) ->
+                            graph.traverseNode(labels) { p[it] ?: Values.NO_VALUE }
+                        }
+                    )
+                    .describedAs("traverse all, $context")
+                    .isTrue
+            }
+            for (label in LABELS) {
+                if (mode.allowsTraverseAllNodesWithLabel(Lookup().getLabelId(label))) {
+                    assertThat(
+                            nodes
+                                .filter { label in it.first }
+                                .all { (labels, p) ->
+                                    graph.traverseNode(labels) { p[it] ?: Values.NO_VALUE }
+                                }
+                        )
+                        .describedAs("traverse all with $label, $context")
+                        .isTrue
+                }
+            }
+            for (key in KEYS) {
+                if (mode.allowsReadPropertyAllLabels(Lookup().getPropertyKeyId(key))) {
+                    assertThat(
+                            nodes.all { (labels, p) ->
+                                graph.readNodeProperty(labels, key) { p[it] ?: Values.NO_VALUE }
+                            }
+                        )
+                        .describedAs("read $key of all, $context")
+                        .isTrue
+                }
+            }
+        }
+    }
+
+    /** The values of [properties] that [selection] asks for, as Neo4j's kernel gives them. */
+    private fun provider(properties: Map<String, Value?>, selection: (Int) -> Boolean) =
+        ReadSecurityPropertyProvider {
+            IntObjectMaps.mutable.empty<Value>().also { values ->
+                for ((key, value) in properties) {
+                    val id = Lookup().getPropertyKeyId(key)
+                    if (value != null && selection(id)) values.put(id, value)
+                }
+            }
+        }
+
+    /** Whether the kernel finds a node with [ids] and [properties], as `DefaultNodeCursor` asks. */
+    private fun traverses(
+        mode: DozenDbAccessMode,
+        ids: IntArray,
+        properties: Map<String, Value?>,
+    ): Boolean {
+        if (mode.allowsTraverseAllLabels()) return true
+        if (mode.hasTraversePropertyRules()) {
+            val keys = mode.getTraverseSecurityProperties(ids)
+            if (keys.notEmpty()) {
+                return mode.allowsTraverseNodeWithPropertyRules(
+                    provider(properties, keys::contains),
+                    *ids,
+                )
+            }
+        }
+        return mode.allowsTraverseNode(*ids)
+    }
+
+    /**
+     * Whether the kernel reads [key] of a node, as `DefaultPropertyCursor` asks, reading the
+     * properties that [selection] makes of the key's id.
+     */
+    private fun reads(
+        mode: DozenDbAccessMode,
+        ids: IntArray,
+        key: String,
+        properties: Map<String, Value?>,
+        selection: (Int) -> PropertySelection,
+    ): Boolean {
+        val id = Lookup().getPropertyKeyId(key)
+        val provider =
+            if (!mode.hasPropertyReadRules()) {
+                null
+            } else {
+                mode.getSecurityPropertySelection(selection(id))?.let {
+                    provider(properties, it::test)
+                }
+            }
+        return mode.allowsReadNodeProperty(tokenSet(ids), id, provider)
+    }
+
+    @Test
     fun `privileges on names that do not exist yet apply once they do`() {
         val privileges =
             listOf(
@@ -302,6 +424,14 @@ class DozenDbAccessModeTest {
     }
 
     private companion object {
+        /** The selections the kernel reads a property with: it alone, all, or all but others. */
+        val SELECTIONS: List<(Int) -> PropertySelection> =
+            listOf(
+                PropertySelection::selection,
+                { _ -> PropertySelection.ALL_PROPERTIES },
+                { key -> PropertySelection.ALL_PROPERTIES.excluding { it != key } },
+                { key -> PropertySelection.ALL_PROPERTIES.excluding { it == key + 1 } },
+            )
         val LABELS = listOf("A", "B", "C")
         val LABEL_SETS =
             listOf(
