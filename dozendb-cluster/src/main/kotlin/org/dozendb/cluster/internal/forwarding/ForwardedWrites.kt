@@ -1,5 +1,8 @@
 package org.dozendb.cluster.internal.forwarding
 
+import org.dozendb.cluster.internal.ClusterSettings
+import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.ratis.TlsConfig
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -39,4 +42,39 @@ internal object ForwardedWrites {
                     "dbms.ssl.policy.cluster.client_auth=REQUIRE"
             else -> null
         }
+
+    /**
+     * Why this member refuses a write on [database], which it does not lead, and how clients write
+     * instead. [leader] leads it, at the Bolt address [leaderBolt], if known; [sendingRefusal] is
+     * why this member forwards no writes, if it does not.
+     */
+    fun notLeader(
+        config: Config,
+        database: String,
+        leader: MemberId?,
+        leaderBolt: HostPort?,
+        sendingRefusal: String?,
+    ): String {
+        val led =
+            when {
+                leader == null ->
+                    "No member leads database '$database' right now; writes succeed once one is " +
+                        "elected."
+                leaderBolt == null -> "Member $leader leads database '$database', not this member."
+                else -> "Member $leader at $leaderBolt leads database '$database', not this member."
+            }
+        val how =
+            when {
+                sendingRefusal != null ->
+                    " This member forwards no writes to the leader: $sendingRefusal. Write on the " +
+                        "leader, or with a driver that sends writes to it (neo4j:// with " +
+                        "${GraphDatabaseSettings.routing_default_router.name()}=CLIENT)."
+                !config.get(ClusterSettings.forwardBoltWrites) ->
+                    " Drivers that route (neo4j://) and HTTP clients write through any member; " +
+                        "Bolt clients (bolt://) write on the leader, or through any member with " +
+                        "${ClusterSettings.forwardBoltWrites.name()}=true."
+                else -> ""
+            }
+        return led + how
+    }
 }

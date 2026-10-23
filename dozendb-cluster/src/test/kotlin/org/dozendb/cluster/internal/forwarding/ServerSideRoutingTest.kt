@@ -379,6 +379,10 @@ class ServerSideRoutingTest {
 
         val refused = catchThrowable { write() } as Neo4jException
         assertThat(refused.code()).isEqualTo("Neo.ClientError.Cluster.NotALeader")
+        assertThat(refused.message)
+            .contains("leads database 'neo4j', not this member")
+            .contains("Bolt clients (bolt://) write on the leader, or through any member with")
+            .contains("dbms.dozendb.routing.forward_bolt_writes=true")
 
         admin.session(SessionConfig.forDatabase(SYSTEM)).use {
             it.run("CALL dbms.setConfigValue('dbms.dozendb.routing.forward_bolt_writes', 'true')")

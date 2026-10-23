@@ -17,6 +17,7 @@ import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseHosting
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
 import org.neo4j.graphdb.event.DatabaseEventContext
@@ -45,6 +46,7 @@ internal class ReplicationService(
     private val mustDetach: (String) -> Boolean,
     private val detached: (String) -> Unit,
     private val adoptDatabases: () -> Unit,
+    private val notLeader: (String, MemberId?) -> String,
     private val metrics: ClusterMetrics? = null,
 ) : DatabaseEventListenerAdapter(), DatabaseHosting {
     override val hostedOnMode: HostedOnMode = HostedOnMode.RAFT
@@ -187,6 +189,7 @@ internal class ReplicationService(
                         {}
                     },
                 onSnapshotNeeded = ::catchUp,
+                notLeaderMessage = { leader -> notLeader(namedDatabaseId.name(), leader) },
                 counts = metrics?.of(namedDatabaseId.name()) ?: ClusterMetrics.Counters(),
             )
         databases[namedDatabaseId.name()] = replica

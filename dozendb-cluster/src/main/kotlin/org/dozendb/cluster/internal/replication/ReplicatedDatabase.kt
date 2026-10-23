@@ -44,6 +44,7 @@ import org.neo4j.storageengine.api.CommandBatch
  * @property adopt runs once such a store is detached, before the group starts and before other
  *   members copy the store, and may commit to the database locally.
  * @property onSnapshotNeeded called when the group's log no longer holds entries this member needs.
+ * @property notLeaderMessage why this member refuses writes while another member, or none, leads.
  * @property counts where its replications are counted, for metrics.
  */
 internal class ReplicatedDatabase(
@@ -59,6 +60,7 @@ internal class ReplicatedDatabase(
     private val log: InternalLog,
     private val afterApply: () -> Unit,
     private val onSnapshotNeeded: (ReplicatedDatabase, Member?, Long) -> Unit,
+    private val notLeaderMessage: (MemberId?) -> String,
     private val counts: ClusterMetrics.Counters = ClusterMetrics.Counters(),
 ) : HostedDatabase {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
@@ -81,7 +83,16 @@ internal class ReplicatedDatabase(
     val commitsLocally: Boolean
         get() = bootstrapping || adopting
 
-    override val leaseService = ClusterLeaseService { commitsLocally }
+    override val leaseService =
+        ClusterLeaseService({ commitsLocally }) { NotLeaderException(notLeaderMessage(leader())) }
+
+    /** The leader of the database as this member knows it, if any. */
+    private fun leader(): MemberId? =
+        try {
+            consensus.status(ref).leader
+        } catch (_: ConsensusUnavailableException) {
+            null
+        }
 
     /**
      * True while the database's transactions go through Raft and its committed entries are applied,
@@ -355,17 +366,8 @@ internal class ReplicatedDatabase(
             false
         }
 
-    private fun notLeader(leader: MemberId?): TransactionFailureException {
-        val address = leader?.let { id ->
-            consensus.members(ref).firstOrNull { it.id == id }?.raftAddress
-        }
-        val known =
-            if (leader == null) "No leader is known right now."
-            else "The leader is member $leader ($address)."
-        return CommitFailure.NOT_LEADER.exception(
-            "This member is not the leader of database ${ref.name}. $known"
-        )
-    }
+    private fun notLeader(leader: MemberId?): TransactionFailureException =
+        CommitFailure.NOT_LEADER.exception(notLeaderMessage(leader))
 
     private fun leaseExpired(leaseId: Int): TransactionFailureException =
         CommitFailure.LEASE_EXPIRED.exception(

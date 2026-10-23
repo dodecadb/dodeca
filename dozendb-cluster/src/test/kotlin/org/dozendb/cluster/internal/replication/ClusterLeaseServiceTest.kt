@@ -9,7 +9,8 @@ import org.neo4j.kernel.impl.api.LeaseService
 
 class ClusterLeaseServiceTest {
     private var bootstrapping = false
-    private val leases = ClusterLeaseService { bootstrapping }
+    private val leases =
+        ClusterLeaseService({ bootstrapping }) { NotLeaderException("Member 1 leads neo4j") }
 
     @Test
     fun `no lease is granted while the member is not writable`() {
@@ -18,7 +19,11 @@ class ClusterLeaseServiceTest {
         assertThatThrownBy { client.ensureValid() }
             .isInstanceOfSatisfying(LeaseException::class.java) {
                 assertThat(it.status()).isEqualTo(Status.Cluster.NotALeader)
+                // As Neo4j's own refusal, with a message of its own.
+                assertThat(it.gqlStatus()).isEqualTo(LeaseException.notOnALeader().gqlStatus())
+                assertThat(it.legacyMessage()).isEqualTo("Member 1 leads neo4j")
             }
+            .hasMessage("Member 1 leads neo4j")
         assertThat(client.leaseId()).isEqualTo(LeaseService.NO_LEASE)
     }
 

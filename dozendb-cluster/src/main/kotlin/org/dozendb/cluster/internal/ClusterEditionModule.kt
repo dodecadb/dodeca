@@ -108,6 +108,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /** Why other members may not forward writes to this member, or null if they may. */
     private val forwardingRefusal: String?
 
+    /** Why this member forwards no writes to other members, or null if it does. */
+    private val sendingRefusal: String?
+
     override val hosting: DatabaseHosting
         get() = replication
 
@@ -160,6 +163,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ClusterTls.of(config, sslPolicyLoader, logService.getUserLog(ClusterTls::class.java))
         memberTls = tls
         forwardingRefusal = ForwardedWrites.refusal(config, tls)
+        sendingRefusal = ForwardedWrites.sendingRefusal(config, tls)
         forwardingRefusal?.let {
             userLog.info(
                 "Other members do not forward writes to this member when it leads a database: " +
@@ -218,6 +222,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ::initialMembers,
                 mustDetach = { cluster.mustDetach(it) },
                 detached = { cluster.detached(it) },
+                notLeader = ::notLeaderMessage,
                 adoptDatabases = {
                     val members =
                         checkNotNull(cluster.foundingMembers) { "this member formed no cluster" }
@@ -484,6 +489,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             }
         }
 
+    /** Why this member refuses a write on [database], which [leader] leads, and where it can go. */
+    private fun notLeaderMessage(database: String, leader: MemberId?): String =
+        ForwardedWrites.notLeader(
+            globalModule.globalConfig,
+            database,
+            leader,
+            leader?.let(directory::boltAddress),
+            sendingRefusal,
+        )
+
     /** Members log in on the routing connector only if they can forward writes to this member. */
     override fun memberLogins(): MemberLogins =
         forwardingRefusal?.let { MemberLogins.Refused(it) } ?: MemberLogins.Allowed
@@ -649,7 +664,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private fun forwarding(): ClusterQueryRouterBootstrap.Forwarding? {
         val config = globalModule.globalConfig
         val tls = memberTls
-        if (tls == null || ForwardedWrites.sendingRefusal(config, tls) != null) return null
+        if (tls == null || sendingRefusal != null) return null
         val logs = globalModule.logService.internalLogProvider
         val remote =
             RemoteTransactions(

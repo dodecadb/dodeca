@@ -1,5 +1,9 @@
 package org.dozendb.cluster.internal.replication
 
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
+import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlStatusInfoCodes
+import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.impl.api.LeaseClient
 import org.neo4j.kernel.impl.api.LeaseException
 import org.neo4j.kernel.impl.api.LeaseService
@@ -15,9 +19,13 @@ import org.neo4j.kernel.impl.api.LeaseService
  *
  * While [local] holds, transactions may write without a lease. That covers only transactions that
  * commit locally before the Raft group starts: Neo4j initialising a store it has just created, and
- * adapting a store this member brought to the cluster it formed.
+ * adapting a store this member brought to the cluster it formed. Otherwise a transaction that
+ * writes while this member is not the writable leader fails with [refusal].
  */
-internal class ClusterLeaseService(private val local: () -> Boolean) : LeaseService {
+internal class ClusterLeaseService(
+    private val local: () -> Boolean,
+    private val refusal: () -> LeaseException,
+) : LeaseService {
     @Volatile private var current: Int = LeaseService.NO_LEASE
 
     /** The lease new transactions get, or [LeaseService.NO_LEASE] when not writable. */
@@ -45,7 +53,7 @@ internal class ClusterLeaseService(private val local: () -> Boolean) : LeaseServ
             if (leaseId == LeaseService.NO_LEASE) {
                 if (lease == LeaseService.NO_LEASE) {
                     if (local()) return
-                    throw LeaseException.notOnALeader()
+                    throw refusal()
                 }
                 leaseId = lease
             } else if (leaseId != lease) {
@@ -53,4 +61,17 @@ internal class ClusterLeaseService(private val local: () -> Boolean) : LeaseServ
             }
         }
     }
+}
+
+/**
+ * A write on a member that does not lead the database, with the status and GQL status of Neo4j's
+ * own ([LeaseException.notOnALeader]) and a [message] that tells where to write instead.
+ */
+@Suppress("DEPRECATION")
+internal class NotLeaderException(message: String) :
+    LeaseException(message, Status.Cluster.NotALeader) {
+    private val gql: ErrorGqlStatusObject =
+        ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N07).build()
+
+    override fun gqlStatusObject(): ErrorGqlStatusObject = gql
 }

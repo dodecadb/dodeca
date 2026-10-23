@@ -97,6 +97,7 @@ class StagedCatchUpTest {
             NullLog.getInstance(),
             afterApply = {},
             onSnapshotNeeded = { _, _, _ -> },
+            notLeaderMessage = { "not the leader" },
         )
 
     /** Leaves [self] behind the leader's log, which starts after entry 3. */

@@ -6,6 +6,7 @@ import java.nio.file.Path
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -30,6 +31,7 @@ import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.AuthenticationException
+import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.graphdb.config.Setting
 
 /** Writes that reach a member which does not lead their database run on the leader. */
@@ -64,6 +66,25 @@ class ForwardedWritesTest {
         ) { result ->
             result.stream().map { it["routingAddress"] as String? }.toList()
         }
+
+    /** Waits until this member knows every member's Bolt address, which its refusals name. */
+    private fun ClusterHarness.Member.awaitBoltAddresses() {
+        await withPollInterval
+            Duration.ofMillis(100) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                assertThat(
+                        database("system").executeTransactionally(
+                            "CALL dozendb.cluster.members() YIELD boltAddress RETURN boltAddress",
+                            emptyMap(),
+                        ) { result ->
+                            result.stream().map { it["boltAddress"] }.toList()
+                        }
+                    )
+                    .hasSize(3)
+                    .doesNotContainNull()
+            }
+    }
 
     private fun ClusterHarness.Member.boundRoutingAddress(): String {
         val address =
@@ -234,6 +255,32 @@ class ForwardedWritesTest {
         for (member in cluster.members) {
             assertThat(member.routingAddresses()).containsOnlyNulls().hasSize(3)
         }
+    }
+
+    @Test
+    fun `a member in plaintext that refuses a write says where to write and why`() {
+        val cluster = cluster(authority = null)
+        val leader = cluster.awaitLeader()
+        val follower = cluster.members.first { it != leader }
+        follower.awaitBoltAddresses()
+
+        val refused =
+            catchThrowable {
+                GraphDatabase.driver("bolt://${follower.boltAddress()}").use { driver ->
+                    driver.session(SessionConfig.forDatabase("neo4j")).use {
+                        it.run("CREATE (:Refused)").consume()
+                    }
+                }
+            }
+                as Neo4jException
+
+        assertThat(refused.code()).isEqualTo("Neo.ClientError.Cluster.NotALeader")
+        val others = cluster.members.filter { it != follower }.map { it.boltAddress() }
+        assertThat(refused.message)
+            .matches(
+                "Member \\S+ at (${others.joinToString("|") { Regex.escape(it) }}) leads database 'neo4j', not this member\\..*"
+            )
+            .contains("This member forwards no writes to the leader: members talk in plaintext")
     }
 
     private companion object {
