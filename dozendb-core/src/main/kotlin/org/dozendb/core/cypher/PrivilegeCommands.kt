@@ -263,10 +263,10 @@ internal class PrivilegeCommands(
                     )
                 }
             is GrantGraphAction ->
-                graph(plan.qualifier()) {
+                Planner {
                     assign(
                         Access.GRANTED,
-                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier(), it),
                         plan.roleName(),
                         plan.immutable(),
                         plan.command(),
@@ -274,10 +274,10 @@ internal class PrivilegeCommands(
                     )
                 }
             is DenyGraphAction ->
-                graph(plan.qualifier()) {
+                Planner {
                     assign(
                         Access.DENIED,
-                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier(), it),
                         plan.roleName(),
                         plan.immutable(),
                         plan.command(),
@@ -285,10 +285,10 @@ internal class PrivilegeCommands(
                     )
                 }
             is RevokeGraphAction ->
-                graph(plan.qualifier()) {
+                Planner {
                     revoke(
                         access(plan.revokeType()),
-                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier(), it),
                         plan.roleName(),
                         plan.immutableOnly(),
                         plan.command(),
@@ -296,10 +296,10 @@ internal class PrivilegeCommands(
                     )
                 }
             is AssertGraphPrivilegeCanBeMutated ->
-                graph(plan.qualifier()) {
+                Planner {
                     assertRevocable(
                         access(plan.revokeType()),
-                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier()),
+                        graph(plan.action(), plan.resource(), plan.graph(), plan.qualifier(), it),
                         plan.roleName(),
                         compile(plan.source(), it),
                     )
@@ -329,7 +329,7 @@ internal class PrivilegeCommands(
         val action: PrivilegeAction,
         val resource: PrivilegeResource,
         private val scope: (MapValue, Transaction) -> Resolved<PrivilegeScope>,
-        private val segment: (MapValue) -> PrivilegeSegment,
+        private val segment: (MapValue, Transaction) -> PrivilegeSegment,
     ) {
         fun resolve(
             access: Access,
@@ -341,7 +341,14 @@ internal class PrivilegeCommands(
                 is Resolved.Missing -> scope
                 is Resolved.Found ->
                     Resolved.Found(
-                        Privilege(access, action, scope.value, resource, segment(params), immutable)
+                        Privilege(
+                            access,
+                            action,
+                            scope.value,
+                            resource,
+                            segment(params, tx),
+                            immutable,
+                        )
                     )
             }
     }
@@ -384,18 +391,13 @@ internal class PrivilegeCommands(
             segment(qualifier),
         )
 
-    /**
-     * The planner of a graph privilege; none for a property rule, which Neo4j's own refusal answers
-     * until DozenDB has property rules.
-     */
-    private fun graph(qualifier: PrivilegeQualifier, planner: Planner): Planner? =
-        if (qualifier is PatternQualifier) null else planner
-
+    /** A graph privilege; a property rule's value is evaluated in [context]'s Cypher version. */
     private fun graph(
         action: GraphAction,
         resource: ActionResource,
         scope: PrivilegeCommandScope,
         qualifier: PrivilegeQualifier,
+        context: AdministrationCommandRuntimeContext,
     ) =
         Template(
             ActionMapper.asKernelAction(action),
@@ -407,7 +409,16 @@ internal class PrivilegeCommands(
                 else -> PrivilegeResource.Graph
             },
             scope(scope),
-            segment(qualifier),
+            if (qualifier is PatternQualifier) {
+                val version = context.runtimeContext().cypherVersion()
+                ({ params, tx ->
+                    PrivilegeSegment.NodePattern(
+                        PropertyRuleQualifiers.rule(qualifier, params, version, tx)
+                    )
+                })
+            } else {
+                segment(qualifier)
+            },
         )
 
     /** The databases of [scope]; a named one by its id, as privileges keep it. */
@@ -451,54 +462,56 @@ internal class PrivilegeCommands(
         else Resolved.Found(PrivilegeScope.Database(UUID.fromString(id)))
     }
 
-    private fun segment(qualifier: PrivilegeQualifier): (MapValue) -> PrivilegeSegment =
+    private fun segment(
+        qualifier: PrivilegeQualifier
+    ): (MapValue, Transaction) -> PrivilegeSegment =
         when (qualifier) {
             is AllQualifier,
-            is AllDatabasesQualifier -> { _ ->
+            is AllDatabasesQualifier -> { _, _ ->
                 PrivilegeSegment.Database
             }
-            is LabelAllQualifier -> { _ ->
+            is LabelAllQualifier -> { _, _ ->
                 PrivilegeSegment.Nodes(null)
             }
-            is LabelQualifier -> { _ ->
+            is LabelQualifier -> { _, _ ->
                 PrivilegeSegment.Nodes(qualifier.label())
             }
-            is RelationshipAllQualifier -> { _ ->
+            is RelationshipAllQualifier -> { _, _ ->
                 PrivilegeSegment.Relationships(null)
             }
-            is RelationshipQualifier -> { _ ->
+            is RelationshipQualifier -> { _, _ ->
                 PrivilegeSegment.Relationships(qualifier.reltype())
             }
-            is UserAllQualifier -> { _ ->
+            is UserAllQualifier -> { _, _ ->
                 PrivilegeSegment.Users(null)
             }
-            is UserQualifier -> { params ->
+            is UserQualifier -> { params, _ ->
                 PrivilegeSegment.Users(
                     admin.runtimeStringValue(qualifier.username(), params, false)
                 )
             }
-            is ProcedureAllQualifier -> { _ ->
+            is ProcedureAllQualifier -> { _, _ ->
                 PrivilegeSegment.Procedures("*")
             }
-            is ProcedureQualifier -> { _ ->
+            is ProcedureQualifier -> { _, _ ->
                 PrivilegeSegment.Procedures(qualifier.glob())
             }
-            is FunctionAllQualifier -> { _ ->
+            is FunctionAllQualifier -> { _, _ ->
                 PrivilegeSegment.Functions("*")
             }
-            is FunctionQualifier -> { _ ->
+            is FunctionQualifier -> { _, _ ->
                 PrivilegeSegment.Functions(qualifier.glob())
             }
-            is SettingAllQualifier -> { _ ->
+            is SettingAllQualifier -> { _, _ ->
                 PrivilegeSegment.Settings("*")
             }
-            is SettingQualifier -> { _ ->
+            is SettingQualifier -> { _, _ ->
                 PrivilegeSegment.Settings(qualifier.glob())
             }
-            is LoadAllQualifier -> { _ ->
+            is LoadAllQualifier -> { _, _ ->
                 PrivilegeSegment.AllData
             }
-            is LoadCidrQualifier -> { params ->
+            is LoadCidrQualifier -> { params, _ ->
                 PrivilegeSegment.Cidr(cidr(qualifier.cidr(), params))
             }
             else -> throw IllegalArgumentException("Unsupported qualifier: $qualifier")

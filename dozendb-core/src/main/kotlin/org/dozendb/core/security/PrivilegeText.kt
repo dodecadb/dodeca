@@ -4,7 +4,16 @@ import java.util.UUID
 import org.neo4j.cypher.internal.ast.prettifier.`ExpressionStringifier$`
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
+import org.neo4j.values.storable.ArrayValue
+import org.neo4j.values.storable.DateTimeValue
+import org.neo4j.values.storable.DateValue
+import org.neo4j.values.storable.DurationValue
+import org.neo4j.values.storable.LocalDateTimeValue
+import org.neo4j.values.storable.LocalTimeValue
+import org.neo4j.values.storable.PointValue
 import org.neo4j.values.storable.TextValue
+import org.neo4j.values.storable.TimeValue
+import org.neo4j.values.storable.Value
 
 /**
  * Privileges as SHOW PRIVILEGES shows them: rows of its columns, and the commands that grant, deny
@@ -157,7 +166,7 @@ object PrivilegeText {
         val rule =
             when (pattern) {
                 is PatternSegment.ValuePatternSegment ->
-                    pattern.operator().toPredicateString(property, literal(pattern))
+                    pattern.operator().toPredicateString(property, literal(pattern.value()))
                 is PatternSegment.NullPatternSegment ->
                     pattern.operator().toPredicateString(property)
                 else -> throw IllegalArgumentException("Unknown property rule: $pattern")
@@ -165,14 +174,20 @@ object PrivilegeText {
         return "$node WHERE $rule"
     }
 
-    private fun literal(pattern: PatternSegment.ValuePatternSegment): String {
-        val value = pattern.value()
-        return if (value is TextValue) {
-            "'${value.stringValue().replace("\\", "\\\\").replace("'", "\\'")}'"
-        } else {
-            value.prettyPrint()
+    /** [value] as a Cypher literal, a temporal value or point as the function that makes it. */
+    private fun literal(value: Value): String =
+        when (value) {
+            is TextValue -> "'${value.stringValue().replace("\\", "\\\\").replace("'", "\\'")}'"
+            is ArrayValue -> value.joinToString(", ", "[", "]") { literal(it as Value) }
+            is DateValue -> "date('${value.prettyPrint()}')"
+            is LocalDateTimeValue -> "localdatetime('${value.prettyPrint()}')"
+            is DateTimeValue -> "datetime('${value.prettyPrint()}')"
+            is LocalTimeValue -> "localtime('${value.prettyPrint()}')"
+            is TimeValue -> "time('${value.prettyPrint()}')"
+            is DurationValue -> "duration('${value.prettyPrint()}')"
+            is PointValue -> value.toString()
+            else -> value.prettyPrint()
         }
-    }
 
     private fun users(segment: PrivilegeSegment): String =
         when (segment) {
