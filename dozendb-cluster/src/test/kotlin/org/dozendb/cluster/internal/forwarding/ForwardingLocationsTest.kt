@@ -10,6 +10,7 @@ import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.fake.InMemoryConsensus
 import org.dozendb.consensus.fake.RecordingStateMachine
+import org.dozendb.core.remote.RemoteFailure
 import org.junit.jupiter.api.Test
 import org.neo4j.bolt.protocol.common.message.AccessMode
 import org.neo4j.bolt.protocol.common.message.request.connection.RoutingContext

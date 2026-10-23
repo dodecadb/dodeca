@@ -1,4 +1,4 @@
-package org.dozendb.cluster.internal.forwarding
+package org.dozendb.core.remote
 
 import io.netty.buffer.ByteBuf
 import io.netty.buffer.Unpooled

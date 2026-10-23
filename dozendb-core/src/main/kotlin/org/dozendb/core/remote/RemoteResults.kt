@@ -1,7 +1,7 @@
 // Neo4j 5's Notification, which Bolt before 5.5 still sends.
 @file:Suppress("DEPRECATION", "OVERRIDE_DEPRECATION")
 
-package org.dozendb.cluster.internal.forwarding
+package org.dozendb.core.remote
 
 import java.util.Optional
 import org.neo4j.bolt.connection.exception.BoltFailureException
@@ -30,8 +30,8 @@ import org.neo4j.values.virtual.ListValue
 import org.neo4j.values.virtual.MapValue
 
 /**
- * What a member's Bolt server reports about a query that ran there, in the PULL or DISCARD summary
- * that ends its results, as Neo4j's types: Neo4j's Bolt server reports them to the client again.
+ * What another server reports about a query that ran there, in the PULL or DISCARD summary that
+ * ends its results, as Neo4j's types: Neo4j's Bolt server reports them to the client again.
  */
 internal class RemoteSummary(metadata: Map<String, Value>) {
     private val entries: Map<String, AnyValue> = metadata.mapValues {
@@ -229,10 +229,10 @@ internal class RemoteNotification(status: MapValue) : RemoteStatus(status), Noti
 }
 
 /**
- * A failure another member reported, with its Neo4j status and GQL status, which Neo4j's Bolt
- * server reports to the client as it would its own.
+ * A failure another server reported, or one decided here for it, with its Neo4j status and GQL
+ * status, which Neo4j's Bolt server reports to the client as it would its own.
  */
-internal class RemoteFailure(
+class RemoteFailure(
     private val status: Status,
     message: String,
     gql: ErrorGqlStatusObject,
@@ -245,10 +245,10 @@ internal class RemoteFailure(
             Status.Code.all().associateBy { it.code().serialize() }
         }
 
-        /** The Neo4j status of [code], from the same Neo4j version on every member. */
+        /** The Neo4j status of [code]; one this Neo4j version does not know is an unknown error. */
         fun status(code: String): Status = STATUSES[code] ?: Status.General.UnknownError
 
-        /** The failure that [failure], a member's response, reports. */
+        /** The failure that [failure], a server's response, reports. */
         fun of(failure: BoltFailureException): RemoteFailure =
             RemoteFailure(
                 status(failure.code()),
@@ -259,7 +259,7 @@ internal class RemoteFailure(
     }
 }
 
-/** The GQL status of a member's failure, and of its causes. */
+/** The GQL status of a server's failure, and of its causes. */
 private class RemoteGqlError(
     private val gqlStatus: String,
     private val description: String,

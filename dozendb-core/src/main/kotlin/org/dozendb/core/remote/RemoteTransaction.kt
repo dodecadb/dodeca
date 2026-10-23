@@ -1,15 +1,12 @@
-package org.dozendb.cluster.internal.forwarding
+package org.dozendb.core.remote
 
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionStage
 import java.util.concurrent.ExecutionException
 import java.util.function.Consumer
-import org.dozendb.consensus.HostPort
 import org.neo4j.bolt.connection.AccessMode
-import org.neo4j.bolt.connection.AuthToken
 import org.neo4j.bolt.connection.BasicResponseHandler
 import org.neo4j.bolt.connection.BoltConnection
-import org.neo4j.bolt.connection.BoltConnectionParameters
-import org.neo4j.bolt.connection.BoltConnectionSource
 import org.neo4j.bolt.connection.NotificationClassification
 import org.neo4j.bolt.connection.NotificationConfig
 import org.neo4j.bolt.connection.NotificationSeverity
@@ -18,15 +15,11 @@ import org.neo4j.bolt.connection.exception.BoltFailureException
 import org.neo4j.bolt.connection.message.Message
 import org.neo4j.bolt.connection.message.Messages
 import org.neo4j.bolt.connection.values.Value
-import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.cypher.internal.util.InternalNotification
 import org.neo4j.fabric.bookmark.RemoteBookmark
 import org.neo4j.fabric.bookmark.TransactionBookmarkManager
 import org.neo4j.fabric.executor.Location
 import org.neo4j.fabric.executor.QueryStatementLifecycles
-import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
-import org.neo4j.gqlstatus.GqlParams
-import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.graphdb.ExecutionPlanDescription
 import org.neo4j.graphdb.GqlStatusObject
 import org.neo4j.graphdb.Notification
@@ -34,7 +27,6 @@ import org.neo4j.graphdb.QueryExecutionType
 import org.neo4j.graphdb.TransactionTerminatedException
 import org.neo4j.kernel.api.KernelTransaction
 import org.neo4j.kernel.api.exceptions.Status
-import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.impl.query.NotificationConfiguration
 import org.neo4j.kernel.impl.query.QueryExecution
 import org.neo4j.kernel.impl.query.QuerySubscriber
@@ -48,26 +40,27 @@ import org.neo4j.values.AnyValue
 import scala.Option
 
 /**
- * A transaction of the database at [location] that runs on the member at [address], its leader when
- * it began, as the user [token] names, acting as [impersonated] if not null. Its connection comes
- * from [pool] with its first query, which BEGIN goes with; an auto-commit transaction runs its one
+ * A transaction of the database at [location] that runs on another server over Bolt, acting as
+ * [impersonated] if not null. Its connection, logged in as the transaction's user there, comes from
+ * [connect] with its first query, which BEGIN goes with; an auto-commit transaction runs its one
  * query as an auto-commit transaction there, as `CALL { } IN TRANSACTIONS` needs. Results stream as
- * the client demands them, a batch at a time. [terminate] may come from any thread.
+ * the client demands them, a batch at a time. Results, notifications and plans reach the client as
+ * the server sent them; [failures] says what the client learns of a failure. [terminate] may come
+ * from any thread.
  *
- * Neo4j's query router drives it from one thread at a time, but for [terminate] and [leaderGone].
+ * Neo4j's query router drives it from one thread at a time, but for [terminate] and [abandon].
  */
-internal class RemoteTransaction(
-    private val location: Location.Remote.Internal.Direct,
-    val address: SocketAddress,
+class RemoteTransaction(
+    private val location: Location.Remote,
     private val info: TransactionInfo,
-    private val pool: () -> BoltConnectionSource<BoltConnectionParameters>,
-    private val token: AuthToken,
+    private val connect: () -> CompletionStage<BoltConnection>,
     private val impersonated: String?,
     private val bookmarks: Set<String>,
     private val bookmarkManager: TransactionBookmarkManager,
     private val terminationCallback: Consumer<Status>,
+    private val failures: RemoteFailures,
     private val ended: (RemoteTransaction) -> Unit,
-) : DatabaseTransaction, ForwardedTransaction {
+) : DatabaseTransaction {
     private val implicit = info.type() == KernelTransaction.Type.IMPLICIT
     private val notificationConfig = notificationConfig(info)
     private val accessMode =
@@ -80,18 +73,15 @@ internal class RemoteTransaction(
     private var begun = false
     private var lastBookmark: String? = null
 
-    /** The member reported a failure: it rolled the transaction back. */
+    /** The server reported a failure: it rolled the transaction back. */
     private var failed = false
     @Volatile private var open = true
     @Volatile private var committing = false
     @Volatile private var terminated: Status? = null
     @Volatile private var inFlight: CompletableFuture<BasicResponseHandler.Summaries>? = null
 
-    override val database: String = location.databaseName
-
-    override val databaseId: NamedDatabaseId = location.databaseReference.databaseId()
-
-    override val member: HostPort = HostPort(address.hostname, address.port)
+    /** The database, by its name on the server. */
+    private val database: String = location.databaseName
 
     override fun location(): Location = location
 
@@ -104,9 +94,9 @@ internal class RemoteTransaction(
         routerNotifications: Set<InternalNotification>,
     ): QueryExecution {
         check(open) { "the transaction is closed" }
-        check(!failed) { "the transaction failed on the leader" }
+        check(!failed) { "the transaction failed on the server" }
         statementLifecycle.startExecution(true)
-        // The leader plans and runs the query: here, it is running from now on.
+        // The server plans and runs the query: here, it is running from now on.
         statementLifecycle.monitoredQuery.onCompilationCompleted(null, null, null, 0)
         statementLifecycle.monitoredQuery.onExecutionStarted(HeapHighWaterMarkTracker.NONE)
         val parameters = HashMap<String, Value>()
@@ -179,7 +169,7 @@ internal class RemoteTransaction(
     override fun rollback() {
         try {
             if (!implicit && begun && !failed && terminated == null) {
-                // The member rolls back without it too, once the connection is reset.
+                // The server rolls back without it too, once the connection is reset.
                 runCatching { exchange(listOf(Messages.rollback())) }
             }
         } finally {
@@ -188,7 +178,7 @@ internal class RemoteTransaction(
     }
 
     override fun close() {
-        // Returned to the pool, the connection is reset: the member rolls back what is open.
+        // Returned to the pool, the connection is reset: the server rolls back what is open.
         end()
     }
 
@@ -199,23 +189,28 @@ internal class RemoteTransaction(
         }
         inFlight?.completeExceptionally(terminatedException(reason))
         val connection = connection ?: return
-        // A RESET terminates the transaction on the member; closing the connection makes sure it
+        // A RESET terminates the transaction on the server; closing the connection makes sure it
         // does, also if the RESET goes unanswered.
         connection.writeAndFlush(BasicResponseHandler(), Messages.reset(), null).whenComplete { _, _
             ->
-            connection.forceClose("the forwarded transaction was terminated")
+            connection.forceClose("the remote transaction was terminated")
         }
     }
 
-    override fun leaderGone(why: String) {
+    /**
+     * Gives up on the server, which can no longer serve the transaction: a commit it did not answer
+     * yet may or may not have been applied; anything else was not, and the router terminates the
+     * transaction for [reason], which the client may retry elsewhere.
+     */
+    fun abandon(why: String, reason: Status) {
         if (!open || terminated != null) return
         if (committing) {
             inFlight?.completeExceptionally(
-                TransactionFailure(outcomeUnknown(IllegalStateException(why)))
+                TransactionFailure(failures.outcomeUnknown(database, IllegalStateException(why)))
             )
             connection?.forceClose(why)
         } else {
-            terminationCallback.accept(Status.Transaction.LeaderSwitch)
+            terminationCallback.accept(reason)
         }
     }
 
@@ -233,16 +228,7 @@ internal class RemoteTransaction(
     private fun connection(): BoltConnection =
         connection
             ?: try {
-                pool()
-                    .getConnection(
-                        BoltConnectionParameters.builder()
-                            .withAuthToken(token)
-                            .withMinVersion(RemoteTransactions.MIN_VERSION)
-                            .build()
-                    )
-                    .toCompletableFuture()
-                    .get()
-                    .also { connection = it }
+                connect().toCompletableFuture().get().also { connection = it }
             } catch (e: ExecutionException) {
                 throw failure(e.cause ?: e, sent = false)
             }
@@ -253,7 +239,7 @@ internal class RemoteTransaction(
         val connection = connection()
         val handler = BasicResponseHandler()
         val response = CompletableFuture<BasicResponseHandler.Summaries>()
-        // Whether the member may have read the messages, which it did not if they were not sent.
+        // Whether the server may have read the messages, which it did not if they were not sent.
         var sent = false
         inFlight = response
         connection
@@ -291,41 +277,12 @@ internal class RemoteTransaction(
             cause is TransactionFailure -> cause.failure
             cause is BoltFailureException -> {
                 failed = true
-                if (cause.code() == UNAUTHORIZED) refused(cause) else RemoteFailure.of(cause)
+                failures.answered(database, cause)
             }
-            committing && sent -> outcomeUnknown(cause)
-            else ->
-                RemoteFailure(
-                    Status.General.DatabaseUnavailable,
-                    "Could not reach the leader of database '$database' at $address, to which " +
-                        "this member forwards writes: ${cause.message}",
-                    ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N09)
-                        .withParam(GqlParams.StringParam.db, database)
-                        .build(),
-                    cause,
-                )
+            committing && sent -> failures.outcomeUnknown(database, cause)
+            else -> failures.unreachable(database, cause)
         }
     }
-
-    /** The leader refused to run the transaction as its user, who it does not know or suspended. */
-    private fun refused(cause: BoltFailureException) =
-        RemoteFailure(
-            Status.Security.Forbidden,
-            "The leader of database '$database' refused to run the transaction as its user: " +
-                cause.message,
-            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42NFF).build(),
-            cause,
-        )
-
-    private fun outcomeUnknown(cause: Throwable): RuntimeException =
-        RemoteFailure(
-            Status.Transaction.TransactionCommitFailed,
-            "The leader of database '$database' at $address did not answer the commit of a " +
-                "forwarded transaction, whose outcome is unknown: it may or may not be committed. " +
-                "Check the data before retrying.",
-            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_2DN01).build(),
-            cause,
-        )
 
     private fun metadata(): Map<String, Value> =
         info.txMetadata().mapValues { (_, value) ->
@@ -382,7 +339,7 @@ internal class RemoteTransaction(
                 }
                 if (buffer.isEmpty() && !hasMore) {
                     ended = true
-                    val summary = checkNotNull(summary) { "the leader sent no summary" }
+                    val summary = checkNotNull(summary) { "the server sent no summary" }
                     if (implicit) lastBookmark = summary.bookmark
                     subscriber.onResultCompleted(summary.statistics)
                     lifecycle.endSuccess()
@@ -445,13 +402,11 @@ internal class RemoteTransaction(
         /** The records fetched at a time, as drivers do by default. */
         const val FETCH_SIZE = 1000L
 
-        private const val UNAUTHORIZED = "Neo.ClientError.Security.Unauthorized"
-
         @Suppress("DEPRECATION") // As Neo4j's own transactions report terminations.
         fun terminatedException(reason: Status): TransactionTerminatedException =
             TransactionTerminatedException(reason)
 
-        /** The client's notification filters, which the member applies. */
+        /** The client's notification filters, which the server applies. */
         private fun notificationConfig(info: TransactionInfo): NotificationConfig {
             val filters = info.queryExecutionConfiguration()?.notificationFilters()
             if (filters == null || filters == NotificationConfiguration.DEFAULT_FILTER) {
@@ -474,4 +429,16 @@ internal class RemoteTransaction(
             return NotificationConfig(severity, disabled)
         }
     }
+}
+
+/** What the client of a [RemoteTransaction] learns when it fails. */
+interface RemoteFailures {
+    /** The server of [database] answered with [failure], also when it refused the login. */
+    fun answered(database: String, failure: BoltFailureException): RuntimeException
+
+    /** The server of [database] could not be reached, or the connection failed. */
+    fun unreachable(database: String, cause: Throwable): RuntimeException
+
+    /** The server of [database] did not answer a commit, which may or may not be applied. */
+    fun outcomeUnknown(database: String, cause: Throwable): RuntimeException
 }

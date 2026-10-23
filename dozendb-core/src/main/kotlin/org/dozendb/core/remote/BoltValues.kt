@@ -1,4 +1,4 @@
-package org.dozendb.cluster.internal.forwarding
+package org.dozendb.core.remote
 
 import java.time.DateTimeException
 import java.time.LocalDate
@@ -174,7 +174,7 @@ internal class BoltValue(val value: AnyValue) : Value {
 }
 
 /** Makes Neo4j's values of those bolt-connection reads from the wire. */
-internal object BoltValues : ValueFactory {
+object BoltValues : ValueFactory {
     override fun value(value: Any?): Value = BoltValue(anyValue(value))
 
     /** Neo4j's value of [value], which bolt-connection read or built. */

@@ -1,6 +1,6 @@
 @file:Suppress("DEPRECATION") // Neo4j 5's Notification.
 
-package org.dozendb.cluster.internal.forwarding
+package org.dozendb.core.remote
 
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -18,8 +18,8 @@ import org.neo4j.kernel.impl.util.ValueUtils
 import org.neo4j.values.AnyValue
 
 /**
- * What another member reports about a query or a failure, which Neo4j's Bolt server here must
- * report to the client as that member's did.
+ * What another server reports about a query or a failure, which Neo4j's Bolt server here must
+ * report to the client as that server's did.
  */
 class RemoteResultsTest {
     private fun value(any: Any?): Value = BoltValues.value(ValueUtils.of(any))
@@ -77,7 +77,7 @@ class RemoteResultsTest {
         )
 
     @Test
-    fun `a summary reports what the member's server wrote`() {
+    fun `a summary reports what the other server wrote`() {
         val summary =
             RemoteSummary(
                 metadata(
@@ -100,7 +100,7 @@ class RemoteResultsTest {
         assertThat(notification.severity).isEqualTo(SeverityLevel.WARNING)
         assertThat(notification.category).isEqualTo(NotificationCategory.UNRECOGNIZED)
         assertThat(notification.position).isEqualTo(InputPosition(9, 1, 10))
-        // Written again by Neo4j's Bolt server, they are what the member's wrote.
+        // Written again by Neo4j's Bolt server, they are what the other server's wrote.
         assertThat(written { handler, put -> handler.onQueryStatistics(put, summary.statistics) })
             .isEqualTo(mapOf("stats" to ValueUtils.of(stats)))
         assertThat(
@@ -149,7 +149,7 @@ class RemoteResultsTest {
     }
 
     @Test
-    fun `a failure is reported to the client as the member reported it`() {
+    fun `a failure is reported to the client as the other server reported it`() {
         val cause =
             BoltGqlErrorException(
                 "Node(0) already exists with label `Film` and property `title` = 'Alien'",

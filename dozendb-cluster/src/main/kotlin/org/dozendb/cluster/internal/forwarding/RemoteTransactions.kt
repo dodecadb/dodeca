@@ -6,39 +6,41 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import java.util.function.BiConsumer
 import java.util.function.Consumer
-import java.util.function.Supplier
 import javax.net.ssl.SSLContext
+import org.dozendb.consensus.HostPort
 import org.dozendb.core.DozenDb
+import org.dozendb.core.remote.BoltValues
+import org.dozendb.core.remote.DebugLogLogging
+import org.dozendb.core.remote.NoObservations
+import org.dozendb.core.remote.RemoteFailure
+import org.dozendb.core.remote.RemoteFailures
+import org.dozendb.core.remote.RemoteTransaction
 import org.dozendb.core.security.MemberLogins
 import org.neo4j.bolt.connection.AuthToken
 import org.neo4j.bolt.connection.AuthTokens
 import org.neo4j.bolt.connection.BoltAgent
+import org.neo4j.bolt.connection.BoltConnectionParameters
 import org.neo4j.bolt.connection.BoltProtocolVersion
-import org.neo4j.bolt.connection.LoggingProvider
 import org.neo4j.bolt.connection.NotificationConfig
 import org.neo4j.bolt.connection.SecurityPlans
 import org.neo4j.bolt.connection.exception.BoltFailureException
 import org.neo4j.bolt.connection.netty.NettyBoltConnectionProviderFactory
-import org.neo4j.bolt.connection.observation.BoltExchangeObservation
-import org.neo4j.bolt.connection.observation.HttpExchangeObservation
-import org.neo4j.bolt.connection.observation.ImmutableObservation
-import org.neo4j.bolt.connection.observation.Observation
 import org.neo4j.bolt.connection.pooled.AuthTokenManager
 import org.neo4j.bolt.connection.pooled.PooledBoltConnectionSource
-import org.neo4j.bolt.connection.pooled.observation.PoolObservationProvider
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.fabric.bookmark.TransactionBookmarkManager
 import org.neo4j.fabric.executor.Location
+import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlParams
+import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.internal.kernel.api.security.AuthSubject
 import org.neo4j.kernel.api.exceptions.Status
+import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.impl.query.ConstituentTransactionFactory
-import org.neo4j.logging.InternalLog
 import org.neo4j.logging.InternalLogProvider
-import org.neo4j.logging.Level
 import org.neo4j.router.transaction.DatabaseTransaction
 import org.neo4j.router.transaction.DatabaseTransactionFactory
 import org.neo4j.router.transaction.TransactionInfo
@@ -67,13 +69,13 @@ internal class RemoteTransactions(
                 mapOf("eventLoopThreadNamePrefix" to "dozendb-forwarding"),
             )
     private val pools = ConcurrentHashMap<SocketAddress, PooledBoltConnectionSource>()
-    private val open: MutableSet<RemoteTransaction> = ConcurrentHashMap.newKeySet()
+    private val open = ConcurrentHashMap<RemoteTransaction, Forwarded>()
     @Volatile private var closed = false
 
     /**
      * The transactions that have not ended, to give up on those of a member that stopped leading.
      */
-    fun open(): Collection<RemoteTransaction> = open.toList()
+    fun open(): Collection<ForwardedTransaction> = open.values.toList()
 
     override fun beginTransaction(
         location: Location.Remote,
@@ -94,10 +96,16 @@ internal class RemoteTransactions(
         val transaction =
             RemoteTransaction(
                 member,
-                address,
                 transactionInfo,
-                { pool(address) },
-                token(subject),
+                {
+                    pool(address)
+                        .getConnection(
+                            BoltConnectionParameters.builder()
+                                .withAuthToken(token(subject))
+                                .withMinVersion(MIN_VERSION)
+                                .build()
+                        )
+                },
                 subject.executingUser().takeIf { it != subject.authenticatedUser() },
                 bookmarkManager
                     .getBookmarksForRemote(location)
@@ -105,9 +113,10 @@ internal class RemoteTransactions(
                     .toSet(),
                 bookmarkManager,
                 terminationCallback,
-                open::remove,
+                LeaderFailures(address),
+                { open.remove(it) },
             )
-        open += transaction
+        open[transaction] = Forwarded(transaction, member, address)
         return transaction
     }
 
@@ -161,7 +170,9 @@ internal class RemoteTransactions(
 
     override fun close() {
         closed = true
-        for (transaction in open()) transaction.terminate(Status.General.DatabaseUnavailable)
+        for (transaction in open.keys.toList()) {
+            transaction.terminate(Status.General.DatabaseUnavailable)
+        }
         val closing = pools.values.map { it.close().toCompletableFuture() }
         pools.clear()
         try {
@@ -204,139 +215,60 @@ internal class RemoteTransactions(
     }
 }
 
-/** bolt-connection's logs, in this member's debug log, from [threshold] on. */
-private class DebugLogLogging(
-    private val logs: InternalLogProvider,
-    private val threshold: Level,
-) : LoggingProvider {
-    override fun getLog(cls: Class<*>): System.Logger =
-        Logger(cls.name, logs.getLog(cls), threshold)
+/** A forwarded [transaction] of the database at [location], as [ForwardingLocations] watches it. */
+private class Forwarded(
+    private val transaction: RemoteTransaction,
+    location: Location.Remote.Internal.Direct,
+    address: SocketAddress,
+) : ForwardedTransaction {
+    override val database: String = location.databaseName
 
-    override fun getLog(name: String): System.Logger = Logger(name, logs.getLog(name), threshold)
+    override val databaseId: NamedDatabaseId = location.databaseReference.databaseId()
 
-    private class Logger(
-        private val name: String,
-        private val log: InternalLog,
-        private val threshold: Level,
-    ) : System.Logger {
-        override fun getName(): String = name
+    override val member: HostPort = HostPort(address.hostname, address.port)
 
-        private fun level(level: System.Logger.Level): Level? =
-            when (level) {
-                System.Logger.Level.ALL,
-                System.Logger.Level.TRACE,
-                System.Logger.Level.DEBUG -> Level.DEBUG
-                System.Logger.Level.INFO -> Level.INFO
-                System.Logger.Level.WARNING -> Level.WARN
-                System.Logger.Level.ERROR -> Level.ERROR
-                System.Logger.Level.OFF -> null
-            }
-
-        override fun isLoggable(level: System.Logger.Level): Boolean {
-            val mapped = level(level) ?: return false
-            return threshold != Level.NONE && mapped.ordinal >= threshold.ordinal
-        }
-
-        // The JDK's own overloads pass a null array of parameters, which Kotlin's varargs refuse.
-        override fun log(level: System.Logger.Level, message: String?) {
-            if (isLoggable(level)) write(level, message ?: "", null)
-        }
-
-        override fun log(level: System.Logger.Level, message: Supplier<String>) {
-            if (isLoggable(level)) write(level, message.get(), null)
-        }
-
-        override fun log(level: System.Logger.Level, value: Any?) {
-            if (isLoggable(level)) write(level, value.toString(), null)
-        }
-
-        override fun log(
-            level: System.Logger.Level,
-            bundle: java.util.ResourceBundle?,
-            message: String?,
-            thrown: Throwable?,
-        ) {
-            if (!isLoggable(level)) return
-            write(level, message ?: "", thrown)
-        }
-
-        override fun log(
-            level: System.Logger.Level,
-            bundle: java.util.ResourceBundle?,
-            format: String?,
-            vararg params: Any?,
-        ) {
-            if (!isLoggable(level)) return
-            val message =
-                if (params.isEmpty()) format ?: ""
-                else runCatching { String.format(format ?: "", *params) }.getOrDefault(format ?: "")
-            write(level, message, null)
-        }
-
-        private fun write(level: System.Logger.Level, message: String, thrown: Throwable?) {
-            when (level(level)) {
-                Level.DEBUG -> log.debug(message, thrown)
-                Level.INFO -> log.info(message, thrown)
-                Level.WARN -> log.warn(message, thrown)
-                Level.ERROR -> log.error(message, thrown)
-                else -> {}
-            }
-        }
-    }
+    override fun leaderGone(why: String) = transaction.abandon(why, Status.Transaction.LeaderSwitch)
 }
 
-/** No observations of connections and pools: Neo4j's metrics and logs observe the transactions. */
-private object NoObservations : PoolObservationProvider {
-    private object Nothing : BoltExchangeObservation, HttpExchangeObservation {
-        override fun onWrite(messageName: String) = this
+/** What clients learn when a transaction on the leader at [address] fails. */
+private class LeaderFailures(private val address: SocketAddress) : RemoteFailures {
+    /** As the leader reported it, but for a login it refused. */
+    override fun answered(database: String, failure: BoltFailureException): RuntimeException =
+        if (failure.code() == UNAUTHORIZED) refused(database, failure)
+        else RemoteFailure.of(failure)
 
-        override fun onRecord() = this
+    override fun unreachable(database: String, cause: Throwable): RuntimeException =
+        RemoteFailure(
+            Status.General.DatabaseUnavailable,
+            "Could not reach the leader of database '$database' at $address, to which this " +
+                "member forwards writes: ${cause.message}",
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N09)
+                .withParam(GqlParams.StringParam.db, database)
+                .build(),
+            cause,
+        )
 
-        override fun onSummary(messageName: String) = this
+    /** The leader refused to run the transaction as its user, who it does not know or suspended. */
+    private fun refused(database: String, cause: BoltFailureException): RuntimeException =
+        RemoteFailure(
+            Status.Security.Forbidden,
+            "The leader of database '$database' refused to run the transaction as its user: " +
+                cause.message,
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42NFF).build(),
+            cause,
+        )
 
-        override fun onHeaders(headers: Map<String, List<String>>) = this
+    override fun outcomeUnknown(database: String, cause: Throwable): RuntimeException =
+        RemoteFailure(
+            Status.Transaction.TransactionCommitFailed,
+            "The leader of database '$database' at $address did not answer the commit of a " +
+                "forwarded transaction, whose outcome is unknown: it may or may not be committed. " +
+                "Check the data before retrying.",
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_2DN01).build(),
+            cause,
+        )
 
-        override fun onResponse(response: HttpExchangeObservation.Response) = this
-
-        override fun error(error: Throwable) = this
-
-        override fun stop() {}
+    private companion object {
+        const val UNAUTHORIZED = "Neo.ClientError.Security.Unauthorized"
     }
-
-    override fun connectionPoolCreate(id: String, uri: URI, maxSize: Int): Observation = Nothing
-
-    override fun connectionPoolClose(id: String, uri: URI): Observation = Nothing
-
-    override fun pooledConnectionCreate(id: String, uri: URI): Observation = Nothing
-
-    override fun pooledConnectionClose(id: String, uri: URI): Observation = Nothing
-
-    override fun pooledConnectionAcquire(id: String, uri: URI): Observation = Nothing
-
-    override fun pooledConnectionInUse(
-        parentObsevation: ImmutableObservation?,
-        id: String,
-        uri: URI,
-    ): Observation = Nothing
-
-    override fun boltExchange(
-        observationParent: ImmutableObservation?,
-        host: String,
-        port: Int,
-        boltVersion: BoltProtocolVersion,
-        setter: BiConsumer<String, String>,
-    ): BoltExchangeObservation = Nothing
-
-    override fun httpExchange(
-        observationParent: ImmutableObservation?,
-        uri: URI,
-        method: String,
-        uriTemplate: String,
-        setter: BiConsumer<String, String>,
-    ): HttpExchangeObservation = Nothing
-
-    override fun scopedObservation(): ImmutableObservation? = null
-
-    override fun <T> supplyInScope(observation: ImmutableObservation?, supplier: Supplier<T>): T =
-        supplier.get()
 }
