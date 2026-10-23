@@ -183,6 +183,41 @@ class ServerSideRoutingTest {
     }
 
     @Test
+    fun `linearizable transactions through a follower wait on the leader, reads where they run`() {
+        val leader = cluster.awaitLeader()
+        val (follower, other) = cluster.members.filter { it != leader }
+        val linearizable =
+            TransactionConfig.builder()
+                .withMetadata(mapOf("dozendb.consistency" to "linearizable"))
+                .build()
+        routing(follower).session(SessionConfig.forDatabase(NEO4J)).use { session ->
+            session.executeWrite({ tx -> tx.run("CREATE (:Linearizable)").consume() }, linearizable)
+        }
+
+        // No bookmark: the read waits for what the leader had committed when it began.
+        val read =
+            direct(other).session(SessionConfig.forDatabase(NEO4J)).use { session ->
+                session
+                    .run("MATCH (n:Linearizable) RETURN count(n) AS c", linearizable)
+                    .single()["c"]
+                    .asLong()
+            }
+        assertThat(read).isEqualTo(1)
+        val unknown =
+            TransactionConfig.builder()
+                .withMetadata(mapOf("dozendb.consistency" to "strong"))
+                .build()
+        val refused =
+            catchThrowable {
+                routing(follower).session(SessionConfig.forDatabase(NEO4J)).use {
+                    it.run("CREATE (:Strong)", unknown).consume()
+                }
+            }
+                as Neo4jException
+        assertThat(refused.code()).isEqualTo("Neo.ClientError.Request.Invalid")
+    }
+
+    @Test
     fun `results through a follower are those of the leader`() {
         val leader = cluster.awaitLeader()
         val follower = follower()

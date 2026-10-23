@@ -12,6 +12,7 @@ import kotlin.concurrent.write
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.internal.ClusterMetrics
+import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -21,6 +22,7 @@ import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.internal.id.IdGeneratorFactory
+import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLogProvider
 
@@ -115,6 +117,20 @@ internal class ReplicationService(
         } catch (_: ConsensusUnavailableException) {
             false
         }
+
+    /**
+     * Waits until the database [id] here holds everything its Raft group had committed when this
+     * was called, as confirmed by its leader: for a linearizable read.
+     */
+    fun awaitLinearizable(id: NamedDatabaseId) {
+        val replica =
+            replica(id)?.takeIf { it.isRunning() }
+                ?: throw ReadConsistencyException(
+                    Status.Cluster.ReplicationFailure,
+                    "Database ${id.name()} is not replicating on this member",
+                )
+        replica.awaitLinearizable()
+    }
 
     /** The replication of [namedDatabaseId] on this member, if it was created. */
     fun replica(namedDatabaseId: NamedDatabaseId): ReplicatedDatabase? =

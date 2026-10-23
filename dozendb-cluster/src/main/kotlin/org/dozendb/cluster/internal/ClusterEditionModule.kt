@@ -18,7 +18,6 @@ import org.dozendb.cluster.internal.durability.FsyncPolicy
 import org.dozendb.cluster.internal.durability.SingleFsyncFileSystem
 import org.dozendb.cluster.internal.forwarding.ForwardedWrites
 import org.dozendb.cluster.internal.forwarding.ForwardingLocations
-import org.dozendb.cluster.internal.forwarding.ForwardingQueryRouterBootstrap
 import org.dozendb.cluster.internal.forwarding.ForwardingWatch
 import org.dozendb.cluster.internal.forwarding.MemberSsl
 import org.dozendb.cluster.internal.forwarding.RemoteTransactions
@@ -28,6 +27,7 @@ import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.DatabaseReconciler
 import org.dozendb.cluster.internal.replication.ReplicationService
+import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
@@ -620,26 +620,36 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         RoutingBoltDatabases(
             ConsistentBoltDatabases(
                 super.createBoltDatabaseManagementServiceProvider(),
-                replication,
                 globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
             ),
             globalModule.globalConfig,
         )
 
     /**
-     * Neo4j Community's query router, which runs write transactions of clients that allow routing
-     * on the leader of their databases when this member does not lead them, if it can: with
-     * server-side routing on and mutual TLS between members.
+     * Neo4j Community's query router, whose transactions here wait for linearizable reads, and
+     * which runs write transactions of clients that allow routing on the leader of their databases
+     * when this member does not lead them, if it can: with server-side routing on and mutual TLS
+     * between members.
      */
     override fun createQueryRouterBootstrap(
         databaseProvider: DatabaseContextProvider<*>,
         securityLog: AbstractSecurityLog,
-    ): CommunityQueryRouterBootstrap {
+    ): CommunityQueryRouterBootstrap =
+        ClusterQueryRouterBootstrap(
+            globalModule,
+            databaseProvider,
+            databaseReferenceRepo,
+            securityLog,
+            globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
+            replication::awaitLinearizable,
+            forwarding(),
+        )
+
+    /** How this member forwards writes to the leaders of their databases, if it does. */
+    private fun forwarding(): ClusterQueryRouterBootstrap.Forwarding? {
         val config = globalModule.globalConfig
         val tls = memberTls
-        if (tls == null || ForwardedWrites.sendingRefusal(config, tls) != null) {
-            return super.createQueryRouterBootstrap(databaseProvider, securityLog)
-        }
+        if (tls == null || ForwardedWrites.sendingRefusal(config, tls) != null) return null
         val logs = globalModule.logService.internalLogProvider
         val remote =
             RemoteTransactions(
@@ -662,14 +672,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         globalModule.globalLife.add(
             ForwardingWatch(locations, remote, electionTimeout.multipliedBy(2))
         )
-        return ForwardingQueryRouterBootstrap(
-            globalModule,
-            databaseProvider,
-            databaseReferenceRepo,
-            securityLog,
-            locations::locationService,
-            remote,
-        )
+        return ClusterQueryRouterBootstrap.Forwarding(locations::locationService, remote)
     }
 
     /** The last transaction of `system` on this member, which its forwarded logins carry. */
