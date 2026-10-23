@@ -16,6 +16,7 @@
  * commands of UserCommands are added, and WAIT waits for the servers.
  * 2026-10-23: the role commands of RoleCommands, the privilege commands of PrivilegeCommands and
  * ShowPrivilegeCommands are added, and DROP DATABASE drops the privileges on the database.
+ * 2026-10-24: the alias commands of AliasCommands are added, and the targets of aliases checked.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -118,9 +119,9 @@ import scala.util.Either
 internal typealias Planner = Function1<AdministrationCommandRuntimeContext, ExecutionPlan>
 
 /**
- * Neo4j Community's administration commands, plus CREATE, DROP, START and STOP DATABASE and the
- * role commands, which Community leaves to Neo4j Enterprise. The database commands only change
- * `Database` nodes in `system`; the databases themselves follow those nodes.
+ * Neo4j Community's administration commands, plus CREATE, DROP, START and STOP DATABASE, the role
+ * commands and the alias commands, which Community leaves to Neo4j Enterprise. The database
+ * commands only change `Database` nodes in `system`; the databases themselves follow those nodes.
  */
 internal class DozenDbAdministrationCommandRuntime
 private constructor(
@@ -131,6 +132,7 @@ private constructor(
     private val roleCommands: RoleCommands,
     private val privilegeCommands: PrivilegeCommands,
     private val showPrivilegeCommands: ShowPrivilegeCommands,
+    private val aliasCommands: AliasCommands,
 ) :
     CommunityAdministrationCommandRuntime(
         engine,
@@ -139,7 +141,8 @@ private constructor(
             .orElse(userCommands)
             .orElse(roleCommands)
             .orElse(privilegeCommands)
-            .orElse(showPrivilegeCommands),
+            .orElse(showPrivilegeCommands)
+            .orElse(aliasCommands),
     ) {
     constructor(
         engine: ExecutionEngine,
@@ -152,6 +155,7 @@ private constructor(
         RoleCommands(engine, dependencies),
         PrivilegeCommands(engine, dependencies),
         ShowPrivilegeCommands(engine, dependencies),
+        AliasCommands(engine, dependencies),
     )
 
     // Community compiles nested plans with its commands and ours, but the top-level plan only with
@@ -162,6 +166,7 @@ private constructor(
             .orElse(roleCommands)
             .orElse(privilegeCommands)
             .orElse(showPrivilegeCommands)
+            .orElse(aliasCommands)
             .orElse(logicalToExecutable())
 
     init {
@@ -170,6 +175,7 @@ private constructor(
         roleCommands.compile = ::compile
         privilegeCommands.compile = ::compile
         showPrivilegeCommands.compile = ::compile
+        aliasCommands.compile = ::compile
     }
 
     /** Where administration commands are logged; none with authentication disabled. */
@@ -192,6 +198,7 @@ private constructor(
             roleCommands.isDefinedAt(command) ||
             privilegeCommands.isDefinedAt(command) ||
             showPrivilegeCommands.isDefinedAt(command) ||
+            aliasCommands.isDefinedAt(command) ||
             super.isApplicableAdministrationCommand(logicalPlan)
     }
 
@@ -603,6 +610,8 @@ private class DatabaseCommands(
         plan: EnsureValidNonSystemDatabase,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
+        if (plan.aliasName().isDefined)
+            return ensureAliasTarget(plan, plan.aliasName().get(), context)
         val databaseName = plan.databaseName()
         val name = admin.getDatabaseNameFields("databaseName", databaseName)
         return updating(
@@ -628,6 +637,76 @@ private class DatabaseCommands(
                     }
                 )
                 .handleError(errors(plan.command(), plan.action(), databaseName)),
+            compile(plan.source(), context),
+            transformer().convert(name.nameConverter()),
+        )
+    }
+
+    /**
+     * Checks that the target of the alias [aliasName] is a database other than `system`: an alias
+     * cannot target another alias.
+     */
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these.
+    private fun ensureAliasTarget(
+        plan: EnsureValidNonSystemDatabase,
+        aliasName: DatabaseName,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val target = plan.databaseName()
+        val name = admin.getDatabaseNameFields("targetName", target)
+        val key = parameter(name.displayNameKey())
+        return updating(
+            "EnsureValidAliasTarget",
+            """
+            OPTIONAL MATCH (database:Database {name: $key})
+            OPTIONAL MATCH (alias:DatabaseName {name: $key, namespace: ${'$'}namespace,
+                primary: false})
+            RETURN CASE
+                WHEN database.name = '${GraphDatabaseSettings.SYSTEM_DATABASE_NAME}' THEN 'system'
+                WHEN database IS NOT NULL THEN 'database'
+                WHEN alias IS NOT NULL THEN 'alias'
+                ELSE 'none'
+            END AS target
+            """
+                .trimIndent(),
+            VirtualValues.map(
+                name.keys() + "namespace",
+                name.values() + Values.utf8Value(TopologyGraphDbmsModel.DEFAULT_NAMESPACE),
+            ),
+            QueryHandler.handleResult(
+                    Function3 { _, value, params ->
+                        val failed =
+                            "Failed to ${plan.action()} the specified database alias " +
+                                "'${show(aliasName, params)}'"
+                        val targetName = show(target, params)
+                        when ((value as TextValue).stringValue()) {
+                            "database" -> `Continue$`.`MODULE$`
+                            "system" ->
+                                ThrowException(
+                                    InvalidArgumentException(
+                                        "$failed: Target database name '$targetName' is " +
+                                            "invalid, due to the prefix 'system'."
+                                    )
+                                )
+                            "alias" ->
+                                ThrowException(
+                                    InvalidArgumentException(
+                                        "$failed: '$targetName' is an alias, and aliases can " +
+                                            "only target databases."
+                                    )
+                                )
+                            else ->
+                                ThrowException(
+                                    DatabaseNotFoundHelper.failedActionAlias(
+                                        plan.action(),
+                                        show(aliasName, params),
+                                        targetName,
+                                    )
+                                )
+                        }
+                    }
+                )
+                .handleError(errors(plan.command(), plan.action(), target)),
             compile(plan.source(), context),
             transformer().convert(name.nameConverter()),
         )

@@ -125,6 +125,13 @@ class AdministrationPlansTest {
                 "EnsureNameIsNotAmbiguous",
                 "EnsureDatabaseSafeToDelete",
                 "WaitForCompletion",
+                // Aliases
+                "CreateLocalDatabaseAlias",
+                "DropDatabaseAlias",
+                "ShowAliases",
+                "EnsureDatabaseNodeExists",
+                "AssertNotBlockedDropAlias",
+                "AssertNotBlockedRemoteAliasManagement",
             )
 
         /** Planned by Community's runtime, which DozenDB's falls back to. */
@@ -151,16 +158,10 @@ class AdministrationPlansTest {
         /** Planned by neither, so they fail as they do in Community: why. */
         val REFUSED =
             mapOf(
-                "CreateLocalDatabaseAlias" to ALIASES,
                 "CreateRemoteDatabaseAlias" to ALIASES,
                 "AlterLocalDatabaseAlias" to ALIASES,
                 "AlterRemoteDatabaseAlias" to ALIASES,
-                "DropDatabaseAlias" to ALIASES,
-                "ShowAliases" to ALIASES,
                 "EnsureAliasIsNotRemote" to ALIASES,
-                "EnsureDatabaseNodeExists" to ALIASES,
-                "AssertNotBlockedDropAlias" to ALIASES,
-                "AssertNotBlockedRemoteAliasManagement" to ALIASES,
                 "EnableServer" to SERVERS,
                 "AlterServer" to SERVERS,
                 "RenameServer" to SERVERS,
@@ -176,13 +177,10 @@ class AdministrationPlansTest {
         /** A command for each refused plan that is a command of its own. */
         val REFUSED_COMMANDS =
             listOf(
-                "CREATE ALIAS films FOR DATABASE neo4j",
                 "CREATE ALIAS remote FOR DATABASE neo4j AT 'neo4j+s://example.com' " +
                     "USER alice PASSWORD 'alice-secret-1'",
                 "ALTER ALIAS films SET DATABASE TARGET neo4j",
                 "ALTER ALIAS remote SET DATABASE USER bob",
-                "DROP ALIAS films FOR DATABASE",
-                "SHOW ALIASES FOR DATABASE",
                 "ENABLE SERVER 'one'",
                 "ALTER SERVER 'one' SET OPTIONS {modeConstraint: 'NONE'}",
                 "RENAME SERVER 'one' TO 'two'",

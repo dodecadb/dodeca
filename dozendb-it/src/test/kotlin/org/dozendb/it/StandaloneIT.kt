@@ -156,10 +156,10 @@ class StandaloneIT {
                     "currentStatus, statusMessage, default, home, constituents RETURN * ORDER BY name",
                 "SHOW DEFAULT DATABASE YIELD name, currentStatus",
                 // DozenDB also shows the roles, status and home database, where Community shows
-                // null, and answers SHOW ROLES and SHOW PRIVILEGES, which Community refuses.
+                // null, and answers SHOW ROLES, SHOW PRIVILEGES and SHOW ALIASES, which Community
+                // refuses.
                 "SHOW USERS YIELD user, passwordChangeRequired",
                 "SHOW SERVERS",
-                "SHOW ALIASES FOR DATABASE",
                 "SHOW CURRENT USER YIELD user, passwordChangeRequired",
             )
             .forEach { assertSame(it, "system") }
@@ -376,6 +376,30 @@ class StandaloneIT {
                 "GRANT ACCESS ON DATABASE archive TO `curator`",
                 "GRANT MATCH {title} ON GRAPH archive NODE Film TO `curator`",
             )
+    }
+
+    @Test
+    @Order(ADDITIONS)
+    fun `serves databases by their aliases, which Community refuses to create`() {
+        refusedByCommunity("CREATE ALIAS motion FOR DATABASE neo4j", "system")
+        refusedByCommunity("SHOW ALIASES FOR DATABASE", "system")
+        dozenDb.rows("CREATE DATABASE pictures WAIT", "system")
+        dozenDb.rows("CREATE ALIAS motion FOR DATABASE pictures", "system")
+        dozenDb.rows("CREATE (:Film {title: 'Alien'})", "motion")
+
+        assertThat(dozenDb.rows("SHOW ALIASES FOR DATABASE", "system"))
+            .containsExactly(
+                mapOf(
+                    "name" to "motion",
+                    "composite" to null,
+                    "database" to "pictures",
+                    "location" to "local",
+                    "url" to null,
+                    "user" to null,
+                )
+            )
+        assertThat(dozenDb.rows("MATCH (f:Film) RETURN f.title AS title", "pictures"))
+            .containsExactly(mapOf("title" to "Alien"))
     }
 
     private companion object {
