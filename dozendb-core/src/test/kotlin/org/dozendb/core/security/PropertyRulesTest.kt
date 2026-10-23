@@ -18,6 +18,7 @@ import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
 
 /**
  * Property-based rules granted and denied with Cypher, as a user finds and reads nodes through
@@ -275,37 +276,55 @@ class PropertyRulesTest {
     @Test
     fun `refuses rule values that no property can be compared with`() {
         server.administer("CREATE ROLE r")
-        fun refusal(predicate: String, value: Any?): String? {
+        /** The message and GQL statuses, outermost first, of the refusal of [predicate]. */
+        fun refusal(predicate: String, value: Any?): Pair<String?, List<String>> {
             // Neo4j takes null parameters, which Kotlin's types do not show.
             @Suppress("UNCHECKED_CAST") val parameters = mapOf("v" to value) as Map<String, Any>
-            return catchThrowable {
+            val error = catchThrowable {
                 server.administer(
                     "GRANT TRAVERSE ON GRAPH * FOR (n) WHERE $predicate TO r",
                     parameters,
                 )
             }
-                ?.let { generateSequence(it) { e -> e.cause }.last().message }
+            val refusal = generateSequence(error) { e -> e.cause }.last()
+            val statuses =
+                generateSequence((refusal as ErrorGqlStatusObject)) { it.cause().orElse(null) }
+                    .map { it.gqlStatus() }
+                    .toList()
+            return refusal.message to statuses
         }
 
         assertThat(refusal("n.p = \$v", null))
             .isEqualTo(
                 "Failed to administer property rule. The property value access rule pattern " +
-                    "`p = NULL` always evaluates to `NULL`."
+                    "`p = NULL` always evaluates to `NULL`. Use `IS NULL` instead." to
+                    listOf("22NA0", "22NA5")
+            )
+        assertThat(refusal("n.p <> \$v", null))
+            .isEqualTo(
+                "Failed to administer property rule. The property value access rule pattern " +
+                    "`p <> NULL` always evaluates to `NULL`. Use `IS NOT NULL` instead." to
+                    listOf("22NA0", "22NA6")
+            )
+        assertThat(refusal("n.p >= \$v", null))
+            .isEqualTo(
+                "Failed to administer property rule. The property value access rule pattern " +
+                    "`p >= NULL` always evaluates to `NULL`." to listOf("22NA0", "22NA4")
             )
         assertThat(refusal("n.p > \$v", Double.NaN))
             .isEqualTo(
                 "Failed to administer property rule. `NaN` is not supported for property-based " +
-                    "access control."
+                    "access control." to listOf("22NA0", "22NA3")
             )
         assertThat(refusal("n.p IN \$v", listOf(1L, "a")))
             .isEqualTo(
                 "Failed to administer property rule. All elements in a list must be literals of " +
-                    "the same type for property-based access control."
+                    "the same type for property-based access control." to listOf("22NA0")
             )
         assertThat(refusal("n.p IN \$v", 1L))
             .isEqualTo(
                 "Failed to administer property rule. The value `Long(1)` is not supported for " +
-                    "property-based access control: IN needs a list."
+                    "property-based access control: IN needs a list." to listOf("22NA0")
             )
     }
 }

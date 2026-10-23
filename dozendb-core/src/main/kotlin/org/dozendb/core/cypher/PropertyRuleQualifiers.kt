@@ -22,6 +22,11 @@ import org.neo4j.cypher.internal.expressions.NotEquals
 import org.neo4j.cypher.internal.expressions.Property
 import org.neo4j.cypher.internal.frontend.phases.ResolvedFunctionInvocation
 import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
+import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlHelper
+import org.neo4j.gqlstatus.GqlParams
+import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.procs.ProcedureCallContext
 import org.neo4j.internal.kernel.api.security.PatternSegment
@@ -50,7 +55,6 @@ internal object PropertyRuleQualifiers {
      * The rule of [qualifier], its value evaluated now with [params] in [tx], so that `date()` is
      * the date of granting. A negation is the opposite operator, as the kernel's operators have it.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these values of parameters.
     fun rule(
         qualifier: PatternQualifier,
         params: MapValue,
@@ -76,11 +80,8 @@ internal object PropertyRuleQualifiers {
             val property = (lhs as Property).propertyKey().name()
             val applied = if (negated) NEGATED.getValue(operator) else operator
             val value = value(evaluate(rhs), applied)
-            value
-                ?: throw InvalidArgumentException(
-                    "$FAILED The property value access rule pattern `$property ${operator.symbol} " +
-                        "NULL` always evaluates to `NULL`."
-                )
+            // Neo4j hands `p <> v` over as `NOT p = v`: the rule is named as written.
+            value ?: throw alwaysNull(applied, "$property ${applied.symbol} NULL")
             return PatternSegment.ValuePatternSegment(labels, property, value, applied)
         }
         fun isNull(lhs: Expression, operator: NullOperator): PatternSegment =
@@ -111,25 +112,66 @@ internal object PropertyRuleQualifiers {
                 val evaluated =
                     value(evaluate(value), applied)
                         ?: throw InvalidArgumentException(
+                            GqlHelper.getGql22NA0_22NB0("{$key:NULL}"),
                             "$FAILED The property value access rule pattern `{$key:NULL}` " +
-                                "always evaluates to `NULL`."
+                                "always evaluates to `NULL`. Use `WHERE` syntax in combination " +
+                                "with `IS NULL` instead.",
                         )
                 PatternSegment.ValuePatternSegment(labels, key, evaluated, applied)
             }
             else ->
                 throw InvalidArgumentException(
+                    invalidRule(
+                        ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_22NA7)
+                            .withParam(
+                                GqlParams.StringParam.expr,
+                                stringify(qualifier.expression()),
+                            )
+                            .build()
+                    ),
                     "$FAILED The expression: `${stringify(qualifier.expression())}` is not " +
                         "supported. Only single, literal-based predicate expressions are allowed " +
-                        "for property-based access control."
+                        "for property-based access control.",
                 )
         }
     }
 
     /**
+     * That the rule [predicate] with [operator] always evaluates to null, as Neo4j says it of
+     * literal nulls, with the same hints.
+     */
+    private fun alwaysNull(operator: ComparisonOperator, predicate: String) =
+        when (operator) {
+            ComparisonOperator.EQUAL ->
+                InvalidArgumentException(
+                    GqlHelper.getGql22NA0_22NA5(predicate),
+                    "$FAILED The property value access rule pattern `$predicate` always " +
+                        "evaluates to `NULL`. Use `IS NULL` instead.",
+                )
+            ComparisonOperator.NOT_EQUAL ->
+                InvalidArgumentException(
+                    GqlHelper.getGql22NA0_22NA6(predicate),
+                    "$FAILED The property value access rule pattern `$predicate` always " +
+                        "evaluates to `NULL`. Use `IS NOT NULL` instead.",
+                )
+            else ->
+                InvalidArgumentException(
+                    GqlHelper.getGql22NA0_22NA4(predicate),
+                    "$FAILED The property value access rule pattern `$predicate` always " +
+                        "evaluates to `NULL`.",
+                )
+        }
+
+    /** Neo4j's GQL status of an invalid property rule, for the reason [cause] if any. */
+    private fun invalidRule(cause: ErrorGqlStatusObject?): ErrorGqlStatusObject =
+        ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_22NA0)
+            .let { if (cause != null) it.withCause(cause) else it }
+            .build()
+
+    /**
      * [evaluated] as a value a property can have, a list for IN as an array; null for null. Values
      * Neo4j's semantic checks cannot see, those of parameters, are refused as it refuses literals.
      */
-    @Suppress("DEPRECATION")
     private fun value(evaluated: AnyValue, operator: ComparisonOperator): Value? {
         val lists = operator == ComparisonOperator.IN || operator == ComparisonOperator.NOT_IN
         val value =
@@ -140,20 +182,25 @@ internal object PropertyRuleQualifiers {
                         evaluated.toStorableArray()
                     } catch (_: RuntimeException) {
                         throw InvalidArgumentException(
+                            invalidRule(null),
                             "$FAILED All elements in a list must be literals of the same type for " +
-                                "property-based access control."
+                                "property-based access control.",
                         )
                     }
                 evaluated is Value && !lists -> evaluated
                 else ->
                     throw InvalidArgumentException(
+                        invalidRule(null),
                         "$FAILED The value `$evaluated` is not supported for property-based " +
-                            "access control${if (lists) ": IN needs a list" else ""}."
+                            "access control${if (lists) ": IN needs a list" else ""}.",
                     )
             }
         if (value is FloatingPointValue && value.isNaN) {
             throw InvalidArgumentException(
-                "$FAILED `NaN` is not supported for property-based access control."
+                invalidRule(
+                    ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_22NA3).build()
+                ),
+                "$FAILED `NaN` is not supported for property-based access control.",
             )
         }
         return value
