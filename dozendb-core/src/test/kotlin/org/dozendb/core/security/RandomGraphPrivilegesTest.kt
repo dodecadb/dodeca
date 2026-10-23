@@ -126,8 +126,20 @@ class RandomGraphPrivilegesTest {
         val nodes = pick("NODES *", "NODES A", "NODES B", "NODES Z", "")
         val properties = pick("{*}", "{p}", "{q}")
         val label = pick("*", "A", "C")
+        val rule =
+            "FOR ${pick("(n)", "(n:A)", "(n:B|Z)")} WHERE " +
+                pick(
+                    "n.p > 1",
+                    "n.p <= 3",
+                    "n.q = 4",
+                    "NOT n.q = 4",
+                    "n.p IN [1, 5, 7]",
+                    "n.q IS NULL",
+                    "n.p IS NOT NULL",
+                    "n.r IS NULL",
+                )
         val privilege =
-            when (nextInt(11)) {
+            when (nextInt(14)) {
                 0 -> "TRAVERSE ON $graph $elements"
                 1 -> "READ $properties ON $graph $elements"
                 2 -> "MATCH $properties ON $graph $elements"
@@ -138,6 +150,10 @@ class RandomGraphPrivilegesTest {
                 7 -> "REMOVE LABEL $label ON $graph"
                 8 -> "SET PROPERTY $properties ON $graph $elements"
                 9 -> "ALL GRAPH PRIVILEGES ON $graph"
+                // Property rules.
+                10 -> "TRAVERSE ON $graph $rule"
+                11 -> "READ $properties ON $graph $rule"
+                12 -> "MATCH $properties ON $graph $rule"
                 else -> "MERGE $properties ON $graph $nodes"
             }
         // MERGE cannot be denied.
