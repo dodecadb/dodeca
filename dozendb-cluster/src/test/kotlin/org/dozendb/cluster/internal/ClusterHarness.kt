@@ -67,6 +67,11 @@ internal class ClusterHarness(
     inner class Member(val index: Int) {
         val home: Path = Files.createDirectories(root.resolve("member-$index"))
         val raftPort: Int = TestPorts.free()
+        // Fixed, as a real member's are, so that it reports its addresses from its first answer
+        // on: with port 0 it reported none until it had bound them, and others took that answer
+        // for a member that takes no forwarded writes until they probed it again.
+        private val boltPort: Int = TestPorts.free()
+        private val routingPort: Int = TestPorts.free()
 
         /** The directory of the cluster SSL policy's certificates. */
         val certificates: Path
@@ -159,15 +164,16 @@ internal class ClusterHarness(
                     .set(GraphDatabaseSettings.auth_enabled, false)
                     .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
                     .set(BoltConnector.enabled, false)
-                    .set(BoltConnector.listen_address, SocketAddress("127.0.0.1", 0))
-                    // Routing tables then name the port bound.
-                    .set(BoltConnector.advertised_address, SocketAddress("127.0.0.1", 0))
+                    .set(BoltConnector.listen_address, SocketAddress("127.0.0.1", boltPort))
+                    .set(BoltConnector.advertised_address, SocketAddress("127.0.0.1", boltPort))
                     .set(
                         GraphDatabaseSettings.routing_listen_address,
-                        SocketAddress("127.0.0.1", 0),
+                        SocketAddress("127.0.0.1", routingPort),
                     )
-                    // Members then report the port bound.
-                    .set(ClusterSettings.routingAdvertisedAddress, SocketAddress("127.0.0.1", 0))
+                    .set(
+                        ClusterSettings.routingAdvertisedAddress,
+                        SocketAddress("127.0.0.1", routingPort),
+                    )
                     .set(HttpConnector.enabled, false)
                     .set(HttpsConnector.enabled, false)
                     .set(DozenDbSettings.clusterEnabled, true)
