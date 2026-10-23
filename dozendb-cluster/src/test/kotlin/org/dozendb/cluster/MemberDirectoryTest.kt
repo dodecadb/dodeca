@@ -21,7 +21,13 @@ class MemberDirectoryTest {
     private val system = DatabaseRef("system", UUID(0, 1))
     private val logs =
         List(3) { index ->
-            consensus.newMember(metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "core$index:7687"))
+            consensus.newMember(
+                metadata =
+                    mapOf(
+                        MemberMetadata.BOLT_ADDRESS to "core$index:7687",
+                        MemberMetadata.ROUTING_ADDRESS to "core$index:7688",
+                    )
+            )
         }
     private var selfDatabases = emptyList<DatabaseState>()
     private val directory =
@@ -29,6 +35,7 @@ class MemberDirectoryTest {
             logs[0],
             system,
             { HostPort("self", 7687) },
+            { HostPort("self", 7688) },
             { selfDatabases },
             NullLog.getInstance(),
             Duration.ofHours(1),
@@ -53,6 +60,23 @@ class MemberDirectoryTest {
         assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("core1", 7687))
         assertThat(directory.boltAddress(logs[2].self.id)).isEqualTo(HostPort("core2", 7687))
         assertThat(directory.boltAddress(logs[0].self.id)).isEqualTo(HostPort("self", 7687))
+        assertThat(directory.routingAddress(logs[1].self.id)).isEqualTo(HostPort("core1", 7688))
+        assertThat(directory.routingAddress(logs[0].self.id)).isEqualTo(HostPort("self", 7688))
+    }
+
+    @Test
+    fun `a member that reports no routing address or an invalid one takes no forwarded writes`() {
+        logs[1].metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "core1:7687")
+        logs[2].metadata =
+            mapOf(
+                MemberMetadata.BOLT_ADDRESS to "core2:7687",
+                MemberMetadata.ROUTING_ADDRESS to "not an address",
+            )
+
+        directory.refresh()
+
+        assertThat(directory.routingAddress(logs[1].self.id)).isNull()
+        assertThat(directory.routingAddress(logs[2].self.id)).isNull()
     }
 
     @Test

@@ -130,6 +130,34 @@ class ClusterSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "Address other members use to reach this server's routing connector " +
+                "(server.routing.listen_address), to forward the writes of databases this " +
+                "member leads. A port without a host uses server.default_advertised_address."
+        )
+        val routingAdvertisedAddress: Setting<SocketAddress> =
+            newBuilder(
+                    "server.routing.advertised_address",
+                    SOCKET_ADDRESS,
+                    SocketAddress(GraphDatabaseSettings.DEFAULT_ROUTING_CONNECTOR_PORT),
+                )
+                .addConstraint(NO_ALL_INTERFACES_ADDRESS)
+                .setDependency(GraphDatabaseSettings.default_advertised_address)
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "Whether a member that does not lead a database forwards write transactions of " +
+                "bolt:// connections to the database's leader, as it does for neo4j:// " +
+                "connections and the HTTP APIs. Drivers open transactions in WRITE mode unless " +
+                "asked for READ, so most bolt:// transactions on a follower then run on the " +
+                "leader, reads included."
+        )
+        val forwardBoltWrites: Setting<Boolean> =
+            newBuilder("dbms.dozendb.routing.forward_bolt_writes", BOOL, false).dynamic().build()
+
+        @JvmField
+        @field:Description(
             "Read consistency of transactions that do not set the dozendb.consistency metadata " +
                 "key. CAUSAL reads wait for the transaction's bookmarks; LINEARIZABLE reads also " +
                 "see every write acknowledged before they started, at the cost of a round trip to " +

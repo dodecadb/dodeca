@@ -14,6 +14,13 @@ object MemberMetadata {
     /** The member's advertised Bolt address, for routing tables. */
     const val BOLT_ADDRESS = "dozendb.boltAddress"
 
+    /**
+     * The member's advertised routing address, to which other members forward writes of the
+     * databases it leads. Absent if it takes no forwarded writes, as without mutual TLS between
+     * members, and from members of versions before 0.1.
+     */
+    const val ROUTING_ADDRESS = "dozendb.routingAddress"
+
     /** The member's [MemberState]: whether it waits to join, is a member, or was removed. */
     const val MEMBER_STATE = "dozendb.memberState"
 

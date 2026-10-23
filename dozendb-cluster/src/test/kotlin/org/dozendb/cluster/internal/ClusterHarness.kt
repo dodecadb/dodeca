@@ -165,6 +165,8 @@ internal class ClusterHarness(
                         GraphDatabaseSettings.routing_listen_address,
                         SocketAddress("127.0.0.1", 0),
                     )
+                    // Members then report the port bound.
+                    .set(ClusterSettings.routingAdvertisedAddress, SocketAddress("127.0.0.1", 0))
                     .set(HttpConnector.enabled, false)
                     .set(HttpsConnector.enabled, false)
                     .set(DozenDbSettings.clusterEnabled, true)

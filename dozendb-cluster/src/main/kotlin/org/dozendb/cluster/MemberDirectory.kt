@@ -18,16 +18,17 @@ import org.dozendb.core.edition.DatabaseState
 import org.neo4j.logging.Log
 
 /**
- * The Bolt addresses of the cluster's members, for routing, and what else they report about
- * themselves. Every member reports its advertised Bolt address and its databases when probed; the
+ * The Bolt and routing addresses of the cluster's members, and what else they report about
+ * themselves. Every member reports its advertised addresses and its databases when probed; the
  * directory probes the members of the `system` group periodically, and soon after someone asks for
  * a member it does not know yet. A member that does not answer keeps its last known address and
- * report. This member's own come from [selfBoltAddress] and [selfDatabases].
+ * report. This member's own come from [selfBoltAddress], [selfRoutingAddress] and [selfDatabases].
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
     private val selfBoltAddress: () -> HostPort?,
+    private val selfRoutingAddress: () -> HostPort?,
     private val selfDatabases: () -> List<DatabaseState>,
     private val log: Log,
     private val refreshInterval: Duration = Duration.ofSeconds(10),
@@ -45,6 +46,21 @@ class MemberDirectory(
                 requestRefresh()
                 null
             }
+    }
+
+    /**
+     * The routing address of [member], to which writes of the databases it leads can be forwarded,
+     * or null while it is not known or if the member takes no forwarded writes.
+     */
+    fun routingAddress(member: MemberId): HostPort? {
+        if (member == consensus.self.id) return selfRoutingAddress()
+        val reported =
+            reports[member]
+                ?: run {
+                    requestRefresh()
+                    return null
+                }
+        return reported[MemberMetadata.ROUTING_ADDRESS]?.let { parsed(it) }
     }
 
     /** What [member] reported when it last answered, such as its versions; see [MemberMetadata]. */
@@ -83,7 +99,22 @@ class MemberDirectory(
         for ((member, answer) in answers) {
             val peer = answer.getOrNull() ?: continue
             if (peer.member.id != member.id) continue
-            reports[member.id] = peer.metadata
+            val routing = peer.metadata[MemberMetadata.ROUTING_ADDRESS]
+            if (
+                routing !=
+                    reports.put(member.id, peer.metadata)?.get(MemberMetadata.ROUTING_ADDRESS)
+            ) {
+                when {
+                    routing == null -> log.info("Member %s takes no forwarded writes", member.id)
+                    parsed(routing) == null ->
+                        log.warn(
+                            "Member %s reports an invalid routing address: %s",
+                            member,
+                            routing,
+                        )
+                    else -> log.info("Member %s takes forwarded writes at %s", member.id, routing)
+                }
+            }
             val reported = peer.metadata[MemberMetadata.BOLT_ADDRESS] ?: continue
             val address = runCatching { HostPort.parse(reported) }.getOrNull()
             if (address == null) {
@@ -113,6 +144,11 @@ class MemberDirectory(
         scheduler?.shutdownNow()
         scheduler = null
     }
+
+    private fun parsed(address: String): HostPort? = runCatching {
+        HostPort.parse(address)
+    }
+        .getOrNull()
 
     private fun requestRefresh() {
         val executor = scheduler ?: return

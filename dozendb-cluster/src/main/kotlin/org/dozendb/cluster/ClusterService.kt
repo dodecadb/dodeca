@@ -21,7 +21,8 @@ import org.dozendb.consensus.Snapshot
 import org.neo4j.logging.Log
 
 /**
- * A voting member as seen from this member; [boltAddress] is null while it is not known.
+ * A voting member as seen from this member; [boltAddress] is null while it is not known, and
+ * [routingAddress] also if the member takes no forwarded writes.
  *
  * @property databases the databases whose groups the member votes in, as this member knows them.
  */
@@ -30,6 +31,7 @@ data class MemberView(
     val isLeader: Boolean,
     val isSelf: Boolean,
     val boltAddress: HostPort? = null,
+    val routingAddress: HostPort? = null,
     val databases: List<String> = emptyList(),
     val dozenDbVersion: String? = null,
     val formatLevels: FormatLevels? = null,
@@ -485,6 +487,7 @@ class ClusterService(
                 isLeader = member.id == leader,
                 isSelf = member.id == consensus.self.id,
                 boltAddress = directory?.boltAddress(member.id),
+                routingAddress = directory?.routingAddress(member.id),
                 dozenDbVersion = reported[MemberMetadata.DOZENDB_VERSION],
                 formatLevels =
                     reported[MemberMetadata.FORMAT_LEVELS]?.let {

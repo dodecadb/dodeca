@@ -27,6 +27,9 @@ class ClusterSettingsTest {
         assertThat(config.get(ClusterSettings.raftDirectory)).isEqualTo(Path.of("/neo4j/data/raft"))
         assertThat(config.get(ClusterSettings.electionTimeoutMin)).isEqualTo(Duration.ofSeconds(1))
         assertThat(config.get(ClusterSettings.electionTimeoutMax)).isEqualTo(Duration.ofSeconds(2))
+        assertThat(config.get(ClusterSettings.routingAdvertisedAddress))
+            .isEqualTo(SocketAddress("localhost", 7688))
+        assertThat(config.get(ClusterSettings.forwardBoltWrites)).isFalse()
     }
 
     @Test
@@ -41,6 +44,8 @@ class ClusterSettingsTest {
             .isEqualTo(SocketAddress("0.0.0.0", 7700))
         assertThat(config.get(ClusterSettings.advertisedAddress))
             .isEqualTo(SocketAddress("core1", 7700))
+        assertThat(config.get(ClusterSettings.routingAdvertisedAddress))
+            .isEqualTo(SocketAddress("core1", 7688))
     }
 
     @Test

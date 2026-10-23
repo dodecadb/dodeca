@@ -16,6 +16,7 @@ import org.dozendb.cluster.MembershipFile
 import org.dozendb.cluster.MembershipReconciler
 import org.dozendb.cluster.internal.durability.FsyncPolicy
 import org.dozendb.cluster.internal.durability.SingleFsyncFileSystem
+import org.dozendb.cluster.internal.forwarding.ForwardedWrites
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
@@ -32,6 +33,7 @@ import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
+import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.DozenDb
 import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.DatabaseState
@@ -41,6 +43,7 @@ import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DefaultSystemGraphInitializer
@@ -89,6 +92,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         )
     private val localStores: Neo4jLocalStores
 
+    /** The TLS between members, or null for plaintext. */
+    private val memberTls: TlsConfig?
+
+    /** Why other members may not forward writes to this member, or null if they may. */
+    private val forwardingRefusal: String?
+
     override val hosting: DatabaseHosting
         get() = replication
 
@@ -124,6 +133,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ) +
                 listOfNotNull(
                     boltHostPort()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
+                    routingHostPort()?.let { MemberMetadata.ROUTING_ADDRESS to it.toString() },
                     replicationService.defaultDatabaseId?.let {
                         MemberMetadata.CLUSTER_ID to it.toString()
                     },
@@ -136,6 +146,17 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ) {
                 ConsensusTuning { it }
             }
+        val tls =
+            ClusterTls.of(config, sslPolicyLoader, logService.getUserLog(ClusterTls::class.java))
+        memberTls = tls
+        forwardingRefusal = ForwardedWrites.refusal(config, tls)
+        forwardingRefusal?.let {
+            userLog.info(
+                "Other members do not forward writes to this member when it leads a database: " +
+                    "%s. Writes that reach them over neo4j:// or HTTP fail there with NotALeader.",
+                it,
+            )
+        }
         consensus =
             RatisConsensusLog(
                 tuning.adjust(
@@ -151,12 +172,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         maxEntrySize = config.get(ClusterSettings.raftMaxEntrySize).toInt(),
                         logSegmentSize = config.get(ClusterSettings.raftLogSegmentSize),
                         metadata = metadata,
-                        tls =
-                            ClusterTls.of(
-                                config,
-                                sslPolicyLoader,
-                                logService.getUserLog(ClusterTls::class.java),
-                            ),
+                        tls = tls,
                     )
                 )
             )
@@ -246,6 +262,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 consensus,
                 systemDatabase,
                 ::boltHostPort,
+                ::routingHostPort,
                 ::databaseStates,
                 logService.getInternalLog(MemberDirectory::class.java),
             )
@@ -459,6 +476,22 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     /** This member's advertised Bolt address, with the bound port if the configured one is 0. */
     private fun boltHostPort(): HostPort? = boltAddress()?.toHostPort()
+
+    /**
+     * This member's advertised routing address, with the bound port if the configured one is 0, or
+     * null if it takes no forwarded writes.
+     */
+    private fun routingHostPort(): HostPort? {
+        if (forwardingRefusal != null) return null
+        val advertised = globalModule.globalConfig.get(ClusterSettings.routingAdvertisedAddress)
+        val port =
+            advertised.port.takeIf { it > 0 }
+                ?: globalModule.connectorPortRegister
+                    .getLocalAddress(ConnectorType.INTRA_BOLT)
+                    ?.port
+                ?: return null
+        return HostPort(advertised.hostname, port)
+    }
 
     /**
      * The members of the cluster, which WAIT waits for. Each reports its databases when probed;

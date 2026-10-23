@@ -60,6 +60,7 @@ class ClusterProcedures {
                 memberId = it.member.id.toString(),
                 raftAddress = it.member.raftAddress.toString(),
                 boltAddress = it.boltAddress?.toString(),
+                routingAddress = it.routingAddress?.toString(),
                 role = if (it.isLeader) "LEADER" else "FOLLOWER",
                 self = it.isSelf,
                 databases = it.databases,
@@ -178,6 +179,8 @@ class ClusterProcedures {
         val memberId: String,
         val raftAddress: String,
         val boltAddress: String?,
+        /** Where other members forward writes when it leads; null if it takes none. */
+        val routingAddress: String?,
         val role: String,
         val self: Boolean,
         /** The databases whose groups the member votes in, as this member knows them. */
