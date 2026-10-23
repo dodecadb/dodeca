@@ -117,8 +117,7 @@ class StandaloneIT {
                     "currentStatus, statusMessage, default, home, constituents RETURN * ORDER BY name",
                 "SHOW DEFAULT DATABASE YIELD name, currentStatus",
                 // DozenDB also shows the roles, status and home database, where Community shows
-                // null,
-                // and answers SHOW ROLES and SHOW PRIVILEGES, which Community refuses (RbacIT).
+                // null, and answers SHOW ROLES and SHOW PRIVILEGES, which Community refuses.
                 "SHOW USERS YIELD user, passwordChangeRequired",
                 "SHOW SERVERS",
                 "SHOW ALIASES FOR DATABASE",
@@ -284,6 +283,60 @@ class StandaloneIT {
         dozenDb.rows("ALTER USER erin REMOVE HOME DATABASE SET STATUS ACTIVE", "system")
         assertThat(dozenDb.runAs("erin", "erin-secret-1", home))
             .isEqualTo(Outcome.Rows(listOf(mapOf("name" to "neo4j"))))
+    }
+
+    @Test
+    @Order(ADDITIONS)
+    fun `gives users the privileges of their roles, which Community refuses`() {
+        refusedByCommunity("CREATE ROLE curator", "system")
+        refusedByCommunity("SHOW ROLES", "system")
+        refusedByCommunity("SHOW PRIVILEGES", "system")
+        for (command in
+            listOf(
+                "CREATE DATABASE archive WAIT",
+                "CREATE USER frank SET PASSWORD 'frank-secret-1' CHANGE NOT REQUIRED",
+                "CREATE ROLE curator",
+                "GRANT ACCESS ON DATABASE archive TO curator",
+                "GRANT MATCH {title} ON GRAPH archive NODES Film TO curator",
+                "GRANT ROLE curator TO frank",
+            )) {
+            dozenDb.rows(command, "system")
+        }
+        dozenDb.rows(
+            "CREATE (:Film {title: 'Alien', budget: 11}), (:Draft {title: 'Untitled'})",
+            "archive",
+        )
+
+        assertThat(
+                dozenDb.runAs(
+                    "frank",
+                    "frank-secret-1",
+                    "MATCH (n) RETURN n.title AS title, n.budget AS budget",
+                    "archive",
+                )
+            )
+            .isEqualTo(Outcome.Rows(listOf(mapOf("title" to "Alien", "budget" to null))))
+        assertThat(dozenDb.runAs("frank", "frank-secret-1", "CREATE (:Film)", "archive"))
+            .isEqualTo(
+                Outcome.Failed(
+                    "Neo.ClientError.Security.Forbidden",
+                    "Create node with labels 'Film' on database 'archive' is not allowed for " +
+                        "user 'frank' with roles [PUBLIC, curator].",
+                )
+            )
+        assertThat(dozenDb.runAs("frank", "frank-secret-1", "RETURN 1", "neo4j"))
+            .isEqualTo(Outcome.Rows(listOf(mapOf("1" to 1L))))
+        assertThat(dozenDb.rows("SHOW USERS YIELD user, roles WHERE user = 'frank'", "system"))
+            .containsExactly(mapOf("user" to "frank", "roles" to listOf("curator", "PUBLIC")))
+        assertThat(
+                dozenDb.rows("SHOW ROLE curator PRIVILEGES AS COMMANDS", "system").map {
+                    it["command"]
+                }
+            )
+            .containsExactly(
+                "GRANT ACCESS ON DATABASE archive TO `curator`",
+                "GRANT MATCH {title} ON GRAPH archive NODE Film TO `curator`",
+            )
     }
 
     private companion object {
