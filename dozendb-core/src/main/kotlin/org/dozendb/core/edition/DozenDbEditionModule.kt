@@ -16,6 +16,7 @@
  */
 package org.dozendb.core.edition
 
+import org.dozendb.core.SettingsProcedures
 import org.dozendb.core.logging.QueryLog
 import org.dozendb.core.monitoring.MetricsService
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
@@ -42,6 +43,7 @@ import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule
 import org.neo4j.internal.kernel.api.security.CommunitySecurityLog
 import org.neo4j.io.device.DeviceMapper
+import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.kernel.api.security.provider.NoAuthSecurityProvider
 import org.neo4j.kernel.database.DatabaseId
 import org.neo4j.kernel.database.DatabaseIdRepository
@@ -300,6 +302,15 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             }
         module.setup()
         setSecurityProvider(module)
+    }
+
+    /** Neo4j Community's procedures, and `dbms.setConfigValue`. */
+    override fun registerEditionSpecificProcedures(
+        globalProcedures: GlobalProcedures,
+        databaseContextProvider: DatabaseContextProvider<*>,
+    ) {
+        super.registerEditionSpecificProcedures(globalProcedures, databaseContextProvider)
+        globalProcedures.registerProcedure(SettingsProcedures::class.java)
     }
 
     /** Starts the default database, then follows the system graph for the other databases. */

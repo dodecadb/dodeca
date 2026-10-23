@@ -78,9 +78,11 @@ class StandaloneIT {
     }
 
     @Test
-    fun `offers the same procedures and functions`() {
-        assertThat(names(dozenDb, "SHOW PROCEDURES YIELD name"))
-            .isEqualTo(names(community, "SHOW PROCEDURES YIELD name"))
+    fun `offers Community's procedures and functions, and setConfigValue`() {
+        val communityProcedures = names(community, "SHOW PROCEDURES YIELD name")
+        val dozenDbProcedures = names(dozenDb, "SHOW PROCEDURES YIELD name")
+        assertThat(communityProcedures - dozenDbProcedures).isEmpty()
+        assertThat(dozenDbProcedures - communityProcedures).containsExactly("dbms.setConfigValue")
         assertThat(names(dozenDb, "SHOW FUNCTIONS YIELD name"))
             .isEqualTo(names(community, "SHOW FUNCTIONS YIELD name"))
     }
