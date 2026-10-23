@@ -10,8 +10,10 @@ group and removes them from it until they match.
 Two procedures show the members, on any member:
 
 - `CALL dozendb.cluster.members()` lists the cluster's members with their Raft
-  and Bolt addresses, which one leads `system`, and in `databases` the
-  databases whose groups each member votes in.
+  and Bolt addresses, where each takes writes that other members forward
+  (`routingAddress`, see [Writes on any member](#writes-on-any-member)), which
+  one leads `system`, and in `databases` the databases whose groups each member
+  votes in.
 - `CALL dozendb.cluster.status()` lists, for every database running on the
   member asked, the member's role, the leader, Raft indexes, and in `members`
   the ids of the members that vote in the database's group.
@@ -167,6 +169,88 @@ old authority from `trusted/`, restarting each.
 Members with TLS and members without cannot reach each other. Shut down every
 member, change `dbms.ssl.policy.cluster.enabled` on each, and start them all
 again.
+
+## Writes on any member
+
+Each database takes writes on its leader alone. A write transaction that
+reaches another member runs on the leader when its client lets the server
+route it, as with Neo4j Enterprise's server-side routing:
+
+- drivers that route (`neo4j://`), while the members set
+  `dbms.routing.default_router=SERVER`. With the default, `CLIENT`, these
+  drivers send writes to the leader themselves, as the routing tables say;
+- HTTP clients, on the Query API and the transactional endpoint;
+- Bolt clients connected to one member (`bolt://`, also Cypher Shell with
+  `-a bolt://...`), only while that member sets
+  `dbms.dozendb.routing.forward_bolt_writes=true`. The setting is off by
+  default, as in Neo4j Enterprise, and dynamic. Without it, such a write fails
+  with `Neo.ClientError.Cluster.NotALeader`, and the error names the leader's
+  Bolt address.
+
+The member forwards the whole transaction, explicit or auto-commit,
+administration commands included: they run on the leader of `system`. On the
+leader, the transaction runs as its user, with the same privileges,
+impersonation, metadata and timeout; the results, notifications, errors and
+bookmarks the client gets are the leader's. The leader's query log and
+security log record it, with `dozendb-forwarding/<version>` as the client's
+user agent, and `SHOW TRANSACTIONS` and `TERMINATE TRANSACTION` on the leader
+see it. Read transactions run on the member they reach, and linearizable reads
+(`COMPATIBILITY.md`) wait where the transaction runs.
+
+### Requirements
+
+Members forward writes to each other's routing connector, which only members
+use. On every member:
+
+- Mutual TLS between members: `dbms.ssl.policy.cluster.enabled=true` with
+  `client_auth` at its default, `REQUIRE` (see
+  [TLS between members](#tls-between-members)). A member logs in on another's
+  routing connector with its certificate, naming the user whose transaction it
+  forwards, and the routing connector takes no other logins. It uses the
+  cluster's SSL policy as Raft does: with `verify_hostname=true`, a member's
+  certificate must also name the host of its routing address.
+- `dbms.routing.enabled=true`, Neo4j's default, and Bolt enabled.
+- The routing connector reachable from the other members:
+  `server.routing.listen_address` (default `:7688`) and
+  `server.routing.advertised_address`, the address other members connect to
+  (default: the host of `server.default_advertised_address` and port 7688).
+  Clients need not reach it.
+
+`dozendb.cluster.members()` shows each member's `routingAddress`, or null for
+a member that takes no forwarded writes. Such a member logs why when it
+starts. A member that forwards no writes says why in the error that a write
+on it gets.
+
+### Failures
+
+- **No leader.** The member waits for one up to
+  `dbms.dozendb.cluster.election_timeout_max`, then fails the transaction with
+  `Neo.ClientError.Cluster.NotALeader`. Drivers retry managed transactions
+  (`executeWrite`) on that error.
+- **The leader changes, or cannot be reached.** Open transactions fail with
+  `Neo.TransientError.Transaction.LeaderSwitch` when another member leads the
+  database or none has for twice the election timeout, and with
+  `Neo.TransientError.General.DatabaseUnavailable` when the leader does not
+  answer. Nothing of them was committed, and drivers retry managed
+  transactions on the new leader.
+- **The leader goes away during a commit.** If the member sent the commit and
+  got no answer, the transaction fails with
+  `Neo.DatabaseError.Transaction.TransactionCommitFailed`, saying that it may
+  or may not have committed, as a commit on the leader itself does when the
+  leader loses its majority.
+- **The leader refuses the user**, for example one suspended meanwhile:
+  `Neo.ClientError.Security.Forbidden`.
+
+### Connections
+
+Each member keeps a pool of connections to each leader it forwards to,
+following Neo4j's settings for server-side routing:
+`dbms.routing.driver.connection.pool.max_size` (default unlimited),
+`dbms.routing.driver.connection.pool.acquisition_timeout`,
+`dbms.routing.driver.connection.pool.idle_test`,
+`dbms.routing.driver.connection.max_lifetime` and
+`dbms.routing.driver.connection.connect_timeout`. What the connections log goes
+to `debug.log`, at `dbms.routing.driver.logging.level`.
 
 ## Upgrading DozenDB
 
@@ -376,9 +460,10 @@ Users, roles, privileges and whether each database is online come with
 ## Roles and privileges
 
 Roles and privileges work as Neo4j Enterprise's operations manual describes,
-with the differences listed in `COMPATIBILITY.md`. With clustering, run their
-commands on the system leader, or through a routing driver or Cypher Shell
-(`neo4j://`), which sends them there.
+with the differences listed in `COMPATIBILITY.md`. With clustering, their
+commands run on the system leader: run them there, or through a routing
+driver or Cypher Shell (`neo4j://`), which sends them there, or on any member
+that forwards them (see [Writes on any member](#writes-on-any-member)).
 
 ### The first admin
 
@@ -578,5 +663,8 @@ dynamic setting at once, until the member restarts; an empty value restores
 the default. It needs the `admin` role and changes only the member it runs
 on: with clustering, run it on each member, connecting to each directly
 (`bolt://`), and change `neo4j.conf` too so that the change outlasts a
-restart. `SHOW SETTINGS YIELD name, isDynamic WHERE isDynamic` lists the
+restart. A member with `dbms.dozendb.routing.forward_bolt_writes=true`
+forwards write transactions to the leader, which the procedure would change
+instead: run it in a read transaction there, as with Cypher Shell's
+`--access-mode read`. `SHOW SETTINGS YIELD name, isDynamic WHERE isDynamic` lists the
 dynamic settings.

@@ -293,7 +293,8 @@ What clustering does not do yet.
 - **Replicated databases.** Every database is replicated, `system` included,
   each in its own Raft group. Administration commands (users,
   `CREATE DATABASE` and the like) run on the leader of `system` and reach every
-  member; a follower rejects them with `Neo.ClientError.Cluster.NotALeader`.
+  member; a follower forwards them there or rejects them, as it does writes
+  (below).
   `CREATE`, `STOP`, `START` and `DROP DATABASE` apply on every member, and a
   member that was down applies the ones it missed when it returns.
 - **New databases.** The system leader creates the store of a new database and
@@ -305,17 +306,24 @@ What clustering does not do yet.
 - **Default database.** The default database (`initial_default_database`)
   exists from the first start on and cannot be dropped or replaced;
   `STOP DATABASE` and `START DATABASE` apply to it.
-- **Writes go to the leader.** A follower rejects writes with
-  `Neo.ClientError.Cluster.NotALeader`. Drivers that route (`neo4j://`) get
-  routing tables with the leader as writer and retry managed transactions on
-  the new leader after a failover. Server-side routing
-  (`dbms.routing.default_router=SERVER`) does not forward writes: a `bolt://`
-  write sent to a follower is rejected. A database that does not run on the
-  member asked, such as a stopped one, is routed to that member only.
+- **Writes go to the leader.** Drivers that route (`neo4j://`) get routing
+  tables with the leader as writer and retry managed transactions on the new
+  leader after a failover. A write transaction that reaches a follower runs on
+  the leader when its client allows server-side routing, as in Neo4j
+  Enterprise: `neo4j://` drivers with `dbms.routing.default_router=SERVER`,
+  and HTTP clients. This needs mutual TLS between members and their routing
+  connector (`server.routing.listen_address`, port 7688) reachable from the
+  others. A `bolt://` write is forwarded only with
+  `dbms.dozendb.routing.forward_bolt_writes=true`, which Neo4j Enterprise does
+  not have. Otherwise the follower rejects the write with
+  `Neo.ClientError.Cluster.NotALeader`, naming the leader's Bolt address. A
+  database that does not run on the member asked, such as a stopped one, is
+  routed to that member only. See `OPERATOR_GUIDE.md`, "Writes on any member".
 - **Linearizable reads** are requested per transaction with the metadata key
   `dozendb.consistency` set to `linearizable`, or for every transaction with
   `dbms.dozendb.reads.default_consistency`. They apply to Bolt clients
-  (drivers, Cypher Shell).
+  (drivers, Cypher Shell). The transaction waits on the member that runs it:
+  the leader for a write that a follower forwards there.
 - **Transaction size.** A transaction can replicate at most 16 MiB of changes
   in Neo4j's command encoding. A larger one fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is
