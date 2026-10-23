@@ -8,6 +8,8 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.core.security.DozenDbSecurityComponent
+import org.dozendb.core.security.PrivilegeRecords
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -18,6 +20,7 @@ import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.exceptions.AuthenticationException
+import org.neo4j.graphdb.Label
 
 /** User status, home databases and roles on every member, which learns of them through Raft. */
 class UsersTest {
@@ -125,6 +128,74 @@ class UsersTest {
         for (member in cluster.members) {
             eventually { assertThat(member.movies("alice", "alice-secret-1")).isZero() }
         }
+    }
+
+    @Test
+    fun `a cluster without roles gets them from its system leader, refusing logins until then`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings =
+                        mapOf(
+                            GraphDatabaseSettings.auth_enabled to true,
+                            BoltConnector.enabled to true,
+                        ),
+                )
+                .also { harness = it }
+        cluster.start()
+        cluster.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+        fun ClusterHarness.Member.roles(): Any? =
+            driver("alice", "alice-secret-1").session().use { session ->
+                session.run("SHOW CURRENT USER YIELD roles").single()["roles"].asList()
+            }
+        for (member in cluster.members) {
+            eventually { assertThat(member.roles()).isEqualTo(listOf("PUBLIC")) }
+        }
+
+        // As in a cluster formed before DozenDB had roles.
+        val leader = cluster.awaitLeader(SYSTEM)
+        leader.database(SYSTEM).beginTx().use { tx ->
+            for (label in listOf(PrivilegeRecords.PRIVILEGE, PrivilegeRecords.ROLE)) {
+                tx.findNodes(label).forEach { node ->
+                    node.relationships.forEach { it.delete() }
+                    node.delete()
+                }
+            }
+            tx.findNodes(Label.label("Version")).forEach {
+                it.removeProperty(DozenDbSecurityComponent.NAME.name())
+            }
+            tx.commit()
+        }
+
+        for (member in cluster.members) {
+            eventually {
+                assertThat(catchThrowable { member.roles() })
+                    .hasMessage(
+                        "Database access is not allowed for user 'alice' yet: this server does " +
+                            "not have the roles of the cluster yet. Try again in a moment."
+                    )
+            }
+        }
+
+        leader.stop()
+
+        for (member in cluster.running()) {
+            eventually { assertThat(member.roles()).isEqualTo(listOf("PUBLIC")) }
+        }
+        assertThat(
+                cluster.awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(
+                    "SHOW USERS YIELD user, roles WHERE user = 'neo4j'",
+                    emptyMap(),
+                ) {
+                    it.next()["roles"]
+                }
+            )
+            .isEqualTo(listOf("admin", "PUBLIC"))
+
+        leader.start()
+
+        eventually { assertThat(leader.roles()).isEqualTo(listOf("PUBLIC")) }
     }
 
     private companion object {

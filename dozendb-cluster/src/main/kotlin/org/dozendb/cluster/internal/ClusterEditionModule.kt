@@ -94,6 +94,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
+    private var roles: RolesInitializer? = null
 
     init {
         val config = globalModule.globalConfig
@@ -285,10 +286,22 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 override fun start() {
                     cluster.start()
                     membership.start()
+                    // The security component exists once the system graph components do.
+                    roles =
+                        RolesInitializer(
+                                consensus,
+                                systemDatabase,
+                                { databaseRepository.getSystemDatabaseContext().databaseFacade() },
+                                replication::readingSystem,
+                                securityComponent,
+                                logService.getInternalLog(RolesInitializer::class.java),
+                            )
+                            .also { it.start() }
                 }
 
                 override fun stop() {
                     try {
+                        roles?.close()
                         membership.close()
                         cluster.stop()
                     } finally {

@@ -212,6 +212,10 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
      */
     private lateinit var security: SystemGraphSecurity
 
+    /** The system graph component of roles and privileges. */
+    protected lateinit var securityComponent: DozenDbSecurityComponent
+        private set
+
     /** Neo4j Community's system graph components, then DozenDB's roles and privileges. */
     override fun registerSystemGraphComponents(
         builder: SystemGraphComponents.Builder,
@@ -219,10 +223,11 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     ) {
         val roles =
             DozenDbSecurityComponent(
-                globalModule.globalConfig,
-                globalModule.fileSystem,
-                globalModule.logService.internalLogProvider,
-            )
+                    globalModule.globalConfig,
+                    globalModule.fileSystem,
+                    globalModule.logService.internalLogProvider,
+                )
+                .also { securityComponent = it }
         // After Community's users, which the roles are given to.
         super.registerSystemGraphComponents(
             object : SystemGraphComponents.Builder() {
