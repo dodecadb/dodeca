@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import org.apache.ratis.proto.RaftProtos.RaftConfigurationProto
@@ -671,6 +672,17 @@ internal class GroupStateMachine(
         }
     }
 
+    private val snapshotCount = AtomicLong()
+    private val leaderChangeCount = AtomicLong()
+
+    /** Snapshots taken since this group started on this member. */
+    val snapshotsTaken: Long
+        get() = snapshotCount.get()
+
+    /** Leaders this member learned of since this group started on it. */
+    val leaderChanges: Long
+        get() = leaderChangeCount.get()
+
     /** Runs on the apply thread, between entries, when Ratis is asked for a snapshot. */
     override fun takeSnapshot(): Long {
         val candidateIndex = synchronized(this) { snapshotCandidate }
@@ -687,6 +699,7 @@ internal class GroupStateMachine(
         val written = SnapshotRecord(Snapshot(LogPosition(index, term), index), installed = false)
         SnapshotRecord.write(directory, written)
         stateLock.withLock { record = written }
+        snapshotCount.incrementAndGet()
         dropCoveredSeed()
         return index
     }
@@ -721,6 +734,7 @@ internal class GroupStateMachine(
         CompletableFuture.completedFuture(longMessage(lastAppliedTermIndex.index))
 
     override fun notifyLeaderChanged(groupMemberId: RaftGroupMemberId, newLeaderId: RaftPeerId?) {
+        if (newLeaderId != null) leaderChangeCount.incrementAndGet()
         listener.onGroupChanged(groupId)
         if (newLeaderId == groupMemberId.peerId && handsOverLeadership) {
             listener.onLeadingDetached(groupId)

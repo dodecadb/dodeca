@@ -25,6 +25,7 @@ import org.apache.ratis.conf.RaftProperties
 import org.apache.ratis.grpc.GrpcConfigKeys
 import org.apache.ratis.grpc.server.GrpcServices
 import org.apache.ratis.proto.RaftProtos.RaftPeerRole
+import org.apache.ratis.proto.RaftProtos.RoleInfoProto
 import org.apache.ratis.protocol.ClientId
 import org.apache.ratis.protocol.GroupManagementRequest
 import org.apache.ratis.protocol.Message
@@ -46,9 +47,11 @@ import org.apache.ratis.protocol.exceptions.ReconfigurationTimeoutException
 import org.apache.ratis.protocol.exceptions.ServerNotReadyException
 import org.apache.ratis.retry.ExceptionDependentRetry
 import org.apache.ratis.retry.RetryPolicies
+import org.apache.ratis.server.DivisionInfo
 import org.apache.ratis.server.RaftConfiguration
 import org.apache.ratis.server.RaftServer
 import org.apache.ratis.server.RaftServerConfigKeys
+import org.apache.ratis.server.raftlog.RaftLog
 import org.apache.ratis.server.storage.RaftStorage
 import org.apache.ratis.server.storage.RaftStorageDirectory
 import org.apache.ratis.thirdparty.com.google.protobuf.UnsafeByteOperations
@@ -61,6 +64,7 @@ import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupMembership
+import org.dozendb.consensus.GroupProgress
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
@@ -503,6 +507,56 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             throw ConsensusUnavailableException("read index of $database failed", reply.exception)
         }
         return GroupStateMachine.decodeLong(reply.message)
+    }
+
+    override fun progress(database: DatabaseRef): GroupProgress? {
+        val status = status(database)
+        if (status.role == Role.Inactive) return null
+        val division =
+            server?.let {
+                runCatching { it.getDivision(RaftGroupId.valueOf(database.id)) }.getOrNull()
+            } ?: return null
+        val raftLog = division.raftLog
+        val roleInfo = division.info.roleInfoProto
+        val leading = status.role == Role.Leader
+        val stateMachine = stateMachines[database.id]
+        return GroupProgress(
+            appendIndex = raftLog.lastEntryTermIndex?.index ?: RaftLog.INVALID_LOG_INDEX,
+            commitIndex = status.commitIndex,
+            appliedIndex = status.appliedIndex,
+            pruneIndex = raftLog.startIndex,
+            term = status.term,
+            leader = leading,
+            sinceLeaderContactMillis =
+                when {
+                    leading -> 0
+                    status.leader != null && roleInfo.hasFollowerInfo() ->
+                        roleInfo.followerInfo.leaderInfo.lastRpcElapsedTimeMs
+                    else -> null
+                },
+            followerMatchIndexes =
+                if (leading) followerMatchIndexes(roleInfo, division.info) else null,
+            snapshotsTaken = stateMachine?.snapshotsTaken ?: 0,
+            leaderChanges = stateMachine?.leaderChanges ?: 0,
+        )
+    }
+
+    /**
+     * The followers' match indexes on the leader. Ratis lists the followers and their match indexes
+     * in two passes over its log appenders: if the followers changed in between, the lists do not
+     * line up, and none are reported this time; nor when the member stopped leading meanwhile.
+     */
+    private fun followerMatchIndexes(
+        roleInfo: RoleInfoProto,
+        info: DivisionInfo,
+    ): Map<MemberId, Long>? {
+        if (!roleInfo.hasLeaderInfo()) return null
+        val followers = roleInfo.leaderInfo.followerInfoList.map { RaftPeerId.valueOf(it.id.id) }
+        val indexes = info.followerMatchIndices ?: return null
+        if (followers.size != indexes.size) return null
+        return followers.zip(indexes.asList()).associate { (peer, index) ->
+            memberId(peer) to index
+        }
     }
 
     override fun status(database: DatabaseRef): GroupStatus {

@@ -160,6 +160,9 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
     /** The local view of the group of [database]. */
     public fun status(database: DatabaseRef): GroupStatus
 
+    /** The local member's progress in the group of [database]; null when it does not run here. */
+    public fun progress(database: DatabaseRef): GroupProgress?
+
     /** The local member's role in the group of [database]. */
     public fun role(database: DatabaseRef): Role = status(database).role
 

@@ -91,6 +91,44 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `progress shows each member's indexes and the followers' on the leader`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val committed = (1..5).map { leader.write("entry-$it") as CommitResult.Committed }
+
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    val progress = leader.consensus.progress(cluster.database)!!
+                    assertThat(progress.leader).isTrue()
+                    assertThat(progress.sinceLeaderContactMillis).isZero()
+                    assertThat(progress.followerMatchIndexes!!.keys)
+                        .containsExactlyInAnyOrderElementsOf(
+                            cluster.nodes.filter { it != leader }.map { it.id }
+                        )
+                    assertThat(progress.followerMatchIndexes!!.values).allMatch {
+                        it >= committed.last().index
+                    }
+                    for (node in cluster.nodes) {
+                        val local = node.consensus.progress(cluster.database)!!
+                        assertThat(local.appliedIndex)
+                            .isGreaterThanOrEqualTo(committed.last().index)
+                        assertThat(local.appliedIndex).isLessThanOrEqualTo(local.commitIndex)
+                        assertThat(local.commitIndex).isLessThanOrEqualTo(local.appendIndex)
+                        assertThat(local.pruneIndex).isLessThanOrEqualTo(local.appendIndex)
+                        assertThat(local.term).isEqualTo(committed.last().term)
+                        assertThat(local.leaderChanges).isPositive()
+                    }
+                }
+            val follower =
+                cluster.nodes.first { it != leader }.consensus.progress(cluster.database)!!
+            assertThat(follower.leader).isFalse()
+            assertThat(follower.followerMatchIndexes).isNull()
+            assertThat(follower.sinceLeaderContactMillis).isNotNull().isLessThan(10_000)
+        }
+
+    @Test
     fun `the submitter receives the response of the leader's apply`() =
         runBlocking<Unit> {
             val cluster = formCluster()

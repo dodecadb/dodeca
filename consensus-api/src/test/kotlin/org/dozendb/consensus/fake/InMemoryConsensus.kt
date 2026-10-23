@@ -13,6 +13,7 @@ import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupMembership
+import org.dozendb.consensus.GroupProgress
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.LogEntry
@@ -428,6 +429,33 @@ class InMemoryConsensus {
                 stateMachine.lastAppliedIndex(),
             )
         }
+
+        override fun progress(database: DatabaseRef): GroupProgress? =
+            synchronized(lock) {
+                val status = statusLocked(database)
+                if (status.role == Role.Inactive) return@synchronized null
+                val group = group(database)
+                val leading = status.role == Role.Leader
+                GroupProgress(
+                    appendIndex = group.log.size.toLong(),
+                    commitIndex = status.commitIndex,
+                    appliedIndex = status.appliedIndex,
+                    pruneIndex = 1,
+                    term = status.term,
+                    leader = leading,
+                    sinceLeaderContactMillis = if (status.leader == null) null else 0,
+                    followerMatchIndexes =
+                        if (leading) {
+                            group.members
+                                .filter { it.id != self.id }
+                                .associate { it.id to group.log.size.toLong() }
+                        } else {
+                            null
+                        },
+                    snapshotsTaken = 0,
+                    leaderChanges = 0,
+                )
+            }
 
         override fun membership(database: DatabaseRef): GroupMembership =
             synchronized(lock) {
