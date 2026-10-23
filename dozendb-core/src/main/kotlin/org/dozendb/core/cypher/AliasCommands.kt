@@ -9,6 +9,9 @@ import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.administration.EnsureNodeExistsExecutionPlanner
 import org.neo4j.cypher.internal.administration.ShowAliasesExecutionPlanner
 import org.neo4j.cypher.internal.ast.DatabaseName
+import org.neo4j.cypher.internal.expressions.Expression
+import org.neo4j.cypher.internal.expressions.Parameter
+import org.neo4j.cypher.internal.logical.plans.AlterLocalDatabaseAlias
 import org.neo4j.cypher.internal.logical.plans.AssertNotBlockedDropAlias
 import org.neo4j.cypher.internal.logical.plans.AssertNotBlockedRemoteAliasManagement
 import org.neo4j.cypher.internal.logical.plans.CreateLocalDatabaseAlias
@@ -17,6 +20,7 @@ import org.neo4j.cypher.internal.logical.plans.EnsureDatabaseNodeExists
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.NameValidator
 import org.neo4j.cypher.internal.logical.plans.ShowAliases
+import org.neo4j.cypher.internal.procs.`Continue$`
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.PredicateExecutionPlan
 import org.neo4j.cypher.internal.procs.QueryHandler
@@ -47,6 +51,7 @@ import scala.Option
 import scala.PartialFunction
 import scala.Tuple2
 import scala.collection.immutable.`Set$`
+import scala.util.Either
 
 /**
  * CREATE, DROP and SHOW ALIASES for local aliases, which Neo4j Community leaves to Neo4j
@@ -79,6 +84,7 @@ internal class AliasCommands(
     private fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
             is CreateLocalDatabaseAlias -> Planner { createLocal(plan, compile(plan.source(), it)) }
+            is AlterLocalDatabaseAlias -> Planner { alterLocal(plan, compile(plan.source(), it)) }
             is DropDatabaseAlias -> Planner { drop(plan, compile(plan.source(), it)) }
             is ShowAliases ->
                 Planner {
@@ -191,24 +197,129 @@ internal class AliasCommands(
                         val name = text(params, alias.displayNameKey())
                         assertValidAliasName(name)
                         NameValidator.assertValidTargetName(text(params, target.displayNameKey()))
-                        val properties =
-                            AliasMapSettingsEvaluator(
-                                    (transaction as InternalTransaction)
-                                        .kernelTransaction()
-                                        .procedures()
-                                )
-                                .convertPropertiesMap(
+                        Tuple2(
+                            params.updatedWith(
+                                PROPERTIES_KEY,
+                                properties(
+                                    transaction,
                                     plan.properties(),
                                     params,
                                     "create the specified database alias '$name'",
-                                )
-                                .getOrElse { MapValue.EMPTY }
-                        Tuple2(
-                            params.updatedWith(PROPERTIES_KEY, properties),
+                                ),
+                            ),
                             `Set$`.`MODULE$`.empty<InternalNotification>(),
                         )
                     }
                 ),
+        )
+    }
+
+    /**
+     * Changes what the command gives of the alias, its target or its properties, all of which it
+     * replaces; the plans before checked that the alias and the new target exist. ALTER ALIAS
+     * without AT is local, so it cannot change the target of a remote alias, which would make it
+     * local, but can change its properties.
+     */
+    private fun alterLocal(plan: AlterLocalDatabaseAlias, source: ExecutionPlan): ExecutionPlan {
+        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName())
+        val target =
+            if (plan.targetName().isDefined) {
+                admin.getDatabaseNameFields("targetName", plan.targetName().get())
+            } else {
+                null
+            }
+        val aliasNames =
+            ParameterTransformer(
+                    ParameterTransformer.`$lessinit$greater$default$1`(),
+                    ParameterTransformer.`$lessinit$greater$default$2`(),
+                )
+                .convert(alias.nameConverter())
+                .convert(inRoot(alias.nameKey(), alias.namespaceKey()))
+        val names =
+            target?.let {
+                aliasNames
+                    .convert(it.nameConverter())
+                    .convert(inRoot(it.nameKey(), it.namespaceKey()))
+            } ?: aliasNames
+        val node =
+            "(alias:$DATABASE_NAME {${TopologyGraphDbmsModel.NAME_PROPERTY}: " +
+                "${parameter(alias.nameKey())}, ${TopologyGraphDbmsModel.NAMESPACE_PROPERTY}: " +
+                "${parameter(alias.namespaceKey())}, ${TopologyGraphDbmsModel.PRIMARY_PROPERTY}: " +
+                "false})"
+        val retarget =
+            target?.let {
+                """
+                WITH alias
+                MATCH (database:$DATABASE {${TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY}:
+                    ${parameter(it.displayNameKey())}})
+                OPTIONAL MATCH (alias)-[old:$TARGETS]->()
+                DELETE old
+                CREATE (alias)-[:$TARGETS]->(database)
+                """
+            } ?: ""
+        val properties =
+            if (plan.properties().isDefined) {
+                """
+                WITH alias
+                MERGE (alias)-[:$PROPERTIES]->(properties:$ALIAS_PROPERTIES)
+                SET properties = ${parameter(PROPERTIES_KEY)}
+                """
+            } else ""
+        val local =
+            if (target == null) {
+                source
+            } else {
+                updating(
+                    "EnsureAliasIsLocal",
+                    "MATCH $node RETURN alias:${TopologyGraphDbmsModel.REMOTE_DATABASE} AS remote",
+                    VirtualValues.map(alias.keys(), alias.values()),
+                    QueryHandler.handleResult(
+                        Function3 { _, remote, params ->
+                            if ((remote as BooleanValue).booleanValue()) {
+                                ThrowException(
+                                    InvalidArgumentException.alterLocalAliasToRemote(
+                                        show(plan.aliasName(), params)
+                                    )
+                                )
+                            } else {
+                                `Continue$`.`MODULE$`
+                            }
+                        }
+                    ),
+                    source,
+                    aliasNames,
+                )
+            }
+        return updating(
+            "AlterLocalDatabaseAlias",
+            "MATCH $node\n$retarget\n$properties\nRETURN alias.${TopologyGraphDbmsModel.NAME_PROPERTY} AS name",
+            VirtualValues.map(
+                alias.keys() + (target?.keys() ?: emptyArray()),
+                alias.values() + (target?.values() ?: emptyArray()),
+            ),
+            QueryHandler.handleError(
+                Function2 { error, params ->
+                    failed("ALTER ALIAS", "alter", show(plan.aliasName(), params), error)
+                }
+            ),
+            local,
+            names.validate(
+                Function2 { transaction, params ->
+                    Tuple2(
+                        params.updatedWith(
+                            PROPERTIES_KEY,
+                            properties(
+                                transaction,
+                                plan.properties(),
+                                params,
+                                "alter the specified database alias " +
+                                    "'${show(plan.aliasName(), params)}'",
+                            ),
+                        ),
+                        `Set$`.`MODULE$`.empty<InternalNotification>(),
+                    )
+                }
+            ),
         )
     }
 
@@ -244,6 +355,22 @@ internal class AliasCommands(
                 .convert(inRoot(alias.nameKey(), alias.namespaceKey())),
         )
     }
+
+    /**
+     * The [properties] of an alias, evaluated as Neo4j evaluates them, with lower-cased keys; none
+     * when not given. [operation] is what the error messages say failed.
+     */
+    private fun properties(
+        transaction: Transaction,
+        properties: Option<Either<scala.collection.immutable.Map<String, Expression>, Parameter>>,
+        params: MapValue,
+        operation: String,
+    ): MapValue =
+        AliasMapSettingsEvaluator(
+                (transaction as InternalTransaction).kernelTransaction().procedures()
+            )
+            .convertPropertiesMap(properties, params, operation)
+            .getOrElse { MapValue.EMPTY }
 
     /**
      * Neo4j's check of alias names, and the rules its documentation adds: names that begin with an

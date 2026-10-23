@@ -127,6 +127,7 @@ class AdministrationPlansTest {
                 "WaitForCompletion",
                 // Aliases
                 "CreateLocalDatabaseAlias",
+                "AlterLocalDatabaseAlias",
                 "DropDatabaseAlias",
                 "ShowAliases",
                 "EnsureDatabaseNodeExists",
@@ -159,7 +160,6 @@ class AdministrationPlansTest {
         val REFUSED =
             mapOf(
                 "CreateRemoteDatabaseAlias" to ALIASES,
-                "AlterLocalDatabaseAlias" to ALIASES,
                 "AlterRemoteDatabaseAlias" to ALIASES,
                 "EnsureAliasIsNotRemote" to ALIASES,
                 "EnableServer" to SERVERS,
@@ -179,7 +179,6 @@ class AdministrationPlansTest {
             listOf(
                 "CREATE ALIAS remote FOR DATABASE neo4j AT 'neo4j+s://example.com' " +
                     "USER alice PASSWORD 'alice-secret-1'",
-                "ALTER ALIAS films SET DATABASE TARGET neo4j",
                 "ALTER ALIAS remote SET DATABASE USER bob",
                 "ENABLE SERVER 'one'",
                 "ALTER SERVER 'one' SET OPTIONS {modeConstraint: 'NONE'}",
