@@ -18,6 +18,15 @@
       <artifactId>neo4j</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Metrics and their JMX beans; slf4j-api comes with Neo4j. -->
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-core</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.dropwizard.metrics</groupId>
+      <artifactId>metrics-jmx</artifactId>
+    </dependency>
 
     <!-- With its own Netty shaded: Neo4j's Netty is on the same classpath. -->
     <dependency>

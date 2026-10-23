@@ -13,8 +13,8 @@
   <name>DozenDB plugin</name>
   <description>
     DozenDB's entry point, which starts it with or without clustering, and the single jar installed
-    into Neo4j's lib/: the DozenDB modules, Apache Ratis, and Kotlin relocated under
-    org.dozendb.shaded.
+    into Neo4j's lib/: the DozenDB modules, Apache Ratis, and Kotlin and Dropwizard Metrics
+    relocated under org.dozendb.shaded.
   </description>
 
   <dependencies>
@@ -76,6 +76,8 @@
                   <include>org.apache.ratis:*</include>
                   <include>org.jetbrains.kotlin:kotlin-stdlib</include>
                   <include>org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm</include>
+                  <include>io.dropwizard.metrics:metrics-core</include>
+                  <include>io.dropwizard.metrics:metrics-jmx</include>
                 </includes>
               </artifactSet>
               <relocations>
@@ -86,6 +88,10 @@
                 <relocation>
                   <pattern>kotlinx</pattern>
                   <shadedPattern>org.dozendb.shaded.kotlinx</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.codahale.metrics</pattern>
+                  <shadedPattern>org.dozendb.shaded.com.codahale.metrics</shadedPattern>
                 </relocation>
               </relocations>
               <filters>

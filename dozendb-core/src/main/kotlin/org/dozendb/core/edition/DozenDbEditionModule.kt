@@ -16,6 +16,7 @@
  */
 package org.dozendb.core.edition
 
+import org.dozendb.core.monitoring.MetricsService
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityComponent
 import org.dozendb.core.security.DozenDbSecurityModule
@@ -136,6 +137,11 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 globalModule.logService.internalLogProvider,
             )
         databaseStateService = DozenDbDatabaseStateService(repository)
+        // Before the databases start, so that it sees them start.
+        MetricsService.create(globalModule, repository)?.let {
+            globalModule.globalLife.add(it)
+            globalModule.globalDependencies.satisfyDependency(it)
+        }
         globalModule.globalLife.add(manager.systemDatabaseStarter())
         globalModule.globalLife.add(manager.allDatabaseStopper())
         globalModule.globalDependencies.satisfyDependency(

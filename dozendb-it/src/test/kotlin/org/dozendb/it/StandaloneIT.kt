@@ -107,6 +107,12 @@ class StandaloneIT {
                 "server.dozendb.cluster.advertised_address",
                 "server.dozendb.cluster.raft_directory",
                 "server.dozendb.cluster.single_fsync",
+                "server.metrics.enabled",
+                "server.metrics.prefix",
+                "server.metrics.filter",
+                "server.metrics.jmx.enabled",
+                "server.metrics.prometheus.enabled",
+                "server.metrics.prometheus.endpoint",
             )
     }
 

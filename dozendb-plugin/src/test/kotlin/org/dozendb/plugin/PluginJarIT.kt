@@ -28,13 +28,19 @@ class PluginJarIT {
             }
 
     @Test
-    fun `Kotlin is relocated and nothing from Neo4j's classpath is bundled`() {
+    fun `Kotlin and Dropwizard Metrics are relocated and nothing from Neo4j's classpath is bundled`() {
         val classes = entries.filter { it.endsWith(".class") }
         val packages = classes.map { it.substringBeforeLast('/') }.toSet()
 
-        assertThat(packages.filter { it.startsWith("kotlin") }).isEmpty()
+        assertThat(packages.filter { it.startsWith("kotlin") || it.startsWith("com/codahale") })
+            .isEmpty()
         assertThat(packages)
-            .contains("org/dozendb/shaded/kotlin", "org/dozendb/shaded/kotlinx/coroutines")
+            .contains(
+                "org/dozendb/shaded/kotlin",
+                "org/dozendb/shaded/kotlinx/coroutines",
+                "org/dozendb/shaded/com/codahale/metrics",
+                "org/dozendb/shaded/com/codahale/metrics/jmx",
+            )
         assertThat(
                 packages.filter {
                     it.startsWith("org/slf4j") ||
@@ -53,6 +59,7 @@ class PluginJarIT {
         assertThat(services("org.neo4j.configuration.SettingsDeclaration"))
             .containsExactlyInAnyOrder(
                 "org.dozendb.core.DozenDbSettings",
+                "org.dozendb.core.monitoring.MetricsSettings",
                 "org.dozendb.cluster.internal.ClusterSettings",
                 "org.dozendb.backup.BackupSettings",
             )

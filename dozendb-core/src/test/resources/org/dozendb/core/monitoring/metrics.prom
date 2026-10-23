@@ -1,0 +1,44 @@
+# HELP neo4j_database_film_archive_2_db_query_execution_latency_millis neo4j.database.film.archive-2.db.query.execution.latency.millis: Query latency.
+# TYPE neo4j_database_film_archive_2_db_query_execution_latency_millis summary
+neo4j_database_film_archive_2_db_query_execution_latency_millis{quantile="0.5"} 3.0
+neo4j_database_film_archive_2_db_query_execution_latency_millis{quantile="0.75"} 5.0
+neo4j_database_film_archive_2_db_query_execution_latency_millis{quantile="0.95"} 5.0
+neo4j_database_film_archive_2_db_query_execution_latency_millis{quantile="0.98"} 5.0
+neo4j_database_film_archive_2_db_query_execution_latency_millis{quantile="0.99"} 5.0
+neo4j_database_film_archive_2_db_query_execution_latency_millis{quantile="0.999"} 5.0
+neo4j_database_film_archive_2_db_query_execution_latency_millis_sum 9
+neo4j_database_film_archive_2_db_query_execution_latency_millis_count 3
+# HELP neo4j_database_film_archive_2_transaction_committed_total neo4j.database.film.archive-2.transaction.committed: Committed transactions.
+# TYPE neo4j_database_film_archive_2_transaction_committed_total counter
+neo4j_database_film_archive_2_transaction_committed_total 7
+# HELP neo4j_database_films_transaction_tx_size_heap neo4j.database.films.transaction.tx_size_heap: Heap bytes per transaction.
+# TYPE neo4j_database_films_transaction_tx_size_heap summary
+neo4j_database_films_transaction_tx_size_heap{quantile="0.5"} NaN
+neo4j_database_films_transaction_tx_size_heap{quantile="0.75"} NaN
+neo4j_database_films_transaction_tx_size_heap{quantile="0.95"} NaN
+neo4j_database_films_transaction_tx_size_heap{quantile="0.98"} NaN
+neo4j_database_films_transaction_tx_size_heap{quantile="0.99"} NaN
+neo4j_database_films_transaction_tx_size_heap{quantile="0.999"} NaN
+neo4j_database_films_transaction_tx_size_heap_sum 0
+neo4j_database_films_transaction_tx_size_heap_count 0
+# HELP neo4j_database_my_db_store_size_total neo4j.database.my-db.store.size.total: Bytes of the database.
+# TYPE neo4j_database_my_db_store_size_total gauge
+neo4j_database_my_db_store_size_total 100
+# HELP neo4j_dbms_bolt_connections_opened_total neo4j.dbms.bolt.connections_opened: Bolt connections opened.
+# TYPE neo4j_dbms_bolt_connections_opened_total counter
+neo4j_dbms_bolt_connections_opened_total 3
+# HELP neo4j_dbms_help_escaping neo4j.dbms.help.escaping: Back\\slash and\nnewline.
+# TYPE neo4j_dbms_help_escaping gauge
+neo4j_dbms_help_escaping 1
+# HELP neo4j_dbms_page_cache_hit_ratio neo4j.dbms.page_cache.hit_ratio: Hit ratio.
+# TYPE neo4j_dbms_page_cache_hit_ratio gauge
+neo4j_dbms_page_cache_hit_ratio 0.25
+# HELP neo4j_dbms_page_cache_hits_total neo4j.dbms.page_cache.hits: Page hits.
+# TYPE neo4j_dbms_page_cache_hits_total counter
+neo4j_dbms_page_cache_hits_total 42
+# HELP neo4j_dbms_page_cache_usage_ratio neo4j.dbms.page_cache.usage_ratio: No pages yet.
+# TYPE neo4j_dbms_page_cache_usage_ratio gauge
+neo4j_dbms_page_cache_usage_ratio NaN
+# HELP neo4j_dbms_vm_heap_used neo4j.dbms.vm.heap.used: Bytes of heap in use.
+# TYPE neo4j_dbms_vm_heap_used gauge
+neo4j_dbms_vm_heap_used 1024

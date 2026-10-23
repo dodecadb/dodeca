@@ -26,3 +26,6 @@ LICENSE.apache-2.0.txt in the jar):
   jar's META-INF/NOTICE.
 - The Kotlin standard library and kotlinx.coroutines, relocated under
   org.dozendb.shaded.
+- Dropwizard Metrics (metrics-core and metrics-jmx), Copyright (c) 2010-2013
+  Coda Hale, Yammer.com, 2014-2021 Dropwizard Team, relocated under
+  org.dozendb.shaded.
