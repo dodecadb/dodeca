@@ -16,11 +16,15 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.driver.AuthToken
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
+import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.AuthenticationException
+import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.graphdb.Label
+import org.neo4j.graphdb.config.Setting
 
 /** User status, home databases and roles on every member, which learns of them through Raft. */
 class UsersTest {
@@ -42,6 +46,20 @@ class UsersTest {
     private fun ClusterHarness.Member.driver(user: String, password: String): Driver =
         GraphDatabase.driver("bolt://${boltAddress()}", AuthTokens.basic(user, password)).also {
             drivers += it
+        }
+
+    /** A routing driver, as cypher-shell and applications use, that starts at this member. */
+    private fun ClusterHarness.Member.routing(auth: AuthToken): Driver =
+        GraphDatabase.driver("neo4j://${boltAddress()}", auth).also { drivers += it }
+
+    /** The nodes in [database], read by a reader and then by the writer. */
+    private fun Driver.nodes(database: String): List<Long> =
+        session(SessionConfig.forDatabase(database)).use { session ->
+            val count = "MATCH (n) RETURN count(n) AS count"
+            listOf(
+                session.executeRead { it.run(count).single()["count"].asLong() },
+                session.executeWrite { it.run(count).single()["count"].asLong() },
+            )
         }
 
     /** The database a session without one uses for [user] on this member. */
@@ -196,6 +214,120 @@ class UsersTest {
         leader.start()
 
         eventually { assertThat(leader.roles()).isEqualTo(listOf("PUBLIC")) }
+    }
+
+    @Test
+    fun `a routing driver reaches the databases a user may access, on readers and the writer`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings =
+                        mapOf(
+                            GraphDatabaseSettings.auth_enabled to true,
+                            BoltConnector.enabled to true,
+                        ),
+                )
+                .also { harness = it }
+        cluster.start()
+        cluster.administer("CREATE DATABASE films")
+        cluster.awaitLeader("films").database("films").executeTransactionally("CREATE (:Movie)")
+        cluster.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+        cluster.administer("CREATE ROLE viewer")
+        cluster.administer("GRANT ROLE viewer TO alice")
+        val alice = cluster.members[0].routing(AuthTokens.basic("alice", "alice-secret-1"))
+
+        eventually { assertThat(alice.nodes("neo4j")).containsExactly(0, 0) }
+        val refused = catchThrowable { alice.nodes("films") }
+        assertThat(refused)
+            .isInstanceOf(ClientException::class.java)
+            .hasMessage(
+                "Database access is not allowed for user 'alice' with roles [PUBLIC, viewer]."
+            )
+
+        cluster.administer("GRANT ACCESS ON DATABASE films TO viewer")
+        cluster.administer("GRANT MATCH {*} ON GRAPH films TO viewer")
+
+        eventually { assertThat(alice.nodes("films")).containsExactly(1, 1) }
+
+        cluster.administer("DENY ACCESS ON DATABASE films TO viewer")
+
+        eventually {
+            assertThat(catchThrowable { alice.nodes("films") })
+                .isInstanceOf(ClientException::class.java)
+                .hasMessage(
+                    "Database access is not allowed for user 'alice' with roles [PUBLIC, viewer]."
+                )
+        }
+    }
+
+    @Test
+    fun `an admin locked out gets the role back with auth disabled on every member`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings =
+                        mapOf(
+                            GraphDatabaseSettings.auth_enabled to true,
+                            BoltConnector.enabled to true,
+                        ),
+                )
+                .also { harness = it }
+        cluster.start()
+        cluster.administer("ALTER USER neo4j SET PASSWORD 'neo4j-secret-1' CHANGE NOT REQUIRED")
+        cluster.administer("REVOKE ROLE admin FROM neo4j")
+        fun Driver.createUser(name: String) {
+            session(SessionConfig.forDatabase(SYSTEM)).use { session ->
+                session
+                    .run("CREATE USER $name SET PASSWORD '$name-secret-1' CHANGE NOT REQUIRED")
+                    .consume()
+            }
+        }
+        val locked = cluster.members[0].routing(AuthTokens.basic("neo4j", "neo4j-secret-1"))
+        eventually {
+            assertThat(catchThrowable { locked.createUser("bob") })
+                .isInstanceOf(ClientException::class.java)
+                .hasMessageStartingWith("Permission has not been granted for CREATE USER.")
+        }
+
+        // As the operations manual has it: auth disabled on every member, then the command on one.
+        fun restart(settings: Map<Setting<*>, Any>) {
+            drivers.forEach(Driver::close)
+            drivers.clear()
+            cluster.members.forEach(ClusterHarness.Member::stop)
+            cluster.members.forEach { it.settings = settings }
+            cluster.start()
+        }
+        restart(mapOf(GraphDatabaseSettings.auth_enabled to false))
+        val unauthenticated = cluster.members[0].routing(AuthTokens.none())
+        // Until the members have elected a system leader, there is no writer to route to.
+        eventually {
+            unauthenticated.session(SessionConfig.forDatabase(SYSTEM)).use {
+                it.run("GRANT ROLE admin TO neo4j").consume()
+            }
+        }
+        restart(emptyMap())
+
+        val admin = cluster.members[0].routing(AuthTokens.basic("neo4j", "neo4j-secret-1"))
+        eventually { admin.createUser("bob") }
+        for (member in cluster.members) {
+            eventually {
+                assertThat(member.homeOf("bob", "bob-secret-1")).isEqualTo("neo4j")
+                member
+                    .driver("neo4j", "neo4j-secret-1")
+                    .session(SessionConfig.forDatabase(SYSTEM))
+                    .use { session ->
+                        assertThat(
+                                session
+                                    .run("SHOW CURRENT USER YIELD roles")
+                                    .single()["roles"]
+                                    .asList()
+                            )
+                            .containsExactly("admin", "PUBLIC")
+                    }
+            }
+        }
     }
 
     private companion object {
