@@ -17,6 +17,7 @@ import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.AuthenticationException
 import org.neo4j.driver.exceptions.ClientException
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
 
 class UserCommandsTest {
     // Kept when a test fails, for the server's logs.
@@ -144,16 +145,26 @@ class UserCommandsTest {
 
     @Test
     fun `refuses external authentication, which DozenDB does not support`() {
-        assertThat(
-                catchThrowable {
-                    server.administer("CREATE USER alice SET AUTH 'oidc-sso' { SET ID 'alice' }")
-                }
-            )
+        val external = catchThrowable {
+            server.administer("CREATE USER alice SET AUTH 'oidc-sso' { SET ID 'alice' }")
+        }
+        assertThat(external)
             .hasMessage(
                 "Failed to create the specified user 'alice': `SET AUTH 'oidc-sso'` is not supported."
             )
+        assertThat(gqlStatusesOf(external)).contains("51N31")
         server.administer("CREATE USER bob SET PASSWORD 'bob-secret-1'")
-        assertThat(catchThrowable { server.administer("ALTER USER bob REMOVE AUTH 'native'") })
+        val remove = catchThrowable { server.administer("ALTER USER bob REMOVE AUTH 'native'") }
+        assertThat(remove)
             .hasMessage("Failed to alter the specified user 'bob': `REMOVE AUTH` is not supported.")
+        assertThat(gqlStatusesOf(remove)).contains("51N31")
     }
+
+    /** The GQL statuses of [error] and of its causes, outermost first. */
+    private fun gqlStatusesOf(error: Throwable): List<String> =
+        generateSequence(error) { it.cause }
+            .filterIsInstance<ErrorGqlStatusObject>()
+            .flatMap { status -> generateSequence(status) { it.cause().orElse(null) } }
+            .map { it.gqlStatus() }
+            .toList()
 }

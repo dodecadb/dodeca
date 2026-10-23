@@ -131,7 +131,7 @@ internal class UserCommands(
             return failure(source, "alter", plan.userName(), external(plan.externalAuths()))
         }
         if (!plan.removeAuth().isEmpty) {
-            return failure(source, "alter", plan.userName(), "`REMOVE AUTH` is")
+            return failure(source, "alter", plan.userName(), listOf("`REMOVE AUTH`"))
         }
         return admin.makeAlterUserExecutionPlan(
             plan.userName(),
@@ -149,28 +149,32 @@ internal class UserCommands(
         )
     }
 
-    private fun external(auths: Seq<ExternalAuth>): String =
-        CollectionConverters.asJava(auths).joinToString(", ") { "`SET AUTH '${it.provider()}'`" } +
-            if (auths.size() == 1) " is" else " are"
+    private fun external(auths: Seq<ExternalAuth>): List<String> =
+        CollectionConverters.asJava(auths).map { "`SET AUTH '${it.provider()}'`" }
 
-    /** Fails with "[what] not supported" once the [source] checks, such as privileges, passed. */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for unsupported features.
+    /**
+     * Fails with "[clauses] not supported" once the [source] checks, such as privileges, passed.
+     */
     private fun failure(
         source: ExecutionPlan,
         operation: String,
         userName: Either<String, Parameter>,
-        what: String,
-    ): ExecutionPlan =
-        PredicateExecutionPlan.apply(
+        clauses: List<String>,
+    ): ExecutionPlan {
+        val what = clauses.joinToString(", ")
+        return PredicateExecutionPlan.apply(
             Function2 { _, _ -> false },
             Option.apply(source),
             Function3 { params, _, _ ->
                 InvalidArgumentException(
+                    notSupported(what),
                     "Failed to $operation the specified user " +
-                        "'${admin.runtimeStringValue(userName, params)}': $what not supported."
+                        "'${admin.runtimeStringValue(userName, params)}': $what " +
+                        "${if (clauses.size == 1) "is" else "are"} not supported.",
                 )
             },
         )
+    }
 
     private fun showUsers(
         columns: ScalaList<LogicalVariable>,

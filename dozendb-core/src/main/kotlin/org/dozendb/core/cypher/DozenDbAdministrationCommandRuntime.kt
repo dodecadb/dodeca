@@ -91,7 +91,9 @@ import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseStatus
 import org.neo4j.exceptions.CantCompileQueryException
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlHelper
 import org.neo4j.gqlstatus.GqlParams
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.graphdb.Transaction
@@ -124,6 +126,13 @@ import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
 
 internal typealias Planner = Function1<AdministrationCommandRuntimeContext, ExecutionPlan>
+
+/** Neo4j's GQL status for a [feature] that DozenDB does not support. */
+internal fun notSupported(feature: String): ErrorGqlStatusObject =
+    ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_51N31)
+        .withParam(GqlParams.StringParam.item, feature)
+        .withParam(GqlParams.StringParam.context, "DozenDB")
+        .build()
 
 /**
  * Neo4j Community's administration commands, plus CREATE, DROP, START and STOP DATABASE, the role
@@ -299,13 +308,13 @@ private class DatabaseCommands(
         val source = compile(plan.source(), context)
         val databaseName = plan.databaseName()
         if (plan.isComposite) {
-            return failure(source) {
+            return failure(source, "Composite databases") {
                 "Failed to create the specified database '${show(databaseName, it)}': " +
                     "composite databases are not supported."
             }
         }
         if (plan.topology().isDefined) {
-            return failure(source) {
+            return failure(source, "TOPOLOGY") {
                 "Failed to create the specified database '${show(databaseName, it)}': " +
                     "TOPOLOGY is not supported."
             }
@@ -385,7 +394,7 @@ private class DatabaseCommands(
      * `existingDataSeedServer`, and refuses every other option rather than ignore it. Ignoring one
      * such as a seed would create an empty database instead of the expected data.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for unsupported options.
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for the refusals of seeds.
     private fun seedOptions(
         plan: CreateDatabase,
         name: String,
@@ -399,8 +408,9 @@ private class DatabaseCommands(
         val unsupported = keys.filter { key -> SUPPORTED_OPTIONS.none { it.equals(key, true) } }
         if (unsupported.isNotEmpty()) {
             throw InvalidArgumentException(
+                GqlHelper.getGql42001_22N04(unsupported.first(), "option", SUPPORTED_OPTIONS),
                 "$failed: unsupported option(s) ${unsupported.joinToString { "'$it'" }}. " +
-                    "DozenDB supports ${SUPPORTED_OPTIONS.joinToString { "'$it'" }}."
+                    "DozenDB supports ${SUPPORTED_OPTIONS.joinToString { "'$it'" }}.",
             )
         }
         val existingData = find(`ExistingDataOption$`.`MODULE$`, options) != null
@@ -473,7 +483,6 @@ private class DatabaseCommands(
         option.findIn(options, Option.apply(config), CREATE_DATABASE).getOrElse { null }
 
     /** The values of [options], evaluated as Neo4j evaluates the options of its commands. */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for this.
     private fun evaluate(options: Options, params: MapValue, version: CypherVersion): MapValue =
         when (options) {
             is OptionsMap -> {
@@ -487,8 +496,13 @@ private class DatabaseCommands(
             is OptionsParam ->
                 params.get(options.parameter().name()) as? MapValue
                     ?: throw InvalidArgumentException(
+                        GqlHelper.getGql22G03_22N27(
+                            params.get(options.parameter().name()).toString(),
+                            "OPTIONS",
+                            listOf("MAP"),
+                        ),
                         "Could not $CREATE_DATABASE with options " +
-                            "'${params.get(options.parameter().name())}'. Expected a map value."
+                            "'${params.get(options.parameter().name())}'. Expected a map value.",
                     )
             else -> MapValue.EMPTY
         }
@@ -505,7 +519,6 @@ private class DatabaseCommands(
     }
 
     /** Runs after the database was created, so the count includes it. */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for the database limit.
     private fun ensureValidNumberOfDatabases(
         plan: EnsureValidNumberOfDatabases,
         context: AdministrationCommandRuntimeContext,
@@ -522,9 +535,21 @@ private class DatabaseCommands(
                     } else {
                         ThrowException(
                             DatabaseLimitReachedException(
+                                ErrorGqlStatusObjectImplementation.from(
+                                        GqlStatusInfoCodes.STATUS_51N55
+                                    )
+                                    .withParam(
+                                        GqlParams.StringParam.db,
+                                        show(plan.source().databaseName(), params),
+                                    )
+                                    .withParam(
+                                        GqlParams.StringParam.cfgSetting,
+                                        DozenDbSettings.maxDatabases.name(),
+                                    )
+                                    .build(),
                                 "Failed to create the specified database " +
                                     "'${show(plan.source().databaseName(), params)}': " +
-                                    "there may be at most $limit databases, including system."
+                                    "there may be at most $limit databases, including system.",
                             )
                         )
                     }
@@ -539,14 +564,14 @@ private class DatabaseCommands(
      * database: it is created at startup, but only on the member that founds a cluster, so dropping
      * it would keep every other member from starting.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for this.
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for dropping the default database.
     private fun dropDatabase(
         plan: DropDatabase,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
         val databaseName = plan.databaseName()
         if (plan.additionalAction() == `DumpData$`.`MODULE$`) {
-            return failure(compile(plan.source(), context)) {
+            return failure(compile(plan.source(), context), "DUMP DATA") {
                 "Failed to delete the specified database '${show(databaseName, it)}': " +
                     "DUMP DATA is not supported."
             }
@@ -625,7 +650,6 @@ private class DatabaseCommands(
         )
     }
 
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for this.
     private fun ensureValidNonSystemDatabase(
         plan: EnsureValidNonSystemDatabase,
         context: AdministrationCommandRuntimeContext,
@@ -648,7 +672,12 @@ private class DatabaseCommands(
                         ) {
                             ThrowException(
                                 InvalidArgumentException(
-                                    "Not allowed to ${plan.action()} the system database."
+                                    ErrorGqlStatusObjectImplementation.from(
+                                            GqlStatusInfoCodes.STATUS_51N69
+                                        )
+                                        .withParam(GqlParams.StringParam.operation, plan.command())
+                                        .build(),
+                                    "Not allowed to ${plan.action()} the system database.",
                                 )
                             )
                         } else {
@@ -719,7 +748,7 @@ private class DatabaseCommands(
      * Checks that the target of the alias [aliasName] is a database other than `system`: an alias
      * cannot target another alias.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these.
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these targets.
     private fun ensureAliasTarget(
         plan: EnsureValidNonSystemDatabase,
         aliasName: DatabaseName,
@@ -834,13 +863,21 @@ private class DatabaseCommands(
             UpdatingSystemCommandExecutionPlan.`$lessinit$greater$default$11`(),
         )
 
-    /** Fails with [message] once the [source] checks, such as privileges, passed. */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for unsupported features.
-    private fun failure(source: ExecutionPlan, message: (MapValue) -> String): ExecutionPlan =
+    /**
+     * Fails with [message], that DozenDB does not support [feature], once the [source] checks, such
+     * as privileges, passed.
+     */
+    private fun failure(
+        source: ExecutionPlan,
+        feature: String,
+        message: (MapValue) -> String,
+    ): ExecutionPlan =
         PredicateExecutionPlan.apply(
             Function2 { _, _ -> false },
             Option.apply(source),
-            Function3 { params, _, _ -> InvalidArgumentException(message(params)) },
+            Function3 { params, _, _ ->
+                InvalidArgumentException(notSupported(feature), message(params))
+            },
         )
 
     private fun notFound(operation: String, databaseName: DatabaseName) =

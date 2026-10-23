@@ -10,6 +10,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.kernel.api.exceptions.Status
 
@@ -38,6 +39,14 @@ class DatabaseCommandsTest {
             .filterIsInstance<Status.HasStatus>()
             .firstOrNull()
             ?.status()
+
+    /** The GQL statuses of [error] and of its causes, outermost first. */
+    private fun gqlStatusesOf(error: Throwable): List<String> =
+        generateSequence(error) { it.cause }
+            .filterIsInstance<ErrorGqlStatusObject>()
+            .flatMap { status -> generateSequence(status) { it.cause().orElse(null) } }
+            .map { it.gqlStatus() }
+            .toList()
 
     private fun StandaloneServer.names(): List<String> =
         rows("SHOW DATABASES YIELD name", StandaloneServer.SYSTEM).map { it["name"] as String }
@@ -83,10 +92,11 @@ class DatabaseCommandsTest {
     fun `refuses to stop or drop system`() {
         val server = start()
 
-        assertThat(server.failure("STOP DATABASE system"))
-            .hasMessage("Not allowed to stop the system database.")
-        assertThat(server.failure("DROP DATABASE system"))
-            .hasMessage("Not allowed to delete the system database.")
+        for ((command, verb) in listOf("STOP" to "stop", "DROP" to "delete")) {
+            val error = server.failure("$command DATABASE system")
+            assertThat(error).hasMessage("Not allowed to $verb the system database.")
+            assertThat(gqlStatusesOf(error)).contains("51N69")
+        }
         assertThat(server.names()).contains("system")
     }
 
@@ -95,15 +105,19 @@ class DatabaseCommandsTest {
         val server = start()
         server.administer("CREATE DATABASE films")
 
-        assertThat(server.failure("CREATE COMPOSITE DATABASE catalog"))
+        val composite = server.failure("CREATE COMPOSITE DATABASE catalog")
+        assertThat(composite)
             .hasMessage(
                 "Failed to create the specified database 'catalog': " +
                     "composite databases are not supported."
             )
-        assertThat(server.failure("DROP DATABASE films DUMP DATA"))
+        assertThat(gqlStatusesOf(composite)).contains("51N31")
+        val dump = server.failure("DROP DATABASE films DUMP DATA")
+        assertThat(dump)
             .hasMessage(
                 "Failed to delete the specified database 'films': DUMP DATA is not supported."
             )
+        assertThat(gqlStatusesOf(dump)).contains("51N31")
         assertThat(server.names()).contains("films").doesNotContain("catalog")
     }
 
@@ -115,20 +129,32 @@ class DatabaseCommandsTest {
         // Seeds need DozenDB's backup module, which this server lacks.
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 's3://bucket/films'}"))
             .hasMessage("$failed: this server cannot create databases from seeds.")
-        assertThat(
-                catchThrowable {
-                    server.administer(
-                        "CREATE DATABASE films OPTIONS \$options",
-                        mapOf("options" to mapOf("storeFormat" to "block")),
-                    )
-                }
+        val option = catchThrowable {
+            server.administer(
+                "CREATE DATABASE films OPTIONS \$options",
+                mapOf("options" to mapOf("storeFormat" to "block")),
             )
+        }
+        assertThat(option)
             .hasMessage(
                 "$failed: unsupported option(s) 'storeFormat'. DozenDB supports 'existingData', " +
                     "'seedURI', 'existingDataSeedServer'."
             )
-        assertThat(server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY"))
-            .hasMessage("$failed: TOPOLOGY is not supported.")
+        assertThat(gqlStatusesOf(option)).contains("22N04")
+        val notAMap = catchThrowable {
+            server.administer(
+                "CREATE DATABASE films OPTIONS \$options",
+                mapOf("options" to "seedURI"),
+            )
+        }
+        assertThat(notAMap)
+            .hasMessage(
+                "Could not create database with options 'String(\"seedURI\")'. Expected a map value."
+            )
+        assertThat(gqlStatusesOf(notAMap)).contains("22N27")
+        val topology = server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY")
+        assertThat(topology).hasMessage("$failed: TOPOLOGY is not supported.")
+        assertThat(gqlStatusesOf(topology)).contains("51N31")
         assertThat(server.names()).doesNotContain("films")
 
         server.administer("CREATE DATABASE films OPTIONS {}")
@@ -201,6 +227,7 @@ class DatabaseCommandsTest {
 
         val error = server.failure("CREATE DATABASE series")
 
+        assertThat(gqlStatusesOf(error)).contains("51N55")
         assertThat(error)
             .hasMessage(
                 "Failed to create the specified database 'series': there may be at most 3 " +
