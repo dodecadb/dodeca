@@ -286,17 +286,6 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 override fun start() {
                     cluster.start()
                     membership.start()
-                    // The security component exists once the system graph components do.
-                    roles =
-                        RolesInitializer(
-                                consensus,
-                                systemDatabase,
-                                { databaseRepository.getSystemDatabaseContext().databaseFacade() },
-                                replication::readingSystem,
-                                securityComponent,
-                                logService.getInternalLog(RolesInitializer::class.java),
-                            )
-                            .also { it.start() }
                 }
 
                 override fun stop() {
@@ -370,6 +359,22 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             }
         }
 
+    /** Starts creating the roles of a cluster without them, once (see [RolesInitializer]). */
+    @Synchronized
+    private fun startRoles() {
+        if (roles != null) return
+        roles =
+            RolesInitializer(
+                    consensus,
+                    systemDatabase,
+                    { databaseRepository.getSystemDatabaseContext().databaseFacade() },
+                    replication::readingSystem,
+                    securityComponent,
+                    globalModule.logService.getInternalLog(RolesInitializer::class.java),
+                )
+                .also { it.start() }
+    }
+
     /** The members to copy a new database from, [creator] first. */
     private fun copySources(creator: MemberId): List<HostPort> =
         consensus
@@ -382,6 +387,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
      * Neo4j's system graph initialiser, run only by the member that founds the cluster: it writes
      * the first system graph with local transactions, after which the system database is
      * replicated. Every other member copies that system graph, and changes to it come through Raft.
+     * The roles of a cluster without them are looked after once this member's initialiser ran, so
+     * that a founder that leads does not create them while its initialiser does.
      */
     override fun registerDatabaseInitializers(
         globalModule: GlobalModule,
@@ -392,9 +399,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         val clusterInitializer =
             object : SystemGraphInitializer() {
                 override fun initializeSystemGraph() {
-                    if (!replication.systemBootstrapping) return
-                    initializer.start()
-                    replication.systemGraphInitialized()
+                    if (replication.systemBootstrapping) {
+                        initializer.start()
+                        replication.systemGraphInitialized()
+                    }
+                    startRoles()
                 }
             }
         globalModule.globalDependencies.satisfyDependency(clusterInitializer)
