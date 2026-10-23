@@ -1,12 +1,18 @@
 package org.dozendb.core
 
+import java.nio.file.Path
 import org.neo4j.configuration.Description
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.SettingConstraints.min
 import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BOOL
 import org.neo4j.configuration.SettingValueParsers.INT
+import org.neo4j.configuration.SettingValueParsers.PATH
+import org.neo4j.configuration.SettingValueParsers.SECURE_STRING
+import org.neo4j.configuration.SettingValueParsers.STRING
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.graphdb.config.Setting
+import org.neo4j.string.SecureString
 
 /**
  * DozenDB settings that apply with clustering enabled or disabled. Registered in
@@ -36,5 +42,34 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val logSuccessfulAuthentication: Setting<Boolean> =
             newBuilder("dbms.security.log_successful_authentication", BOOL, true).build()
+
+        @JvmField
+        @field:Description(
+            "The PKCS12 keystore holding the AES key that encrypts the passwords of remote " +
+                "database aliases, as an absolute path or relative to the home directory. " +
+                "Every member of a cluster needs the same key. Named like Neo4j Enterprise's " +
+                "setting."
+        )
+        val keystorePath: Setting<Path> =
+            newBuilder("dbms.security.keystore.path", PATH, null)
+                .setDependency(GraphDatabaseSettings.neo4j_home)
+                .dynamic()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The password of the keystore that dbms.security.keystore.path names, which also " +
+                "protects the key. Named like Neo4j Enterprise's setting."
+        )
+        val keystorePassword: Setting<SecureString> =
+            newBuilder("dbms.security.keystore.password", SECURE_STRING, null).dynamic().build()
+
+        @JvmField
+        @field:Description(
+            "The name of the AES key in the keystore that dbms.security.keystore.path names. " +
+                "Named like Neo4j Enterprise's setting."
+        )
+        val keyName: Setting<String> =
+            newBuilder("dbms.security.key.name", STRING, null).dynamic().build()
     }
 }

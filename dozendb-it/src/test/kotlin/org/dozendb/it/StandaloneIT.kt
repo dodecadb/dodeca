@@ -123,6 +123,9 @@ class StandaloneIT {
                 "server.metrics.prometheus.enabled",
                 "server.metrics.prometheus.endpoint",
                 "dbms.security.log_successful_authentication",
+                "dbms.security.keystore.path",
+                "dbms.security.keystore.password",
+                "dbms.security.key.name",
             )
     }
 
