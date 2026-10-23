@@ -152,14 +152,14 @@ class PrivilegeGenerator(private val random: Random, private val databases: List
             if (random.nextBoolean()) {
                 PatternSegment.ValuePatternSegment(
                     listOf(emptySet(), setOf("A"), setOf("A", "B")).random(random),
-                    "p",
+                    listOf("p", "q").random(random),
                     Values.intValue(random.nextInt(0, 3)),
                     PropertyRule.ComparisonOperator.entries.random(random),
                 )
             } else {
                 PatternSegment.NullPatternSegment(
                     listOf(emptySet(), setOf("B")).random(random),
-                    "p",
+                    listOf("p", "q").random(random),
                     PropertyRule.NullOperator.entries.random(random),
                 )
             }
