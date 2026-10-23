@@ -5,6 +5,7 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.stream.Stream
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowableOfType
 import org.dozendb.core.StandaloneServer
@@ -24,6 +25,7 @@ import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.procedure.Context
+import org.neo4j.procedure.Procedure
 import org.neo4j.procedure.UserFunction
 
 /**
@@ -64,7 +66,10 @@ class AdministrationPrivilegesTest {
             .database(SYSTEM)
             .dependencyResolver
             .resolveDependency(GlobalProcedures::class.java)
-            .registerFunction(Functions::class.java)
+            .apply {
+                registerFunction(Functions::class.java)
+                registerProcedure(Procedures::class.java)
+            }
         server.rows("CREATE (:A {p: 1})-[:R]->(:B {p: 2})")
         server.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
         server.administer("CREATE ROLE r")
@@ -83,6 +88,16 @@ class AdministrationPrivilegesTest {
         @Context lateinit var transaction: Transaction
 
         @UserFunction("test.nodes") fun nodes(): Long = transaction.allNodes.stream().count()
+    }
+
+    /** A procedure outside Neo4j's namespaces, as a plugin's are. */
+    class Procedures {
+        @Context lateinit var transaction: Transaction
+
+        class Count(@JvmField val count: Long)
+
+        @Procedure("test.count")
+        fun count(): Stream<Count> = Stream.of(Count(transaction.allNodes.stream().count()))
     }
 
     private fun driver(user: String, password: String): Driver =
@@ -254,6 +269,20 @@ class AdministrationPrivilegesTest {
 
         assertThat(alice.refused("CALL db.labels()"))
             .isEqualTo(denial("Executing procedure is not allowed"))
+    }
+
+    @Test
+    fun `PUBLIC narrowed as the operator guide shows executes only the procedures it lists`() {
+        grant("REVOKE EXECUTE PROCEDURE * ON DBMS FROM PUBLIC")
+        grant("GRANT EXECUTE PROCEDURE db.*, dbms.*, tx.* ON DBMS TO PUBLIC")
+
+        assertThat(alice.values("CALL db.labels() YIELD label")).isEmpty()
+        assertThat(alice.refused("CALL test.count()"))
+            .isEqualTo(denial("Executing procedure is not allowed"))
+
+        grant("GRANT EXECUTE PROCEDURE test.* ON DBMS TO r")
+
+        assertThat(alice.values("CALL test.count() YIELD count")).containsExactly(0L)
     }
 
     @Test
