@@ -515,6 +515,53 @@ class ServerSideRoutingTest {
     }
 
     @Test
+    fun `explicit transactions begin with BEGIN, also through a follower`() {
+        val leader = cluster.awaitLeader()
+        val warnings = { member: ClusterHarness.Member ->
+            Files.readAllLines(member.home.resolve("logs/debug.log")).count {
+                it.contains("Could not eagerly create kernel transaction")
+            }
+        }
+        val before = cluster.members.associateWith(warnings)
+
+        // As in Neo4j, it shows on the leader before its first query.
+        direct(leader).session(SessionConfig.forDatabase(NEO4J)).use { session ->
+            session
+                .beginTransaction(
+                    TransactionConfig.builder().withMetadata(mapOf("begun" to "idle")).build()
+                )
+                .use { tx ->
+                    await withPollInterval
+                        Duration.ofMillis(100) atMost
+                        ClusterHarness.AWAIT untilAsserted
+                        {
+                            assertThat(
+                                    count(
+                                        leader,
+                                        "SHOW TRANSACTIONS YIELD metaData " +
+                                            "WHERE metaData.begun = 'idle' RETURN count(*)",
+                                        SYSTEM,
+                                    )
+                                )
+                                .isEqualTo(1)
+                        }
+                    tx.run("CREATE (:Begun)").consume()
+                    tx.commit()
+                }
+        }
+        // Through a follower, it begins on the leader with its first query.
+        routing(follower()).session(SessionConfig.forDatabase(NEO4J)).use { session ->
+            session.beginTransaction().use { tx ->
+                tx.run("CREATE (:Begun)").consume()
+                tx.commit()
+            }
+        }
+
+        assertThat(count(leader, "MATCH (b:Begun) RETURN count(b)")).isEqualTo(2)
+        assertThat(cluster.members.associateWith(warnings)).isEqualTo(before)
+    }
+
+    @Test
     fun `transaction metadata reaches the leader`() {
         val leader = cluster.awaitLeader()
         val follower = follower()

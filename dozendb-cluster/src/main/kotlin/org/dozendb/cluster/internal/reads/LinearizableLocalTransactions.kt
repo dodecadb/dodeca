@@ -33,7 +33,8 @@ internal class LinearizableLocalTransactions(
         transactionInfo: TransactionInfo,
         bookmarkManager: TransactionBookmarkManager,
         terminationCallback: Consumer<Status>,
-        constituentTransactionFactory: ConstituentTransactionFactory,
+        // Null when Neo4j's query router begins the transaction with BEGIN, before any query.
+        constituentTransactionFactory: ConstituentTransactionFactory?,
     ): DatabaseTransaction {
         waits.await(transactionInfo, location.databaseReference().databaseId())
         return super.beginTransaction(

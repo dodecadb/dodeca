@@ -80,7 +80,8 @@ internal class RemoteTransactions(
         transactionInfo: TransactionInfo,
         bookmarkManager: TransactionBookmarkManager,
         terminationCallback: Consumer<Status>,
-        constituentTransactionFactory: ConstituentTransactionFactory,
+        // Null when Neo4j's query router begins the transaction with BEGIN, before any query.
+        constituentTransactionFactory: ConstituentTransactionFactory?,
     ): DatabaseTransaction {
         check(!closed) { "this member is shutting down" }
         val member =
