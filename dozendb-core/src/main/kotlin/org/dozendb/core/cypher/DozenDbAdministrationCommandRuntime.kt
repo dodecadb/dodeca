@@ -29,6 +29,7 @@ import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.SeedServers
+import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.security.PrivilegeRecords
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.common.DependencyResolver
@@ -171,6 +172,10 @@ private constructor(
         showPrivilegeCommands.compile = ::compile
     }
 
+    /** Where administration commands are logged; none with authentication disabled. */
+    private val securityLog: SecurityLog? =
+        dependencies.resolveTypeDependencies(SecurityLog::class.java).firstOrNull()
+
     override fun name(): String = "dozendb administration-commands"
 
     override fun compileToExecutable(
@@ -194,6 +199,11 @@ private constructor(
         plan: LogicalPlan,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
+        if (plan is LogSystemCommand) {
+            val source = compile(plan.source(), context)
+            return securityLog?.let { LoggedCommandExecutionPlan(source, plan.command(), it) }
+                ?: source
+        }
         if (!commands.isDefinedAt(plan)) {
             throw CantCompileQueryException(
                 "Plan is not a recognized database administration command: ${plan.javaClass.simpleName}"

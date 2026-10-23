@@ -115,6 +115,7 @@ class StandaloneIT {
                 "server.metrics.jmx.enabled",
                 "server.metrics.prometheus.enabled",
                 "server.metrics.prometheus.endpoint",
+                "dbms.security.log_successful_authentication",
             )
     }
 

@@ -16,8 +16,10 @@
  */
 package org.dozendb.core.edition
 
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.SettingsProcedures
 import org.dozendb.core.logging.QueryLog
+import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.monitoring.MetricsService
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityComponent
@@ -29,6 +31,7 @@ import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.CommunityKernelPanicListener
+import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DatabaseContextProviderDelegate
 import org.neo4j.dbms.database.DatabaseOperationCounts
@@ -56,7 +59,7 @@ import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.log4j.LoggerTarget
-import org.neo4j.server.security.auth.CommunitySecurityModule
+import org.neo4j.router.CommunityQueryRouterBootstrap
 
 /**
  * Neo4j Community's edition module with many databases, which follow the `Database` nodes of the
@@ -279,29 +282,63 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         defaultDatabaseResolver = resolver
     }
 
+    /** The security log, with authentication enabled. */
+    private val securityLog: SecurityLog? by lazy {
+        val config = globalModule.globalConfig
+        if (config.get(GraphDatabaseSettings.auth_enabled)) {
+            SecurityLog(
+                globalModule.logService.internalLogProvider.getLog(LoggerTarget.SECURITY_LOGGER),
+                config.get(DozenDbSettings.logSuccessfulAuthentication),
+            )
+        } else {
+            null
+        }
+    }
+
     /** Neo4j Community's, with logins that have the privileges of their users' roles. */
     override fun createSecurityModule(globalModule: GlobalModule) {
-        globalModule.globalDependencies.satisfyDependency(CommunitySecurityLog.NULL_LOG)
-        if (!globalModule.globalConfig.get(GraphDatabaseSettings.auth_enabled)) {
+        val log = securityLog
+        // For authorization failures; Community gives a log that writes nothing.
+        globalModule.globalDependencies.satisfyDependency(log ?: CommunitySecurityLog.NULL_LOG)
+        if (log == null) {
             setSecurityProvider(NoAuthSecurityProvider.INSTANCE)
             return
         }
+        globalModule.databaseEventListeners.registerDatabaseEventListener(
+            log.followSystemDatabase(databaseRepository)
+        )
         val module =
             DozenDbSecurityModule(
                 globalModule.logService,
                 globalModule.globalConfig,
                 globalModule.globalDependencies,
-                CommunitySecurityLog(
-                    globalModule.logService.internalLogProvider.getLog(
-                        CommunitySecurityModule::class.java
-                    )
-                ),
+                log,
                 security,
             ) {
                 defaultDatabaseResolver.defaultDatabase(it)
             }
         module.setup()
         setSecurityProvider(module)
+    }
+
+    /** Neo4j Community's query router, whose authorization failures go to the security log. */
+    override fun bootstrapQueryRouterServices(
+        databaseManagementService: DatabaseManagementService
+    ) {
+        val bootstrap =
+            CommunityQueryRouterBootstrap(
+                globalModule.globalLife,
+                globalModule.globalDependencies,
+                globalModule.logService,
+                globalModule.globalDependencies.resolveDependency(
+                    DatabaseContextProvider::class.java
+                ),
+                databaseReferenceRepo,
+                securityLog ?: CommunitySecurityLog.NULL_LOG,
+            )
+        globalModule.globalDependencies.satisfyDependency(
+            bootstrap.bootstrapServices(databaseManagementService)
+        )
     }
 
     /** Neo4j Community's procedures, and `dbms.setConfigValue`. */

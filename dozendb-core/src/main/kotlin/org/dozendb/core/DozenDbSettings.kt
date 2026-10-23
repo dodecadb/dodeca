@@ -28,5 +28,13 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val clusterEnabled: Setting<Boolean> =
             newBuilder("dbms.dozendb.cluster.enabled", BOOL, false).immutable().build()
+
+        @JvmField
+        @field:Description(
+            "Logs successful logins to the security log. When false, only failed logins are " +
+                "logged. Named like Neo4j Enterprise's setting."
+        )
+        val logSuccessfulAuthentication: Setting<Boolean> =
+            newBuilder("dbms.security.log_successful_authentication", BOOL, true).build()
     }
 }

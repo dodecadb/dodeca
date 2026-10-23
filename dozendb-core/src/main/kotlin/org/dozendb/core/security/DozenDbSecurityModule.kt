@@ -14,6 +14,7 @@
 package org.dozendb.core.security
 
 import java.util.UUID
+import org.dozendb.core.logging.SecurityLog
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -34,6 +35,7 @@ import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.kernel.api.security.AuthManager
+import org.neo4j.kernel.api.security.AuthToken
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.database.PrivilegeDatabaseReference
@@ -57,7 +59,7 @@ class DozenDbSecurityModule(
     private val logService: LogService,
     private val config: Config,
     private val dependencies: Dependencies,
-    private val securityLog: AbstractSecurityLog,
+    private val securityLog: SecurityLog,
     private val security: SystemGraphSecurity,
     private val defaultDatabase: (String) -> String,
 ) : CommunitySecurityModule(logService, config, dependencies, securityLog) {
@@ -93,7 +95,7 @@ class DozenDbSecurityModule(
         helper: SecurityGraphHelper,
         strategy: AuthenticationStrategy,
         private val security: SystemGraphSecurity,
-        private val securityLog: AbstractSecurityLog,
+        private val securityLog: SecurityLog,
         private val defaultDatabase: (String) -> String,
     ) : BasicSystemGraphRealm(helper, strategy) {
         override fun login(
@@ -101,21 +103,34 @@ class DozenDbSecurityModule(
             connectionInfo: ClientConnectionInfo,
         ): LoginContext {
             val login = super.login(authToken, connectionInfo)
-            val result = login.subject().authenticationResult
-            if (
-                result != AuthenticationResult.SUCCESS &&
-                    result != AuthenticationResult.PASSWORD_CHANGE_REQUIRED
-            ) {
-                return login
+            val user = authToken[AuthToken.PRINCIPAL] as? String ?: ""
+            when (login.subject().authenticationResult) {
+                AuthenticationResult.SUCCESS,
+                AuthenticationResult.PASSWORD_CHANGE_REQUIRED -> {}
+                AuthenticationResult.TOO_MANY_ATTEMPTS -> {
+                    securityLog.loginFailed(user, connectionInfo, "too many failed attempts")
+                    return login
+                }
+                else -> {
+                    securityLog.loginFailed(
+                        user,
+                        connectionInfo,
+                        "invalid principal or credentials",
+                    )
+                    return login
+                }
             }
             if (security.isSuspended(login.subject().executingUser())) {
+                securityLog.loginFailed(user, connectionInfo, "the user is suspended")
                 return BasicLoginContext(
                     null as User?,
                     AuthenticationResult.FAILURE,
                     connectionInfo,
                 )
             }
-            return DozenDbLoginContext(login, security, defaultDatabase)
+            return DozenDbLoginContext(login, security, defaultDatabase).also {
+                securityLog.loggedIn(it)
+            }
         }
 
         override fun impersonate(originalAuth: LoginContext, userToImpersonate: String) =
@@ -210,11 +225,12 @@ internal class DozenDbLoginContext(
                 graph.isSuspended(user) -> "Cannot impersonate user '$user': the user is suspended."
                 else ->
                     return DozenDbLoginContext(
-                        login,
-                        security,
-                        defaultDatabase,
-                        ImpersonatingSubject(subject(), user),
-                    )
+                            login,
+                            security,
+                            defaultDatabase,
+                            ImpersonatingSubject(subject(), user),
+                        )
+                        .also { (securityLog as? SecurityLog)?.impersonating(it, user) }
             }
         securityLog.error(this, "Impersonating user '$user' was refused: $refusal")
         throw AuthorizationViolationException.authorizationViolation(refusal)

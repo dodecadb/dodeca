@@ -2,6 +2,7 @@ package org.dozendb.cluster.internal
 
 import java.nio.file.Path
 import java.time.Duration
+import kotlin.io.path.readText
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
@@ -115,6 +116,40 @@ class UsersTest {
                     .isInstanceOf(AuthenticationException::class.java)
             }
         }
+    }
+
+    @Test
+    fun `the security log has the commands its member committed, not those a follower refused`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings =
+                        mapOf(
+                            GraphDatabaseSettings.auth_enabled to true,
+                            BoltConnector.enabled to true,
+                        ),
+                )
+                .also { harness = it }
+        cluster.start()
+        cluster.administer("ALTER USER neo4j SET PASSWORD 'admin-secret-1' CHANGE NOT REQUIRED")
+        val leader = cluster.awaitLeader(SYSTEM)
+        val follower = cluster.members.first { it != leader }
+        fun ClusterHarness.Member.admin(command: String) =
+            driver("neo4j", "admin-secret-1").session(SessionConfig.forDatabase(SYSTEM)).use {
+                it.run(command).consume()
+            }
+        fun ClusterHarness.Member.securityLog() = home.resolve("logs/security.log").readText()
+
+        // The follower applies the new password a moment after the leader.
+        eventually { follower.driver("neo4j", "admin-secret-1").verifyConnectivity() }
+        assertThat(catchThrowable { follower.admin("CREATE ROLE critic") }).isNotNull()
+        leader.admin("CREATE ROLE curator")
+
+        assertThat(follower.securityLog())
+            .contains("INFO  [neo4j]: logged in")
+            .doesNotContain("CREATE ROLE")
+        assertThat(leader.securityLog()).contains("INFO  [neo4j]: CREATE ROLE curator")
     }
 
     @Test
