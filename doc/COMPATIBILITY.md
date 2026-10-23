@@ -197,13 +197,94 @@ and status codes are Neo4j's where its documentation or code gives them.
   the privileges they started with. Administration commands that change
   nothing, such as a `GRANT` of a privilege the role has, may answer on a
   follower from its copy instead of failing with `NotALeader`.
-- **No security log yet.** Refused impersonations and privileges that cannot
-  be read are logged in `debug.log`; other refusals only reach the client.
+- **Refusals are logged in `security.log`**, as described under
+  [Metrics and logs](#metrics-and-logs), except refused `LOAD CSV` URLs,
+  which Neo4j Community's URL checks log in `debug.log`. Privileges that
+  cannot be read are logged in `debug.log`.
 - **What bypasses privileges in Neo4j Enterprise bypasses them here too**:
   procedures listed in `dbms.security.procedures.unrestricted` or run with
   `EXECUTE BOOSTED`, APOC triggers and other code that opens its own
   transactions, constraint violation messages that name existing values, and
   query plans estimated from counts.
+
+## Metrics and logs
+
+DozenDB reports metrics and writes the query log and the security log as
+Neo4j Enterprise's operations manual describes them, from that documentation
+alone; Neo4j Community declares the query log settings and ships the log
+files' configuration, but writes neither log. `OPERATOR_GUIDE.md` describes
+how to use them.
+
+- **Exporters:** Prometheus and JMX (domain `neo4j.metrics`). The CSV and
+  Graphite settings (`server.metrics.csv.*`, `server.metrics.graphite.*`) are
+  not declared, so a configuration that names them is refused at startup
+  with "Unrecognized setting" instead of being ignored. Neo4j Community
+  refuses the `server.metrics.*` settings the same way.
+- **Names** are Enterprise's, `<prefix>.dbms.<name>` and
+  `<prefix>.database.<database>.<name>`, with its settings and default filter.
+  Metrics Enterprise does not have are named under a `dozendb` segment, such
+  as `dozendb.cluster.raft.follower_lag_max`. Enterprise's exact Prometheus
+  output is not documented; DozenDB's replaces characters other than letters,
+  digits and `_` with `_`, adds `_total` to counters, reports histograms as
+  summaries (quantiles 0.5 to 0.999, `_sum`, `_count`), and starts each
+  family's `# HELP` with the dotted name. Database names that differ only in
+  such characters, such as `my-db` and `my_db`, give the same Prometheus
+  names: the second family is left out and a warning logged. Prometheus's
+  `promtool check metrics` reads the output and flags only gauges whose
+  Enterprise names end like counters or summaries: `store.size.total`,
+  `vm.file.descriptors.count` and `vm.memory.buffer.<pool>.count`.
+- **Metrics without a source in Neo4j Community or DozenDB** are not
+  reported: `server.threads.jetty.*`, `cluster.discovery.*` and
+  `cluster.internal.discovery.*`, Enterprise's Raft internals
+  (`cluster.raft.tx_retries`, `in_flight_cache.*`,
+  `raft_log_entry_prefetch_buffer.*`, `message_processing_*`),
+  `cluster.catchup.*` and `cluster.store_copy.*` of Enterprise's catch-up
+  protocol (DozenDB's copies are counted under `dozendb.cluster.store_copy`),
+  the pipelined and parallel runtimes' metrics, Cypher's `compiled` counts and
+  `bolt.accumulated_queue_time`. Followers are reported together on the
+  leader (`dozendb.cluster.raft.followers`, `follower_lag_max`), not one
+  series each.
+- **The query log is on by default**, at Neo4j's declared default
+  `db.logs.query.enabled=VERBOSE`: every member logs the start and end of
+  every query with its parameters, rotated by the shipped `server-logs.xml`
+  (7 files of 20 MB). A server moving from Neo4j Community or DozerDB starts
+  writing `query.log`, which costs up to 12% of the throughput of trivial
+  queries (`OPERATOR_GUIDE.md`). Set `INFO` with a
+  `db.logs.query.threshold`, or `OFF`, to log less.
+- **Query log lines** follow the documented fields, their order and the JSON
+  field names. Neo4j does not document the rest, which DozenDB defines:
+  - `Query started: ` before start lines; `id:<n> - ` only with `VERBOSE`;
+    then `transaction id:<n> - <ms> ms: (planning: <ms>[, cpu: <ms>],
+    waiting: <ms>) - <bytes> B - <hits> page hits, <faults> page faults -
+    <source>\t<database> - <user> - <query>[ - <parameters>] -
+    runtime=<runtime> - <annotation data>[ - <failure>]`, with the plan
+    description on the following lines when enabled.
+  - Failures are logged at `ERROR` with the message on one line, or with
+    `obfuscate_errors` only the status code and GQLSTATUS; the rest at
+    `INFO`.
+  - The user is the executing user, `<authenticated>:<executing>` when
+    impersonating, as in the security log.
+  - Parameters are a Cypher map (`{name: 'Tom', n: 1}`), each value cut to
+    `max_parameter_length` characters followed by `...`.
+  - A query that cannot be parsed is logged with its string literals masked,
+    or without its text and parameters with `obfuscate_literals`, so that a
+    mistyped command never logs a password.
+  - Transaction lines: `Transaction started: transaction id:<n> - <database>
+    - <user>`, `Transaction committed: transaction id:<n> - <ms> ms -
+    <database> - <user>`, and `Transaction rolled back: ...` with the
+    failure.
+  - JSON lines list their fields in alphabetical order after `time` and
+    `level`.
+- **The security log** has logins (`dbms.security.log_successful_authentication`
+  leaves out successful ones), failed logins with the reason, refused
+  privileges and impersonations, and administration commands that changed
+  something, with passwords hidden. A command is logged once its transaction
+  commits, on the member where it committed: with clustering, the leader of
+  `system`. A command that changed nothing, such as `CREATE ROLE ... IF NOT
+  EXISTS` for a role that exists, is not logged.
+- **`dbms.setConfigValue`** changes a dynamic setting as in Neo4j
+  Enterprise: for administrators, on the member it runs on, until that
+  member restarts. Neo4j Community has no such procedure.
 
 ## Clustering limitations
 

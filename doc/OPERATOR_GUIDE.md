@@ -460,3 +460,123 @@ Move them as commands instead, in either direction:
    Commands about databases or features the new servers lack fail and can
    be left out.
 
+
+## Monitoring
+
+DozenDB reports metrics, and writes the query log and the security log, as
+Neo4j Enterprise's operations manual describes them; `COMPATIBILITY.md` lists
+the differences. With clustering, each member reports and logs what happens
+on it: monitor every member.
+
+### Metrics
+
+Metrics are on by default and reported over JMX. For Prometheus, enable the
+endpoint on every member, on an address Prometheus reaches (the default,
+`localhost:2004`, serves only the member's own host):
+
+```
+server.metrics.prometheus.enabled=true
+server.metrics.prometheus.endpoint=0.0.0.0:2004
+```
+
+In Neo4j's Docker image, set `NEO4J_server_metrics_prometheus_enabled=true`
+and `NEO4J_server_metrics_prometheus_endpoint=0.0.0.0:2004`, and publish port
+2004. Prometheus scrapes `http://<member>:2004/metrics`.
+
+| Setting | Default | |
+|---|---|---|
+| `server.metrics.enabled` | `true` | `false` reports no metrics at all. |
+| `server.metrics.prefix` | `neo4j` | The start of every name. |
+| `server.metrics.filter` | Neo4j Enterprise's list | Globs of the names reported; `*` reports every metric. |
+| `server.metrics.jmx.enabled` | `true` | MBeans in the domain `neo4j.metrics`, also read by `CALL dbms.queryJmx('neo4j.metrics:*')`. |
+| `server.metrics.prometheus.enabled` | `false` | |
+| `server.metrics.prometheus.endpoint` | `localhost:2004` | |
+
+Names are Neo4j Enterprise's: `neo4j.dbms.<name>` for the server and
+`neo4j.database.<database>.<name>` for each database, such as
+`neo4j.database.neo4j.transaction.committed`. In Prometheus, characters other
+than letters, digits and `_` become `_`, counters end in `_total`, and
+histograms are summaries with quantiles, `_sum` and `_count`:
+`neo4j_database_neo4j_transaction_committed_total`. A database's series
+appear when it starts and go when it stops or is dropped. Metrics that only
+DozenDB has carry `dozendb` in their names.
+
+A filter replaces the default list rather than adding to it. To report more,
+repeat the default, which
+`SHOW SETTINGS YIELD name, defaultValue WHERE name = 'server.metrics.filter'`
+shows, and append globs such as `*cluster.raft.*,*dozendb.cluster.*`.
+
+With clustering, each member reports for each database, under
+`neo4j.database.<database>.`:
+
+| Metric | |
+|---|---|
+| `cluster.raft.is_leader` | 1 on the member that leads the database and takes its writes, else 0. The sum over the members should be 1; alert when it stays otherwise. |
+| `cluster.raft.append_index`, `commit_index`, `applied_index`, `prune_index`, `term` | The member's Raft log: its last entry, the last entry known committed, the last applied to the database, and the first still kept. |
+| `cluster.raft.last_leader_message` | Milliseconds since the member last heard from the leader; 0 on the leader. |
+| `cluster.raft.replication_new`, `replication_attempt`, `replication_success`, `replication_fail`, `replication_maybe` | Transactions the member asked Raft to replicate, and their outcomes. `replication_maybe` counts transactions whose outcome the client did not learn, as when the leader changes during the commit. |
+| `dozendb.cluster.replication.latency.millis` | Milliseconds from asking Raft to replicate a transaction until it was applied. |
+| `dozendb.cluster.raft.followers`, `follower_lag_max` | On the leader only: the followers it sends to, and the most committed entries one of them does not have yet. A lag that keeps growing means a follower does not keep up. |
+| `dozendb.cluster.raft.snapshots`, `leader_changes` | Raft snapshots taken and leaders learned of since the member started. |
+| `dozendb.cluster.store_copy.received`, `served`, `repeated`, `received.millis` | Copies of the database the member installed, to join or to catch up; copies it sent to other members; copies it needed within an hour of the previous one, a sign that it does not keep up (see "Raft log retention and catch-up" in `COMPATIBILITY.md`); and how long catching up took. |
+
+The server reports `neo4j.dbms.dozendb.cluster.members`, the voting members
+as the member knows them.
+
+### Query log
+
+Every member writes `logs/query.log`, as `conf/server-logs.xml` configures it:
+seven files of 20 MB. At the default level, `db.logs.query.enabled=VERBOSE`,
+it logs the start and the end of every query, with its parameters. `INFO`
+logs the end of queries that took at least `db.logs.query.threshold`
+(default `0s`, every query), and `OFF` logs nothing. The other
+`db.logs.query.*` settings work as Neo4j documents them, for example
+`db.logs.query.parameter_logging_enabled=false` to leave parameters out, or
+`db.logs.query.obfuscate_literals=true` to hide the literals in query text.
+Passwords never appear: Neo4j hides them in administration commands, and a
+query that cannot be parsed is logged with its string literals masked.
+
+Logging costs time on every query. In a benchmark of trivial queries over
+Bolt, which shows the cost the most, `VERBOSE` served 8% fewer queries per
+second than `OFF` from one client and 12% fewer from eight, and raised the
+99th percentile latency from 0.26 to 0.29 ms; `INFO`, with the default
+threshold, served 2 to 3% fewer. Small write transactions, which wait for the
+disk, lost less than 5%. Metrics cost less than the variation between runs,
+and a scrape of every metric of a server with 102 databases, about 14,000
+series, took 16 ms and 3 MB, or 180 kB compressed as Prometheus asks for it.
+`MonitoringBenchmark` in `dozendb-core` measures this.
+
+For JSON lines, use Neo4j's layout in the `QueryLog` appender of
+`conf/server-logs.xml`, in place of its `PatternLayout`:
+
+```
+<JsonTemplateLayout eventTemplateUri="classpath:org/neo4j/logging/QueryLogJsonLayout.json"/>
+```
+
+### Security log
+
+Every member writes `logs/security.log`:
+
+- logins (`[alice]: logged in`), unless
+  `dbms.security.log_successful_authentication=false`, and failed logins with
+  the reason (`[alice]: failed to log in: invalid principal or credentials`);
+- administration commands that changed something, with passwords hidden
+  (`[neo4j]: CREATE USER bob SET PASSWORD '******' CHANGE REQUIRED`), on the
+  member where they committed: with clustering, the leader of `system`;
+- privileges refused and impersonation, with the user, as
+  `[alice:bob]: impersonating user bob logged in` when `alice`
+  impersonates `bob`.
+
+For JSON lines, use
+`<JsonTemplateLayout eventTemplateUri="classpath:org/neo4j/logging/StructuredJsonLayout.json"/>`
+in the `SecurityLog` appender.
+
+### Changing settings while running
+
+`CALL dbms.setConfigValue('db.logs.query.enabled', 'INFO')` changes a
+dynamic setting at once, until the member restarts; an empty value restores
+the default. It needs the `admin` role and changes only the member it runs
+on: with clustering, run it on each member, connecting to each directly
+(`bolt://`), and change `neo4j.conf` too so that the change outlasts a
+restart. `SHOW SETTINGS YIELD name, isDynamic WHERE isDynamic` lists the
+dynamic settings.
