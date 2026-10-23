@@ -33,13 +33,6 @@
       <artifactId>awaitility-kotlin</artifactId>
       <scope>test</scope>
     </dependency>
-    <!-- With its own Netty shaded: Neo4j's Netty is on the same classpath. -->
-    <dependency>
-      <groupId>org.neo4j.driver</groupId>
-      <artifactId>neo4j-java-driver-all</artifactId>
-      <version>${neo4j-java-driver.version}</version>
-      <scope>test</scope>
-    </dependency>
   </dependencies>
   <build>
     <resources>
