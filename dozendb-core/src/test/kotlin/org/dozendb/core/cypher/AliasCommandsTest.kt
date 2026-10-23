@@ -12,6 +12,7 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
@@ -74,6 +75,8 @@ class AliasCommandsTest {
         ) {
             "$cypher succeeded"
         }
+
+    private val titles = "MATCH (f:Film) RETURN f.title AS title"
 
     private fun aliases(): List<Map<String, Any?>> =
         admin.run("SHOW ALIASES FOR DATABASE YIELD * RETURN *")
@@ -246,6 +249,81 @@ class AliasCommandsTest {
     }
 
     @Test
+    fun `refuses to drop a database that aliases target, unless told to drop them too`() {
+        admin.run("CREATE ALIAS movies FOR DATABASE films")
+        admin.run("CREATE ALIAS classics FOR DATABASE films PROPERTIES {rating: 5}")
+        admin.run("CREATE ALIAS home FOR DATABASE neo4j")
+
+        for (command in
+            listOf(
+                "DROP DATABASE films",
+                "DROP DATABASE films IF EXISTS",
+                "CREATE OR REPLACE DATABASE films",
+            )) {
+            val error = admin.refused(command)
+            assertThat(error)
+                .describedAs(command)
+                .hasMessage(
+                    "Failed to delete the specified database 'films': Database has aliases " +
+                        "'classics', 'movies'. Drop them before the database, or drop the " +
+                        "database with CASCADE ALIASES."
+                )
+            assertThat(error.code()).isEqualTo("Neo.ClientError.Database.ExistingAliasFound")
+            assertThat(error.gqlStatus()).isEqualTo("42N82")
+        }
+        assertThat(admin.run(titles, database = "films")).isNotEmpty()
+
+        admin.run("DROP DATABASE films CASCADE ALIASES")
+
+        assertThat(aliases().map { it["name"] to it["database"] })
+            .containsExactly("home" to "neo4j")
+        assertThat(admin.run("SHOW DATABASES YIELD name").map { it["name"] })
+            .containsExactlyInAnyOrder("neo4j", "system")
+        // Nothing of the aliases is left in the system graph.
+        server.database(SYSTEM).beginTx().use { tx ->
+            val names = tx.findNodes(TopologyGraphDbmsModel.DATABASE_NAME_LABEL).stream().toList()
+            assertThat(
+                    names.filter {
+                        !it.hasRelationship(TopologyGraphDbmsModel.TARGETS_RELATIONSHIP)
+                    }
+                )
+                .isEmpty()
+            assertThat(tx.findNodes(TopologyGraphDbmsModel.ALIAS_PROPERTIES_LABEL).stream().count())
+                .isEqualTo(1L)
+        }
+        admin.run("CREATE DATABASE films WAIT")
+        admin.run("CREATE ALIAS movies FOR DATABASE films")
+        assertThat(admin.run(titles, database = "movies")).isEmpty()
+    }
+
+    @Test
+    fun `refuses database names that aliases have`() {
+        admin.run("CREATE ALIAS movies FOR DATABASE films")
+
+        for (command in listOf("CREATE DATABASE movies", "CREATE OR REPLACE DATABASE movies")) {
+            val error = admin.refused(command)
+            assertThat(error)
+                .describedAs(command)
+                .hasMessage(
+                    "Failed to create the specified database 'movies': A database alias with " +
+                        "that name already exists."
+                )
+            assertThat(error.code()).isEqualTo("Neo.ClientError.Database.ExistingDatabaseFound")
+            assertThat(error.gqlStatus()).isEqualTo("42N11")
+        }
+        val exists = admin.refused("CREATE DATABASE films")
+        assertThat(exists)
+            .hasMessage("Failed to create the specified database 'films': Database already exists.")
+        assertThat(exists.gqlStatus()).isEqualTo("42N11")
+        admin.run("CREATE DATABASE movies IF NOT EXISTS")
+
+        assertThat(admin.run("SHOW DATABASES YIELD name").map { it["name"] })
+            .doesNotContain("movies")
+        assertThat(aliases().map { it["name"] to it["database"] })
+            .containsExactly("movies" to "films")
+    }
+
+    @Test
     fun `refuses names that are taken, and aliases that do not exist`() {
         admin.run("CREATE ALIAS movies FOR DATABASE films")
 
@@ -411,6 +489,11 @@ class AliasCommandsTest {
         admin.run("GRANT SHOW ALIAS ON DBMS TO curator")
         assertThat(alice.run("SHOW ALIASES FOR DATABASE").map { it["name"] to it["database"] })
             .containsExactlyInAnyOrder("home" to "neo4j", "movies" to null)
+
+        // Dropping a database with its aliases takes dropping aliases too.
+        admin.run("GRANT DROP DATABASE ON DBMS TO curator")
+        assertThat(alice.refused("DROP DATABASE films CASCADE ALIASES"))
+            .hasMessageStartingWith("Permission has not been granted for DROP ALIAS.")
 
         admin.run("GRANT ALIAS MANAGEMENT ON DBMS TO curator")
         alice.run("DROP ALIAS movies FOR DATABASE")

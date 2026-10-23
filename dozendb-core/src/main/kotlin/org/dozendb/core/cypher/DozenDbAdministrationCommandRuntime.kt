@@ -17,6 +17,8 @@
  * 2026-10-23: the role commands of RoleCommands, the privilege commands of PrivilegeCommands and
  * ShowPrivilegeCommands are added, and DROP DATABASE drops the privileges on the database.
  * 2026-10-24: the alias commands of AliasCommands are added, and the targets of aliases checked.
+ * DROP DATABASE refuses to drop a database that local aliases target unless CASCADE ALIASES drops
+ * them too, and drops only the names of the database, not those of other databases or aliases.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -46,6 +48,7 @@ import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.LogicalQuery
 import org.neo4j.cypher.internal.RuntimeContext
 import org.neo4j.cypher.internal.ast.AdministrationAction
+import org.neo4j.cypher.internal.ast.`CascadeAliases$`
 import org.neo4j.cypher.internal.ast.DatabaseName
 import org.neo4j.cypher.internal.ast.`DumpData$`
 import org.neo4j.cypher.internal.ast.`IfExistsReplace$`
@@ -80,7 +83,7 @@ import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.QueryHandlerResult
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
-import org.neo4j.dbms.api.DatabaseExistsException
+import org.neo4j.dbms.api.DatabaseAliasExistsException
 import org.neo4j.dbms.api.DatabaseLimitReachedException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
@@ -88,6 +91,9 @@ import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseStatus
 import org.neo4j.exceptions.CantCompileQueryException
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlParams
+import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.AdminActionOnResource
@@ -103,6 +109,7 @@ import org.neo4j.kernel.impl.query.TransactionalContext
 import org.neo4j.values.storable.LongValue
 import org.neo4j.values.storable.TextValue
 import org.neo4j.values.storable.Values
+import org.neo4j.values.virtual.ListValue
 import org.neo4j.values.virtual.MapValue
 import org.neo4j.values.virtual.MapValueBuilder
 import org.neo4j.values.virtual.VirtualValues
@@ -268,10 +275,9 @@ private class DatabaseCommands(
                         Function3 { _, _, _ -> IllegalStateException("Unreachable") },
                     )
                 }
-            // There are neither composite databases nor aliases that could make a name ambiguous
-            // or a database unsafe to delete.
+            // There are no composite databases that could make a name ambiguous.
             is EnsureNameIsNotAmbiguous -> Planner { compile(plan.source(), it) }
-            is EnsureDatabaseSafeToDelete -> Planner { compile(plan.source(), it) }
+            is EnsureDatabaseSafeToDelete -> Planner { ensureSafeToDelete(plan, it) }
             is WaitForCompletion ->
                 Planner { context ->
                     WaitExecutionPlan(
@@ -286,7 +292,6 @@ private class DatabaseCommands(
             else -> null
         }
 
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for an existing database.
     private fun createDatabase(
         plan: CreateDatabase,
         context: AdministrationCommandRuntimeContext,
@@ -307,6 +312,17 @@ private class DatabaseCommands(
         }
         val name = admin.getNameFields("databaseName", databaseName, Function1(::validName))
         val key = parameter(name.nameKey())
+        val free =
+            ensureNameFree(
+                engine,
+                authorization,
+                "database",
+                name.nameKey(),
+                VirtualValues.map(arrayOf(name.nameKey()), arrayOf(name.nameValue())),
+                transformer().convert(name.nameConverter()),
+                { show(databaseName, it) },
+                source,
+            )
         val version = context.runtimeContext().cypherVersion()
         val seed =
             Function2<Transaction, MapValue, MapValue> { _, params ->
@@ -347,16 +363,18 @@ private class DatabaseCommands(
             QueryHandler.handleError(
                 Function2 { error, params ->
                     if (hasStatus(error, Status.Schema.ConstraintValidationFailed)) {
-                        DatabaseExistsException(
+                        nameTaken(
                             "Failed to create the specified database " +
-                                "'${show(databaseName, params)}': Database already exists."
+                                "'${show(databaseName, params)}': Database already exists.",
+                            show(databaseName, params),
+                            error,
                         )
                     } else {
                         failed("CREATE DATABASE", "create", show(databaseName, params), error)
                     }
                 }
             ),
-            source,
+            free,
             transformer().convert(name.nameConverter()).convert(seed),
         )
     }
@@ -516,9 +534,10 @@ private class DatabaseCommands(
         )
 
     /**
-     * Drops a database with the privileges on it. Refuses the default database: it is created
-     * at startup, but only on the member that founds a cluster, so dropping it would keep every
-     * other member from starting.
+     * Drops a database with the privileges on it and its names: its own and, with CASCADE
+     * ALIASES, its local aliases, which the plans before refused otherwise. Refuses the default
+     * database: it is created at startup, but only on the member that founds a cluster, so dropping
+     * it would keep every other member from starting.
      */
     @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for this.
     private fun dropDatabase(
@@ -557,10 +576,11 @@ private class DatabaseCommands(
                 ${PrivilegeRecords.DATABASE}: database.uuid})
             DETACH DELETE privilege
             WITH DISTINCT database
-            OPTIONAL MATCH (database)-[r]-()
-            OPTIONAL MATCH (databaseName:DatabaseName {name: $key})
-            OPTIONAL MATCH (databaseName)-[r2]-()
-            DELETE r, database, r2, databaseName
+            OPTIONAL MATCH (database)<-[:TARGETS]-(name:DatabaseName)
+            OPTIONAL MATCH (name)-[:PROPERTIES|CONNECTS_WITH]->(attached)
+            DETACH DELETE attached, name
+            WITH DISTINCT database
+            DETACH DELETE database
             WITH DISTINCT $key AS droppedName
             CREATE (:DeletedDatabase {name: droppedName, timestamp: timestamp()})
             RETURN droppedName
@@ -639,6 +659,59 @@ private class DatabaseCommands(
                 .handleError(errors(plan.command(), plan.action(), databaseName)),
             compile(plan.source(), context),
             transformer().convert(name.nameConverter()),
+        )
+    }
+
+    /**
+     * Refuses to drop a database that local aliases target, naming them, unless CASCADE ALIASES
+     * drops them too. Remote aliases never stop a drop: they no longer resolve once it is gone.
+     */
+    private fun ensureSafeToDelete(
+        plan: EnsureDatabaseSafeToDelete,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val source = compile(plan.source(), context)
+        if (plan.aliasAction() is `CascadeAliases$`) return source
+        val databaseName = plan.databaseName()
+        val name = admin.getDatabaseNameFields("databaseName", databaseName)
+        return updating(
+            "EnsureDatabaseSafeToDelete",
+            """
+            MATCH (database:Database {name: ${parameter(name.displayNameKey())}})
+                <-[:TARGETS]-(alias:DatabaseName {primary: false})
+            WITH alias.displayName AS alias ORDER BY alias
+            RETURN collect(alias) AS aliases
+            """
+                .trimIndent(),
+            VirtualValues.map(name.keys(), name.values()),
+            QueryHandler.handleResult(
+                    Function3 { _, aliases, params ->
+                        val names = (aliases as ListValue).map { (it as TextValue).stringValue() }
+                        if (names.isEmpty()) {
+                            `Continue$`.`MODULE$`
+                        } else {
+                            ThrowException(aliasesExist(show(databaseName, params), names))
+                        }
+                    }
+                )
+                .handleError(errors("DROP DATABASE", "delete", databaseName)),
+            source,
+            transformer().convert(name.nameConverter()),
+        )
+    }
+
+    private fun aliasesExist(
+        database: String,
+        aliases: List<String>,
+    ): DatabaseAliasExistsException {
+        val listed = aliases.joinToString(", ") { "'$it'" }
+        return DatabaseAliasExistsException(
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42N82)
+                .withParam(GqlParams.StringParam.db1, database)
+                .withParam(GqlParams.StringParam.db2, listed)
+                .build(),
+            "Failed to delete the specified database '$database': Database has aliases $listed. " +
+                "Drop them before the database, or drop the database with CASCADE ALIASES.",
         )
     }
 

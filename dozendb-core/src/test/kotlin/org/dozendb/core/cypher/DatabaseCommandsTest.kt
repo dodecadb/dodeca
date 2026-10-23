@@ -195,6 +195,9 @@ class DatabaseCommandsTest {
     fun `limits the number of databases, including system`() {
         val server = start(mapOf(DozenDbSettings.maxDatabases to 3))
         server.administer("CREATE DATABASE films")
+        // Aliases are not databases.
+        server.administer("CREATE ALIAS movies FOR DATABASE films")
+        server.administer("CREATE ALIAS pictures FOR DATABASE films")
 
         val error = server.failure("CREATE DATABASE series")
 
@@ -206,7 +209,7 @@ class DatabaseCommandsTest {
                     "limit via the config setting 'dbms.max_databases'"
             )
         assertThat(server.names()).doesNotContain("series")
-        server.administer("DROP DATABASE films")
+        server.administer("DROP DATABASE films CASCADE ALIASES")
         server.administer("CREATE DATABASE series")
         assertThat(server.names()).contains("series")
     }
