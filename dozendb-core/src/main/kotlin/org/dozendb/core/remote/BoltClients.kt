@@ -74,11 +74,13 @@ class DebugLogLogging(
             level: System.Logger.Level,
             bundle: java.util.ResourceBundle?,
             format: String?,
-            vararg params: Any?,
+            // Not vararg: the JDK's System.Logger.log(Level, String), which bolt-connection's
+            // channel loggers inherit, passes a null array on.
+            params: Array<out Any?>?,
         ) {
             if (!isLoggable(level)) return
             val message =
-                if (params.isEmpty()) format ?: ""
+                if (params.isNullOrEmpty()) format ?: ""
                 else runCatching { String.format(format ?: "", *params) }.getOrDefault(format ?: "")
             write(level, message, null)
         }
