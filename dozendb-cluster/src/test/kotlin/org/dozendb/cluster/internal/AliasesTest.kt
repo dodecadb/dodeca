@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.nio.file.Path
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -16,7 +17,9 @@ import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
+import org.neo4j.graphdb.QueryExecutionException
 import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.kernel.api.exceptions.Status
 
 /**
  * Local aliases in a cluster: created on the leader of `system`, they reach the other members
@@ -42,6 +45,10 @@ class AliasesTest {
             it.start()
         }
 
+    private fun ClusterHarness.administer(command: String) {
+        awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command)
+    }
+
     /** A driver that connects to this member only, or with [scheme] `neo4j` routes from it. */
     private fun ClusterHarness.Member.driver(scheme: String = "bolt"): Driver =
         GraphDatabase.driver("$scheme://${boltAddress()}", AuthTokens.none()).also {
@@ -52,6 +59,14 @@ class AliasesTest {
         session(SessionConfig.forDatabase(database)).use { session ->
             session.run(cypher).list { it.asMap() }
         }
+
+    /** The database that a session in [alias] uses on this member. */
+    private fun ClusterHarness.Member.databaseOf(alias: String): String =
+        driver().run("CALL db.info() YIELD name", alias).single()["name"] as String
+
+    /** The aliases this member shows, by name, with their databases. */
+    private fun ClusterHarness.Member.aliases(): List<Pair<Any?, Any?>> =
+        driver().run("SHOW ALIASES FOR DATABASE", SYSTEM).map { it["name"] to it["database"] }
 
     /** The routing table this member gives for [name], by role. */
     private fun ClusterHarness.Member.routingTable(name: String): Map<Any?, Any?> =
@@ -72,6 +87,116 @@ class AliasesTest {
             {
                 assertion()
             }
+    }
+
+    @Test
+    fun `aliases reach every member, which route and write by their name`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films WAIT")
+        cluster.administer("CREATE ALIAS movies FOR DATABASE films")
+
+        for (member in cluster.members) {
+            eventually {
+                assertThat(member.databaseOf("movies")).isEqualTo("films")
+                // Read at once, once films has a leader: the tables change while it elects one.
+                val table = member.routingTable("films")
+                assertThat(table).containsKey("WRITE")
+                assertThat(member.routingTable("movies")).isEqualTo(table)
+            }
+        }
+        // Drivers that route ask for the table of the name they were given, and write on the
+        // leader of its database, from whichever member they start at.
+        for (member in cluster.members) {
+            member.driver("neo4j").session(SessionConfig.forDatabase("movies")).use { session ->
+                session.executeWrite { it.run("CREATE (:Film)").consume() }
+            }
+        }
+        for (member in cluster.members) {
+            eventually {
+                assertThat(
+                        member.database("films").executeTransactionally(
+                            "MATCH (f:Film) RETURN count(f) AS films",
+                            emptyMap(),
+                        ) {
+                            it.next()["films"]
+                        }
+                    )
+                    .isEqualTo(3L)
+            }
+        }
+
+        cluster.administer("ALTER ALIAS movies SET DATABASE TARGET neo4j")
+
+        for (member in cluster.members) {
+            eventually { assertThat(member.databaseOf("movies")).isEqualTo(DEFAULT) }
+        }
+
+        cluster.administer("ALTER ALIAS movies SET DATABASE TARGET films")
+        cluster.awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(
+            "DROP DATABASE movies CASCADE ALIASES WAIT",
+            emptyMap(),
+        ) { result ->
+            assertThat(result.stream().map { it["success"] }.toList()).containsOnly(true)
+        }
+
+        for (member in cluster.members) {
+            eventually { assertThat(member.aliases()).isEmpty() }
+            assertThat(member.dbms!!.listDatabases()).doesNotContain("films")
+        }
+    }
+
+    @Test
+    fun `followers refuse alias commands`() {
+        val cluster = cluster()
+        cluster.administer("CREATE ALIAS movies FOR DATABASE neo4j")
+        val follower = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        eventually { assertThat(follower.databaseOf("movies")).isEqualTo(DEFAULT) }
+
+        for (command in
+            listOf(
+                "CREATE ALIAS classics FOR DATABASE neo4j",
+                "CREATE OR REPLACE ALIAS movies FOR DATABASE neo4j",
+                "ALTER ALIAS movies SET DATABASE PROPERTIES {rating: 5}",
+                "DROP ALIAS movies FOR DATABASE",
+            )) {
+            assertThatThrownBy { follower.database(SYSTEM).executeTransactionally(command) }
+                .describedAs(command)
+                .isInstanceOf(QueryExecutionException::class.java)
+                .hasMessageContaining("must be executed on the LEADER")
+                .matches {
+                    (it as QueryExecutionException).statusCode ==
+                        Status.Cluster.NotALeader.code().serialize()
+                }
+        }
+        assertThat(follower.aliases()).containsExactly("movies" to DEFAULT)
+    }
+
+    @Test
+    fun `a member that was down learns the aliases it missed`() {
+        val cluster = cluster()
+        val down = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        down.stop()
+
+        cluster.administer("CREATE DATABASE films")
+        cluster.administer("CREATE ALIAS movies FOR DATABASE neo4j")
+        cluster.administer("CREATE ALIAS gone FOR DATABASE neo4j")
+        cluster.administer("ALTER ALIAS movies SET DATABASE TARGET films PROPERTIES {rating: 5}")
+        cluster.administer("DROP ALIAS gone FOR DATABASE")
+        down.start()
+
+        eventually { assertThat(down.databaseOf("movies")).isEqualTo("films") }
+        assertThat(
+                down
+                    .driver()
+                    .run("SHOW ALIASES FOR DATABASE YIELD name, database, properties", SYSTEM)
+            )
+            .containsExactly(
+                mapOf(
+                    "name" to "movies",
+                    "database" to "films",
+                    "properties" to mapOf("rating" to 5L),
+                )
+            )
     }
 
     @Test

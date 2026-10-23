@@ -167,6 +167,7 @@ class SystemCatchUpTest {
         val defaultGroup = behind.database().databaseId().databaseId().uuid()
         behind.stop()
         cluster.administer("CREATE DATABASE films")
+        cluster.administer("CREATE ALIAS movies FOR DATABASE films")
         cluster.discardSystemLogPast(checkNotNull(leader.status(SYSTEM)).commitIndex)
         cluster.discardDefaultLogPast(
             checkNotNull(cluster.awaitLeader().status()).commitIndex,
@@ -179,6 +180,8 @@ class SystemCatchUpTest {
         assertThat(behind.userCount()).isEqualTo(cluster.awaitLeader(SYSTEM).userCount())
         // The cluster is idle: nothing applied after the copy tells the member about films.
         cluster.awaitOnlineEverywhere("films")
+        // Aliases are in the copy too.
+        assertThat(behind.database("movies").databaseName()).isEqualTo("films")
         behind.assertCopiedSystemWithoutErrors()
         assertThat(behind.debugLog()).anyMatch { "Database neo4j now holds Raft snapshot" in it }
     }
