@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import org.dozendb.core.edition.DozenDbEditionModule
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.ConnectorPortRegister
@@ -98,6 +99,8 @@ class StandaloneServer(
                 .set(GraphDatabaseSettings.routing_listen_address, SocketAddress("localhost", 0))
                 .set(HttpConnector.enabled, false)
                 .set(HttpsConnector.enabled, false)
+                // Bolt's thread pools otherwise wait 5 s each for quiet before they stop.
+                .set(GraphDatabaseInternalSettings.netty_server_shutdown_quiet_period, 0)
         @Suppress("UNCHECKED_CAST")
         settings.forEach { (setting, value) -> builder.set(setting as Setting<Any>, value) }
         return builder.build()

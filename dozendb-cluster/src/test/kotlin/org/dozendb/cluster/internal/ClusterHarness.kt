@@ -23,6 +23,7 @@ import org.dozendb.core.monitoring.metrics
 import org.dozendb.core.monitoring.samples
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.ConnectorPortRegister
@@ -180,6 +181,8 @@ internal class ClusterHarness(
                     .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
                     .set(CLUSTER_TLS.enabled, authority != null)
                     .set(BackupSettings.listenAddress, SocketAddress("127.0.0.1", 0))
+                    // Bolt's thread pools otherwise wait 5 s each for quiet before they stop.
+                    .set(GraphDatabaseInternalSettings.netty_server_shutdown_quiet_period, 0)
             @Suppress("UNCHECKED_CAST")
             (this@ClusterHarness.settings + settings).forEach { (setting, value) ->
                 builder.set(setting as Setting<Any>, value)
