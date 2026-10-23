@@ -2,6 +2,10 @@ package org.dozendb.it
 
 import com.github.dockerjava.api.model.Bind
 import com.github.dockerjava.api.model.Volume
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse.BodyHandlers
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
@@ -98,9 +102,39 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
      * drivers outside the Docker network to this member.
      */
     fun boltOnHostPort(hostPort: Int): DozenDbContainer {
-        setPortBindings(listOf("$hostPort:$BOLT_PORT"))
+        setPortBindings(portBindings + "$hostPort:$BOLT_PORT")
         return withEnv("NEO4J_server_bolt_advertised__address", "127.0.0.1:$hostPort")
     }
+
+    /**
+     * Reports the metrics that [filter] selects on the Prometheus endpoint, published on [hostPort]
+     * of this machine, which stays the same across restarts.
+     */
+    fun prometheusOnHostPort(hostPort: Int, filter: String = "*"): DozenDbContainer {
+        addExposedPort(PROMETHEUS_PORT)
+        setPortBindings(portBindings + "$hostPort:$PROMETHEUS_PORT")
+        prometheusPort = hostPort
+        withEnv("NEO4J_server_metrics_prometheus_enabled", "true")
+        withEnv("NEO4J_server_metrics_prometheus_endpoint", "0.0.0.0:$PROMETHEUS_PORT")
+        return withEnv("NEO4J_server_metrics_filter", filter)
+    }
+
+    private var prometheusPort: Int? = null
+
+    /** The text the Prometheus endpoint reports now. */
+    fun scrape(): String {
+        val port = checkNotNull(prometheusPort) { "$alias reports no metrics" }
+        val response =
+            http.send(
+                HttpRequest.newBuilder(URI("http://$host:$port/metrics")).build(),
+                BodyHandlers.ofString(),
+            )
+        check(response.statusCode() == 200) { "$alias: HTTP ${response.statusCode()}" }
+        return response.body()
+    }
+
+    /** The samples the Prometheus endpoint reports now, by name with labels. */
+    fun samples(): Map<String, Double> = Promtool.samples(scrape())
 
     private fun driver(): Driver =
         driver
@@ -158,8 +192,11 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         }
 
     /** Neo4j's debug log, read from the container. */
-    fun debugLog(): String =
-        copyFileFromContainer("/logs/debug.log") { it.readAllBytes().decodeToString() }
+    fun debugLog(): String = logFile("debug.log")
+
+    /** The log file [name], such as `query.log`, read from the container. */
+    fun logFile(name: String): String =
+        copyFileFromContainer("/logs/$name") { it.readAllBytes().decodeToString() }
 
     /** Saves the console and debug logs under [directory] for diagnosis. */
     fun saveLogs(directory: Path) {
@@ -245,10 +282,12 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
 
     companion object {
         const val BOLT_PORT = 7687
+        const val PROMETHEUS_PORT = 2004
         const val BACKUP_PORT = 6362
         const val PASSWORD = "dozendb-it-secret"
         private const val SHUTDOWN_SECONDS = 120
         private val DATA = Volume("/data")
+        private val http = HttpClient.newHttpClient()
 
         /** Where Neo4j's image looks for the cluster SSL policy's certificates. */
         private const val CLUSTER_CERTIFICATES = "/var/lib/neo4j/certificates/cluster"

@@ -1,5 +1,7 @@
 package org.dozendb.it
 
+import com.github.dockerjava.api.DockerClient
+import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -8,6 +10,9 @@ import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.TestMethodOrder
+import org.testcontainers.containers.GenericContainer
+import org.testcontainers.containers.startupcheck.StartupCheckStrategy
+import org.testcontainers.containers.startupcheck.StartupCheckStrategy.StartupStatus
 import org.testcontainers.lifecycle.Startables
 
 /**
@@ -117,6 +122,29 @@ class StandaloneIT {
                 "server.metrics.prometheus.endpoint",
                 "dbms.security.log_successful_authentication",
             )
+    }
+
+    @Test
+    fun `Community refuses to start with the metrics settings DozenDB declares`() {
+        val (exitCode, logs) =
+            GenericContainer(DozenDbContainer.communityImage)
+                .withEnv("NEO4J_AUTH", "none")
+                .withEnv("NEO4J_server_metrics_prometheus_enabled", "true")
+                .withStartupCheckStrategy(Exited().withTimeout(Duration.ofMinutes(2)))
+                .use {
+                    it.start()
+                    it.currentContainerInfo.state.exitCodeLong to it.logs
+                }
+
+        assertThat(exitCode).isNotZero()
+        assertThat(logs).contains("Unrecognized setting", "server.metrics.prometheus.enabled")
+    }
+
+    /** Startup completes once the container stopped, whatever its exit code. */
+    private class Exited : StartupCheckStrategy() {
+        override fun checkStartupState(client: DockerClient, containerId: String): StartupStatus =
+            if (getCurrentState(client, containerId).running == true) StartupStatus.NOT_YET_KNOWN
+            else StartupStatus.SUCCESSFUL
     }
 
     @Test

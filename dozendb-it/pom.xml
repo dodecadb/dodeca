@@ -13,6 +13,11 @@
   <name>DozenDB integration tests</name>
   <description>Multi-node, fault, crash and benchmark tests against the plugin jar in Neo4j's official Community image. Run with -Pit.</description>
 
+  <properties>
+    <!-- Its promtool checks the metrics the plugin reports. -->
+    <prometheus.image>prom/prometheus:v3.5.0</prometheus.image>
+  </properties>
+
   <dependencies>
     <!-- Only for build order: the tests install the plugin jar into a Docker image. -->
     <dependency>
@@ -87,6 +92,7 @@
               <systemPropertyVariables>
                 <dozendb.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}.jar</dozendb.plugin.jar>
                 <neo4j.image>${neo4j.image}</neo4j.image>
+                <prometheus.image>${prometheus.image}</prometheus.image>
                 <it.logs>${project.build.directory}/it-logs</it.logs>
               </systemPropertyVariables>
               <classpathDependencyExcludes>
