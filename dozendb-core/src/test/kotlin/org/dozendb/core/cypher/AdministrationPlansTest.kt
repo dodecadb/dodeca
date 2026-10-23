@@ -127,10 +127,14 @@ class AdministrationPlansTest {
                 "WaitForCompletion",
                 // Aliases
                 "CreateLocalDatabaseAlias",
+                "CreateRemoteDatabaseAlias",
                 "AlterLocalDatabaseAlias",
+                "AlterRemoteDatabaseAlias",
                 "DropDatabaseAlias",
                 "ShowAliases",
                 "EnsureDatabaseNodeExists",
+                "DoNothingIfDatabaseExists",
+                "DoNothingIfDatabaseNotExists",
                 "AssertNotBlockedDropAlias",
                 "AssertNotBlockedRemoteAliasManagement",
             )
@@ -149,19 +153,14 @@ class AdministrationPlansTest {
                 "DropUser",
                 "SetOwnPassword",
                 "ShowDatabase",
-                "DoNothingIfDatabaseExists",
-                "DoNothingIfDatabaseNotExists",
             )
 
-        const val ALIASES = "aliases are not supported yet"
         const val SERVERS = "the dozendb.cluster procedures manage the servers"
 
         /** Planned by neither, so they fail as they do in Community: why. */
         val REFUSED =
             mapOf(
-                "CreateRemoteDatabaseAlias" to ALIASES,
-                "AlterRemoteDatabaseAlias" to ALIASES,
-                "EnsureAliasIsNotRemote" to ALIASES,
+                "EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it",
                 "EnableServer" to SERVERS,
                 "AlterServer" to SERVERS,
                 "RenameServer" to SERVERS,
@@ -177,9 +176,6 @@ class AdministrationPlansTest {
         /** A command for each refused plan that is a command of its own. */
         val REFUSED_COMMANDS =
             listOf(
-                "CREATE ALIAS remote FOR DATABASE neo4j AT 'neo4j+s://example.com' " +
-                    "USER alice PASSWORD 'alice-secret-1'",
-                "ALTER ALIAS remote SET DATABASE USER bob",
                 "ENABLE SERVER 'one'",
                 "ALTER SERVER 'one' SET OPTIONS {modeConstraint: 'NONE'}",
                 "RENAME SERVER 'one' TO 'two'",

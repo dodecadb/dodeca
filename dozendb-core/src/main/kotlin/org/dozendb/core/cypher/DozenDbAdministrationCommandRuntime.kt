@@ -16,7 +16,7 @@
  * commands of UserCommands are added, and WAIT waits for the servers.
  * 2026-10-23: the role commands of RoleCommands, the privilege commands of PrivilegeCommands and
  * ShowPrivilegeCommands are added, and DROP DATABASE drops the privileges on the database.
- * 2026-10-24: the alias commands of AliasCommands are added, and the targets of aliases checked.
+ * 2026-10-24: the alias commands of AliasCommands and RemoteAliasCommands are added, and the targets of aliases checked.
  * DROP DATABASE refuses to drop a database that local aliases target unless CASCADE ALIASES drops
  * them too, and drops only the names of the database, not those of other databases or aliases.
  * START, STOP and DROP DATABASE take the name of a local alias for its database.
@@ -150,6 +150,8 @@ private constructor(
     private val privilegeCommands: PrivilegeCommands,
     private val showPrivilegeCommands: ShowPrivilegeCommands,
     private val aliasCommands: AliasCommands,
+    private val remoteAliasCommands: RemoteAliasCommands,
+    private val nameChecks: DatabaseNameChecks,
 ) :
     CommunityAdministrationCommandRuntime(
         engine,
@@ -159,7 +161,9 @@ private constructor(
             .orElse(roleCommands)
             .orElse(privilegeCommands)
             .orElse(showPrivilegeCommands)
-            .orElse(aliasCommands),
+            .orElse(aliasCommands)
+            .orElse(remoteAliasCommands)
+            .orElse(nameChecks),
     ) {
     constructor(
         engine: ExecutionEngine,
@@ -173,6 +177,8 @@ private constructor(
         PrivilegeCommands(engine, dependencies),
         ShowPrivilegeCommands(engine, dependencies),
         AliasCommands(engine, dependencies),
+        RemoteAliasCommands(engine, dependencies),
+        DatabaseNameChecks(engine, dependencies),
     )
 
     // Community compiles nested plans with its commands and ours, but the top-level plan only with
@@ -184,6 +190,8 @@ private constructor(
             .orElse(privilegeCommands)
             .orElse(showPrivilegeCommands)
             .orElse(aliasCommands)
+            .orElse(remoteAliasCommands)
+            .orElse(nameChecks)
             .orElse(logicalToExecutable())
 
     init {
@@ -193,6 +201,8 @@ private constructor(
         privilegeCommands.compile = ::compile
         showPrivilegeCommands.compile = ::compile
         aliasCommands.compile = ::compile
+        remoteAliasCommands.compile = ::compile
+        nameChecks.compile = ::compile
     }
 
     /** Where administration commands are logged; none with authentication disabled. */
@@ -216,6 +226,8 @@ private constructor(
             privilegeCommands.isDefinedAt(command) ||
             showPrivilegeCommands.isDefinedAt(command) ||
             aliasCommands.isDefinedAt(command) ||
+            remoteAliasCommands.isDefinedAt(command) ||
+            nameChecks.isDefinedAt(command) ||
             super.isApplicableAdministrationCommand(logicalPlan)
     }
 

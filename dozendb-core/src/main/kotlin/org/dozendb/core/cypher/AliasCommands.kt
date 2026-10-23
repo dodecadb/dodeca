@@ -3,11 +3,10 @@ package org.dozendb.core.cypher
 import org.neo4j.common.DependencyResolver
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
+import org.neo4j.cypher.internal.AdministrationShowCommandUtils
 import org.neo4j.cypher.internal.AliasMapSettingsEvaluator
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
-import org.neo4j.cypher.internal.administration.EnsureNodeExistsExecutionPlanner
-import org.neo4j.cypher.internal.administration.ShowAliasesExecutionPlanner
 import org.neo4j.cypher.internal.ast.DatabaseName
 import org.neo4j.cypher.internal.expressions.Expression
 import org.neo4j.cypher.internal.expressions.Parameter
@@ -16,7 +15,6 @@ import org.neo4j.cypher.internal.logical.plans.AssertNotBlockedDropAlias
 import org.neo4j.cypher.internal.logical.plans.AssertNotBlockedRemoteAliasManagement
 import org.neo4j.cypher.internal.logical.plans.CreateLocalDatabaseAlias
 import org.neo4j.cypher.internal.logical.plans.DropDatabaseAlias
-import org.neo4j.cypher.internal.logical.plans.EnsureDatabaseNodeExists
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.NameValidator
 import org.neo4j.cypher.internal.logical.plans.ShowAliases
@@ -24,6 +22,7 @@ import org.neo4j.cypher.internal.procs.`Continue$`
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.PredicateExecutionPlan
 import org.neo4j.cypher.internal.procs.QueryHandler
+import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
 import org.neo4j.cypher.internal.util.InternalNotification
@@ -37,9 +36,13 @@ import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.SecurityAuthorizationHandler
+import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.kernel.api.exceptions.Status
+import org.neo4j.kernel.database.DatabaseReference
+import org.neo4j.kernel.database.DatabaseReferenceImpl
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.impl.coreapi.InternalTransaction
+import org.neo4j.values.AnyValue
 import org.neo4j.values.storable.BooleanValue
 import org.neo4j.values.storable.TextValue
 import org.neo4j.values.storable.Values
@@ -50,7 +53,9 @@ import scala.Function3
 import scala.Option
 import scala.PartialFunction
 import scala.Tuple2
+import scala.collection.immutable.Seq
 import scala.collection.immutable.`Set$`
+import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
 
 /**
@@ -86,33 +91,7 @@ internal class AliasCommands(
             is CreateLocalDatabaseAlias -> Planner { createLocal(plan, compile(plan.source(), it)) }
             is AlterLocalDatabaseAlias -> Planner { alterLocal(plan, compile(plan.source(), it)) }
             is DropDatabaseAlias -> Planner { drop(plan, compile(plan.source(), it)) }
-            is ShowAliases ->
-                Planner {
-                    ShowAliasesExecutionPlanner.apply(
-                            engine,
-                            authorization,
-                            dependencies.resolveDependency(DatabaseReferenceRepository::class.java),
-                        )
-                        .planShowAliasesForDatabase(
-                            Option.apply(compile(plan.source(), it)),
-                            plan.aliasName(),
-                            plan.verbose(),
-                            plan.returnColumns(),
-                            plan.yields(),
-                            plan.returns(),
-                        )
-                }
-            is EnsureDatabaseNodeExists ->
-                Planner {
-                    EnsureNodeExistsExecutionPlanner.apply(engine, authorization)
-                        .planEnsureDatabaseNodeExists(
-                            plan.command(),
-                            plan.name(),
-                            plan.extraFilter(),
-                            plan.action(),
-                            Option.apply(compile(plan.source(), it)),
-                        )
-                }
+            is ShowAliases -> Planner { showAliases(plan, compile(plan.source(), it)) }
             // Neo4j Enterprise can block the management of aliases; nothing blocks it here.
             is AssertNotBlockedDropAlias,
             is AssertNotBlockedRemoteAliasManagement ->
@@ -200,7 +179,7 @@ internal class AliasCommands(
                         Tuple2(
                             params.updatedWith(
                                 PROPERTIES_KEY,
-                                properties(
+                                aliasProperties(
                                     transaction,
                                     plan.properties(),
                                     params,
@@ -211,6 +190,118 @@ internal class AliasCommands(
                         )
                     }
                 ),
+        )
+    }
+
+    /**
+     * SHOW ALIASES, as Neo4j shows them: the target of a local alias only to those who may see it,
+     * remote aliases with their URL, user and driver settings. A name given finds the alias of that
+     * name, which DozenDB reads as one name also when it has dots.
+     */
+    private fun showAliases(plan: ShowAliases, source: ExecutionPlan): ExecutionPlan {
+        val fields =
+            if (plan.aliasName().isDefined) {
+                admin.getDatabaseNameFields("aliasName", plan.aliasName().get())
+            } else {
+                null
+            }
+        val filter =
+            fields?.let {
+                "WHERE alias.name = ${parameter(it.nameKey())} AND " +
+                    "alias.namespace = ${parameter(it.namespaceKey())}"
+            } ?: ""
+        val verbose =
+            if (plan.verbose()) {
+                ", driverSettings{.*} AS driver, properties{.*} AS properties"
+            } else {
+                ""
+            }
+        val names = ParameterTransformer.apply { _, securityContext, _ ->
+            visibleAliases(securityContext)
+        }
+        return SystemCommandExecutionPlan(
+            "ShowAliasesForDatabase",
+            engine,
+            authorization,
+            """
+            UNWIND ${parameter(ALIASES_KEY)} AS alias
+            WITH alias $filter
+            MATCH (aliasNode:$DATABASE_NAME {${TopologyGraphDbmsModel.NAME_PROPERTY}: alias.name,
+                ${TopologyGraphDbmsModel.NAMESPACE_PROPERTY}: alias.namespace})
+            OPTIONAL MATCH (aliasNode)-[:$CONNECTS_WITH]->(driverSettings:$DRIVER_SETTINGS)
+            OPTIONAL MATCH (aliasNode)-[:$PROPERTIES]->(properties:$ALIAS_PROPERTIES)
+            WITH alias.displayName AS name,
+                CASE alias.namespace
+                    WHEN '${TopologyGraphDbmsModel.DEFAULT_NAMESPACE}' THEN null
+                    ELSE alias.namespace
+                END AS composite,
+                alias.database AS database,
+                alias.location AS location,
+                aliasNode.${TopologyGraphDbmsModel.URL_PROPERTY} AS url,
+                aliasNode.${TopologyGraphDbmsModel.USERNAME_PROPERTY} AS user
+                $verbose
+            ${AdministrationShowCommandUtils.generateReturnClause(plan.returnColumns(), plan.yields(), plan.returns(), seqOf("name"))}
+            """
+                .trimIndent(),
+            fields?.let { VirtualValues.map(it.keys(), it.values()) } ?: VirtualValues.EMPTY_MAP,
+            Option.apply(source),
+            SystemCommandExecutionPlan.`apply$default$7`(),
+            fields?.let {
+                names.convert(it.nameConverter()).convert(inRoot(it.nameKey(), it.namespaceKey()))
+            } ?: names,
+            SystemCommandExecutionPlan.`apply$default$9`(),
+        )
+    }
+
+    /** The aliases of every kind, with the targets of local aliases [securityContext] may see. */
+    private fun visibleAliases(securityContext: SecurityContext): MapValue {
+        val references = dependencies.resolveDependency(DatabaseReferenceRepository::class.java)
+        val aliases =
+            references.allDatabaseReferences.mapNotNull { reference ->
+                when (reference) {
+                    is DatabaseReferenceImpl.External ->
+                        alias(reference, reference.targetAlias().name(), REMOTE_LOCATION)
+                    is DatabaseReferenceImpl.Internal ->
+                        if (reference.isPrimary) {
+                            null
+                        } else {
+                            val database =
+                                references
+                                    .getByAlias(reference.databaseId().name())
+                                    .filter {
+                                        securityContext.databaseAccessMode().canSeeDatabase(it)
+                                    }
+                                    .map { it.alias().name() }
+                                    .orElse(null)
+                            alias(reference, database, LOCAL_LOCATION)
+                        }
+                    // There are no composite databases.
+                    else -> null
+                }
+            }
+        return VirtualValues.map(
+            arrayOf(ALIASES_KEY),
+            arrayOf<AnyValue>(VirtualValues.list(*aliases.toTypedArray())),
+        )
+    }
+
+    /** An alias [reference] to [database], as SHOW ALIASES lists it. */
+    private fun alias(reference: DatabaseReference, database: String?, location: String): MapValue {
+        val name = reference.alias().name()
+        val namespace =
+            reference.namespace().map { it.name() }.orElse(TopologyGraphDbmsModel.DEFAULT_NAMESPACE)
+        return VirtualValues.map(
+            arrayOf("name", "namespace", "database", "displayName", "location"),
+            arrayOf(
+                Values.utf8Value(name),
+                Values.utf8Value(namespace),
+                database?.let(Values::utf8Value) ?: Values.NO_VALUE,
+                Values.utf8Value(
+                    if (namespace == TopologyGraphDbmsModel.DEFAULT_NAMESPACE) name
+                    else "$namespace.$name"
+                ),
+                Values.utf8Value(location),
+            ),
         )
     }
 
@@ -308,7 +399,7 @@ internal class AliasCommands(
                     Tuple2(
                         params.updatedWith(
                             PROPERTIES_KEY,
-                            properties(
+                            aliasProperties(
                                 transaction,
                                 plan.properties(),
                                 params,
@@ -354,39 +445,6 @@ internal class AliasCommands(
                 .convert(alias.nameConverter())
                 .convert(inRoot(alias.nameKey(), alias.namespaceKey())),
         )
-    }
-
-    /**
-     * The [properties] of an alias, evaluated as Neo4j evaluates them, with lower-cased keys; none
-     * when not given. [operation] is what the error messages say failed.
-     */
-    private fun properties(
-        transaction: Transaction,
-        properties: Option<Either<scala.collection.immutable.Map<String, Expression>, Parameter>>,
-        params: MapValue,
-        operation: String,
-    ): MapValue =
-        AliasMapSettingsEvaluator(
-                (transaction as InternalTransaction).kernelTransaction().procedures()
-            )
-            .convertPropertiesMap(properties, params, operation)
-            .getOrElse { MapValue.EMPTY }
-
-    /**
-     * Neo4j's check of alias names, and the rules its documentation adds: names that begin with an
-     * underscore are reserved too, and names cannot end with a dot.
-     */
-    @Suppress("DEPRECATION") // Like Neo4j's own name validation.
-    private fun assertValidAliasName(name: String) {
-        NameValidator.assertValidAliasName(name)
-        if (name.startsWith("_")) {
-            throw InvalidArgumentException("Alias name '$name' is invalid, due to the prefix '_'.")
-        }
-        if (name.endsWith(".")) {
-            throw InvalidArgumentException(
-                "Alias name '$name' is invalid: alias names cannot end with a dot."
-            )
-        }
     }
 
     private fun updating(
@@ -438,6 +496,9 @@ internal class AliasCommands(
 
     private fun parameter(key: String) = "${'$'}`$key`"
 
+    private fun <T> seqOf(vararg items: T): Seq<T> =
+        CollectionConverters.asScala(items.toList()).toSeq()
+
     private companion object {
         val DATABASE = TopologyGraphDbmsModel.DATABASE_LABEL.name()
         val DATABASE_NAME = TopologyGraphDbmsModel.DATABASE_NAME_LABEL.name()
@@ -445,6 +506,12 @@ internal class AliasCommands(
         val PROPERTIES = TopologyGraphDbmsModel.PROPERTIES_RELATIONSHIP.name()
         val CONNECTS_WITH = TopologyGraphDbmsModel.CONNECTS_WITH_RELATIONSHIP.name()
         val ALIAS_PROPERTIES = TopologyGraphDbmsModel.ALIAS_PROPERTIES_LABEL.name()
+        val DRIVER_SETTINGS = TopologyGraphDbmsModel.DRIVER_SETTINGS_LABEL.name()
+        const val LOCAL_LOCATION = "local"
+        const val REMOTE_LOCATION = "remote"
+
+        /** The parameter of the aliases SHOW ALIASES lists. */
+        const val ALIASES_KEY = "__dozendb_aliases"
 
         /** The parameter of the properties of a new alias. */
         const val PROPERTIES_KEY = "__dozendb_aliasProperties"
@@ -533,3 +600,34 @@ internal fun inRoot(nameKey: String, namespaceKey: String) =
                 )
         }
     }
+
+/**
+ * The [properties] of an alias, evaluated as Neo4j evaluates them, with lower-cased keys; none when
+ * not given. [operation] is what the error messages say failed.
+ */
+internal fun aliasProperties(
+    transaction: Transaction,
+    properties: Option<Either<scala.collection.immutable.Map<String, Expression>, Parameter>>,
+    params: MapValue,
+    operation: String,
+): MapValue =
+    AliasMapSettingsEvaluator((transaction as InternalTransaction).kernelTransaction().procedures())
+        .convertPropertiesMap(properties, params, operation)
+        .getOrElse { MapValue.EMPTY }
+
+/**
+ * Neo4j's check of alias names, and the rules its documentation adds: names that begin with an
+ * underscore are reserved too, and names cannot end with a dot.
+ */
+@Suppress("DEPRECATION") // Like Neo4j's own name validation.
+internal fun assertValidAliasName(name: String) {
+    NameValidator.assertValidAliasName(name)
+    if (name.startsWith("_")) {
+        throw InvalidArgumentException("Alias name '$name' is invalid, due to the prefix '_'.")
+    }
+    if (name.endsWith(".")) {
+        throw InvalidArgumentException(
+            "Alias name '$name' is invalid: alias names cannot end with a dot."
+        )
+    }
+}
