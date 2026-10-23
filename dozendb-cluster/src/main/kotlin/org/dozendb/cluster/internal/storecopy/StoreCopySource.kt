@@ -37,6 +37,7 @@ import org.neo4j.logging.InternalLog
  *
  * @property replicating whether a database's transactions go through Raft here.
  * @property snapshots the current snapshot of a database replicating here, by name.
+ * @property served called with a database's name after a copy of it was sent.
  */
 internal class StoreCopySource(
     private val databases: () -> DatabaseContextProvider<*>,
@@ -45,6 +46,7 @@ internal class StoreCopySource(
     private val snapshots: (String) -> Snapshot?,
     private val log: InternalLog,
     private val maximumWait: Duration = Duration.ofSeconds(10),
+    private val served: (String) -> Unit = {},
 ) : BulkSource {
     override fun serve(request: ByteArray, out: OutputStream) {
         val (name, id, minimumIndex) = decodeRequest(request)
@@ -79,6 +81,7 @@ internal class StoreCopySource(
             archive.end()
         }
         log.info("Sent a copy of database %s", name)
+        served(name)
     }
 
     /** The database [name], with the id [id] if one is given, once it replicates here. */

@@ -5,6 +5,8 @@ import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
+import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
@@ -43,7 +45,8 @@ internal fun interface DatabaseCopier {
  * the copy, whose snapshot is recorded, and started again.
  *
  * A database that needs another copy within [REPEAT_WARNING] of the previous one gets a warning:
- * its member does not keep up with the others.
+ * its member does not keep up with the others. [metrics], when given, counts repeated copies and
+ * how long catching up took.
  */
 internal class CatchUp(
     private val consensus: ConsensusLog,
@@ -53,6 +56,7 @@ internal class CatchUp(
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val clock: Clock = Clock.systemUTC(),
+    private val metrics: ClusterMetrics? = null,
 ) {
     /** When each database, by group id, last started again after it was replaced. */
     private val replaced = ConcurrentHashMap<UUID, Instant>()
@@ -69,6 +73,7 @@ internal class CatchUp(
         exclusively: (() -> Unit) -> Unit = { it() },
     ) {
         val ref = replica.ref
+        val started = System.nanoTime()
         log.warn(
             "Database %s needs Raft entries up to %d that the log no longer holds; replacing it " +
                 "with a copy from %s",
@@ -85,13 +90,14 @@ internal class CatchUp(
                 log.warn("Copying database %s was interrupted; it keeps running", ref.name)
                 return
             }
-        exclusively { replace(replica, copy) }
+        exclusively { replace(replica, copy, started) }
     }
 
     private fun warnIfRepeated(ref: DatabaseRef) {
         val previous = replaced[ref.id] ?: return
         val since = Duration.between(previous, clock.instant())
         if (since < REPEAT_WARNING) {
+            metrics?.of(ref.name)?.copiesRepeated?.increment()
             log.warn(
                 "Database %s needs another copy %d s after the previous one. This member does " +
                     "not keep up with the others: it keeps losing its connection to them, or its " +
@@ -103,7 +109,7 @@ internal class CatchUp(
     }
 
     /** Stops the database, moves [copy] into place and starts the database again. */
-    private fun replace(replica: ReplicatedDatabase, copy: StagedCopy) {
+    private fun replace(replica: ReplicatedDatabase, copy: StagedCopy, started: Long) {
         val ref = replica.ref
         control().stop(replica.namedDatabaseId)
         // The shutdown event detached the group; detach it also if the database was not running.
@@ -119,6 +125,10 @@ internal class CatchUp(
         }
         if (control().start(replica.namedDatabaseId)) {
             log.info("Database %s runs again", ref.name)
+            metrics
+                ?.of(ref.name)
+                ?.copyMillis
+                ?.update(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started))
         } else {
             log.error("Database %s did not start after it was replaced", ref.name)
         }

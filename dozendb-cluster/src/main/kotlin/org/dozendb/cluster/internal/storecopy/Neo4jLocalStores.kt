@@ -27,7 +27,7 @@ import org.neo4j.storageengine.api.StorageEngineFactory
  *
  * A copy of a database whose group does not run here yet, as at startup or for a new database,
  * leaves its Raft position as the group's seed ([seed]), so that the group does not ask for
- * another.
+ * another. [received] is called with a database's name once a copy of it is in place.
  */
 internal class Neo4jLocalStores(
     private val fs: FileSystemAbstraction,
@@ -35,6 +35,7 @@ internal class Neo4jLocalStores(
     private val databaseNames: List<String>,
     private val transfer: BulkTransfer,
     private val log: InternalLog,
+    private val received: (String) -> Unit = {},
     private val seed: (DatabaseRef, Snapshot) -> Unit,
 ) : LocalStores {
     private val placement = StorePlacement(fs, layout)
@@ -169,6 +170,7 @@ internal class Neo4jLocalStores(
 
     private fun moveIntoPlace(copy: Staged) {
         placement.moveIntoPlace(copy.layout, copy.name)
+        received(copy.name)
         log.info(
             "Copied database %s from %s: %d files, %d bytes, %s, Raft snapshot %s",
             copy.name,

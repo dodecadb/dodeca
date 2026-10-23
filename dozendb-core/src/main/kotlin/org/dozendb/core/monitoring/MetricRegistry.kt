@@ -124,6 +124,11 @@ class MetricRegistry(
         fun histogram(name: String, description: String): SummaryHistogram? =
             SummaryHistogram().takeIf { add(name, MetricType.HISTOGRAM, description, it) }
 
+        /** [histogram], which outlives this group, such as counts kept across restarts. */
+        fun histogram(name: String, description: String, histogram: SummaryHistogram) {
+            add(name, MetricType.HISTOGRAM, description, histogram)
+        }
+
         @Synchronized
         private fun add(
             name: String,

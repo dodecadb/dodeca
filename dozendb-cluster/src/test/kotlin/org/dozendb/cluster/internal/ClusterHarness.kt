@@ -18,6 +18,9 @@ import org.dozendb.consensus.Role
 import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestPorts
 import org.dozendb.core.DozenDbSettings
+import org.dozendb.core.monitoring.MetricsSettings
+import org.dozendb.core.monitoring.metrics
+import org.dozendb.core.monitoring.samples
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -26,6 +29,7 @@ import org.neo4j.configuration.connectors.ConnectorPortRegister
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.connectors.HttpConnector
 import org.neo4j.configuration.connectors.HttpsConnector
+import org.neo4j.configuration.helpers.GlobbingPattern
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.configuration.ssl.SslPolicyConfig
 import org.neo4j.configuration.ssl.SslPolicyScope
@@ -193,6 +197,10 @@ internal class ClusterHarness(
                 .port
         }
 
+        /** The samples this member's Prometheus endpoint reports now, by name with labels. */
+        fun samples(): Map<String, Double> =
+            checkNotNull(database("system").metrics()) { "$this reports no metrics" }.samples()
+
         /** The address Bolt listens on, when enabled in the settings. */
         fun boltAddress(): String {
             val register =
@@ -276,6 +284,14 @@ internal class ClusterHarness(
         val START_TIMEOUT: Duration = Duration.ofMinutes(2)
 
         private val SEGMENT = Regex("""log_(?:inprogress_)?(\d+)(?:-\d+)?""")
+
+        /** Settings that report every metric over Prometheus, on a port of each member's own. */
+        val METRICS: Map<Setting<*>, Any> =
+            mapOf(
+                MetricsSettings.prometheusEnabled to true,
+                MetricsSettings.prometheusEndpoint to SocketAddress("localhost", 0),
+                MetricsSettings.filter to listOf(GlobbingPattern("*")),
+            )
 
         /** Neo4j's SSL policy of the cluster scope. */
         val CLUSTER_TLS: SslPolicyConfig = SslPolicyConfig.forScope(SslPolicyScope.CLUSTER)

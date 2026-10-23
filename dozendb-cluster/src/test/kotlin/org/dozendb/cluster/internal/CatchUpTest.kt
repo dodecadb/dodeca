@@ -31,9 +31,12 @@ class CatchUpTest {
         harness?.close()
     }
 
-    /** Small entries and segments, and frequent snapshots, so that logs are discarded quickly. */
+    /**
+     * Small entries and segments, and frequent snapshots, so that logs are discarded quickly; every
+     * metric reported.
+     */
     private fun cluster(): ClusterHarness =
-        ClusterHarness(root, 3) {
+        ClusterHarness(root, 3, settings = ClusterHarness.METRICS) {
                 it.copy(
                     maxEntrySize = 1 shl 20,
                     logSegmentSize = 1,
@@ -114,12 +117,31 @@ class CatchUpTest {
         val stoppedAt = checkNotNull(leader.status()).commitIndex
 
         cluster.discardLogUpTo(stoppedAt, database.id)
+        val others = cluster.members.filter { it != behind }
+        // Members also serve the copies that others form or join the cluster with.
+        fun served() = others.sumOf { it.samples().getValue("${COPIES}_served_total") }
+        val servedBefore = served()
         behind.start()
 
         cluster.awaitSameAsLeader(behind)
         assertThat(behind.cluster.latestSnapshot(database)?.position?.index)
             .describedAs("snapshot installed from the copy")
             .isGreaterThan(stoppedAt)
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                val copied = behind.samples()
+                assertThat(copied["${COPIES}_received_total"]).isEqualTo(1.0)
+                assertThat(copied["${COPIES}_received_millis_count"]).isEqualTo(1.0)
+                assertThat(copied["${COPIES}_repeated_total"]).isZero()
+                assertThat(copied["${COPIES}_served_total"]).isZero()
+                assertThat(served() - servedBefore).isEqualTo(1.0)
+                val leading = cluster.awaitLeader().samples()
+                assertThat(leading["neo4j_database_neo4j_dozendb_cluster_raft_snapshots_total"])
+                    .isPositive()
+                assertThat(leading["neo4j_database_neo4j_cluster_raft_prune_index"])
+                    .isGreaterThan(stoppedAt.toDouble())
+            }
         cluster.write("CREATE (:Marker {at: 'after'})")
         cluster.awaitSameAsLeader(behind)
         assertThat(behind.count("Marker")).isEqualTo(2)
@@ -169,5 +191,10 @@ class CatchUpTest {
         assertThat(behind.cluster.latestSnapshot(database)?.position?.index ?: -1)
             .describedAs("no snapshot installed")
             .isEqualTo(snapshotBefore?.position?.index ?: -1)
+    }
+
+    companion object {
+        /** The default database's store copy metrics, in Prometheus. */
+        private const val COPIES = "neo4j_database_neo4j_dozendb_cluster_store_copy"
     }
 }

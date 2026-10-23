@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.dbms.api.DatabaseNotFoundException
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 
@@ -29,8 +30,8 @@ class MembershipTest {
         harness?.close()
     }
 
-    private fun cluster(): ClusterHarness =
-        ClusterHarness(root, 3).also {
+    private fun cluster(settings: Map<Setting<*>, Any> = emptyMap()): ClusterHarness =
+        ClusterHarness(root, 3, settings = settings).also {
             harness = it
             it.start()
         }
@@ -116,7 +117,7 @@ class MembershipTest {
     @Test
     fun `an added member joins every database's group, copying each database once`() {
         val cluster =
-            ClusterHarness(root, 3) {
+            ClusterHarness(root, 3, settings = ClusterHarness.METRICS) {
                     it.copy(
                         maxEntrySize = 1 shl 20,
                         logSegmentSize = 1,
@@ -158,6 +159,22 @@ class MembershipTest {
             .describedAs("no database copied twice")
             .content()
             .doesNotContain("needs Raft entries")
+        eventually {
+            val copies = joining.samples()
+            for (database in listOf(SYSTEM, "films", DEFAULT)) {
+                assertThat(
+                        copies[
+                            "neo4j_database_${database}_dozendb_cluster_store_copy_received_total"]
+                    )
+                    .describedAs("copies of $database")
+                    .isEqualTo(1.0)
+            }
+            for (member in cluster.members) {
+                assertThat(member.samples()["neo4j_dbms_dozendb_cluster_members"])
+                    .describedAs("members, as $member knows them")
+                    .isEqualTo(4.0)
+            }
+        }
     }
 
     /** The ids of the members voting in the group of [name], as this member knows them. */
@@ -184,7 +201,7 @@ class MembershipTest {
 
     @Test
     fun `a removed member leaves every group, stops its databases and cannot be added again`() {
-        val cluster = cluster()
+        val cluster = cluster(ClusterHarness.METRICS)
         cluster.administer("CREATE DATABASE films")
         eventually {
             for (member in cluster.members) assertThat(member.count("films")).isEqualTo(0)
@@ -199,6 +216,21 @@ class MembershipTest {
             assertThat(removed.cluster.state).isEqualTo(MemberState.REMOVED)
             for (name in listOf(DEFAULT, "films")) {
                 assertThat(removed.database(name).isAvailable(0)).describedAs(name).isFalse()
+            }
+            assertThat(removed.samples().keys)
+                .describedAs("metrics of the removed member")
+                .noneMatch { it.startsWith("neo4j_database_films_") }
+                .noneMatch { it.startsWith("neo4j_database_neo4j_") }
+                // It left the group of system, which still runs here: the counts of what it
+                // replicated stay, its progress in the group goes.
+                .noneMatch {
+                    it.startsWith("neo4j_database_system_cluster_raft_") && !it.endsWith("_total")
+                }
+            val leader = cluster.awaitLeader("films", among = { remaining })
+            assertThat(leader.samples()["neo4j_database_films_dozendb_cluster_raft_followers"])
+                .isEqualTo(1.0)
+            for (member in remaining) {
+                assertThat(member.samples()["neo4j_dbms_dozendb_cluster_members"]).isEqualTo(2.0)
             }
         }
         cluster

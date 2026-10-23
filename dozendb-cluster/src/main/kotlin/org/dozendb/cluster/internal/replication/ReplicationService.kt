@@ -11,6 +11,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.write
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -29,7 +30,8 @@ import org.neo4j.logging.InternalLogProvider
  * tells whether this member brought a database's store to the cluster it formed and has yet to
  * detach it from the Raft group it may come from; [detached] records that it has. [adoptDatabases]
  * runs once this member detached the system database it brought, in local transactions on it: it
- * makes the databases that `system` lists the new cluster's.
+ * makes the databases that `system` lists the new cluster's. [metrics], when given, counts each
+ * database's replication.
  */
 internal class ReplicationService(
     private val consensus: ConsensusLog,
@@ -41,6 +43,7 @@ internal class ReplicationService(
     private val mustDetach: (String) -> Boolean,
     private val detached: (String) -> Unit,
     private val adoptDatabases: () -> Unit,
+    private val metrics: ClusterMetrics? = null,
 ) : DatabaseEventListenerAdapter(), DatabaseHosting {
     override val hostedOnMode: HostedOnMode = HostedOnMode.RAFT
 
@@ -120,6 +123,7 @@ internal class ReplicationService(
     /** Forgets the dropped database [namedDatabaseId] and deletes its Raft group here. */
     fun remove(namedDatabaseId: NamedDatabaseId) {
         replica(namedDatabaseId)?.let { databases.remove(namedDatabaseId.name(), it) }
+        metrics?.forget(namedDatabaseId.name())
         consensus.removeGroup(
             DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
         )
@@ -167,6 +171,7 @@ internal class ReplicationService(
                         {}
                     },
                 onSnapshotNeeded = ::catchUp,
+                counts = metrics?.of(namedDatabaseId.name()) ?: ClusterMetrics.Counters(),
             )
         databases[namedDatabaseId.name()] = replica
         return replica

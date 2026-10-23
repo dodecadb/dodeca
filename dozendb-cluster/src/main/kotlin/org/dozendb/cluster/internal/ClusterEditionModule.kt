@@ -160,6 +160,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     )
                 )
             )
+        val metrics = ClusterMetrics(consensus, systemDatabase)
+        globalModule.globalDependencies.satisfyDependency(metrics)
         stores =
             Neo4jLocalStores(
                 globalModule.fileSystem,
@@ -167,7 +169,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 listOf(systemDatabase.name, defaultDatabase),
                 consensus,
                 logService.getInternalLog(Neo4jLocalStores::class.java),
-                consensus::seed,
+                received = { name -> metrics.of(name).copiesReceived.increment() },
+                seed = consensus::seed,
             )
         localStores = stores
         val catchUp =
@@ -177,6 +180,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 { databaseControl() },
                 stores::stageReplicated,
                 logService.getInternalLog(CatchUp::class.java),
+                metrics = metrics,
             )
         replicationService =
             ReplicationService(
@@ -203,6 +207,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         databases.joinToString { it.name() },
                     )
                 },
+                metrics = metrics,
             )
         replication = replicationService
         val fileSystem = globalModule.fileSystem
@@ -231,6 +236,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         ?.let { consensus.currentSnapshot(it.ref) }
                 },
                 log = logService.getInternalLog(StoreCopySource::class.java),
+                served = { name -> metrics.of(name).copiesServed.increment() },
             ),
         )
         globalModule.databaseEventListeners.registerDatabaseEventListener(replication)

@@ -4,6 +4,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
+import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.consensus.CommitResult
 import org.dozendb.consensus.ConsensusLog
@@ -43,6 +44,7 @@ import org.neo4j.storageengine.api.CommandBatch
  * @property adopt runs once such a store is detached, before the group starts and before other
  *   members copy the store, and may commit to the database locally.
  * @property onSnapshotNeeded called when the group's log no longer holds entries this member needs.
+ * @property counts where its replications are counted, for metrics.
  */
 internal class ReplicatedDatabase(
     val namedDatabaseId: NamedDatabaseId,
@@ -57,6 +59,7 @@ internal class ReplicatedDatabase(
     private val log: InternalLog,
     private val afterApply: () -> Unit,
     private val onSnapshotNeeded: (ReplicatedDatabase, Member?, Long) -> Unit,
+    private val counts: ClusterMetrics.Counters = ClusterMetrics.Counters(),
 ) : HostedDatabase {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
 
@@ -227,14 +230,19 @@ internal class ReplicatedDatabase(
 
     /** Replicates a kernel transaction and returns the append index of its local apply. */
     fun replicate(batch: CommandBatch): Long {
+        counts.replicationNew.increment()
+        val started = System.nanoTime()
         val lease = leaseService.currentLease
-        if (lease == LeaseService.NO_LEASE) throw notLeader(consensus.status(ref).leader)
-        if (batch.leaseId != lease) throw leaseExpired(batch.leaseId)
+        if (lease == LeaseService.NO_LEASE) throw failed(notLeader(consensus.status(ref).leader))
+        if (batch.leaseId != lease) throw failed(leaseExpired(batch.leaseId))
         val payload = TransactionEnvelope.encode(batch)
         if (payload.size > consensus.maxEntrySize) {
-            throw CommitFailure.COMMIT_FAILED.exception(
-                "The transaction is too large to replicate: ${payload.size} bytes of changes, the " +
-                    "maximum is ${consensus.maxEntrySize}. Split it into smaller transactions."
+            throw failed(
+                CommitFailure.COMMIT_FAILED.exception(
+                    "The transaction is too large to replicate: ${payload.size} bytes of changes, " +
+                        "the maximum is ${consensus.maxEntrySize}. Split it into smaller " +
+                        "transactions."
+                )
             )
         }
         val result =
@@ -242,21 +250,39 @@ internal class ReplicatedDatabase(
                 runBlocking { consensus.submit(ref, payload) }
             } catch (e: InterruptedException) {
                 Thread.currentThread().interrupt()
-                throw outcomeUnknown(e)
+                throw unknown(outcomeUnknown(e))
             }
         return when (result) {
             is CommitResult.Committed ->
                 when (val outcome = ApplyOutcome.decode(result.response)) {
-                    is ApplyOutcome.Applied -> outcome.appendIndex
-                    is ApplyOutcome.LeaseExpired -> throw leaseExpired(outcome.leaseId)
+                    is ApplyOutcome.Applied -> {
+                        counts.replicationSuccess.increment()
+                        counts.replicationMillis.update(
+                            TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started)
+                        )
+                        outcome.appendIndex
+                    }
+                    is ApplyOutcome.LeaseExpired -> throw failed(leaseExpired(outcome.leaseId))
                     null ->
-                        throw outcomeUnknown(
-                            IllegalStateException("entry ${result.index} had no outcome")
+                        throw unknown(
+                            outcomeUnknown(
+                                IllegalStateException("entry ${result.index} had no outcome")
+                            )
                         )
                 }
-            is CommitResult.NotLeader -> throw notLeader(result.leaderHint)
-            is CommitResult.OutcomeUnknown -> throw outcomeUnknown(result.cause)
+            is CommitResult.NotLeader -> throw failed(notLeader(result.leaderHint))
+            is CommitResult.OutcomeUnknown -> throw unknown(outcomeUnknown(result.cause))
         }
+    }
+
+    /** [failure], counted as a transaction refused before or instead of replicating. */
+    private fun failed(failure: TransactionFailureException) = failure.also {
+        counts.replicationFail.increment()
+    }
+
+    /** [failure], counted as a transaction whose outcome is unknown. */
+    private fun unknown(failure: TransactionFailureException) = failure.also {
+        counts.replicationMaybe.increment()
     }
 
     private fun onStatus(status: GroupStatus) {
