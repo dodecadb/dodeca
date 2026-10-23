@@ -40,6 +40,7 @@ class RoutingIT {
             .inNetwork(network)
             .clusterMember(aliases.map { "$it:7700" })
             .boltOnHostPort(boltPorts[index])
+            .withHttp()
     }
     private val running = members.toMutableList()
     private lateinit var driver: Driver
@@ -208,6 +209,39 @@ class RoutingIT {
 
     @Test
     @Order(5)
+    fun `HTTP writes on a follower run on the leader`() {
+        val leader = awaitLeader()
+        val follower = running.first { it != leader }
+
+        val queryApi =
+            follower.post("/db/neo4j/query/v2", """{"statement": "CREATE (:ViaQueryApi)"}""")
+        val transactionApi =
+            follower.post(
+                "/db/neo4j/tx/commit",
+                """{"statements": [{"statement": "CREATE (:ViaTransactionApi)"}]}""",
+            )
+
+        assertThat(queryApi.statusCode()).describedAs(queryApi.body()).isBetween(200, 299)
+        assertThat(transactionApi.statusCode()).isEqualTo(200)
+        assertThat(transactionApi.body()).contains("\"errors\":[]")
+        for (member in running) {
+            await atMost
+                Duration.ofSeconds(30) untilAsserted
+                {
+                    assertThat(
+                            member.rows(
+                                "MATCH (n) WHERE n:ViaQueryApi OR n:ViaTransactionApi " +
+                                    "RETURN count(n) AS c"
+                            )
+                        )
+                        .describedAs(member.alias)
+                        .containsExactly(mapOf("c" to 2L))
+                }
+        }
+    }
+
+    @Test
+    @Order(6)
     fun `writes continue on a new leader soon after the leader dies`() {
         val leader = awaitLeader()
         val acknowledged = mutableListOf<Int>()

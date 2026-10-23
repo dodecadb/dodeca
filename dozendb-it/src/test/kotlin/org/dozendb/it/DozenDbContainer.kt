@@ -5,10 +5,12 @@ import com.github.dockerjava.api.model.Volume
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.net.http.HttpResponse.BodyHandlers
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.Base64
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
@@ -105,6 +107,27 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         setPortBindings(portBindings + "$hostPort:$BOLT_PORT")
         return withEnv("NEO4J_server_bolt_advertised__address", "127.0.0.1:$hostPort")
     }
+
+    /** Publishes Neo4j's HTTP connector, for [post]. */
+    fun withHttp(): DozenDbContainer {
+        addExposedPort(HTTP_PORT)
+        return this
+    }
+
+    /** Posts [json] to [path] of Neo4j's HTTP API as `neo4j`. */
+    fun post(path: String, json: String): HttpResponse<String> =
+        http.send(
+            HttpRequest.newBuilder(URI("http://$host:${getMappedPort(HTTP_PORT)}$path"))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json")
+                .header(
+                    "Authorization",
+                    "Basic " + Base64.getEncoder().encodeToString("neo4j:$PASSWORD".toByteArray()),
+                )
+                .POST(HttpRequest.BodyPublishers.ofString(json))
+                .build(),
+            BodyHandlers.ofString(),
+        )
 
     /**
      * Reports the metrics that [filter] selects on the Prometheus endpoint, published on [hostPort]
@@ -282,6 +305,8 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
 
     companion object {
         const val BOLT_PORT = 7687
+        const val HTTP_PORT = 7474
+        const val ROUTING_PORT = 7688
         const val PROMETHEUS_PORT = 2004
         const val BACKUP_PORT = 6362
         const val PASSWORD = "dozendb-it-secret"
