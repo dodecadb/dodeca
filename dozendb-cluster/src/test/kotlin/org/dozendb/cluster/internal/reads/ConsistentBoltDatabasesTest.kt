@@ -52,7 +52,7 @@ class ConsistentBoltDatabasesTest {
         }
 
     private fun begin(metadata: Map<String, Any>?) {
-        ConsistentBoltDatabases(delegate, ReadConsistency.CAUSAL)
+        ConsistentBoltDatabases(delegate, ReadConsistency.CAUSAL) { error("no bookmarks") }
             .database("neo4j", EmptyMemoryTracker.INSTANCE)
             .beginTransaction(
                 KernelTransaction.Type.EXPLICIT,

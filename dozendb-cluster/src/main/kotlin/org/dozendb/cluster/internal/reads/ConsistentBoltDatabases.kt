@@ -7,6 +7,9 @@ import org.neo4j.bolt.dbapi.BoltGraphDatabaseServiceSPI
 import org.neo4j.bolt.dbapi.BoltTransaction
 import org.neo4j.bolt.protocol.common.message.AccessMode
 import org.neo4j.bolt.protocol.common.message.request.connection.RoutingContext
+import org.neo4j.fabric.bookmark.BookmarkFormat
+import org.neo4j.fabric.bookmark.LocalGraphTransactionIdTracker
+import org.neo4j.fabric.bookmark.TransactionBookmarkManagerImpl
 import org.neo4j.internal.kernel.api.connectioninfo.ClientConnectionInfo
 import org.neo4j.internal.kernel.api.security.LoginContext
 import org.neo4j.kernel.api.KernelTransaction
@@ -19,10 +22,15 @@ import org.neo4j.memory.MemoryTracker
  * `dozendb.consistency` metadata key: one that asks for another fails as it begins, before Neo4j's
  * query router decides where it runs. [LinearizableLocalTransactions] waits for linearizable reads
  * there.
+ *
+ * A transaction first waits until `system` here holds what its bookmarks saw of it, as Neo4j's
+ * query router waits ([transactionIds]), but before Neo4j resolves the name of its database, which
+ * this member would not find yet if the leader created it, or an alias of it, moments ago.
  */
 internal class ConsistentBoltDatabases(
     private val delegate: BoltGraphDatabaseManagementServiceSPI,
     private val defaultConsistency: ReadConsistency,
+    private val transactionIds: () -> LocalGraphTransactionIdTracker,
 ) : BoltGraphDatabaseManagementServiceSPI {
     override fun database(
         databaseName: String,
@@ -44,6 +52,11 @@ internal class ConsistentBoltDatabases(
             queryExecutionConfiguration: QueryExecutionConfiguration,
         ): BoltTransaction {
             ReadConsistency.of(txMetadata, defaultConsistency)
+            if (bookmarks.isNotEmpty()) {
+                TransactionBookmarkManagerImpl(BookmarkFormat.parse(bookmarks))
+                    .bookmarkForLocalSystemDatabase
+                    .ifPresent { transactionIds().awaitSystemGraphUpToDate(it.transactionId()) }
+            }
             return database.beginTransaction(
                 type,
                 loginContext,

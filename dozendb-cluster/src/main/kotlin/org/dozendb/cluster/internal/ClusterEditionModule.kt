@@ -29,6 +29,7 @@ import org.dozendb.cluster.internal.replication.DatabaseReconciler
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
+import org.dozendb.cluster.internal.routing.ConfirmedReferences
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
 import org.dozendb.consensus.ConsensusLog
@@ -64,6 +65,7 @@ import org.neo4j.dbms.routing.RoutingService
 import org.neo4j.dbms.routing.RoutingTableTTLProvider
 import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
+import org.neo4j.fabric.bookmark.LocalGraphTransactionIdTracker
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.graphdb.factory.module.GlobalModule
@@ -624,7 +626,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             config,
             { cluster.members().size <= 1 },
             defaultDatabaseResolver,
-            databaseReferenceRepo,
+            ConfirmedReferences(databaseReferenceRepo) {
+                replication.awaitLinearizable(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
+            },
             true,
             globalModule.globalClock,
         )
@@ -636,7 +640,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ConsistentBoltDatabases(
                 super.createBoltDatabaseManagementServiceProvider(),
                 globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
-            ),
+            ) {
+                // Neo4j's query router registers it, after the Bolt databases are made.
+                globalModule.globalDependencies.resolveDependency(
+                    LocalGraphTransactionIdTracker::class.java
+                )
+            },
             globalModule.globalConfig,
         )
 
