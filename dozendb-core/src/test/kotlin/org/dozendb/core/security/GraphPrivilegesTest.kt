@@ -228,6 +228,19 @@ class GraphPrivilegesTest {
     }
 
     @Test
+    fun `privileges on names that do not exist yet apply once they do`() {
+        grant("GRANT TRAVERSE ON GRAPH * NODES Fresh TO r")
+        grant("GRANT READ {fresh} ON GRAPH * NODES Fresh TO r")
+
+        assertThat(nodes()).isEqualTo(0L)
+
+        server.rows("CREATE (:Fresh {fresh: 1})")
+
+        // Alice's privileges were compiled before the names existed.
+        assertThat(alice.values("MATCH (n) RETURN n.fresh")).containsExactly(1L)
+    }
+
+    @Test
     fun `privileges on a named graph or the home graph apply there only`() {
         server.administer("CREATE DATABASE films")
         server.rows("CREATE (:A {p: 100})", "films")
