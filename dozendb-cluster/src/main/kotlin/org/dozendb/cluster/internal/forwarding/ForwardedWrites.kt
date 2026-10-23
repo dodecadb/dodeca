@@ -17,10 +17,16 @@ internal object ForwardedWrites {
      * members [tls], or null if they may.
      */
     fun refusal(config: Config, tls: TlsConfig?): String? =
+        if (!config.get(BoltConnector.enabled)) {
+            "Bolt, and with it the routing connector, is disabled " +
+                "(${BoltConnector.enabled.name()}=false)"
+        } else {
+            sendingRefusal(config, tls)
+        }
+
+    /** Why this member forwards no writes to other members, or null if it does. */
+    fun sendingRefusal(config: Config, tls: TlsConfig?): String? =
         when {
-            !config.get(BoltConnector.enabled) ->
-                "Bolt, and with it the routing connector, is disabled " +
-                    "(${BoltConnector.enabled.name()}=false)"
             !config.get(GraphDatabaseSettings.routing_enabled) ->
                 "server-side routing is disabled " +
                     "(${GraphDatabaseSettings.routing_enabled.name()}=false)"

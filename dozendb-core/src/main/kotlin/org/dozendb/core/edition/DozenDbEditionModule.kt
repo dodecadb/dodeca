@@ -47,6 +47,7 @@ import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule
+import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.CommunitySecurityLog
 import org.neo4j.io.device.DeviceMapper
 import org.neo4j.kernel.api.procedure.GlobalProcedures
@@ -359,20 +360,30 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         databaseManagementService: DatabaseManagementService
     ) {
         val bootstrap =
-            CommunityQueryRouterBootstrap(
-                globalModule.globalLife,
-                globalModule.globalDependencies,
-                globalModule.logService,
+            createQueryRouterBootstrap(
                 globalModule.globalDependencies.resolveDependency(
                     DatabaseContextProvider::class.java
                 ),
-                databaseReferenceRepo,
                 securityLog ?: CommunitySecurityLog.NULL_LOG,
             )
         globalModule.globalDependencies.satisfyDependency(
             bootstrap.bootstrapServices(databaseManagementService)
         )
     }
+
+    /** Neo4j Community's query router, whose transactions run on this server. */
+    protected open fun createQueryRouterBootstrap(
+        databaseProvider: DatabaseContextProvider<*>,
+        securityLog: AbstractSecurityLog,
+    ): CommunityQueryRouterBootstrap =
+        CommunityQueryRouterBootstrap(
+            globalModule.globalLife,
+            globalModule.globalDependencies,
+            globalModule.logService,
+            databaseProvider,
+            databaseReferenceRepo,
+            securityLog,
+        )
 
     /** Neo4j Community's procedures, and `dbms.setConfigValue`. */
     override fun registerEditionSpecificProcedures(

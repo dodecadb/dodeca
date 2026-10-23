@@ -17,6 +17,12 @@ import org.dozendb.cluster.MembershipReconciler
 import org.dozendb.cluster.internal.durability.FsyncPolicy
 import org.dozendb.cluster.internal.durability.SingleFsyncFileSystem
 import org.dozendb.cluster.internal.forwarding.ForwardedWrites
+import org.dozendb.cluster.internal.forwarding.ForwardingLocations
+import org.dozendb.cluster.internal.forwarding.ForwardingQueryRouterBootstrap
+import org.dozendb.cluster.internal.forwarding.ForwardingWatch
+import org.dozendb.cluster.internal.forwarding.MemberSsl
+import org.dozendb.cluster.internal.forwarding.RemoteTransactions
+import org.dozendb.cluster.internal.forwarding.RoutingBoltDatabases
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
@@ -62,12 +68,15 @@ import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
+import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.router.CommunityQueryRouterBootstrap
 import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
+import org.neo4j.storageengine.api.TransactionIdStore
 
 /**
  * DozenDB's edition module with clustering added. Only used when clustering is enabled.
@@ -608,11 +617,68 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     override fun createBoltDatabaseManagementServiceProvider():
         BoltGraphDatabaseManagementServiceSPI =
-        ConsistentBoltDatabases(
-            super.createBoltDatabaseManagementServiceProvider(),
-            replication,
-            globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
+        RoutingBoltDatabases(
+            ConsistentBoltDatabases(
+                super.createBoltDatabaseManagementServiceProvider(),
+                replication,
+                globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
+            ),
+            globalModule.globalConfig,
         )
+
+    /**
+     * Neo4j Community's query router, which runs write transactions of clients that allow routing
+     * on the leader of their databases when this member does not lead them, if it can: with
+     * server-side routing on and mutual TLS between members.
+     */
+    override fun createQueryRouterBootstrap(
+        databaseProvider: DatabaseContextProvider<*>,
+        securityLog: AbstractSecurityLog,
+    ): CommunityQueryRouterBootstrap {
+        val config = globalModule.globalConfig
+        val tls = memberTls
+        if (tls == null || ForwardedWrites.sendingRefusal(config, tls) != null) {
+            return super.createQueryRouterBootstrap(databaseProvider, securityLog)
+        }
+        val logs = globalModule.logService.internalLogProvider
+        val remote =
+            RemoteTransactions(
+                config,
+                MemberSsl.context(tls),
+                tls.verifyHostname,
+                ::lastSystemTransaction,
+                logs,
+            )
+        val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
+        val locations =
+            ForwardingLocations(
+                { id -> replication.replica(id)?.ref },
+                consensus,
+                directory::routingAddress,
+                { member -> directory.reported(member) != null },
+                electionTimeout,
+                logs.getLog(ForwardingLocations::class.java),
+            )
+        globalModule.globalLife.add(
+            ForwardingWatch(locations, remote, electionTimeout.multipliedBy(2))
+        )
+        return ForwardingQueryRouterBootstrap(
+            globalModule,
+            databaseProvider,
+            databaseReferenceRepo,
+            securityLog,
+            locations::locationService,
+            remote,
+        )
+    }
+
+    /** The last transaction of `system` on this member, which its forwarded logins carry. */
+    private fun lastSystemTransaction(): Long =
+        databaseRepository
+            .getSystemDatabaseContext()
+            .dependencies()
+            .resolveDependency(TransactionIdStore::class.java)
+            .lastClosedTransactionId
 
     override fun registerEditionSpecificProcedures(
         globalProcedures: GlobalProcedures,
