@@ -37,6 +37,10 @@ class ArtifactChain(val artifacts: List<Artifact>) {
     val last: Artifact
         get() = artifacts.last()
 
+    /** The latest users, roles and privileges a backup of the chain holds, if any. */
+    val metadataScript: String?
+        get() = artifacts.lastOrNull { it.header.metadataScript != null }?.header?.metadataScript
+
     override fun toString() = artifacts.joinToString(", ")
 }
 

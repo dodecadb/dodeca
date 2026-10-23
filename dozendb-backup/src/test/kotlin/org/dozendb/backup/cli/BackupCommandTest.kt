@@ -88,6 +88,57 @@ class BackupCommandTest {
         server.rows("MATCH (n:$label) RETURN count(n) AS count").single()["count"] as Long
 
     @Test
+    fun `keeps the users, roles and privileges of the database, which a restore writes out`() {
+        val source = source().apply { start() }
+        source.administer("CREATE ROLE curator")
+        source.administer("GRANT MATCH {*} ON GRAPH neo4j TO curator")
+        source.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+        source.administer("GRANT ROLE curator TO alice")
+
+        for (arguments in
+            listOf(
+                arrayOf("--type=FULL"),
+                arrayOf("--include-metadata=roles"),
+                arrayOf("--include-metadata=none"),
+                arrayOf("system"),
+            )) {
+            // So that no differential backup is empty.
+            source.rows("CREATE (:Batch)")
+            val result = backup(source, *arguments)
+            assertThat(result.exitCode).describedAs(result.toString()).isZero
+        }
+        val (all, roles, none) = artifacts()
+
+        assertThat(all.header.metadataScript)
+            .contains(
+                "CREATE ROLE `curator` IF NOT EXISTS;\n",
+                "GRANT MATCH {*} ON GRAPH \$database NODE * TO `curator`;\n",
+                "GRANT ROLE `curator` TO `alice`;\n",
+            )
+            .containsPattern("CREATE USER `alice` IF NOT EXISTS SET ENCRYPTED PASSWORD '1,")
+        assertThat(roles.header.metadataScript)
+            .contains("CREATE ROLE `curator` IF NOT EXISTS;\n")
+            .doesNotContain("CREATE USER")
+        assertThat(none.header.metadataScript).isNull()
+        assertThat(artifacts("system").single().header.metadataScript).isNull()
+        assertThat(backup(source, "--include-metadata=some").err)
+            .contains("'some' is not one of none, all, users and roles")
+
+        // The restore of the chain writes out the latest metadata it holds, that of roles.
+        val home = Files.createDirectories(root.resolve("restored"))
+        val restore = Admin.run(home, ::RestoreCommand, "--from-path=${none.path}")
+        val script = home.resolve("data/scripts/neo4j/restore_metadata.cypher")
+
+        assertThat(restore.exitCode).describedAs(restore.toString()).isZero
+        assertThat(Files.readString(script)).isEqualTo(roles.header.metadataScript)
+        assertThat(restore.out)
+            .contains(
+                "Wrote the users, roles and privileges of database 'neo4j' to $script.",
+                "cat $script | bin/cypher-shell -d system --param \"database => 'neo4j'\"",
+            )
+    }
+
+    @Test
     fun `a full backup under writes holds every write acknowledged before it`() {
         val source = source().apply { start() }
         CommunityServer.populate(source.database())

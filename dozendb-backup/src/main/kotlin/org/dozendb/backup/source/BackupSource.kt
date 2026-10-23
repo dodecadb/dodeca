@@ -16,8 +16,10 @@ import org.dozendb.backup.source.CommittedTransactions.Diverged
 import org.dozendb.backup.source.CommittedTransactions.Pruned
 import org.dozendb.consensus.BulkSource
 import org.dozendb.core.edition.LatestWrites
+import org.dozendb.core.security.MetadataScript
 import org.dozendb.core.store.StoreArchive
 import org.dozendb.core.store.StoreSnapshots
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.DatabaseNamePattern
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.io.fs.FileSystemAbstraction
@@ -34,6 +36,7 @@ internal class BackupSource(
     private val latestWrites: LatestWrites,
     private val fs: FileSystemAbstraction,
     private val source: String,
+    private val defaultDatabase: String,
     logProvider: InternalLogProvider,
     private val clock: Clock = Clock.systemUTC(),
 ) : BulkSource {
@@ -53,6 +56,7 @@ internal class BackupSource(
                 is Request.Full -> database(decoded.database, out)?.let { full(it, out) }
                 is Request.Differential ->
                     database(decoded.database, out)?.let { differential(it, decoded, out) }
+                is Request.Metadata -> database(SYSTEM, out)?.let { metadata(it, decoded, out) }
             }
         } catch (e: IOException) {
             // Typically the client went away; the transport logs nothing that a server shows.
@@ -61,6 +65,7 @@ internal class BackupSource(
                     is Request.List -> "the list of databases"
                     is Request.Full -> "a full backup of ${decoded.database}"
                     is Request.Differential -> "a differential backup of ${decoded.database}"
+                    is Request.Metadata -> "the metadata of ${decoded.database}"
                 }
             log.warn("Serving %s failed: %s", what, e.message)
             throw e
@@ -189,10 +194,32 @@ internal class BackupSource(
         }
     }
 
+    /** The users, roles and privileges of the database, from [system] once it holds the latest. */
+    private fun metadata(system: Database, request: Request.Metadata, out: OutputStream) {
+        val script =
+            databases
+                .getDatabaseContext(system.namedDatabaseId)
+                .orElseThrow()
+                .databaseFacade()
+                .beginTx()
+                .use {
+                    MetadataScript.generate(
+                        it,
+                        request.database,
+                        request.include,
+                        defaultDatabase,
+                        log,
+                    )
+                }
+        BackupProtocol.writeStatus(out, Status.OK)
+        BackupProtocol.writeScript(out, script)
+    }
+
     private fun now(): Instant = clock.instant().truncatedTo(ChronoUnit.SECONDS)
 
     private companion object {
         val LATEST_WRITES_TIMEOUT: Duration = Duration.ofMinutes(1)
         val CLOSE_TIMEOUT: Duration = Duration.ofMinutes(1)
+        val SYSTEM: String = GraphDatabaseSettings.SYSTEM_DATABASE_NAME
     }
 }

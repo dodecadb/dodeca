@@ -3,6 +3,7 @@ package org.dozendb.backup
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.PrintStream
+import java.io.PrintWriter
 import java.nio.file.Path
 import org.neo4j.cli.ExecutionContext
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
@@ -22,16 +23,19 @@ internal object Admin {
     ): Result {
         val out = ByteArrayOutputStream()
         val err = ByteArrayOutputStream()
+        val errors = PrintStream(err, true)
         val context =
             ExecutionContext(
                 home,
                 home.resolve("conf"),
                 PrintStream(out, true),
-                PrintStream(err, true),
+                errors,
                 input,
                 DefaultFileSystemAbstraction(),
             )
-        val exitCode = CommandLine(command(context)).execute(*arguments)
+        // Usage errors too, which picocli prints itself.
+        val exitCode =
+            CommandLine(command(context)).setErr(PrintWriter(errors, true)).execute(*arguments)
         return Result(exitCode, out.toString(), err.toString())
     }
 }

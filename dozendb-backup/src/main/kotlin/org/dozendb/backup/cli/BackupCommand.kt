@@ -17,6 +17,7 @@ import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.BackupTls
 import org.dozendb.backup.client.BackupClient
 import org.dozendb.consensus.HostPort
+import org.dozendb.core.security.MetadataScript
 import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.Converters.DatabaseNamePatternConverter
@@ -24,6 +25,7 @@ import org.neo4j.cli.ExecutionContext
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.DatabaseNamePattern
+import org.neo4j.dbms.archive.backup.BackupMetadataV2
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.pagecache.context.CursorContext
@@ -32,6 +34,7 @@ import org.neo4j.logging.InternalLogProvider
 import org.neo4j.ssl.config.SslPolicyLoader
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.StoreId
+import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Help.Visibility.ALWAYS
 import picocli.CommandLine.Option
@@ -109,6 +112,33 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             ],
     )
     private var type = Type.AUTO
+
+    @Option(
+        names = ["--include-metadata"],
+        paramLabel = "none|all|users|roles",
+        defaultValue = "all",
+        showDefaultValue = ALWAYS,
+        converter = [IncludeConverter::class],
+        description =
+            [
+                "Include in the backup the Cypher that gives a DBMS back the database's users, " +
+                    "roles and privileges, which a restore writes to " +
+                    "data/scripts/<database>/restore_metadata.cypher. roles: the roles with " +
+                    "privileges on the database or every database, and those privileges. users: " +
+                    "the users who can access the database, and their roles among those. all: " +
+                    "both. none: nothing. Never for the system database."
+            ],
+    )
+    private var includeMetadata = MetadataScript.Include.ALL
+
+    /** `none|all|users|roles`, as Enterprise writes them. */
+    class IncludeConverter : CommandLine.ITypeConverter<MetadataScript.Include> {
+        override fun convert(value: String): MetadataScript.Include =
+            MetadataScript.Include.entries.find { it.name.equals(value, ignoreCase = true) }
+                ?: throw CommandLine.TypeConversionException(
+                    "'$value' is not one of none, all, users and roles"
+                )
+    }
 
     @Option(
         names = ["--compress"],
@@ -285,9 +315,10 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         }
         for (server in servers) {
             try {
+                val script = metadata(name, client, server)
                 if (latest != null) {
                     try {
-                        differential(name, latest, client, server)
+                        differential(name, latest, client, server, script)
                         return true
                     } catch (e: Discontinued) {
                         ctx.out()
@@ -297,7 +328,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                             )
                     }
                 }
-                full(name, client, server, resources)
+                full(name, client, server, resources, script)
                 return true
             } catch (e: Refused) {
                 ctx.err().println("Could not back up database '$name' from $server: ${e.message}")
@@ -318,11 +349,32 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         return ArtifactChains.select(artifacts, null).last
     }
 
+    /**
+     * The users, roles and privileges of [name] that --include-metadata asks [server] for, taken
+     * before the backup; none for `system`.
+     */
+    private fun metadata(name: String, client: BackupClient, server: HostPort): String? {
+        if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) return null
+        if (includeMetadata == MetadataScript.Include.NONE) return null
+        val script = client.metadata(server, name, includeMetadata) ?: return null
+        val size = script.toByteArray(Charsets.UTF_8).size
+        if (size > BackupMetadataV2.METADATA_SCRIPT_MAX_LENGTH) {
+            throw Refused(
+                Status.FAILED,
+                "the users, roles and privileges of '$name' take $size bytes, more than a backup " +
+                    "holds; back it up with --include-metadata=none and keep them with SHOW " +
+                    "PRIVILEGES AS COMMANDS",
+            )
+        }
+        return script
+    }
+
     private fun differential(
         name: String,
         latest: Artifact,
         client: BackupClient,
         server: HostPort,
+        script: String?,
     ) {
         val base = latest.header
         val fs = ctx.fs()
@@ -342,7 +394,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                                 "re-created or replaced"
                         )
                     }
-                    val artifact = header.copy(compressed = compress)
+                    val artifact = header.copy(compressed = compress, metadataScript = script)
                     val file =
                         Artifacts.writeNew(toPath, header.databaseName, header.time, fs) {
                             Artifacts.writeDifferential(
@@ -384,6 +436,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         client: BackupClient,
         server: HostPort,
         resources: AdminResources,
+        script: String?,
     ) {
         val fs = ctx.fs()
         val staging = fs.createTempDirectory(temporaryDirectory(), ".dozendb-backup-")
@@ -423,6 +476,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     lastChecksum = last.checksum(),
                     lastCommitTime = Instant.ofEpochMilli(last.commitTimestamp()),
                     source = copy.metadata.source,
+                    metadataScript = script,
                 )
             val file =
                 Artifacts.writeNew(toPath, header.databaseName, header.time, fs) {

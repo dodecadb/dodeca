@@ -17,6 +17,8 @@ import org.neo4j.storageengine.api.StoreId
  * @property lastChecksum the checksum of the transaction at [highestAppendIndex], null if empty.
  * @property lastCommitTime when that transaction committed, in milliseconds, null if empty.
  * @property source the server that served the backup.
+ * @property metadataScript the Cypher that gives a DBMS back the database's users, roles and
+ *   privileges, as `--include-metadata` asked for them; null without.
  */
 data class ArtifactHeader(
     val databaseName: String,
@@ -31,6 +33,7 @@ data class ArtifactHeader(
     val lastChecksum: Int?,
     val lastCommitTime: Instant?,
     val source: String,
+    val metadataScript: String? = null,
 ) {
     init {
         require(time.nano == 0) { "time $time is not in whole seconds" }

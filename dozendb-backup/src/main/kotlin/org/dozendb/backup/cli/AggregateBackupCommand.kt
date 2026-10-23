@@ -166,6 +166,7 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
                     lastChecksum = last.checksum(),
                     lastCommitTime = Instant.ofEpochMilli(last.commitTimestamp()),
                     source = expected.source,
+                    metadataScript = chain.metadataScript,
                 )
             // In place under a new name before the chain goes, so that a crash loses neither.
             var aggregate =

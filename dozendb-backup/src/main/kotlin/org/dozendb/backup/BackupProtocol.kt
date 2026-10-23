@@ -9,6 +9,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.time.Instant
+import org.dozendb.core.security.MetadataScript
 import org.dozendb.core.store.StoreArchive
 
 /**
@@ -22,6 +23,8 @@ import org.dozendb.core.store.StoreArchive
  *   a copy of the database that strict recovery completes up to that transaction.
  * - [Request.Differential]: an uncompressed differential backup of the transactions after the given
  *   one.
+ * - [Request.Metadata]: `boolean present`, and if so `int length` and as many bytes of UTF-8: the
+ *   [MetadataScript] of the database.
  */
 internal object BackupProtocol {
     const val NAME = "dozendb.backup"
@@ -54,6 +57,9 @@ internal object BackupProtocol {
          * [checksum].
          */
         data class Differential(val database: String, val after: Long, val checksum: Int) : Request
+
+        /** What [include] asks for of the users, roles and privileges of [database]. */
+        data class Metadata(val database: String, val include: MetadataScript.Include) : Request
     }
 
     /** A full copy's metadata: when the server took it, and which server. */
@@ -84,6 +90,11 @@ internal object BackupProtocol {
                 out.writeLong(request.after)
                 out.writeInt(request.checksum)
             }
+            is Request.Metadata -> {
+                out.writeByte(KIND_METADATA)
+                out.writeUTF(request.database)
+                out.writeUTF(request.include.name)
+            }
         }
     }
 
@@ -98,6 +109,14 @@ internal object BackupProtocol {
                 KIND_FULL -> Request.Full(input.readUTF())
                 KIND_DIFFERENTIAL ->
                     Request.Differential(input.readUTF(), input.readLong(), input.readInt())
+                KIND_METADATA ->
+                    Request.Metadata(
+                        input.readUTF(),
+                        input.readUTF().let { include ->
+                            MetadataScript.Include.entries.find { it.name == include }
+                                ?: throw IOException("unknown metadata $include")
+                        },
+                    )
                 else -> throw IOException("unknown backup request $kind")
             }
         }
@@ -150,6 +169,30 @@ internal object BackupProtocol {
         return List(data.readInt()) { data.readUTF() }
     }
 
+    fun writeScript(out: OutputStream, script: String?) {
+        val data = DataOutputStream(out)
+        data.writeBoolean(script != null)
+        if (script != null) {
+            val bytes = script.toByteArray(Charsets.UTF_8)
+            data.writeInt(bytes.size)
+            data.write(bytes)
+        }
+        data.flush()
+    }
+
+    fun readScript(input: InputStream): String? {
+        val data = DataInputStream(input)
+        if (!data.readBoolean()) return null
+        val length = data.readInt()
+        if (length < 0) throw IOException("invalid metadata length $length")
+        return String(
+            data.readNBytes(length).also {
+                if (it.size != length) throw IOException("the server ended its metadata early")
+            },
+            Charsets.UTF_8,
+        )
+    }
+
     fun encode(metadata: FullMetadata): ByteArray = bytes {
         it.writeLong(metadata.time.toEpochMilli())
         it.writeUTF(metadata.source)
@@ -173,6 +216,7 @@ internal object BackupProtocol {
     private const val KIND_LIST = 1
     private const val KIND_FULL = 2
     private const val KIND_DIFFERENTIAL = 3
+    private const val KIND_METADATA = 4
 
     private fun bytes(write: (DataOutputStream) -> Unit): ByteArray {
         val buffer = ByteArrayOutputStream()

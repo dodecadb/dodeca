@@ -286,6 +286,31 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                     "To use it, run CREATE DATABASE $name, or START DATABASE $name if it " +
                         "exists, on the system database."
             )
+        writeMetadata(name, chain, config)
+    }
+
+    /**
+     * Writes the latest users, roles and privileges of [chain] to `restore_metadata.cypher`, as
+     * Enterprise's restore does, and tells how to run it once the database exists.
+     */
+    private fun writeMetadata(name: String, chain: ArtifactChain, config: Config) {
+        if (name == NamedDatabaseId.SYSTEM_DATABASE_NAME) return
+        val script = chain.metadataScript ?: return
+        val file =
+            config
+                .get(GraphDatabaseSettings.data_directory)
+                .resolve("scripts")
+                .resolve(name)
+                .resolve(METADATA_SCRIPT)
+        val fs = ctx.fs()
+        fs.mkdirs(file.parent)
+        fs.openAsOutputStream(file, false).use { it.write(script.toByteArray(Charsets.UTF_8)) }
+        ctx.out()
+            .println(
+                "Wrote the users, roles and privileges of database '$name' to $file. Once the " +
+                    "database exists, run it on the system database to give them back:\n  cat " +
+                    "$file | bin/cypher-shell -d system --param \"database => '$name'\""
+            )
     }
 
     /** Prepares the database on this clustered server, where CREATE DATABASE finds it. */
@@ -314,6 +339,7 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                 throw e
             }
         ctx.out().println("Prepared database '$name' on this server ${describe(chain, prepared)}.")
+        writeMetadata(name, chain, config)
         val storage = AbstractIdentityModule.createServerIdStorage(fs, layout.serverIdFile())
         if (storage.exists()) {
             ctx.out()
@@ -348,5 +374,6 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
 
     private companion object {
         val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        const val METADATA_SCRIPT = "restore_metadata.cypher"
     }
 }

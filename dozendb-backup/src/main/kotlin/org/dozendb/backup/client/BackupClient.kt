@@ -11,6 +11,7 @@ import org.dozendb.backup.BackupProtocol.Request
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.ratis.BulkServer
 import org.dozendb.consensus.ratis.TlsConfig
+import org.dozendb.core.security.MetadataScript
 import org.dozendb.core.store.StoreArchive
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -78,6 +79,10 @@ internal class BackupClient(private val fs: FileSystemAbstraction, private val t
         fetch(server, Request.Differential(database, after, checksum)) { input ->
             Artifacts.readDifferential(input, readers, block)
         }
+
+    /** What [include] asks for of the users, roles and privileges of [database] on [server]. */
+    fun metadata(server: HostPort, database: String, include: MetadataScript.Include): String? =
+        fetch(server, Request.Metadata(database, include), BackupProtocol::readScript)
 
     private companion object {
         // gRPC logs to java.util.logging, which a command prints; its INFO lines are noise there.

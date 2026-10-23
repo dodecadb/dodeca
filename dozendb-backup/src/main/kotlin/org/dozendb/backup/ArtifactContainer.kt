@@ -107,6 +107,7 @@ internal object ArtifactContainer {
         header.previousChecksum?.let { put(KEY_PREVIOUS_CHECKSUM, it.toString()) }
         header.lastChecksum?.let { put(KEY_LAST_CHECKSUM, it.toString()) }
         header.lastCommitTime?.let { put(KEY_LAST_COMMIT_TIME, it.toEpochMilli().toString()) }
+        header.metadataScript?.let { put(BackupMetadataV2.METADATA_SCRIPT_FIELD, it) }
     }
 
     private fun header(metadata: BackupMetadataV2, compressed: Boolean): ArtifactHeader {
@@ -131,6 +132,7 @@ internal object ArtifactContainer {
             lastChecksum = fields[KEY_LAST_CHECKSUM]?.let { checksum(it) },
             lastCommitTime = fields[KEY_LAST_COMMIT_TIME]?.let { commitTime(it) },
             source = fields[KEY_SOURCE] ?: throw IOException("the source of the backup is missing"),
+            metadataScript = fields[BackupMetadataV2.METADATA_SCRIPT_FIELD],
         )
     }
 

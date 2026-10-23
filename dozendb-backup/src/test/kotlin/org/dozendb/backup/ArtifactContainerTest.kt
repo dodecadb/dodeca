@@ -79,6 +79,23 @@ class ArtifactContainerTest {
 
     @ParameterizedTest
     @ValueSource(booleans = [true, false])
+    fun `keeps the users and roles of the database, where Community keeps them`(
+        compressed: Boolean
+    ) {
+        val script = "CREATE ROLE `curator` IF NOT EXISTS;\nGRANT ROLE `curator` TO `alice`;\n"
+        val header = header(compressed, full = true).copy(metadataScript = script)
+
+        val artifact = artifact(header)
+
+        assertThat(ArtifactContainer.read(ByteArrayInputStream(artifact)).header).isEqualTo(header)
+        assertThat(
+                BackupFormatSelector.readDescription(ByteArrayInputStream(artifact)).metadataScript
+            )
+            .isEqualTo(script)
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
     fun `without DozenDB's keys, the metadata is Community's byte for byte`(compressed: Boolean) {
         val header = header(compressed, full = true)
         val community =
