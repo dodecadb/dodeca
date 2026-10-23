@@ -8,6 +8,7 @@ import org.dozendb.core.monitoring.sources.DatabaseOperationMetrics
 import org.dozendb.core.monitoring.sources.JvmMetrics
 import org.dozendb.core.monitoring.sources.MemoryPoolMetrics
 import org.dozendb.core.monitoring.sources.PageCacheMetrics
+import org.dozendb.core.monitoring.sources.QueryMetrics
 import org.dozendb.core.monitoring.sources.RoutingMetrics
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DatabaseOperationCounts
@@ -54,6 +55,7 @@ private constructor(
             null
         }
 
+    private val queries = QueryMetrics()
     private var dbms: MetricRegistry.MetricGroup? = null
     private val listeners = mutableListOf<Any>()
     private val databaseMetrics = ConcurrentHashMap<String, DatabaseMetricGroup>()
@@ -85,6 +87,7 @@ private constructor(
         MemoryPoolMetrics.register(dbms, globalModule.memoryPools)
         listen(BoltMetrics.register(dbms))
         listen(RoutingMetrics(dbms))
+        listen(queries)
         DatabaseOperationMetrics.register(
             dbms,
             globalModule.globalDependencies.resolveDependency(DatabaseOperationCounts::class.java),
@@ -144,14 +147,15 @@ private constructor(
     ): DatabaseMetricGroup {
         val sizes =
             globalModule.globalDependencies.resolveDependency(DatabaseSizeService::class.java)
-        val undo = DatabaseMetrics.register(metrics, database, sizes)
-        MemoryPoolMetrics.register(
-            metrics,
-            globalModule.memoryPools,
-            database.namedDatabaseId.name(),
-        )
+        val name = database.namedDatabaseId.name()
+        val undoDatabase = DatabaseMetrics.register(metrics, database, sizes)
+        val undoQueries = queries.register(name, metrics)
+        MemoryPoolMetrics.register(metrics, globalModule.memoryPools, name)
         for (contributor in contributors()) contributor.database(database, metrics)
-        return DatabaseMetricGroup(metrics, undo)
+        return DatabaseMetricGroup(metrics) {
+            undoQueries()
+            undoDatabase()
+        }
     }
 
     override fun databaseShutdown(eventContext: DatabaseEventContext) = remove(eventContext)

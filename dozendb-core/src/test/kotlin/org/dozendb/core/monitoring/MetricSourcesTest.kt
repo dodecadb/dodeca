@@ -115,6 +115,7 @@ class MetricSourcesTest {
             database.executeTransactionally("CREATE RANGE INDEX FOR (m:Movie) ON (m.title)")
             database.executeTransactionally("CALL db.awaitIndexes()")
             repeat(2) { database.executeTransactionally("MATCH (m:Movie) RETURN count(m)") }
+            runCatching { database.executeTransactionally("MATCH (m:Movie) RETURN x") }
             database.dependencyResolver
                 .resolveDependency(CheckPointer::class.java)
                 .forceCheckPoint(SimpleTriggerInfo("test"))
@@ -141,6 +142,11 @@ class MetricSourcesTest {
                 .isGreaterThanOrEqualTo(1.0)
             assertThat(after["neo4j_database_neo4j_cypher_cache_executable_query_entries"])
                 .isGreaterThan(0.0)
+            assertThat(moved("db_query_execution_success_total")).isGreaterThanOrEqualTo(5.0)
+            assertThat(moved("db_query_execution_slotted_success_total")).isGreaterThan(0.0)
+            assertThat(moved("db_query_execution_failure_total")).isEqualTo(1.0)
+            assertThat(moved("db_query_execution_latency_millis_count"))
+                .isEqualTo(moved("db_query_execution_success_total"))
             assertThat(after)
                 .containsKeys(
                     "neo4j_database_neo4j_pool_transaction_neo4j_used_heap",

@@ -16,6 +16,7 @@
  */
 package org.dozendb.core.edition
 
+import org.dozendb.core.logging.QueryLog
 import org.dozendb.core.monitoring.MetricsService
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityComponent
@@ -52,6 +53,7 @@ import org.neo4j.kernel.database.SystemGraphDatabaseReferenceRepository
 import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.logging.log4j.LoggerTarget
 import org.neo4j.server.security.auth.CommunitySecurityModule
 
 /**
@@ -142,6 +144,13 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             globalModule.globalLife.add(it)
             globalModule.globalDependencies.satisfyDependency(it)
         }
+        globalModule.globalLife.add(
+            QueryLog(
+                globalModule.globalConfig,
+                globalModule.globalMonitors,
+                globalModule.logService.internalLogProvider.getLog(LoggerTarget.QUERY_LOGGER),
+            )
+        )
         globalModule.globalLife.add(manager.systemDatabaseStarter())
         globalModule.globalLife.add(manager.allDatabaseStopper())
         globalModule.globalDependencies.satisfyDependency(
