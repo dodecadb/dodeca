@@ -55,15 +55,17 @@ object PrivilegeText {
     /**
      * The command that gives [privilege] to the role [role], or to `$role` for null; with [revoke],
      * the one that takes it away. Null for a privilege on a database that [databaseName] does not
-     * know. WRITE on every node and on every relationship give the same command.
+     * know; the database [parameter] is `$database`. WRITE on every node and on every relationship
+     * give the same command.
      */
     fun command(
         privilege: Privilege,
         role: String?,
         revoke: Boolean,
         databaseName: (UUID) -> String?,
+        parameter: UUID? = null,
     ): Command? {
-        val body = body(privilege, databaseName) ?: return null
+        val body = body(privilege, databaseName, parameter) ?: return null
         val immutable = if (privilege.immutable) "IMMUTABLE " else ""
         val access = if (privilege.access == Access.GRANTED) "GRANT" else "DENY"
         val grantee = role?.let { STRINGIFIER.backtick(it, true, false) } ?: "\$role"
@@ -73,7 +75,11 @@ object PrivilegeText {
         return Command(text, privilege.immutable)
     }
 
-    private fun body(privilege: Privilege, databaseName: (UUID) -> String?): String? {
+    private fun body(
+        privilege: Privilege,
+        databaseName: (UUID) -> String?,
+        parameter: UUID?,
+    ): String? {
         val action = privilege.action
         val segment = privilege.segment
         return when (val scope = privilege.scope) {
@@ -91,7 +97,9 @@ object PrivilegeText {
             else -> {
                 val name =
                     when (scope) {
-                        is PrivilegeScope.Database -> name(databaseName(scope.id) ?: return null)
+                        is PrivilegeScope.Database ->
+                            if (scope.id == parameter) "\$database"
+                            else name(databaseName(scope.id) ?: return null)
                         PrivilegeScope.AllDatabases -> "*"
                         else -> null
                     }
