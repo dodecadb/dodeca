@@ -921,6 +921,18 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         // A member behind the leader's log installs a copy of the database: the leader only
         // notifies it.
         RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, false)
+        // After 30 failed attempts in a row to reach a follower, Ratis waits 5 s before each next
+        // one, and counts the INCONSISTENCY replies of a follower that came back as failures too.
+        // A member back from a stop of half a minute, as in a rolling restart, would hear from the
+        // leader every 5 s while it catches up: no heartbeats within its election timeout, and a
+        // leader that needs it for a majority, because another member is down, steps down and
+        // leaves its commits under way with an unknown outcome. Attempts stay well within the
+        // minimum election timeout instead; Ratis waits 0.5 to 1.5 times the time given.
+        val retryWait = maxOf(1, config.electionTimeoutMin.toMillis() / 4)
+        RaftServerConfigKeys.Log.Appender.setRetryPolicy(
+            properties,
+            "1ms,10, ${retryWait}ms,${Int.MAX_VALUE}",
+        )
         // A log entry must fit the appender buffer, which must fit the write buffer. Both are per
         // group; the write buffer is direct memory.
         val entryLimit = config.maxEntrySize.toLong() + ENTRY_OVERHEAD

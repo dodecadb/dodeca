@@ -320,6 +320,45 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a member back after a long stop takes part in commits at once`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val (back, other) = cluster.nodes.filter { it != leader }
+            leader.write("before")
+            back.stop()
+            leader.write("while away")
+            // Long enough that the leader failed many times in a row to reach it.
+            await atMost
+                Duration.ofSeconds(60) untilAsserted
+                {
+                    assertThat(
+                            leader.consensus
+                                .progress(cluster.database)
+                                ?.followerContactMillis
+                                ?.get(back.id)
+                        )
+                        .isGreaterThan(LONG_STOP.toMillis())
+                }
+
+            back.start()
+            back.consensus.startGroup(cluster.database, back.machine, emptyList())
+            // As in a rolling restart: the next member stops once this one is back.
+            other.stop()
+
+            // The leader needs the member that came back for every commit, and keeps leading.
+            val result = withTimeout(Duration.ofSeconds(5).toMillis()) { leader.write("after") }
+            assertThat(result).isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(leader.consensus.status(cluster.database).role).isEqualTo(Role.Leader)
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(back.machine.payloads())
+                        .containsExactly("before", "while away", "after")
+                }
+        }
+
+    @Test
     fun `a write appended before leadership is lost has an unknown outcome`() =
         runBlocking<Unit> {
             val cluster = formCluster()
@@ -823,5 +862,11 @@ class RatisConsensusLogTest {
 
     private companion object {
         val CHANGE_TIMEOUT: Duration = Duration.ofSeconds(20)
+
+        /**
+         * Longer than Ratis' default first 30 attempts to reach a follower: 10 at once, 20 a second
+         * apart.
+         */
+        val LONG_STOP: Duration = Duration.ofSeconds(25)
     }
 }
