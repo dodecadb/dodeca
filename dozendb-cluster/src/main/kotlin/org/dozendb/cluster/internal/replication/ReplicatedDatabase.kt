@@ -202,10 +202,30 @@ internal class ReplicatedDatabase(
 
     /**
      * Stops applying the group's entries, before the database stops or after it panicked. The group
-     * keeps running on this member, which hands leadership over unless [handOverOnStop] is off.
+     * keeps running on this member, which hands leadership over unless [handOverOnStop] is off. A
+     * leader first grants no lease, so that new commits fail as on a member that does not lead, and
+     * lets the commits under way finish, for [STOP_DRAIN] at most: once detached, it would no
+     * longer apply their entries, and could not tell their outcome.
      */
     fun stop() {
+        val leading =
+            synchronized(lock) {
+                if (statusListener == null) return
+                val leading = writableTerm != NOT_WRITABLE
+                handingOver = true
+                leaveWritableTerm()
+                leading
+            }
+        if (leading && !awaitNoCommits(STOP_DRAIN)) {
+            log.warn(
+                "Stopping %s while commits are still under way after %s: their clients may not " +
+                    "learn whether they committed",
+                ref.name,
+                STOP_DRAIN,
+            )
+        }
         synchronized(lock) {
+            handingOver = false
             val listener = statusListener ?: return
             replicating = false
             listener.close()
@@ -463,6 +483,7 @@ internal class ReplicatedDatabase(
         )
 
     private companion object {
+        val STOP_DRAIN: Duration = Duration.ofSeconds(10)
         const val NOT_WRITABLE = -1L
         const val REUSE_CHECK_MILLIS = 200L
         const val ID_CACHE_TAG = "dozendbIdCache"

@@ -29,6 +29,7 @@ import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.api.exceptions.Status
+import org.neo4j.kernel.impl.api.LeaseService
 
 /** Moving the leadership of a database on purpose. */
 class LeadershipTest {
@@ -180,6 +181,54 @@ class LeadershipTest {
                         .isEqualTo(acknowledged.size.toLong())
                 }
             }
+    }
+
+    @Test
+    fun `a leader that stops lets the commits under way finish`() {
+        val fileSystems = ConcurrentHashMap<Int, SlowLogFileSystem>()
+        val cluster = cluster { fileSystems.getOrPut(it.index) { SlowLogFileSystem() } }
+        val leader = cluster.awaitLeader()
+        val follower = cluster.running().first { it != leader }
+        val leaderFiles = fileSystems.getValue(leader.index)
+        // A new label commits its token first, in a transaction of its own.
+        leader.database().executeTransactionally("CREATE (n:InFlight) DELETE n")
+        val replica = leader.replica()
+        val hold = SlowLogFileSystem.Hold(DEFAULT_DATABASE)
+        leaderFiles.holding = hold
+        val writes: List<CompletableFuture<Void>>
+        val stopped: CompletableFuture<Void>
+        try {
+            // The leader applies the first and holds it; the second waits behind it.
+            val first = CompletableFuture.runAsync {
+                leader.database().executeTransactionally("CREATE (:InFlight)")
+            }
+            assertThat(hold.held.await(30, TimeUnit.SECONDS)).isTrue()
+            val second = CompletableFuture.runAsync {
+                leader.database().executeTransactionally("CREATE (:InFlight)")
+            }
+            writes = listOf(first, second)
+            // Both committed: the followers applied them.
+            await atMost
+                Duration.ofSeconds(30) untilAsserted
+                {
+                    assertThat(follower.count("MATCH (n:InFlight) RETURN count(n)")).isEqualTo(2)
+                }
+
+            stopped = CompletableFuture.runAsync { leader.stop() }
+            await atMost
+                Duration.ofSeconds(30) untilAsserted
+                {
+                    assertThat(replica.leaseService.currentLease).isEqualTo(LeaseService.NO_LEASE)
+                }
+        } finally {
+            leaderFiles.holding = null
+            hold.release()
+        }
+
+        for (write in writes) {
+            assertThatCode { write.get(30, TimeUnit.SECONDS) }.doesNotThrowAnyException()
+        }
+        stopped.get(60, TimeUnit.SECONDS)
     }
 
     @Test
