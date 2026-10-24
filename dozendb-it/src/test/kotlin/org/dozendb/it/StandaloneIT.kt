@@ -108,6 +108,7 @@ class StandaloneIT {
                 "dbms.dozendb.cluster.initial_members",
                 "dbms.dozendb.cluster.election_timeout_min",
                 "dbms.dozendb.cluster.election_timeout_max",
+                "dbms.cluster.raft.leader_transfer.balancing_strategy",
                 "dbms.dozendb.routing.reads_on_leader",
                 "dbms.dozendb.routing.forward_bolt_writes",
                 "dbms.dozendb.reads.default_consistency",
