@@ -252,6 +252,58 @@ following Neo4j's settings for server-side routing:
 `dbms.routing.driver.connection.connect_timeout`. What the connections log goes
 to `debug.log`, at `dbms.routing.driver.logging.level`.
 
+## Where databases are led
+
+Each database has a leader of its own, which takes all its writes: member 1
+can lead `system`, member 2 `neo4j` and member 3 `films`. The members share
+the write load as far as they share the leaderships.
+
+Leadership moves:
+
+- **In an election**, when the leader stops answering, and at the first
+  election of a new cluster's databases. Any member that votes may win.
+- **When a member stops a database it leads**, or stops itself: it hands each
+  leadership to the member leading the fewest databases among those where the
+  database runs and is writable, so that a stopping member spreads its
+  leaderships over the others.
+- **When a database is read-only on the member that leads it**, by
+  `server.databases.read_only`, `server.databases.default_to_read_only` or
+  `server.databases.writable`, which are dynamic and set per member: the
+  member hands the leadership to the member where the database is writable
+  that leads the fewest databases, within a second or two. Meanwhile routing
+  tables list no writer for the database, so routing drivers wait and retry.
+  A database that is read-only on every member keeps its leader, its writes
+  fail with `Neo.ClientError.General.WriteOnReadOnlyAccessDatabase`, and the
+  leader logs a warning once.
+- **To balance the leaderships**, with
+  `dbms.cluster.raft.leader_transfer.balancing_strategy=EQUAL_BALANCING`, the
+  default. Once the leaders have stayed put on every member for 10 seconds,
+  the member that leads the most databases hands one over to the member that
+  leads the fewest, if they lead at least two apart. One move at a time, until
+  every member leads as many databases as the others, give or take one; every
+  database counts the same, `system` too. This is how a member that comes
+  back from a restart gets its share again, and how a new database, which
+  starts led by the member that created it (the leader of `system`), finds
+  its place. `NO_BALANCING` leaves the leaders where elections and handovers
+  put them. The setting is dynamic; give every member the same.
+
+A member that hands a leadership over on purpose stops taking new commits of
+the database, lets the commits under way finish, then hands over, which
+usually takes a fraction of a second. Commits meanwhile fail with
+`Neo.ClientError.Cluster.NotALeader`, as on a member that does not lead:
+nothing of them was committed, and drivers retry managed transactions
+(`executeWrite`) on the new leader. A transaction that the client keeps open
+across the move fails the same way and needs a retry. No commit is left with
+an unknown outcome by a handover, as it can be when a leader fails.
+
+To see where databases are led: `CALL dozendb.cluster.status()` on any member
+lists its role and the leader of every database; the metric
+`cluster.raft.is_leader` is 1 on each database's leader. Every handover is
+logged in `debug.log` with its reason, as in
+`Transferred leadership of neo4j(...) to ...: the database is read-only on this
+member`, and counted in `dozendb.cluster.raft.leadership_transfers` on the
+member that handed over.
+
 ## Upgrading DozenDB
 
 DozenDB is upgraded one member at a time while the cluster keeps serving.
@@ -687,6 +739,7 @@ With clustering, each member reports for each database, under
 | `dozendb.cluster.replication.latency.millis` | Milliseconds from asking Raft to replicate a transaction until it was applied. |
 | `dozendb.cluster.raft.followers`, `follower_lag_max` | On the leader only: the followers it sends to, and the most committed entries one of them does not have yet. A lag that keeps growing means a follower does not keep up. |
 | `dozendb.cluster.raft.snapshots`, `leader_changes` | Raft snapshots taken and leaders learned of since the member started. |
+| `dozendb.cluster.raft.leadership_transfers` | Leaderships the member handed over to another member on purpose since it started: when it stopped the database, when the database was read-only on it, or to balance leaders (see [Where databases are led](#where-databases-are-led)). |
 | `dozendb.cluster.store_copy.received`, `served`, `repeated`, `received.millis` | Copies of the database the member installed, to join or to catch up; copies it sent to other members; copies it needed within an hour of the previous one, a sign that it does not keep up (see "Raft log retention and catch-up" in `COMPATIBILITY.md`); and how long catching up took. |
 
 The server reports `neo4j.dbms.dozendb.cluster.members`, the voting members

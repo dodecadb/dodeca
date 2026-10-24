@@ -364,6 +364,38 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
   composite databases, only `SHOW ALIASES` shows them:
   `graph.propertiesByName()` needs a composite session database.
 
+## Leadership balancing
+
+DozenDB balances the leaderships of databases over the members as Neo4j
+Enterprise documents, with its setting
+`dbms.cluster.raft.leader_transfer.balancing_strategy`: `EQUAL_BALANCING`, the
+default, moves leaders so that every member leads as many databases as the
+others, and `NO_BALANCING` leaves them where elections put them. DozenDB makes
+the setting dynamic. As in Enterprise, a member hands over the leadership of a
+database that is read-only on it (`server.databases.read_only` and the like).
+See `OPERATOR_GUIDE.md`, "Where databases are led".
+
+Where Enterprise's documentation says nothing, DozenDB's choices:
+
+- Balancing waits until the leaders have stayed put on every member for 10
+  seconds, and moves one leadership at a time, from the member leading the
+  most databases to the one leading the fewest, only between members that
+  lead at least two apart. Every database counts the same, `system` too.
+- A member that stops a database it leads, or stops itself, hands each
+  leadership to the member leading the fewest databases, also with
+  `NO_BALANCING`.
+- A member that hands a leadership over on purpose lets the commits under way
+  finish first; commits meanwhile fail with `NotALeader`, which drivers retry.
+  No handover leaves a commit with an unknown outcome.
+- Routing tables list no writer while a database is read-only on its leader. A
+  database that is read-only on every member keeps its leader, whose writes
+  fail.
+
+Not supported yet: server tags (`initial.server.tags`, the `tags` option of
+`ALTER SERVER`) and leader priority by tag
+(`db.cluster.raft.leader_transfer.priority_tag`). Like any setting DozenDB does
+not know, these fail Neo4j's strict configuration validation.
+
 ## Clustering limitations
 
 What clustering does not do yet.
@@ -409,7 +441,9 @@ What clustering does not do yet.
 - **Outcome unknown.** If the leader loses leadership or the majority while a
   commit is in flight, the transaction fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and a message saying
-  that it may or may not have committed. This is inherent to replication.
+  that it may or may not have committed. This is inherent to replication. A
+  member that hands its leadership over on purpose, or stops a database it
+  leads, first lets the commits under way finish.
 - **Starting databases.** All members must start from identical databases. A
   new cluster starts from the databases of at most one member, or of the member
   with the lowest id if none has any. Members with databases of their own
