@@ -546,6 +546,90 @@ Move them as commands instead, in either direction:
    be left out.
 
 
+## Database aliases
+
+A local alias is another name of a database on this DBMS:
+
+```cypher
+CREATE ALIAS movies FOR DATABASE films
+```
+
+A remote alias names a database on another DBMS, which transactions in the
+alias run on, logged in with the user and password it keeps:
+
+```cypher
+CREATE ALIAS `remote-films` FOR DATABASE films
+  AT 'neo4j+s://films.example.com:7687'
+  USER alice PASSWORD 'alice-secret'
+  DRIVER {connection_timeout: duration('PT5S')}
+```
+
+`COMPATIBILITY.md` describes what aliases do and where DozenDB answered what
+Neo4j's documentation leaves open.
+
+### Keystore for remote aliases
+
+DozenDB encrypts the passwords of remote aliases with an AES key from a
+PKCS12 keystore, under Neo4j Enterprise's settings. Make the keystore with
+the JDK's `keytool`, with the same password for the keystore and the key:
+
+```sh
+keytool -genseckey -keyalg aes -keysize 256 -storetype pkcs12 \
+  -keystore /var/lib/neo4j/conf/aliases.p12 -alias aliases \
+  -storepass "$KEYSTORE_PASSWORD"
+```
+
+```properties
+dbms.security.keystore.path=/var/lib/neo4j/conf/aliases.p12
+dbms.security.keystore.password=<the keystore password>
+dbms.security.key.name=aliases
+```
+
+The settings are dynamic and read at each use. Without a readable key,
+creating or using a remote alias fails naming the three settings. A new key
+cannot read the passwords encrypted with the old one: set them again with
+`ALTER ALIAS ... SET DATABASE PASSWORD`. With clustering, every member needs
+the same keystore, since every member runs transactions in remote aliases
+itself.
+
+### TLS for remote aliases
+
+The URL's scheme decides: `neo4j+s` and `bolt+s` trust the certificates that
+the JVM's trust store trusts, `neo4j+ssc` and `bolt+ssc` any certificate. To
+trust a private CA, add it to a copy of the JDK's `cacerts` and name the copy
+for the JVM; the JVM's other TLS clients, such as `LOAD CSV` over HTTPS, then
+trust it too:
+
+```sh
+cp "$JAVA_HOME/lib/security/cacerts" /var/lib/neo4j/conf/trust.jks
+keytool -importcert -noprompt -alias films-ca -file films-ca.crt \
+  -keystore /var/lib/neo4j/conf/trust.jks -storepass changeit
+```
+
+```properties
+server.jvm.additional=-Djavax.net.ssl.trustStore=/var/lib/neo4j/conf/trust.jks
+```
+
+A trust store of the PKCS12 type also needs
+`server.jvm.additional=-Djavax.net.ssl.trustStorePassword=<its password>`,
+on a line of its own: without it, the JVM reads none of its certificates.
+
+`neo4j` and `bolt` without TLS are refused unless the alias has
+`DRIVER {ssl_enforced: false}`.
+
+### Failures of remote aliases
+
+Errors of the other DBMS reach the client as remote execution failures,
+`Neo.ClientError.Statement.RemoteExecutionClientError` for instance, whose
+message names the other DBMS's status, such as
+`Neo.ClientError.Security.Unauthorized` for a wrong password or
+`Neo.ClientError.Database.DatabaseNotFound` for a target that does not exist
+there. A DBMS that cannot be reached gives
+`Neo.TransientError.Statement.RemoteExecutionTransientError`. Connection
+failures towards it are also in `debug.log`, at the level of
+`dbms.routing.driver.logging.level` unless the alias's driver settings set
+another.
+
 ## Monitoring
 
 DozenDB reports metrics, and writes the query log and the security log, as

@@ -132,10 +132,10 @@ DozenDB reports the Enterprise edition, in `CALL dbms.components()` for
 example, as DozerDB did, so that tools offer what DozenDB adds to Neo4j
 Community, such as many databases. Of what Neo4j Enterprise adds, DozenDB
 supports many databases, property existence, key and type constraints, user
-status and home databases, roles and privileges, impersonation, and
-clustering of its own. It refuses, with an error, the other Enterprise
-features that reach it, such as composite databases, aliases,
-`ALTER DATABASE`, the server commands (`SHOW SERVERS` and the like; the
+status and home databases, roles and privileges, impersonation, local and
+remote database aliases, and clustering of its own. It refuses, with an
+error, the other Enterprise features that reach it, such as composite
+databases, `ALTER DATABASE`, the server commands (`SHOW SERVERS` and the like; the
 `dozendb.cluster` procedures manage members instead), `CREATE DATABASE`
 options other than seeds, topologies, and external authentication.
 
@@ -285,6 +285,84 @@ how to use them.
 - **`dbms.setConfigValue`** changes a dynamic setting as in Neo4j
   Enterprise: for administrators, on the member it runs on, until that
   member restarts. Neo4j Community has no such procedure.
+
+## Database aliases
+
+DozenDB implements local and remote database aliases as Neo4j Enterprise's
+operations manual describes them, from that documentation alone: `CREATE`,
+`ALTER`, `DROP` and `SHOW ALIASES` with `IF NOT EXISTS`, `IF EXISTS`,
+`OR REPLACE`, `PROPERTIES` and parameters, the alias privileges (`CREATE`,
+`DROP`, `ALTER` and `SHOW ALIAS`, `ALIAS MANAGEMENT`), and
+`DROP DATABASE ... RESTRICT | CASCADE ALIASES`. Aliases are kept in the
+system graph exactly as Neo4j keeps them, so Neo4j Community resolves their
+names wherever a database name goes: driver sessions, `USE`, routing tables,
+home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
+
+- **Names.** Without composite databases, a dotted name such as
+  `films.classic` is a name of its own; `SHOW ALIASES` shows `composite` as
+  null. A local alias targets a standard database, never `system` or another
+  alias.
+- **Database commands given a local alias**, `START`, `STOP`,
+  `DROP DATABASE` and `WAIT`, act on its database, as the documentation's
+  "in all other Cypher commands in place of the target database" suggests;
+  `CREATE OR REPLACE DATABASE` never follows an alias. `DROP DATABASE` of a
+  database with local aliases fails naming them unless `CASCADE ALIASES`
+  drops them too, and `CREATE OR REPLACE DATABASE` fails while they exist;
+  remote aliases never block it.
+- **Changes.** A transaction keeps the database its alias pointed at when it
+  began. With clustering, a follower applies a change a moment after the
+  leader; sessions with a bookmark of the change, and routing requests, find
+  it at once.
+- **A home database** set to a local alias is its database; one set to a
+  remote alias is that alias, also for `ACCESS ON HOME DATABASE`.
+- **`initial.dbms.default_database`** naming an alias stops the server from
+  starting, with a message saying so: Neo4j does not support aliases there.
+- **Privileges.** Access through a local alias is checked on its database,
+  and `GRANT`, `DENY` and `REVOKE` on a local alias are refused naming the
+  database. A remote alias has privileges of its own, kept by its name:
+  `ALTER ALIAS` keeps them and `DROP ALIAS` removes them. Only `ACCESS`
+  applies to a remote alias; other privileges on one are refused, since the
+  other DBMS checks them for the user the alias names. These are DozenDB's
+  answers where the documentation is silent.
+- **Remote aliases** run their transactions on the DBMS at their URL, in the
+  database they target, logged in as the user they name, on whichever server
+  or member the client is connected to:
+  - `neo4j://` URLs are routed, `bolt://` URLs direct. `+s` trusts the
+    certificates that the JVM's trust store trusts and `+ssc` any
+    certificate; as in Neo4j 5, there is no SSL policy for remote aliases.
+    Insecure schemes need `DRIVER {ssl_enforced: false}`.
+  - The alias's driver settings override `dbms.routing.driver.*`. Each version
+    of an alias has its own connections: transactions that begin after
+    `ALTER ALIAS` use the new URL, user or settings, while those running
+    finish with the old ones. The connections of a version that changed or
+    was dropped close when its transactions end, found within a minute.
+  - Passwords are encrypted with a key from a keystore, under Neo4j
+    Enterprise's settings; see `OPERATOR_GUIDE.md`.
+  - Failures there reach the client as remote execution failures,
+    `Neo.ClientError.Statement.RemoteExecutionClientError`,
+    `RemoteExecutionTransientError` or `RemoteExecutionFailed` with GQL
+    status 50N06, 50N16 or 50N17, whose cause is the other DBMS's GQL error
+    and whose message names its status, such as
+    `Neo.ClientError.Statement.ArithmeticError`. A DBMS that cannot be
+    reached gives 08N17, which drivers retry; an untrusted certificate
+    08N16. The other DBMS's own status never reaches the client: a remote
+    "not a leader" or "unauthorized" would mislead the client's driver about
+    this server.
+  - Queries are parsed here, as Neo4j's query router does, so a syntax error
+    is this server's.
+  - The other DBMS's bookmarks travel inside this one's.
+  - Impersonation through a remote alias is refused, since its transactions
+    run as the user it names. Administration commands cannot reach the other
+    DBMS: a remote alias cannot target `system`.
+  - Alias chains: routing requests for `neo4j://` URLs name the alias, so the
+    other DBMS refuses to route to a remote alias of its own (08N14, inside
+    a remote execution failure). `bolt://` URLs send no routing requests,
+    and chains through them are not detected, as in Neo4j.
+  - Their transactions do not show in `SHOW TRANSACTIONS` here, as
+    documented.
+- **Alias properties** are kept and shown as Enterprise does. Without
+  composite databases, only `SHOW ALIASES` shows them:
+  `graph.propertiesByName()` needs a composite session database.
 
 ## Clustering limitations
 

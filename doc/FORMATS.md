@@ -21,6 +21,9 @@ Format level 1 is every format below at the version shown.
 | Snapshot record | `SnapshotRecord` | 1 | Kept by each member, also as a joining member's seed. |
 | Membership record | `MembershipFile` | 1 | Kept by each member. |
 | System graph properties and nodes | `Neo4jSystemGraph` | none | Replicated in `system`. |
+| Roles and privileges | `PrivilegeRecords` | none | Replicated in `system`, in DozenDB's own nodes: a privilege on one database has scope `DATABASE` and the database's id, one on a remote alias scope `ALIAS` and the alias's name. |
+| Database aliases | Neo4j's `TopologyGraphDbmsModel` | none | Replicated in `system`, exactly as Neo4j keeps them. A remote alias's password is encrypted by `AliasPasswords`: AES/GCM/NoPadding with a 128-bit tag, a random 12-byte iv kept as `iv`, under the key of the keystore that every member has. |
+| Remote alias transaction | `RemoteAliasTransactions`, `RemoteTransaction` | Bolt | Sent to other DBMSs, not between members: Neo4j's Bolt protocol, 5.0 or later. Routing requests of `neo4j://` URLs carry the routing context `alias`, the alias's name, which Neo4j checks against alias chains. Not part of the format levels. |
 | Backup request and response | `BackupProtocol` | 1 | Sent between a server and `neo4j-admin database backup`, which may be of another DozenDB version: each side refuses the other's version if it differs, with a message. Not part of the format levels. A full backup's copy is a database copy (`StoreArchive`). |
 | Backup artifact | `ArtifactContainer`, `DifferentialBody` | 1 | Kept in `.backup` files, in Neo4j's container: `dozendb.format` in its header. Every later version reads it. |
 
