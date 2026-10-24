@@ -22,7 +22,8 @@ import org.neo4j.logging.Log
  * themselves. Every member reports its advertised addresses and its databases when probed; the
  * directory probes the members of the `system` group periodically, and soon after someone asks for
  * a member it does not know yet. A member that does not answer keeps its last known address and
- * report. This member's own come from [selfBoltAddress], [selfRoutingAddress] and [selfDatabases].
+ * report. This member's own come from [selfBoltAddress], [selfRoutingAddress], [selfDatabases] and
+ * [selfReadOnly].
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
@@ -32,9 +33,17 @@ class MemberDirectory(
     private val selfDatabases: () -> List<DatabaseState>,
     private val log: Log,
     private val refreshInterval: Duration = Duration.ofSeconds(10),
+    private val selfReadOnly: () -> Set<UUID> = { emptySet() },
 ) {
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
+    private val answered: MutableSet<MemberId> = ConcurrentHashMap.newKeySet()
+
+    /** Whether every member was probed at least once since this directory started. */
+    @Volatile
+    var refreshed: Boolean = false
+        private set
+
     private val refreshPending = AtomicBoolean()
     private var scheduler: ScheduledExecutorService? = null
 
@@ -70,21 +79,40 @@ class MemberDirectory(
      * The members whose copy of the database [id] failed, such as by a panic: this member's as it
      * is now, the others' as they last reported it. A member that has not reported is not one.
      */
-    fun failedCopies(id: UUID): Set<MemberId> {
-        val failed = mutableSetOf<MemberId>()
-        if (selfDatabases().any { it.id == id && it.status == DatabaseState.Status.FAILED }) {
-            failed += consensus.self.id
-        }
-        for ((member, report) in reports) {
-            val databases = report[MemberMetadata.DATABASES] ?: continue
-            val states =
-                runCatching { DatabaseStatesCodec.decode(databases) }.getOrNull() ?: continue
-            if (states.any { it.id == id && it.status == DatabaseState.Status.FAILED }) {
-                failed += member
+    fun failedCopies(id: UUID): Set<MemberId> =
+        (reports.keys + consensus.self.id)
+            .filter { member ->
+                databaseStates(member).orEmpty().any {
+                    it.id == id && it.status == DatabaseState.Status.FAILED
+                }
             }
-        }
-        return failed
+            .toSet()
+
+    /**
+     * The databases on [member] and their states: this member's as they are now, another's as it
+     * last reported them, or null if it has not.
+     */
+    fun databaseStates(member: MemberId): List<DatabaseState>? {
+        if (member == consensus.self.id) return selfDatabases()
+        val databases = reports[member]?.get(MemberMetadata.DATABASES) ?: return null
+        return runCatching { DatabaseStatesCodec.decode(databases) }.getOrNull()
     }
+
+    /**
+     * The ids of the databases that are read-only on [member]: this member's as they are now,
+     * another's as it last reported them; none if it has not.
+     */
+    fun readOnlyDatabases(member: MemberId): Set<UUID> {
+        if (member == consensus.self.id) return selfReadOnly()
+        val ids = reports[member]?.get(MemberMetadata.READ_ONLY_DATABASES) ?: return emptySet()
+        return ids.split(',')
+            .filter { it.isNotBlank() }
+            .mapNotNull { runCatching { UUID.fromString(it.trim()) }.getOrNull() }
+            .toSet()
+    }
+
+    /** Whether [member] answered the latest probe. This member always does. */
+    fun answering(member: MemberId): Boolean = member == consensus.self.id || member in answered
 
     /** Probes every member once and records the addresses they report. */
     fun refresh() {
@@ -96,9 +124,14 @@ class MemberDirectory(
                 }
                 .awaitAll()
         }
+        answered.retainAll(others.map { it.id }.toSet())
         for ((member, answer) in answers) {
-            val peer = answer.getOrNull() ?: continue
-            if (peer.member.id != member.id) continue
+            val peer = answer.getOrNull()?.takeIf { it.member.id == member.id }
+            if (peer == null) {
+                answered -= member.id
+                continue
+            }
+            answered += member.id
             val routing = peer.metadata[MemberMetadata.ROUTING_ADDRESS]
             if (
                 routing !=
@@ -125,6 +158,7 @@ class MemberDirectory(
                 log.info("Member %s serves Bolt at %s", member.id, address)
             }
         }
+        refreshed = true
     }
 
     fun start() {

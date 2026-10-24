@@ -40,6 +40,22 @@ class ClusterRoutingTest {
     }
 
     @Test
+    fun `a leader where the database is read-only takes no writes, but reads`() {
+        val endpoints =
+            ClusterRouting.endpoints(
+                status(members[1]),
+                members,
+                bolt::get,
+                readsOnLeader = true,
+                failed = emptySet(),
+                readOnly = setOf(members[1].id, members[2].id),
+            )
+
+        assertThat(endpoints.writers).isEmpty()
+        assertThat(endpoints.readers).containsExactly(address(1), address(3), address(2))
+    }
+
+    @Test
     fun `the leader can be kept free of reads`() {
         val endpoints =
             ClusterRouting.endpoints(

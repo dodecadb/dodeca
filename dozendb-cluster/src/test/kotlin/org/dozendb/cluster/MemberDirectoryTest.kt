@@ -30,6 +30,7 @@ class MemberDirectoryTest {
             )
         }
     private var selfDatabases = emptyList<DatabaseState>()
+    private var selfReadOnly = emptySet<UUID>()
     private val directory =
         MemberDirectory(
             logs[0],
@@ -39,6 +40,7 @@ class MemberDirectoryTest {
             { selfDatabases },
             NullLog.getInstance(),
             Duration.ofHours(1),
+            { selfReadOnly },
         )
 
     init {
@@ -113,6 +115,31 @@ class MemberDirectoryTest {
         assertThat(directory.failedCopies(films)).containsExactly(logs[1].self.id)
         assertThat(directory.failedCopies(books)).containsExactly(logs[0].self.id)
         assertThat(directory.failedCopies(UUID(0, 9))).isEmpty()
+    }
+
+    @Test
+    fun `knows where databases are read-only and which members answer`() {
+        val id = UUID.randomUUID()
+        logs[1].metadata += MemberMetadata.READ_ONLY_DATABASES to "$id,${UUID(0, 9)}"
+        logs[2].metadata += MemberMetadata.READ_ONLY_DATABASES to ""
+        selfReadOnly = setOf(id)
+        assertThat(directory.refreshed).isFalse()
+
+        directory.refresh()
+
+        assertThat(directory.refreshed).isTrue()
+        assertThat(directory.readOnlyDatabases(logs[0].self.id)).containsExactly(id)
+        assertThat(directory.readOnlyDatabases(logs[1].self.id)).containsExactly(id, UUID(0, 9))
+        assertThat(directory.readOnlyDatabases(logs[2].self.id)).isEmpty()
+        assertThat(logs.map { directory.answering(it.self.id) }).containsOnly(true)
+
+        consensus.crash(logs[2].self.id)
+        directory.refresh()
+
+        assertThat(directory.answering(logs[2].self.id)).isFalse()
+        assertThat(directory.answering(logs[1].self.id)).isTrue()
+        // What it reported last stays known.
+        assertThat(directory.readOnlyDatabases(logs[1].self.id)).contains(id)
     }
 
     @Test

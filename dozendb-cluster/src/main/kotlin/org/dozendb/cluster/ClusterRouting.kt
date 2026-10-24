@@ -27,6 +27,7 @@ object ClusterRouting {
         boltAddress: (MemberId) -> HostPort?,
         readsOnLeader: Boolean,
         failed: Set<MemberId>,
+        readOnly: Set<MemberId> = emptySet(),
     ): RoutingEndpoints {
         val ordered = members.sortedBy { it.id }
         val serving = ordered.filter { it.id !in failed }
@@ -41,7 +42,9 @@ object ClusterRouting {
             }
         return RoutingEndpoints(
             routers = ordered.mapNotNull { boltAddress(it.id) },
-            writers = listOfNotNull(leaderAddress),
+            // A leader where the database is read-only takes no writes; it hands its leadership
+            // over to a member where it is writable, if there is one.
+            writers = listOfNotNull(leaderAddress.takeIf { leader !in readOnly }),
             readers = readers,
         )
     }

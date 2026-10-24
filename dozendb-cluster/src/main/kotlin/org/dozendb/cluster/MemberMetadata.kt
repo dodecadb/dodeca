@@ -33,6 +33,12 @@ object MemberMetadata {
     /** The databases on the member and their states, for WAIT; see [DatabaseStatesCodec]. */
     const val DATABASES = "dozendb.databases"
 
+    /**
+     * The ids of the databases that are read-only on the member by its configuration
+     * (`server.databases.read_only` and the like), separated by commas.
+     */
+    const val READ_ONLY_DATABASES = "dozendb.readOnlyDatabases"
+
     /** The [FormatLevels] the member's DozenDB version supports. */
     const val FORMAT_LEVELS = "dozendb.formatLevels"
 

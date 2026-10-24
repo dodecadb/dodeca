@@ -1,0 +1,159 @@
+package org.dozendb.cluster.internal.leadership
+
+import java.time.Duration
+import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import org.dozendb.cluster.MemberDirectory
+import org.dozendb.cluster.internal.replication.ReplicationService
+import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.Role
+import org.dozendb.core.edition.DatabaseState
+import org.neo4j.logging.InternalLog
+
+/**
+ * Moves the leadership of databases this member leads to other members, where Neo4j Enterprise
+ * documents that leadership moves: away from a member where the database is read-only.
+ *
+ * Looks every [interval], and soon after [request]. A database goes to the member, among those that
+ * could lead it (see [Leadership.eligible]), that leads the fewest databases; this member checks
+ * first that the member answers it and has every committed entry, and hands the leadership over
+ * without failing commits under way (see `ReplicatedDatabase.transferLeadership`).
+ */
+internal class LeaderBalancer(
+    private val consensus: ConsensusLog,
+    private val replication: ReplicationService,
+    private val directory: MemberDirectory,
+    /** How long a transfer, and the commits under way before it, may take. */
+    private val transferTimeout: Duration,
+    /** How long ago a member may have last answered this member to take a leadership over. */
+    private val contactLimit: Duration,
+    private val log: InternalLog,
+    private val interval: Duration = Duration.ofSeconds(1),
+) {
+    private val executor = Executors.newSingleThreadScheduledExecutor { runnable ->
+        Thread(runnable, "dozendb-leader-balancer").apply { isDaemon = true }
+    }
+    private val requested = AtomicBoolean()
+
+    /** Databases read-only here that no member could take over, logged once; executor only. */
+    private val stuck = mutableSetOf<UUID>()
+
+    fun start() {
+        executor.scheduleWithFixedDelay(
+            ::lookQuietly,
+            interval.toMillis(),
+            interval.toMillis(),
+            TimeUnit.MILLISECONDS,
+        )
+    }
+
+    /** Asks for a look soon, as when the databases read-only here changed. */
+    fun request() {
+        if (!requested.compareAndSet(false, true)) return
+        try {
+            executor.execute {
+                requested.set(false)
+                lookQuietly()
+            }
+        } catch (_: RejectedExecutionException) {
+            // Stopping.
+        }
+    }
+
+    fun stop() {
+        executor.shutdownNow()
+    }
+
+    /** Who leads the databases replicated here and who could, as this member sees it now. */
+    fun view(): LeadershipView = LeadershipView(replication.created().mapNotNull(::leadership))
+
+    private fun leadership(database: DatabaseRef): Leadership? {
+        val status = consensus.status(database)
+        if (status.role == Role.Inactive) return null
+        val membership =
+            try {
+                consensus.membership(database)
+            } catch (_: ConsensusUnavailableException) {
+                return null
+            }
+        val leader = status.leader
+        return Leadership(
+            database,
+            leader,
+            membership.members
+                .map { it.id }
+                .filter { it != leader && canLead(it, database.id) }
+                .toSet(),
+            writableOnLeader =
+                leader == null || database.id !in directory.readOnlyDatabases(leader),
+            settled = membership.settled,
+        )
+    }
+
+    /** Whether [member] answers, runs the database [id] and can write to it. */
+    private fun canLead(member: MemberId, id: UUID): Boolean =
+        directory.answering(member) &&
+            directory.databaseStates(member).orEmpty().any {
+                it.id == id && it.status == DatabaseState.Status.ONLINE
+            } &&
+            id !in directory.readOnlyDatabases(member)
+
+    private fun lookQuietly() {
+        try {
+            look()
+        } catch (e: Exception) {
+            log.warn("Deciding where databases are led failed", e)
+        }
+    }
+
+    private fun look() {
+        // Until every member was probed once, none counts as answering.
+        if (!directory.refreshed) return
+        val self = consensus.self.id
+        var view = view()
+        if (LeaderMoves.readOnly(view, self).keys.any { it.id !in stuck }) {
+            // Other members may have reported before the database turned read-only there too.
+            directory.refresh()
+            view = view()
+        }
+        for ((database, candidates) in LeaderMoves.readOnly(view, self)) {
+            if (candidates.isEmpty()) {
+                if (stuck.add(database.id)) {
+                    log.warn(
+                        "Database %s is read-only on this member, which leads it, and no other " +
+                            "member can take it over: its writes fail until one can",
+                        database.name,
+                    )
+                }
+                continue
+            }
+            stuck -= database.id
+            candidates.firstOrNull { transfer(database, it, MoveReason.READ_ONLY) }
+        }
+        stuck.retainAll(
+            view.databases
+                .filter { it.leader == self && !it.writableOnLeader }
+                .map { it.database.id }
+        )
+    }
+
+    /**
+     * Transfers the leadership of [database] to [to] if [to] answers this member and has every
+     * committed entry; returns whether [to] leads it afterwards.
+     */
+    private fun transfer(database: DatabaseRef, to: MemberId, reason: MoveReason): Boolean {
+        val replica = replication.replica(database) ?: return false
+        val progress = consensus.progress(database) ?: return false
+        val contact = progress.followerContactMillis?.get(to)
+        val match = progress.followerMatchIndexes?.get(to)
+        if (contact == null || contact > contactLimit.toMillis() || match == null) return false
+        if (match < progress.commitIndex) return false
+        return replica.transferLeadership(to, reason.text, transferTimeout)
+    }
+}

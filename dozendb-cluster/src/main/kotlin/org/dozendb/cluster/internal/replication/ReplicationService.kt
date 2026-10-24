@@ -138,6 +138,10 @@ internal class ReplicationService(
     fun replica(namedDatabaseId: NamedDatabaseId): ReplicatedDatabase? =
         databases[namedDatabaseId.name()]?.takeIf { it.namedDatabaseId == namedDatabaseId }
 
+    /** The replication of [database] on this member, if it was created. */
+    fun replica(database: DatabaseRef): ReplicatedDatabase? =
+        databases[database.name]?.takeIf { it.ref == database }
+
     /** Forgets the dropped database [namedDatabaseId] and deletes its Raft group here. */
     fun remove(namedDatabaseId: NamedDatabaseId) {
         replica(namedDatabaseId)?.let { databases.remove(namedDatabaseId.name(), it) }

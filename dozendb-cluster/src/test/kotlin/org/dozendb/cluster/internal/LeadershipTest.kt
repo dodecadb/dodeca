@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -11,9 +12,12 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatCode
+import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
+import org.awaitility.kotlin.during
 import org.awaitility.kotlin.untilAsserted
+import org.awaitility.kotlin.untilNotNull
 import org.dozendb.cluster.internal.ClusterHarness.Companion.DEFAULT_DATABASE
 import org.dozendb.cluster.internal.replication.ReplicatedDatabase
 import org.dozendb.cluster.internal.replication.ReplicationService
@@ -21,6 +25,8 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.api.exceptions.Status
 
@@ -63,6 +69,65 @@ class LeadershipTest {
             .filterIsInstance<Status.HasStatus>()
             .firstOrNull()
             ?.status()
+
+    private fun ClusterHarness.Member.debugLog(): String =
+        Files.readString(home.resolve("logs/debug.log"))
+
+    private fun ClusterHarness.Member.makeReadOnly(vararg databases: String) {
+        database("system")
+            .dependencyResolver
+            .resolveDependency(Config::class.java)
+            .setDynamic(GraphDatabaseSettings.read_only_databases, databases.toSet(), "a test")
+    }
+
+    @Test
+    fun `a member where a database turns read-only hands its leadership to one where it is not`() {
+        val cluster = cluster()
+        val leader = cluster.awaitLeader()
+
+        leader.makeReadOnly(DEFAULT_DATABASE)
+
+        val next =
+            await atMost
+                Duration.ofSeconds(30) untilNotNull
+                {
+                    cluster.awaitLeader().takeIf { it != leader }
+                }
+        // Ratis and DozenDB's consensus log there, for every member.
+        assertThat(Files.readString(root.resolve("raft.log")))
+            .contains("Transferred leadership of $DEFAULT_DATABASE(")
+            .contains("the database is read-only on this member")
+        next.database().executeTransactionally("CREATE (:Written)")
+        // The member still follows the database it does not write to.
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(leader.count("MATCH (n:Written) RETURN count(n)")).isEqualTo(1)
+            }
+    }
+
+    @Test
+    fun `a database read-only on every member keeps its leader`() {
+        val cluster = cluster()
+        val leader = cluster.awaitLeader()
+
+        cluster.running().filter { it != leader }.forEach { it.makeReadOnly(DEFAULT_DATABASE) }
+        leader.makeReadOnly(DEFAULT_DATABASE)
+
+        // The leader asks the others before it hands over, and finds no member to take over.
+        await during
+            Duration.ofSeconds(3) atMost
+            Duration.ofSeconds(10) untilAsserted
+            {
+                assertThat(cluster.awaitLeader()).isEqualTo(leader)
+            }
+        val error = catchThrowable {
+            leader.database().executeTransactionally("CREATE (:Refused)")
+        }
+        assertThat(statusOf(error)).isEqualTo(Status.General.WriteOnReadOnlyAccessDatabase)
+        assertThat(leader.debugLog().lines().filter { "no other member can take it over" in it })
+            .hasSize(1)
+    }
 
     @Test
     fun `a transfer lets the commits in flight finish and refuses later ones for a retry`() {

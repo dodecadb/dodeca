@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal
 
 import java.io.IOException
+import java.util.UUID
 import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
@@ -22,6 +23,7 @@ import org.dozendb.cluster.internal.forwarding.ForwardingWatch
 import org.dozendb.cluster.internal.forwarding.MemberSsl
 import org.dozendb.cluster.internal.forwarding.RemoteTransactions
 import org.dozendb.cluster.internal.forwarding.RoutingBoltDatabases
+import org.dozendb.cluster.internal.leadership.LeaderBalancer
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
@@ -57,6 +59,8 @@ import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DefaultSystemGraphInitializer
 import org.neo4j.dbms.database.SystemGraphInitializer
+import org.neo4j.dbms.database.readonly.SystemGraphReadOnlyDatabaseLookupFactory
+import org.neo4j.dbms.database.readonly.SystemGraphReadOnlyListener
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
 import org.neo4j.dbms.routing.DefaultDatabaseAvailabilityChecker
 import org.neo4j.dbms.routing.DefaultRoutingService
@@ -74,6 +78,8 @@ import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.kernel.api.procedure.GlobalProcedures
+import org.neo4j.kernel.database.DatabaseIdFactory
+import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
@@ -98,6 +104,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val directory: MemberDirectory
     private val consensus: ConsensusLog
     private val membership: MembershipReconciler
+    private val balancer: LeaderBalancer
     private val memberId = MemberId(identityModule.serverId().uuid())
     private val systemDatabase =
         DatabaseRef(
@@ -145,6 +152,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.STORES_READY to replicationService.defaultDatabaseStarted.toString(),
                 MemberMetadata.MEMBER_STATE to cluster.state.name,
                 MemberMetadata.DATABASES to DatabaseStatesCodec.encode(databaseStates()),
+                MemberMetadata.READ_ONLY_DATABASES to readOnlyHere().joinToString(","),
                 MemberMetadata.FORMAT_LEVELS to formatLevels.toString(),
                 MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
             ) +
@@ -285,6 +293,17 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ::routingHostPort,
                 ::databaseStates,
                 logService.getInternalLog(MemberDirectory::class.java),
+                selfReadOnly = ::readOnlyHere,
+            )
+        val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
+        balancer =
+            LeaderBalancer(
+                consensus,
+                replicationService,
+                directory,
+                transferTimeout = electionTimeout.multipliedBy(2),
+                contactLimit = electionTimeout,
+                log = logService.getInternalLog(LeaderBalancer::class.java),
             )
         cluster =
             ClusterService(
@@ -329,10 +348,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 override fun start() {
                     cluster.start()
                     membership.start()
+                    balancer.start()
                 }
 
                 override fun stop() {
                     try {
+                        balancer.stop()
                         roles?.close()
                         membership.close()
                         cluster.stop()
@@ -342,6 +363,43 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 }
             }
         )
+    }
+
+    /**
+     * Community's read-only checker, which also tells the balancer when the databases read-only
+     * here change, so that this member hands over the leadership of those it leads.
+     */
+    override fun createGlobalReadOnlyChecker(
+        systemDatabaseProvider: SystemDatabaseProvider,
+        databaseIdRepository: DatabaseIdRepository,
+        globalModule: GlobalModule,
+    ) {
+        val checker =
+            createGlobalReadOnlyChecker(
+                setOf(SystemGraphReadOnlyDatabaseLookupFactory.DEFAULT_PROVIDER),
+                systemDatabaseProvider,
+                databaseIdRepository,
+                { balancer.request() },
+                globalModule,
+            )
+        globalReadOnlyChecker = checker
+        globalModule.globalLife.add(
+            SystemGraphReadOnlyListener(globalModule.transactionEventListeners, checker)
+        )
+        globalModule.globalDependencies.satisfyDependency(checker)
+    }
+
+    /**
+     * The ids of the replicated databases that are read-only on this member by its configuration
+     * (`server.databases.read_only` and the like), not those read-only on every member.
+     */
+    private fun readOnlyHere(): Set<UUID> {
+        val checker = globalReadOnlyChecker ?: return emptySet()
+        return replication
+            .created()
+            .map { it.id }
+            .filter { checker.isReadOnlyLocally(DatabaseIdFactory.from(it)) }
+            .toSet()
     }
 
     /** The base wiring, with the databases following the replicated system graph. */

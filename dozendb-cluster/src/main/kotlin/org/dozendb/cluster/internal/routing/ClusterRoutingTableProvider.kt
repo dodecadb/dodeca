@@ -37,12 +37,17 @@ internal class ClusterRoutingTableProvider(
         val endpoints =
             replication.replica(databaseReference.databaseId())?.let { replica ->
                 try {
+                    val members = consensus.members(replica.ref)
                     ClusterRouting.endpoints(
                         consensus.status(replica.ref),
-                        consensus.members(replica.ref),
+                        members,
                         directory::boltAddress,
                         readsOnLeader,
                         directory.failedCopies(replica.ref.id),
+                        members
+                            .map { it.id }
+                            .filter { replica.ref.id in directory.readOnlyDatabases(it) }
+                            .toSet(),
                     )
                 } catch (_: ConsensusUnavailableException) {
                     // The group does not run here.
