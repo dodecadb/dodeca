@@ -565,6 +565,18 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             sendingRefusal,
         )
 
+    /**
+     * Whether this member is the only one, as Neo4j's routing asks before routing. Not while it
+     * stops: then the database checks that follow refuse the route as unavailable, which drivers
+     * retry on another member, instead of failing it with an unknown error.
+     */
+    private fun alone(): Boolean =
+        try {
+            cluster.members().size <= 1
+        } catch (_: ConsensusUnavailableException) {
+            false
+        }
+
     /** Members log in on the routing connector only if they can forward writes to this member. */
     override fun memberLogins(): MemberLogins =
         forwardingRefusal?.let { MemberLogins.Refused(it) } ?: MemberLogins.Allowed
@@ -688,7 +700,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             routing,
             clientRoutingDomainChecker,
             config,
-            { cluster.members().size <= 1 },
+            ::alone,
             defaultDatabaseResolver,
             ConfirmedReferences(databaseReferenceRepo) {
                 replication.awaitLinearizable(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)

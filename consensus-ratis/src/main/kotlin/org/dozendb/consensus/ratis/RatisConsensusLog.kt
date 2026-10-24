@@ -673,9 +673,11 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     }
 
     override fun membership(database: DatabaseRef): GroupMembership {
+        // Also asked while the member stops, as by routing requests that Bolt still serves.
+        val raftServer = server ?: throw ConsensusUnavailableException("consensus is not running")
         val division =
             try {
-                requireServer().getDivision(RaftGroupId.valueOf(database.id))
+                raftServer.getDivision(RaftGroupId.valueOf(database.id))
             } catch (e: IOException) {
                 throw ConsensusUnavailableException("group $database is not running", e)
             }

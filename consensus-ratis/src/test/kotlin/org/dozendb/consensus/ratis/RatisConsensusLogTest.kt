@@ -351,6 +351,19 @@ class RatisConsensusLogTest {
     }
 
     @Test
+    fun `a member that stopped says its groups are not running`() {
+        val cluster = formCluster()
+        val node = cluster.awaitLeader()
+        val consensus = node.consensus
+
+        node.stop()
+
+        assertThat(consensus.status(cluster.database).role).isEqualTo(Role.Inactive)
+        assertThatThrownBy { consensus.membership(cluster.database) }
+            .isInstanceOf(ConsensusUnavailableException::class.java)
+    }
+
+    @Test
     fun `removing a member shrinks the group`() =
         runBlocking<Unit> {
             val cluster = formCluster()
