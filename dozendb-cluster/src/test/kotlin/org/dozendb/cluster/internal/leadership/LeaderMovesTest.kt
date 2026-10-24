@@ -1,8 +1,10 @@
 package org.dozendb.cluster.internal.leadership
 
+import java.time.Duration
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.GroupProgress
 import org.dozendb.consensus.MemberId
 import org.junit.jupiter.api.Test
 
@@ -118,6 +120,49 @@ class LeaderMovesTest {
         assertThat(LeaderMoves.readOnly(view, b)).isEmpty()
         // Balancing leaves databases that are read-only on their leader to the read-only rule.
         assertThat(LeaderMoves.balancing(view)?.database).isNotIn(databases[1], databases[2])
+    }
+
+    /** What a leader knows of [b], its follower, which last answered [contact] ms ago. */
+    private fun progress(commit: Long, match: Long, contact: Long = 50) =
+        GroupProgress(
+            appendIndex = commit + 10,
+            commitIndex = commit,
+            appliedIndex = commit,
+            pruneIndex = 0,
+            term = 3,
+            leader = true,
+            sinceLeaderContactMillis = 0,
+            followerMatchIndexes = mapOf(b to match, c to commit),
+            followerContactMillis = mapOf(b to contact, c to 10),
+            snapshotsTaken = 0,
+            leaderChanges = 1,
+            leadershipTransfers = 0,
+        )
+
+    private val contactLimit = Duration.ofSeconds(1)
+
+    @Test
+    fun `a follower behind the commit index by the entries in flight keeps up`() {
+        // Under steady writes the other follower acknowledges first and moves the commit index on.
+        assertThat(LeaderMoves.keepsUp(progress(7737, 7729), b, 7400, contactLimit)).isTrue()
+    }
+
+    @Test
+    fun `a follower without what was committed at the previous look does not keep up`() {
+        // Catching up after a restart.
+        assertThat(LeaderMoves.keepsUp(progress(15086, 8453), b, 13315, contactLimit)).isFalse()
+    }
+
+    @Test
+    fun `a follower that has not answered lately does not keep up`() {
+        assertThat(LeaderMoves.keepsUp(progress(7737, 7737, contact = 2030), b, 7400, contactLimit))
+            .isFalse()
+    }
+
+    @Test
+    fun `no follower keeps up before the leader has looked once, nor one it knows nothing of`() {
+        assertThat(LeaderMoves.keepsUp(progress(7737, 7737), b, null, contactLimit)).isFalse()
+        assertThat(LeaderMoves.keepsUp(progress(7737, 7737), a, 7400, contactLimit)).isFalse()
     }
 
     @Test

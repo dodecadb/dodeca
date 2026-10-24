@@ -1,6 +1,8 @@
 package org.dozendb.cluster.internal.leadership
 
+import java.time.Duration
 import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.GroupProgress
 import org.dozendb.consensus.MemberId
 
 /**
@@ -83,6 +85,28 @@ internal object LeaderMoves {
             }
         }
         return null
+    }
+
+    /**
+     * Whether [follower] can take the leadership of a group over from the leader that reports
+     * [progress] without holding its writes back for long: it answered within [contactLimit], and
+     * its log holds every entry the group had committed at the leader's previous look,
+     * [committedBefore] (none before the first). Under steady writes the faster follower
+     * acknowledges each batch first and moves the commit index on, so one that keeps up still
+     * trails it by the entries in flight, which the transfer waits for. One catching up after a
+     * restart trails the earlier commit index too.
+     */
+    fun keepsUp(
+        progress: GroupProgress,
+        follower: MemberId,
+        committedBefore: Long?,
+        contactLimit: Duration,
+    ): Boolean {
+        val contact = progress.followerContactMillis?.get(follower) ?: return false
+        val match = progress.followerMatchIndexes?.get(follower) ?: return false
+        return contact <= contactLimit.toMillis() &&
+            committedBefore != null &&
+            match >= committedBefore
     }
 
     private const val SYSTEM = "system"

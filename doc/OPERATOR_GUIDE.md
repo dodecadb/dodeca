@@ -282,7 +282,8 @@ Leadership moves:
   leads the fewest, if they lead at least two apart. One move at a time, until
   every member leads as many databases as the others, give or take one; every
   database counts the same, `system` too. This is how a member that comes
-  back from a restart gets its share again, and how a new database, which
+  back from a restart gets its share again, once it has caught up with the
+  writes it missed, and how a new database, which
   starts led by the member that created it (the leader of `system`), finds
   its place. `NO_BALANCING` leaves the leaders where elections and handovers
   put them. The setting is dynamic; give every member the same.

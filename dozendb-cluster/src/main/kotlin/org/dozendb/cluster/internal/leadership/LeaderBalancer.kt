@@ -27,9 +27,10 @@ import org.neo4j.logging.InternalLog
  * everywhere for [stabilityDelay], every database has a leader and no group changes its members;
  * moving off a read-only member does not wait. A database goes to the member, among those that
  * could lead it (see [Leadership.eligible]), that leads the fewest databases; this member checks
- * first that the member answers it and has every committed entry, and hands the leadership over
- * without failing commits under way (see `ReplicatedDatabase.transferLeadership`). It also ranks
- * the members a leadership is handed over to when this member stops applying a database.
+ * first that the member answers it and keeps up with its log (see [LeaderMoves.keepsUp]), and hands
+ * the leadership over without failing commits under way (see
+ * `ReplicatedDatabase.transferLeadership`). It also ranks the members a leadership is handed over
+ * to when this member stops applying a database.
  */
 internal class LeaderBalancer(
     private val consensus: ConsensusLog,
@@ -52,6 +53,9 @@ internal class LeaderBalancer(
 
     /** Databases read-only here that no member could take over, logged once; executor only. */
     private val stuck = mutableSetOf<UUID>()
+
+    /** The commit index of each database this member led at the last look; executor only. */
+    private val committed = mutableMapOf<UUID, Long>()
 
     /** The leaders at the last look, and when they last changed; executor only. */
     private var leaders: Map<UUID, MemberId?> = emptyMap()
@@ -130,6 +134,7 @@ internal class LeaderBalancer(
     private fun lookQuietly() {
         try {
             look()
+            noteCommits()
         } catch (e: Exception) {
             log.warn("Deciding where databases are led failed", e)
         }
@@ -188,17 +193,23 @@ internal class LeaderBalancer(
         if (move.from == consensus.self.id) transfer(move.database, move.to, move.reason)
     }
 
+    /** Notes the commit index of each database this member leads, for the next look. */
+    private fun noteCommits() {
+        committed.clear()
+        for (database in replication.created()) {
+            val progress = consensus.progress(database) ?: continue
+            if (progress.leader) committed[database.id] = progress.commitIndex
+        }
+    }
+
     /**
-     * Transfers the leadership of [database] to [to] if [to] answers this member and has every
-     * committed entry; returns whether [to] leads it afterwards.
+     * Transfers the leadership of [database] to [to] if [to] keeps up with this member (see
+     * [LeaderMoves.keepsUp]); returns whether [to] leads it afterwards.
      */
     private fun transfer(database: DatabaseRef, to: MemberId, reason: MoveReason): Boolean {
         val replica = replication.replica(database) ?: return false
         val progress = consensus.progress(database) ?: return false
-        val contact = progress.followerContactMillis?.get(to)
-        val match = progress.followerMatchIndexes?.get(to)
-        if (contact == null || contact > contactLimit.toMillis() || match == null) return false
-        if (match < progress.commitIndex) return false
+        if (!LeaderMoves.keepsUp(progress, to, committed[database.id], contactLimit)) return false
         return replica.transferLeadership(to, reason.text, transferTimeout)
     }
 }
