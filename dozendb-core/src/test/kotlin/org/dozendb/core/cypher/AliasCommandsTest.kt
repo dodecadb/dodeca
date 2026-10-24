@@ -3,6 +3,7 @@ package org.dozendb.core.cypher
 import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.catchThrowable
 import org.assertj.core.api.Assertions.catchThrowableOfType
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.StandaloneServer.Companion.SYSTEM
@@ -532,6 +533,32 @@ class AliasCommandsTest {
         assertThat(admin.refused("CREATE ALIAS movies FOR DATABASE films PROPERTIES {cast: {}}"))
             .hasMessageContaining("Property values can only be of primitive types")
         assertThat(aliases()).isEmpty()
+    }
+
+    @Test
+    fun `refuses to start with a default database named like an alias`() {
+        admin.run("CREATE ALIAS movies FOR DATABASE films")
+        drivers.forEach(Driver::close)
+        drivers.clear()
+        server.stop()
+        server =
+            StandaloneServer(
+                root,
+                mapOf(
+                    GraphDatabaseSettings.auth_enabled to true,
+                    BoltConnector.enabled to true,
+                    GraphDatabaseSettings.initial_default_database to "Movies",
+                ),
+            )
+
+        val failure = catchThrowable { server.start() }
+
+        assertThat(generateSequence(failure) { it.cause }.map { it.message }.toList())
+            .contains(
+                "Failed to initialize system graph component: The default database 'movies' " +
+                    "that initial.dbms.default_database names is a database alias, which cannot " +
+                    "be the default database: drop the alias or choose another default database."
+            )
     }
 
     @Test

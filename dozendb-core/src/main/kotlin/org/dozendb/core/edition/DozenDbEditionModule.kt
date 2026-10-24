@@ -245,11 +245,15 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     protected lateinit var securityComponent: DozenDbSecurityComponent
         private set
 
-    /** Neo4j Community's system graph components, then DozenDB's roles and privileges. */
+    /**
+     * Neo4j Community's system graph components, then DozenDB's roles and privileges; before them,
+     * the check that the default database is no alias.
+     */
     override fun registerSystemGraphComponents(
         builder: SystemGraphComponents.Builder,
         globalModule: GlobalModule,
     ) {
+        builder.register(DefaultDatabaseCheck(globalModule.globalConfig))
         val roles =
             DozenDbSecurityComponent(
                     globalModule.globalConfig,
