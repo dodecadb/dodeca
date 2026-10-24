@@ -55,6 +55,8 @@ object MetadataScript {
                 PrivilegeScope.AllDatabases,
                 PrivilegeScope.Home -> true
                 is PrivilegeScope.Database -> scope.id == id
+                // A remote alias's privileges are no database's.
+                is PrivilegeScope.Alias,
                 PrivilegeScope.Dbms -> false
             }
         val roles =

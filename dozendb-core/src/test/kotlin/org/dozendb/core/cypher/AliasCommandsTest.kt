@@ -349,6 +349,17 @@ class AliasCommandsTest {
             .containsExactly(mapOf("requestedStatus" to "offline"))
         assertThat(alice.refused("START DATABASE movies"))
             .hasMessageStartingWith("Permission has not been granted for START DATABASE.")
+
+        // Privileges are granted on the database, which the message names.
+        val alias =
+            "`movies` is an alias of database `films`: privileges are granted on the database."
+        val granted = admin.refused("GRANT START ON DATABASE movies TO operator")
+        assertThat(granted).hasMessage("Failed to grant privilege to role 'operator': $alias")
+        assertThat(granted.gqlStatus()).isEqualTo("42002")
+        assertThat(admin.refused("DENY ACCESS ON DATABASE movies TO operator"))
+            .hasMessage("Failed to deny privilege to role 'operator': $alias")
+        assertThat(admin.refused("REVOKE STOP ON DATABASE movies FROM operator"))
+            .hasMessage("Failed to revoke privilege from role 'operator': $alias")
     }
 
     @Test

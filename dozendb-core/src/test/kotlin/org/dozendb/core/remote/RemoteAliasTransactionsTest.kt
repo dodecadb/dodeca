@@ -304,6 +304,60 @@ class RemoteAliasTransactionsTest {
     }
 
     @Test
+    fun `grants access to remote aliases by their names`() {
+        val there = there()
+        val here = server("here", auth = true)
+        here.administer("ALTER USER neo4j SET PASSWORD 'neo4j-secret-1' CHANGE NOT REQUIRED")
+        here.administer("CREATE USER carol SET PASSWORD 'carol-secret-1' CHANGE NOT REQUIRED")
+        here.administer("CREATE ROLE analyst")
+        here.administer("GRANT ROLE analyst TO carol")
+        here.alias("routed", there, "neo4j")
+        val admin = here.driver(AuthTokens.basic("neo4j", "neo4j-secret-1"))
+        val carol = here.driver(AuthTokens.basic("carol", "carol-secret-1"))
+        fun privileges() =
+            admin.run("SHOW ROLE analyst PRIVILEGES AS COMMANDS", SYSTEM).map { it["command"] }
+        val denied = "Database access is not allowed for user 'carol' with roles [PUBLIC, analyst]."
+
+        assertThat(carol.failure("RETURN 1", "routed").message).isEqualTo(denied)
+        admin.run("GRANT ACCESS ON DATABASE routed TO analyst", SYSTEM)
+        assertThat(privileges()).containsExactly("GRANT ACCESS ON DATABASE routed TO `analyst`")
+        assertThat(admin.run("SHOW ROLE analyst PRIVILEGES YIELD graph", SYSTEM))
+            .containsExactly(mapOf("graph" to "routed"))
+        assertThat(carol.run("RETURN 1 AS one", "routed")).containsExactly(mapOf("one" to 1L))
+        // ALTER ALIAS keeps them: they follow the name.
+        here.administer(
+            "ALTER ALIAS routed SET DATABASE DRIVER {ssl_enforced: false, connection_pool_max_size: 5}"
+        )
+        assertThat(carol.run("RETURN 1 AS one", "routed")).containsExactly(mapOf("one" to 1L))
+        admin.run("DENY ACCESS ON DATABASE routed TO analyst", SYSTEM)
+        assertThat(carol.failure("RETURN 1", "routed").message).isEqualTo(denied)
+        admin.run("REVOKE DENY ACCESS ON DATABASE routed FROM analyst", SYSTEM)
+        assertThat(carol.run("RETURN 1 AS one", "routed")).containsExactly(mapOf("one" to 1L))
+
+        // The other DBMS checks the rest, for the user the alias names.
+        val graph = admin.failure("GRANT MATCH {*} ON GRAPH routed TO analyst", SYSTEM)
+        assertThat(graph.gqlStatus()).isEqualTo("42002")
+        assertThat(graph.message)
+            .isEqualTo(
+                "Failed to grant privilege to role 'analyst': Only the ACCESS privilege applies to " +
+                    "the remote database alias `routed`: its transactions run on another DBMS, " +
+                    "with the privileges there of the user the alias names."
+            )
+
+        // A home database that is a remote alias is one, for PUBLIC's ACCESS ON HOME DATABASE.
+        here.administer("CREATE USER dave SET PASSWORD 'dave-secret-1' CHANGE NOT REQUIRED")
+        here.administer("ALTER USER dave SET HOME DATABASE routed")
+        val dave = here.driver(AuthTokens.basic("dave", "dave-secret-1"))
+        assertThat(dave.run("RETURN 1 AS one", "routed")).containsExactly(mapOf("one" to 1L))
+
+        // Dropped, the alias takes its privileges along: one of its name later has none.
+        admin.run("DROP ALIAS routed FOR DATABASE", SYSTEM)
+        assertThat(privileges()).isEmpty()
+        here.alias("routed", there, "neo4j")
+        assertThat(carol.failure("RETURN 1", "routed").message).isEqualTo(denied)
+    }
+
+    @Test
     fun `refuses impersonation through remote aliases`() {
         val there = there()
         val here = server("here", auth = true)

@@ -249,6 +249,7 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
             PrivilegeScope.AllDatabases -> true
             PrivilegeScope.Home -> database != null && database == home
             is PrivilegeScope.Database -> database == scope.id
+            is PrivilegeScope.Alias -> database == scope.id
         }
 
     private fun covers(fact: Fact, segment: PrivilegeSegment): Boolean =

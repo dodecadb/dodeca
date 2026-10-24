@@ -41,6 +41,7 @@ object PrivilegeText {
                 PrivilegeScope.AllDatabases -> "*"
                 PrivilegeScope.Home -> "HOME"
                 is PrivilegeScope.Database -> databaseName(scope.id) ?: return null
+                is PrivilegeScope.Alias -> scope.name
             }
         return Row(
             privilege.access.name,
@@ -100,6 +101,7 @@ object PrivilegeText {
                         is PrivilegeScope.Database ->
                             if (scope.id == parameter) "\$database"
                             else name(databaseName(scope.id) ?: return null)
+                        is PrivilegeScope.Alias -> name(scope.name)
                         PrivilegeScope.AllDatabases -> "*"
                         else -> null
                     }

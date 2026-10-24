@@ -1,5 +1,6 @@
 package org.dozendb.core.cypher
 
+import org.dozendb.core.security.PrivilegeRecords
 import org.neo4j.common.DependencyResolver
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
@@ -415,8 +416,9 @@ internal class AliasCommands(
     }
 
     /**
-     * Drops the alias, local or remote, with what is attached to it; none is left to the plans
-     * before, which CREATE OR REPLACE relies on. A database's own name is never dropped.
+     * Drops the alias, local or remote, with what is attached to it and the privileges of a remote
+     * alias, as a database's go with it; none is left to the plans before, which CREATE OR REPLACE
+     * relies on. A database's own name is never dropped.
      */
     private fun drop(plan: DropDatabaseAlias, source: ExecutionPlan): ExecutionPlan {
         val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName())
@@ -428,7 +430,10 @@ internal class AliasCommands(
                 ${TopologyGraphDbmsModel.NAMESPACE_PROPERTY}: ${parameter(alias.namespaceKey())},
                 ${TopologyGraphDbmsModel.PRIMARY_PROPERTY}: false})
             OPTIONAL MATCH (alias)-[:$PROPERTIES|$CONNECTS_WITH]->(attached)
-            DETACH DELETE alias, attached
+            OPTIONAL MATCH (privilege:${PrivilegeRecords.PRIVILEGE.name()} {
+                ${PrivilegeRecords.SCOPE}: '${PrivilegeRecords.ONE_ALIAS}',
+                ${PrivilegeRecords.ALIAS}: alias.${TopologyGraphDbmsModel.NAME_PROPERTY}})
+            DETACH DELETE alias, attached, privilege
             """
                 .trimIndent(),
             VirtualValues.map(alias.keys(), alias.values()),

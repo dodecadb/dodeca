@@ -84,6 +84,7 @@ import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
 import org.neo4j.gqlstatus.GqlHelper
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
+import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Transaction
 import org.neo4j.graphdb.security.AuthorizationViolationException
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
@@ -339,17 +340,28 @@ internal class PrivilegeCommands(
         ): Resolved<Privilege> =
             when (val scope = scope(params, tx)) {
                 is Resolved.Missing -> scope
-                is Resolved.Found ->
-                    Resolved.Found(
-                        Privilege(
-                            access,
-                            action,
-                            scope.value,
-                            resource,
-                            segment(params, tx),
-                            immutable,
+                is Resolved.Refused -> scope
+                is Resolved.Found -> {
+                    val value = scope.value
+                    if (value is PrivilegeScope.Alias && action != PrivilegeAction.ACCESS) {
+                        Resolved.Refused(
+                            "Only the ACCESS privilege applies to the remote database alias " +
+                                "`${value.name}`: its transactions run on another DBMS, with " +
+                                "the privileges there of the user the alias names."
                         )
-                    )
+                    } else {
+                        Resolved.Found(
+                            Privilege(
+                                access,
+                                action,
+                                value,
+                                resource,
+                                segment(params, tx),
+                                immutable,
+                            )
+                        )
+                    }
+                }
             }
     }
 
@@ -361,6 +373,9 @@ internal class PrivilegeCommands(
          * notifications.
          */
         data class Missing(val database: String, val reason: String) : Resolved<Nothing>
+
+        /** Nothing, because privileges cannot apply there, as [reason] says. */
+        data class Refused(val reason: String) : Resolved<Nothing>
     }
 
     private fun dbms(action: AdministrationAction, qualifier: PrivilegeQualifier) =
@@ -451,15 +466,45 @@ internal class PrivilegeCommands(
                 "Parameterized database and graph names do not support wildcards.",
             )
         }
+        val normalized = NormalizedDatabaseName(shown).name()
         val id =
             tx.findNode(
                     TopologyGraphDbmsModel.DATABASE_LABEL,
                     TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
-                    NormalizedDatabaseName(shown).name(),
+                    normalized,
                 )
                 ?.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY) as String?
-        return if (id == null) Resolved.Missing(shown, "Database `$shown` does not exist.")
-        else Resolved.Found(PrivilegeScope.Database(UUID.fromString(id)))
+        if (id != null) return Resolved.Found(PrivilegeScope.Database(UUID.fromString(id)))
+        // Dotted names too are names in the root namespace: there are no composite databases.
+        val alias =
+            tx.findNodes(
+                    TopologyGraphDbmsModel.DATABASE_NAME_LABEL,
+                    TopologyGraphDbmsModel.NAME_PROPERTY,
+                    normalized,
+                    TopologyGraphDbmsModel.NAMESPACE_PROPERTY,
+                    TopologyGraphDbmsModel.DEFAULT_NAMESPACE,
+                )
+                .use { nodes -> nodes.asSequence().firstOrNull() }
+        val target =
+            alias
+                ?.getSingleRelationship(
+                    TopologyGraphDbmsModel.TARGETS_RELATIONSHIP,
+                    Direction.OUTGOING,
+                )
+                ?.endNode
+                ?.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY) as String?
+        return when {
+            alias?.hasLabel(TopologyGraphDbmsModel.REMOTE_DATABASE_LABEL) == true ->
+                Resolved.Found(PrivilegeScope.Alias(normalized))
+            // Neo4j defines privileges on the database, not on its local aliases.
+            target != null &&
+                alias.getProperty(TopologyGraphDbmsModel.PRIMARY_PROPERTY, true) == false ->
+                Resolved.Refused(
+                    "`$shown` is an alias of database `$target`: privileges are granted on the " +
+                        "database."
+                )
+            else -> Resolved.Missing(shown, "Database `$shown` does not exist.")
+        }
     }
 
     private fun segment(
@@ -607,6 +652,7 @@ internal class PrivilegeCommands(
                             GqlHelper.getGql42002_42N00(privilege.database),
                             "$failure: ${privilege.reason}",
                         )
+                    is Resolved.Refused -> throw refused("$failure: ${privilege.reason}")
                     is Resolved.Found -> {
                         val record = PrivilegeRecords.record(roleId, privilege.value)
                         params
@@ -732,6 +778,12 @@ internal class PrivilegeCommands(
     ): MapValue {
         val roleId = roleId(tx, show(roleName, params))
         val privilege = template.resolve(access, true, params, tx)
+        if (privilege is Resolved.Refused) {
+            throw refused(
+                "Failed to revoke privilege from role '${show(roleName, params)}': " +
+                    privilege.reason
+            )
+        }
         val missing =
             when {
                 roleId == null -> "Role does not exist."
@@ -842,6 +894,13 @@ internal class PrivilegeCommands(
             error is Status.HasStatus -> error
             else -> IllegalStateException("Failed to $operation.", error)
         }
+
+    /** A privilege that cannot apply where the command says. */
+    private fun refused(message: String) =
+        InvalidArgumentException(
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42002).build(),
+            message,
+        )
 
     private fun hasStatus(error: Throwable, status: Status): Boolean =
         generateSequence(error) { it.cause }.any { it is Status.HasStatus && it.status() == status }

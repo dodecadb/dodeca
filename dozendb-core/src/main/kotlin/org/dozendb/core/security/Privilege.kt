@@ -50,7 +50,25 @@ sealed interface PrivilegeScope {
     data class Database(val id: UUID) : PrivilegeScope {
         override fun toString() = "database $id"
     }
+
+    /**
+     * One remote alias, by its name: a remote alias has no id that ALTER ALIAS keeps, and DROP
+     * ALIAS removes its privileges. Its [id] stands for it where privileges apply to databases.
+     */
+    data class Alias(val name: String) : PrivilegeScope {
+        val id: UUID
+            get() = remoteAliasId(name)
+
+        override fun toString() = "alias $name"
+    }
 }
+
+/**
+ * The id that stands for the remote alias [name] where privileges apply: derived from its name, and
+ * never stored, so no database has it.
+ */
+fun remoteAliasId(name: String): UUID =
+    UUID.nameUUIDFromBytes("dozendb-remote-alias:$name".toByteArray(Charsets.UTF_8))
 
 /** What of the elements a graph privilege is about; SHOW PRIVILEGES' `resource`. */
 sealed interface PrivilegeResource {

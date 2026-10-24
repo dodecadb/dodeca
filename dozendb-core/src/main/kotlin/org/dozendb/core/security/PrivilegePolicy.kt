@@ -178,6 +178,7 @@ class PrivilegePolicy(privileges: Collection<Privilege>, private val home: UUID?
             PrivilegeScope.AllDatabases -> true
             PrivilegeScope.Home -> database != null && database == home
             is PrivilegeScope.Database -> database == scope.id
+            is PrivilegeScope.Alias -> database == scope.id
         }
 
     /** A DBMS-wide [action], or ALL DBMS PRIVILEGES. */

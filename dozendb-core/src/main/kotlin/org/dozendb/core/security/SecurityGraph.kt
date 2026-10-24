@@ -25,6 +25,7 @@ class SecurityGraph(
     val roles: Map<String, Role>,
     private val databases: Map<String, UUID>,
     private val aliases: Map<String, UUID> = emptyMap(),
+    private val remoteAliases: Set<String> = emptySet(),
 ) {
     class User(val suspended: Boolean, val home: String?, val roles: Set<String>)
 
@@ -43,9 +44,13 @@ class SecurityGraph(
 
     /**
      * The id of the database [name], or of the target of the local alias [name], whose privileges
-     * are those of its database; null if there is neither.
+     * are those of its database, or the one that stands for the remote alias [name]
+     * ([remoteAliasId]); null if there is none of them.
      */
-    fun databaseId(name: String): UUID? = databases[name] ?: aliases[name]
+    fun databaseId(name: String): UUID? =
+        databases[name]
+            ?: aliases[name]
+            ?: name.takeIf { it in remoteAliases }?.let(::remoteAliasId)
 
     private val names: Map<UUID, String> by lazy {
         databases.entries.associate { (name, id) -> id to name }
@@ -152,7 +157,18 @@ class SecurityGraph(
                         }
                         .toMap()
                 }
-            return SecurityGraph(initialized, users, roles, databases, aliases)
+            val remoteAliases =
+                tx.findNodes(TopologyGraphDbmsModel.REMOTE_DATABASE_LABEL).use { nodes ->
+                    nodes
+                        .asSequence()
+                        .filter {
+                            it.getProperty(TopologyGraphDbmsModel.NAMESPACE_PROPERTY, null) ==
+                                TopologyGraphDbmsModel.DEFAULT_NAMESPACE
+                        }
+                        .map { it.getProperty(TopologyGraphDbmsModel.NAME_PROPERTY) as String }
+                        .toSet()
+                }
+            return SecurityGraph(initialized, users, roles, databases, aliases, remoteAliases)
         }
 
         private fun privileges(role: Node, name: String, log: InternalLog): List<Privilege> =

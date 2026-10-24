@@ -31,11 +31,14 @@ object PrivilegeRecords {
     const val KEY = "key"
 
     /**
-     * A privilege on one database has [SCOPE] [ONE_DATABASE] and the database's id as [DATABASE].
+     * A privilege on one database has [SCOPE] [ONE_DATABASE] and the database's id as [DATABASE];
+     * one on a remote alias has [SCOPE] [ONE_ALIAS] and the alias's name as [ALIAS].
      */
     const val SCOPE = "scope"
     const val ONE_DATABASE = "DATABASE"
     const val DATABASE = "database"
+    const val ONE_ALIAS = "ALIAS"
+    const val ALIAS = "alias"
 
     private const val ACTION = "action"
     private const val RESOURCE = "resource"
@@ -82,6 +85,7 @@ object PrivilegeRecords {
                 "ALL" -> PrivilegeScope.AllDatabases
                 "HOME" -> PrivilegeScope.Home
                 ONE_DATABASE -> PrivilegeScope.Database(UUID.fromString(text(DATABASE)))
+                ONE_ALIAS -> PrivilegeScope.Alias(text(ALIAS))
                 else -> throw IllegalArgumentException("unknown scope $scope")
             }
         val resource =
@@ -156,6 +160,10 @@ object PrivilegeRecords {
             is PrivilegeScope.Database -> {
                 put(SCOPE, ONE_DATABASE)
                 put(DATABASE, scope.id.toString())
+            }
+            is PrivilegeScope.Alias -> {
+                put(SCOPE, ONE_ALIAS)
+                put(ALIAS, scope.name)
             }
         }
         when (val resource = privilege.resource) {
