@@ -2,9 +2,11 @@
 
 DozenDB adds to Neo4j Community Edition what Community leaves to Enterprise:
 many databases (`CREATE`, `DROP`, `START` and `STOP DATABASE`), property
-existence constraints, and Raft-based replication with automatic leader
-failover. A cluster of three or more voting members survives the loss of a
-minority of members without losing acknowledged writes.
+existence, key and type constraints, roles and privileges, local and remote
+database aliases, online backup and restore, metrics and the query and
+security logs, and Raft-based replication with automatic leader failover and
+writes on any member. A cluster of three or more voting members survives the
+loss of a minority of members without losing acknowledged writes.
 
 DozenDB is a single jar installed into Neo4j Community's `lib/`. It began as an
 add-on to [DozerDB](https://dozerdb.org) and contains a Kotlin port of the
@@ -21,7 +23,7 @@ Under development. Not ready for production use.
 | `consensus-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
 | `dozendb-core/` | What DozenDB adds to Neo4j Community on every server, clustered or not: the edition module, database management, administration commands, constraints and settings. |
-| `dozendb-backup/` | Online backup and restore, clustered or not. So far the backup files: Neo4j's `.backup` artifacts, full and differential. |
+| `dozendb-backup/` | Online backup and restore, clustered or not: `neo4j-admin database backup`, `database restore`, `database aggregate-backup` and `backup inspect`, with Neo4j's `.backup` artifacts, full and differential. |
 | `dozendb-cluster/` | Clustering on top of `dozendb-core`: commit interception, routing, reads, snapshots and membership. |
 | `dozendb-plugin/` | The entry point, and the build of the single jar installed into Neo4j's `lib/`. |
 | `dozendb-it/` | Integration, fault, crash and benchmark tests. |
