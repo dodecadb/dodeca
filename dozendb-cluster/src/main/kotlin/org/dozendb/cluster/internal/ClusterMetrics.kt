@@ -109,6 +109,12 @@ internal class ClusterMetrics(
         counter("dozendb.cluster.raft.leader_changes", "Leaders this member learned of.") {
             progress.get()?.leaderChanges ?: 0
         }
+        counter(
+            "dozendb.cluster.raft.leadership_transfers",
+            "Leaderships this member transferred to another member.",
+        ) {
+            progress.get()?.leadershipTransfers ?: 0
+        }
         metrics.gauge(
             "dozendb.cluster.raft.followers",
             "On the leader, the followers it sends to.",

@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.nio.file.Path
 import java.time.Duration
 import org.dozendb.cluster.FormatLevels
+import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -30,7 +31,8 @@ import org.neo4j.graphdb.config.Setting
  *
  * Neo4j only accepts setting names in a fixed set of namespaces. Following Neo4j's convention,
  * settings that must agree across the cluster live under `dbms.dozendb.`, settings specific to one
- * server under `server.dozendb.`, and undocumented settings for tests under `internal.`.
+ * server under `server.dozendb.`, and undocumented settings for tests under `internal.`. Settings
+ * that Neo4j Enterprise documents for the same purpose keep Enterprise's names.
  */
 class ClusterSettings : SettingsDeclaration {
     companion object {
@@ -168,6 +170,38 @@ class ClusterSettings : SettingsDeclaration {
                     "dbms.dozendb.reads.default_consistency",
                     ofEnum(ReadConsistency::class.java),
                     ReadConsistency.CAUSAL,
+                )
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "How members move the leadership of databases on their own. EQUAL_BALANCING moves " +
+                "leaders so that every member leads as many databases as the others, give or " +
+                "take one; NO_BALANCING leaves leaders where elections put them. Either way, a " +
+                "member hands over the leadership of a database that is read-only on it, and " +
+                "hands its leaderships to the members leading the fewest databases when it stops."
+        )
+        val balancingStrategy: Setting<BalancingStrategy> =
+            newBuilder(
+                    "dbms.cluster.raft.leader_transfer.balancing_strategy",
+                    ofEnum(BalancingStrategy::class.java),
+                    BalancingStrategy.EQUAL_BALANCING,
+                )
+                .dynamic()
+                .build()
+
+        @JvmField
+        @field:Internal
+        @field:Description(
+            "For tests: how long leaders must have stayed put on every member before balancing " +
+                "moves one."
+        )
+        val balancingDelay: Setting<Duration> =
+            newBuilder(
+                    "internal.dbms.dozendb.cluster.leadership_balancing_delay",
+                    DURATION,
+                    Duration.ofSeconds(10),
                 )
                 .immutable()
                 .build()

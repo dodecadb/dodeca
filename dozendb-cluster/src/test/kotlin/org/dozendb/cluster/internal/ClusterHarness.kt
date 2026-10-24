@@ -13,6 +13,7 @@ import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.BackupSettings
 import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.internal.durability.withSingleFsync
+import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.Role
 import org.dozendb.consensus.testing.TestAuthority
@@ -185,6 +186,8 @@ internal class ClusterHarness(
                     )
                     .set(ClusterSettings.electionTimeoutMin, Duration.ofMillis(300))
                     .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
+                    // Tests about other things keep their leaders; balancing tests turn it on.
+                    .set(ClusterSettings.balancingStrategy, BalancingStrategy.NO_BALANCING)
                     .set(CLUSTER_TLS.enabled, authority != null)
                     .set(BackupSettings.listenAddress, SocketAddress("127.0.0.1", 0))
                     // Bolt's thread pools otherwise wait 5 s each for quiet before they stop.

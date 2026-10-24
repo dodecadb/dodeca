@@ -301,10 +301,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 consensus,
                 replicationService,
                 directory,
+                strategy = { config.get(ClusterSettings.balancingStrategy) },
+                stabilityDelay = config.get(ClusterSettings.balancingDelay),
                 transferTimeout = electionTimeout.multipliedBy(2),
                 contactLimit = electionTimeout,
                 log = logService.getInternalLog(LeaderBalancer::class.java),
             )
+        consensus.leaderPlacement = balancer
         cluster =
             ClusterService(
                 consensus,

@@ -74,6 +74,8 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     ): DozenDbContainer {
         withEnv("NEO4J_dbms_dozendb_cluster_enabled", "true")
         withEnv("NEO4J_dbms_dozendb_cluster_initial__members", initialMembers.joinToString(","))
+        // Tests about other things keep their leaders; see [balancingLeaders].
+        withEnv(BALANCING_STRATEGY, "NO_BALANCING")
         withEnv("NEO4J_dbms_ssl_policy_cluster_enabled", (authority != null).toString())
         if (authority != null) {
             withEnv("NEO4J_dbms_ssl_policy_cluster_verify__hostname", "true")
@@ -85,6 +87,18 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
             }
         }
         return this
+    }
+
+    /**
+     * Balances leaders as members do by default, after leaders have stayed put for [delay] instead
+     * of 10 s.
+     */
+    fun balancingLeaders(delay: Duration): DozenDbContainer {
+        withEnv(BALANCING_STRATEGY, "EQUAL_BALANCING")
+        return withEnv(
+            "NEO4J_internal_dbms_dozendb_cluster_leadership__balancing__delay",
+            "${delay.toMillis()}ms",
+        )
     }
 
     /**
@@ -372,6 +386,8 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         const val PROMETHEUS_PORT = 2004
         const val BACKUP_PORT = 6362
         const val PASSWORD = "dozendb-it-secret"
+        private const val BALANCING_STRATEGY =
+            "NEO4J_dbms_cluster_raft_leader__transfer_balancing__strategy"
         private const val SHUTDOWN_SECONDS = 120
         private val DATA = Volume("/data")
         private val http = HttpClient.newHttpClient()

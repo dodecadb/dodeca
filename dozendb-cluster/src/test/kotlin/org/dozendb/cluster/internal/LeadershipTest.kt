@@ -19,6 +19,7 @@ import org.awaitility.kotlin.during
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.dozendb.cluster.internal.ClusterHarness.Companion.DEFAULT_DATABASE
+import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.cluster.internal.replication.ReplicatedDatabase
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.junit.jupiter.api.AfterEach
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.impl.api.LeaseService
@@ -44,10 +46,11 @@ class LeadershipTest {
 
     private fun cluster(
         size: Int = 3,
+        settings: Map<Setting<*>, Any> = emptyMap(),
         fileSystem: ((ClusterHarness.Member) -> FileSystemAbstraction)? = null,
     ): ClusterHarness {
         println("Cluster harness in $root")
-        return ClusterHarness(root, size, fileSystem).also {
+        return ClusterHarness(root, size, fileSystem, settings).also {
             harness = it
             it.start()
         }
@@ -70,6 +73,34 @@ class LeadershipTest {
             .filterIsInstance<Status.HasStatus>()
             .firstOrNull()
             ?.status()
+
+    private fun ClusterHarness.administer(command: String) {
+        awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command)
+    }
+
+    /** Creates databases until there are [DATABASES]. */
+    private fun ClusterHarness.createDatabases() {
+        DATABASES.drop(2).forEach { administer("CREATE DATABASE $it WAIT") }
+    }
+
+    /**
+     * How many of [DATABASES] each running member leads, once they agree on every leader; null
+     * until they do.
+     */
+    private fun ClusterHarness.led(): Map<ClusterHarness.Member, Int>? {
+        val members = running()
+        val leaders = DATABASES.map { name ->
+            members.map { it.status(name)?.leader }.distinct().singleOrNull() ?: return null
+        }
+        return members.associateWith { member -> leaders.count { it == member.cluster.self.id } }
+    }
+
+    private fun ClusterHarness.Member.setBalancing(strategy: BalancingStrategy) {
+        database(SYSTEM)
+            .dependencyResolver
+            .resolveDependency(Config::class.java)
+            .setDynamic(ClusterSettings.balancingStrategy, strategy, "a test")
+    }
 
     private fun ClusterHarness.Member.debugLog(): String =
         Files.readString(home.resolve("logs/debug.log"))
@@ -276,7 +307,112 @@ class LeadershipTest {
         assertThat(cluster.awaitLeader()).isEqualTo(target)
     }
 
+    @Test
+    fun `with equal balancing every member leads its share of the databases`() {
+        val cluster = cluster(settings = BALANCING)
+
+        cluster.createDatabases()
+
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.led()?.values).containsExactlyInAnyOrder(3, 3, 2)
+            }
+        // Balanced, it stays so.
+        val balanced = cluster.led()
+        await during
+            Duration.ofSeconds(3) atMost
+            Duration.ofSeconds(10) untilAsserted
+            {
+                assertThat(cluster.led()).isEqualTo(balanced)
+            }
+    }
+
+    @Test
+    fun `a member that stops hands its leaderships to those leading the fewest`() {
+        val cluster = cluster()
+        cluster.createDatabases()
+        // Without balancing, the creator of each database leads it.
+        val busiest =
+            await atMost
+                Duration.ofSeconds(30) untilNotNull
+                {
+                    cluster.led()?.maxBy { it.value }?.key
+                }
+
+        busiest.stop()
+
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                val led = cluster.led()
+                assertThat(led?.values?.sum()).isEqualTo(DATABASES.size)
+                assertThat(led!!.values.max() - led.values.min()).isLessThanOrEqualTo(1)
+            }
+        assertThat(Files.readString(root.resolve("raft.log")))
+            .contains("this member stopped applying its entries")
+    }
+
+    @Test
+    fun `a member that comes back gets its share of the leaderships`() {
+        val cluster = cluster(settings = BALANCING)
+        cluster.createDatabases()
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.led()?.values).containsExactlyInAnyOrder(3, 3, 2)
+            }
+        val restarted = cluster.running().first()
+
+        restarted.stop()
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.led()?.values).containsExactlyInAnyOrder(4, 4)
+            }
+        restarted.start()
+
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.led()?.values).containsExactlyInAnyOrder(3, 3, 2)
+            }
+    }
+
+    @Test
+    fun `without balancing leaders stay put, until balancing is turned on`() {
+        val cluster =
+            cluster(settings = mapOf(ClusterSettings.balancingDelay to Duration.ofSeconds(1)))
+        cluster.createDatabases()
+        val unbalanced = await atMost Duration.ofSeconds(30) untilNotNull { cluster.led() }
+        // The creator leads every database it created.
+        assertThat(unbalanced.values.max()).isGreaterThanOrEqualTo(DATABASES.size - 2)
+
+        await during
+            Duration.ofSeconds(3) atMost
+            Duration.ofSeconds(10) untilAsserted
+            {
+                assertThat(cluster.led()).isEqualTo(unbalanced)
+            }
+        cluster.running().forEach { it.setBalancing(BalancingStrategy.EQUAL_BALANCING) }
+
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.led()?.values).containsExactlyInAnyOrder(3, 3, 2)
+            }
+    }
+
     private companion object {
         const val WRITERS = 4
+        const val SYSTEM = "system"
+        val DATABASES = listOf(SYSTEM, DEFAULT_DATABASE) + (1..6).map { "db$it" }
+
+        /** Equal balancing, once leaders stayed put for a second. */
+        val BALANCING: Map<Setting<*>, Any> =
+            mapOf(
+                ClusterSettings.balancingStrategy to BalancingStrategy.EQUAL_BALANCING,
+                ClusterSettings.balancingDelay to Duration.ofSeconds(1),
+            )
     }
 }
