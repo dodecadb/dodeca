@@ -26,6 +26,11 @@ public data class GroupProgress(
      * follower, or when the followers changed while they were read.
      */
     val followerMatchIndexes: Map<MemberId, Long>?,
+    /**
+     * On the leader, milliseconds since each follower last answered it. Null when
+     * [followerMatchIndexes] is.
+     */
+    val followerContactMillis: Map<MemberId, Long>?,
     /** Snapshots taken since the group started on this member. */
     val snapshotsTaken: Long,
     /** Changes of the known leader since the group started on this member. */

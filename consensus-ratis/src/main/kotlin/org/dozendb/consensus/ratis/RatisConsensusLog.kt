@@ -590,6 +590,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val roleInfo = division.info.roleInfoProto
         val leading = status.role == Role.Leader
         val stateMachine = stateMachines[database.id]
+        val matchIndexes = if (leading) followerMatchIndexes(roleInfo, division.info) else null
         return GroupProgress(
             appendIndex = raftLog.lastEntryTermIndex?.index ?: RaftLog.INVALID_LOG_INDEX,
             commitIndex = status.commitIndex,
@@ -604,8 +605,13 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                         roleInfo.followerInfo.leaderInfo.lastRpcElapsedTimeMs
                     else -> null
                 },
-            followerMatchIndexes =
-                if (leading) followerMatchIndexes(roleInfo, division.info) else null,
+            followerMatchIndexes = matchIndexes,
+            followerContactMillis =
+                matchIndexes?.let {
+                    roleInfo.leaderInfo.followerInfoList.associate {
+                        memberId(RaftPeerId.valueOf(it.id.id)) to it.lastRpcElapsedTimeMs
+                    }
+                },
             snapshotsTaken = stateMachine?.snapshotsTaken ?: 0,
             leaderChanges = stateMachine?.leaderChanges ?: 0,
             leadershipTransfers = stateMachine?.leadershipTransfers ?: 0,

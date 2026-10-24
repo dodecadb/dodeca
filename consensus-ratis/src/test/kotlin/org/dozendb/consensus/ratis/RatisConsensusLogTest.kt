@@ -114,6 +114,12 @@ class RatisConsensusLogTest {
                     assertThat(progress.followerMatchIndexes!!.values).allMatch {
                         it >= committed.last().index
                     }
+                    assertThat(progress.followerContactMillis!!.keys)
+                        .isEqualTo(progress.followerMatchIndexes!!.keys)
+                    // Followers answer heartbeats every half minimum election timeout.
+                    assertThat(progress.followerContactMillis!!.values).allMatch {
+                        it < RatisTestCluster.ELECTION_TIMEOUT_MAX.toMillis()
+                    }
                     for (node in cluster.nodes) {
                         val local = node.consensus.progress(cluster.database)!!
                         assertThat(local.appliedIndex)
@@ -129,6 +135,7 @@ class RatisConsensusLogTest {
                 cluster.nodes.first { it != leader }.consensus.progress(cluster.database)!!
             assertThat(follower.leader).isFalse()
             assertThat(follower.followerMatchIndexes).isNull()
+            assertThat(follower.followerContactMillis).isNull()
             assertThat(follower.sinceLeaderContactMillis).isNotNull().isLessThan(10_000)
         }
 

@@ -489,6 +489,18 @@ class InMemoryConsensus {
                         } else {
                             null
                         },
+                    followerContactMillis =
+                        if (leading) {
+                            group.members
+                                .filter { it.id != self.id }
+                                .associate {
+                                    it.id to
+                                        if (members.getValue(it.id).isRunning(database)) 0L
+                                        else Long.MAX_VALUE
+                                }
+                        } else {
+                            null
+                        },
                     snapshotsTaken = 0,
                     leaderChanges = 0,
                     leadershipTransfers = transfers[database.id] ?: 0,
