@@ -93,6 +93,25 @@ class InMemoryConsensusTest {
     }
 
     @Test
+    fun `leadership transfers only from the leader to a running member`() =
+        runBlocking<Unit> {
+            startAll()
+            consensus.electLeader(database, a.self.id)
+            c.detachGroup(database)
+
+            assertThat(b.transferLeadership(database, c.self.id, "a test", Duration.ofSeconds(1)))
+                .isFalse()
+            assertThat(a.transferLeadership(database, c.self.id, "a test", Duration.ofSeconds(1)))
+                .isFalse()
+            assertThat(a.transferLeadership(database, b.self.id, "a test", Duration.ofSeconds(1)))
+                .isTrue()
+
+            assertThat(a.status(database).leader).isEqualTo(b.self.id)
+            assertThat(b.status(database).term).isEqualTo(2)
+            assertThat(a.progress(database)?.leadershipTransfers).isEqualTo(1)
+        }
+
+    @Test
     fun `followers reject writes and name the leader`() =
         runBlocking<Unit> {
             startAll()

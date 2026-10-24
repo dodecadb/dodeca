@@ -674,6 +674,7 @@ internal class GroupStateMachine(
 
     private val snapshotCount = AtomicLong()
     private val leaderChangeCount = AtomicLong()
+    private val transferCount = AtomicLong()
 
     /** Snapshots taken since this group started on this member. */
     val snapshotsTaken: Long
@@ -682,6 +683,14 @@ internal class GroupStateMachine(
     /** Leaders this member learned of since this group started on it. */
     val leaderChanges: Long
         get() = leaderChangeCount.get()
+
+    /** Leaderships this member transferred to another member since this group started on it. */
+    val leadershipTransfers: Long
+        get() = transferCount.get()
+
+    fun countTransfer() {
+        transferCount.incrementAndGet()
+    }
 
     /** Runs on the apply thread, between entries, when Ratis is asked for a snapshot. */
     override fun takeSnapshot(): Long {

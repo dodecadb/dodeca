@@ -30,4 +30,6 @@ public data class GroupProgress(
     val snapshotsTaken: Long,
     /** Changes of the known leader since the group started on this member. */
     val leaderChanges: Long,
+    /** Leaderships this member transferred to another member since the group started on it. */
+    val leadershipTransfers: Long,
 )

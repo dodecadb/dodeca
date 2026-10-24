@@ -102,6 +102,30 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
     public fun detachGroup(database: DatabaseRef, handOverLeadership: Boolean = true)
 
     /**
+     * Chooses whom this member hands leadership over to after [detachGroup]. Configuration order
+     * until set.
+     */
+    public var leaderPlacement: LeaderPlacement
+
+    /**
+     * Transfers the leadership of the group of [database], which this member leads, to the voting
+     * member [to]. [to] takes over once its log holds every entry of this member's, which it may
+     * have to catch up on first, within [timeout]. Meanwhile this member refuses new entries:
+     * [submit] returns [CommitResult.NotLeader]. The transfer is logged with [reason], which
+     * completes "Transferred leadership of <database> to <member>: ".
+     *
+     * @return whether [to] leads the group afterwards; false, after logging why, if this member did
+     *   not lead it, [to] did not take over within [timeout], or a membership change is in
+     *   progress.
+     */
+    public suspend fun transferLeadership(
+        database: DatabaseRef,
+        to: MemberId,
+        reason: String,
+        timeout: Duration,
+    ): Boolean
+
+    /**
      * The state of the local state machine of [database] as a snapshot: the last entry applied and
      * the state machine's applied index, read together. Null if the group is not running here. A
      * copy of the state machine taken after this call holds every entry up to the snapshot.

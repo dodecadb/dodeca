@@ -6,6 +6,7 @@ import java.io.InputStream
 import java.net.InetSocketAddress
 import java.util.EnumSet
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
@@ -67,6 +68,7 @@ import org.dozendb.consensus.GroupMembership
 import org.dozendb.consensus.GroupProgress
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.LeaderPlacement
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.PeerInfo
@@ -120,6 +122,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     @Volatile private var server: RaftServer? = null
     @Volatile private var boundAddress: InetSocketAddress? = null
+    @Volatile override var leaderPlacement: LeaderPlacement = LeaderPlacement.CONFIGURATION_ORDER
 
     private val groupListener =
         object : GroupStateMachine.Listener {
@@ -343,27 +346,22 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     private fun tryHandOver(groupId: UUID, attempt: Int) {
         val raftServer = server ?: return
-        val raftGroupId = RaftGroupId.valueOf(groupId)
-        val division = runCatching { raftServer.getDivision(raftGroupId) }.getOrNull() ?: return
+        val division =
+            runCatching { raftServer.getDivision(RaftGroupId.valueOf(groupId)) }.getOrNull()
+                ?: return
         val stateMachine = stateMachines[groupId] ?: return
         if (!division.info.isLeader || !stateMachine.handsOverLeadership) return
         val database = stateMachine.database
-        for (candidate in division.raftConf.currentPeers.map { it.id }.filter { it != peerId }) {
-            val reply = runCatching {
-                raftServer.transferLeadership(
-                    TransferLeadershipRequest(
-                        clientId,
-                        peerId,
-                        raftGroupId,
-                        callIds.incrementAndGet(),
-                        candidate,
-                        config.requestTimeout.toMillis(),
-                    )
-                )
+        val others = division.raftConf.currentPeers.map(::memberId).filter { it != config.memberId }
+        val candidates =
+            (leaderPlacement.rank(database, others).filter { it in others } + others).distinct()
+        for (candidate in candidates) {
+            val failure = runCatching {
+                requestTransfer(database, candidate, config.requestTimeout).get()
             }
-                .getOrNull()
-            if (reply?.isSuccess == true) {
-                log.info("Handed leadership of {} over to {}", database, candidate)
+                .getOrElse { it }
+            if (failure == null) {
+                transferred(database, candidate, HANDOVER_REASON)
                 return
             }
         }
@@ -375,6 +373,73 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             )
         }
         handOverLeadership(groupId, HANDOVER_RETRY, attempt + 1)
+    }
+
+    override suspend fun transferLeadership(
+        database: DatabaseRef,
+        to: MemberId,
+        reason: String,
+        timeout: java.time.Duration,
+    ): Boolean {
+        val failure =
+            try {
+                requestTransfer(database, to, timeout).await()
+            } catch (e: Exception) {
+                unwrap(e)
+            }
+        if (failure != null) {
+            log.info(
+                "Could not transfer leadership of {} to {} ({}): {}",
+                database,
+                to,
+                reason,
+                failure.message,
+            )
+            return false
+        }
+        transferred(database, to, reason)
+        return true
+    }
+
+    /**
+     * Asks Ratis to transfer the leadership of [database] to [to]. Completes with null once [to]
+     * leads, or with why not.
+     */
+    private fun requestTransfer(
+        database: DatabaseRef,
+        to: MemberId,
+        timeout: java.time.Duration,
+    ): CompletableFuture<Throwable?> {
+        val raftServer =
+            server
+                ?: return CompletableFuture.completedFuture(
+                    IllegalStateException("consensus is not started")
+                )
+        val request =
+            TransferLeadershipRequest(
+                clientId,
+                peerId,
+                RaftGroupId.valueOf(database.id),
+                callIds.incrementAndGet(),
+                RaftPeerId.valueOf(to.toString()),
+                timeout.toMillis(),
+            )
+        return try {
+            raftServer.transferLeadershipAsync(request).handle { reply, failure ->
+                when {
+                    failure != null -> unwrap(failure)
+                    reply.isSuccess -> null
+                    else -> reply.exception ?: IllegalStateException("the transfer failed")
+                }
+            }
+        } catch (e: IOException) {
+            CompletableFuture.completedFuture(e)
+        }
+    }
+
+    private fun transferred(database: DatabaseRef, to: MemberId, reason: String) {
+        stateMachines[database.id]?.countTransfer()
+        log.info("Transferred leadership of {} to {}: {}", database, to, reason)
     }
 
     override fun currentSnapshot(database: DatabaseRef): Snapshot? {
@@ -538,6 +603,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 if (leading) followerMatchIndexes(roleInfo, division.info) else null,
             snapshotsTaken = stateMachine?.snapshotsTaken ?: 0,
             leaderChanges = stateMachine?.leaderChanges ?: 0,
+            leadershipTransfers = stateMachine?.leadershipTransfers ?: 0,
         )
     }
 
@@ -871,6 +937,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     private companion object {
         const val RETRY_SLEEP_MS = 200L
         val HANDOVER_RETRY: java.time.Duration = java.time.Duration.ofSeconds(1)
+        const val HANDOVER_REASON = "this member stopped applying its entries"
         /** Room for the Ratis entry header around a payload, generously rounded. */
         const val ENTRY_OVERHEAD = 64L shl 10
         const val DEFAULT_MESSAGE_SIZE = 64L shl 20

@@ -16,6 +16,7 @@ import org.dozendb.consensus.GroupMembership
 import org.dozendb.consensus.GroupProgress
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.LeaderPlacement
 import org.dozendb.consensus.LogEntry
 import org.dozendb.consensus.LogPosition
 import org.dozendb.consensus.Member
@@ -177,6 +178,10 @@ class InMemoryConsensus {
         private val listeners = mutableMapOf<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
         private val removedFrom = mutableSetOf<UUID>()
         private val passingConfigurations = mutableMapOf<UUID, List<Member>>()
+        private val transfers = mutableMapOf<UUID, Long>()
+
+        @Volatile
+        override var leaderPlacement: LeaderPlacement = LeaderPlacement.CONFIGURATION_ORDER
 
         internal fun isRunning(database: DatabaseRef): Boolean = database.id in running
 
@@ -335,6 +340,38 @@ class InMemoryConsensus {
             notifications.forEach { it() }
         }
 
+        /**
+         * Makes [to] the leader in a new term at once, if this member leads and [to] runs the
+         * group; [timeout] is not needed.
+         */
+        override suspend fun transferLeadership(
+            database: DatabaseRef,
+            to: MemberId,
+            reason: String,
+            timeout: Duration,
+        ): Boolean {
+            val notifications =
+                synchronized(lock) {
+                    val group = groups[database.id] ?: return false
+                    val target = members[to]
+                    if (
+                        group.leader != self.id ||
+                            !isRunning(database) ||
+                            group.members.none { it.id == to } ||
+                            target == null ||
+                            !target.isRunning(database)
+                    ) {
+                        return false
+                    }
+                    group.term++
+                    group.leader = to
+                    transfers[database.id] = (transfers[database.id] ?: 0) + 1
+                    this@InMemoryConsensus.statusNotifications(database)
+                }
+            notifications.forEach { it() }
+            return true
+        }
+
         override fun currentSnapshot(database: DatabaseRef): Snapshot? =
             synchronized(lock) {
                 val stateMachine = running[database.id] ?: return null
@@ -454,6 +491,7 @@ class InMemoryConsensus {
                         },
                     snapshotsTaken = 0,
                     leaderChanges = 0,
+                    leadershipTransfers = transfers[database.id] ?: 0,
                 )
             }
 

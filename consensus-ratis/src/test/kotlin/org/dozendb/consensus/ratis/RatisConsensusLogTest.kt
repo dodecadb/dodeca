@@ -20,6 +20,7 @@ import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.LeaderPlacement
 import org.dozendb.consensus.LogEntry
 import org.dozendb.consensus.LogPosition
 import org.dozendb.consensus.MemberId
@@ -649,6 +650,57 @@ class RatisConsensusLogTest {
                 {
                     assertThat(leader.machine.payloads()).containsExactly("one", "two")
                 }
+        }
+
+    @Test
+    fun `a detached leader hands leadership to the member its placement ranks first`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            leader.write("one")
+            // The member that configuration order tries last.
+            val preferred =
+                leader.consensus.members(cluster.database).map { it.id }.last { it != leader.id }
+            leader.consensus.leaderPlacement = LeaderPlacement { _, _ -> listOf(preferred) }
+
+            leader.consensus.detachGroup(cluster.database)
+
+            assertThat(cluster.awaitLeaderOtherThan(leader).id).isEqualTo(preferred)
+            assertThat(leader.consensus.progress(cluster.database)?.leadershipTransfers)
+                .isEqualTo(1)
+        }
+
+    @Test
+    fun `leadership transfers to a member that has caught up`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            leader.write("one")
+            val target = cluster.nodes.first { it != leader }
+
+            val transferred =
+                leader.consensus.transferLeadership(
+                    cluster.database,
+                    target.id,
+                    "a test",
+                    Duration.ofSeconds(10),
+                )
+
+            assertThat(transferred).isTrue()
+            assertThat(cluster.awaitLeaderOtherThan(leader)).isEqualTo(target)
+            assertThat(target.write("two")).isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(leader.consensus.progress(cluster.database)?.leadershipTransfers)
+                .isEqualTo(1)
+            // A member that does not lead has nothing to transfer.
+            assertThat(
+                    leader.consensus.transferLeadership(
+                        cluster.database,
+                        target.id,
+                        "a test",
+                        Duration.ofSeconds(1),
+                    )
+                )
+                .isFalse()
         }
 
     @Test
