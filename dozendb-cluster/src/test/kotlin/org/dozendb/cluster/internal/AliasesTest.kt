@@ -1,13 +1,17 @@
 package org.dozendb.cluster.internal
 
+import java.nio.file.Files
 import java.nio.file.Path
+import java.security.KeyStore
 import java.time.Duration
+import javax.crypto.KeyGenerator
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.core.DozenDbSettings
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -18,8 +22,10 @@ import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.graphdb.QueryExecutionException
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.api.exceptions.Status
+import org.neo4j.string.SecureString
 
 /**
  * Local aliases in a cluster: created on the leader of `system`, they reach the other members
@@ -38,12 +44,31 @@ class AliasesTest {
     }
 
     private fun cluster(
-        fileSystem: ((ClusterHarness.Member) -> FileSystemAbstraction)? = null
+        settings: Map<Setting<*>, Any> = emptyMap(),
+        fileSystem: ((ClusterHarness.Member) -> FileSystemAbstraction)? = null,
     ): ClusterHarness =
-        ClusterHarness(root, 3, fileSystem, mapOf(BoltConnector.enabled to true)).also {
+        ClusterHarness(root, 3, fileSystem, mapOf(BoltConnector.enabled to true) + settings).also {
             harness = it
             it.start()
         }
+
+    /** The settings of a keystore, which every member shares, for passwords of remote aliases. */
+    private fun keystore(): Map<Setting<*>, Any> {
+        val path = root.resolve("aliases.p12")
+        val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        val store = KeyStore.getInstance("PKCS12").apply { load(null, null) }
+        store.setEntry(
+            "aliases",
+            KeyStore.SecretKeyEntry(key),
+            KeyStore.PasswordProtection(KEYSTORE_SECRET.toCharArray()),
+        )
+        Files.newOutputStream(path).use { store.store(it, KEYSTORE_SECRET.toCharArray()) }
+        return mapOf(
+            DozenDbSettings.keystorePath to path,
+            DozenDbSettings.keystorePassword to SecureString(KEYSTORE_SECRET),
+            DozenDbSettings.keyName to "aliases",
+        )
+    }
 
     private fun ClusterHarness.administer(command: String) {
         awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command)
@@ -236,7 +261,39 @@ class AliasesTest {
         }
     }
 
+    @Test
+    fun `members run transactions in remote aliases on the DBMS they name`() {
+        val cluster = cluster(settings = keystore())
+        // The DBMS the alias names is this cluster, which routes its writes to the leader.
+        val first = cluster.members.first()
+        cluster.administer(
+            "CREATE ALIAS elsewhere FOR DATABASE neo4j AT 'neo4j://${first.boltAddress()}' " +
+                "USER anyone PASSWORD 'any-secret' DRIVER {ssl_enforced: false}"
+        )
+
+        for (member in cluster.members) {
+            eventually {
+                member.driver().session(SessionConfig.forDatabase("elsewhere")).use { session ->
+                    session.executeWrite {
+                        it.run("MERGE (:Remote {by: \$by})", mapOf("by" to member.index)).consume()
+                    }
+                }
+            }
+        }
+        val leader = cluster.awaitLeader()
+        assertThat(
+                leader.database().executeTransactionally(
+                    "MATCH (r:Remote) RETURN r.by AS by ORDER BY by",
+                    emptyMap(),
+                ) {
+                    it.stream().map { row -> row["by"] }.toList()
+                }
+            )
+            .containsExactly(0L, 1L, 2L)
+    }
+
     private companion object {
+        const val KEYSTORE_SECRET = "keystore-secret"
         const val SYSTEM = "system"
         const val DEFAULT = ClusterHarness.DEFAULT_DATABASE
     }

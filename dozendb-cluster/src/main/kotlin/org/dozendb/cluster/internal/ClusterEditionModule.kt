@@ -45,6 +45,7 @@ import org.dozendb.core.DozenDb
 import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DozenDbEditionModule
+import org.dozendb.core.edition.DozenDbQueryRouterBootstrap
 import org.dozendb.core.edition.HostingServer
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
@@ -66,6 +67,7 @@ import org.neo4j.dbms.routing.RoutingTableTTLProvider
 import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.fabric.bookmark.LocalGraphTransactionIdTracker
+import org.neo4j.fabric.executor.Location
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.graphdb.factory.module.GlobalModule
@@ -76,7 +78,7 @@ import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
-import org.neo4j.router.CommunityQueryRouterBootstrap
+import org.neo4j.router.transaction.DatabaseTransactionFactory
 import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
 import org.neo4j.storageengine.api.TransactionIdStore
 
@@ -658,7 +660,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     override fun createQueryRouterBootstrap(
         databaseProvider: DatabaseContextProvider<*>,
         securityLog: AbstractSecurityLog,
-    ): CommunityQueryRouterBootstrap =
+        remoteAliases: DatabaseTransactionFactory<Location.Remote>,
+    ): DozenDbQueryRouterBootstrap =
         ClusterQueryRouterBootstrap(
             globalModule,
             databaseProvider,
@@ -667,6 +670,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
             replication::awaitLinearizable,
             forwarding(),
+            remoteAliases,
         )
 
     /** How this member forwards writes to the leaders of their databases, if it does. */

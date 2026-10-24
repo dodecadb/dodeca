@@ -21,6 +21,8 @@ import org.dozendb.core.SettingsProcedures
 import org.dozendb.core.logging.QueryLog
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.monitoring.MetricsService
+import org.dozendb.core.remote.RemoteAliasTransactions
+import org.dozendb.core.security.AliasPasswords
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityComponent
 import org.dozendb.core.security.DozenDbSecurityModule
@@ -44,6 +46,7 @@ import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.SystemGraphComponent
 import org.neo4j.dbms.database.SystemGraphComponents
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
+import org.neo4j.fabric.executor.Location
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule
@@ -65,7 +68,7 @@ import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.log4j.LoggerTarget
-import org.neo4j.router.CommunityQueryRouterBootstrap
+import org.neo4j.router.transaction.DatabaseTransactionFactory
 
 /**
  * Neo4j Community's edition module with many databases, which follow the `Database` nodes of the
@@ -355,34 +358,57 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             NoAuthSecurityProvider.INSTANCE.loopbackAuthManager()
     }
 
-    /** Neo4j Community's query router, whose authorization failures go to the security log. */
+    /**
+     * Neo4j Community's query router, whose authorization failures go to the security log, and
+     * which runs transactions in remote aliases on the DBMS each names.
+     */
     override fun bootstrapQueryRouterServices(
         databaseManagementService: DatabaseManagementService
     ) {
+        val config = globalModule.globalConfig
+        val remoteAliases =
+            RemoteAliasTransactions(
+                config,
+                { databaseManagementService.database(GraphDatabaseSettings.SYSTEM_DATABASE_NAME) },
+                AliasPasswords(config),
+                globalModule.logService.internalLogProvider,
+            )
+        globalModule.globalDependencies.satisfyDependency(remoteAliases)
+        globalModule.globalLife.add(
+            object : LifecycleAdapter() {
+                override fun stop() = remoteAliases.close()
+            }
+        )
         val bootstrap =
             createQueryRouterBootstrap(
                 globalModule.globalDependencies.resolveDependency(
                     DatabaseContextProvider::class.java
                 ),
                 securityLog ?: CommunitySecurityLog.NULL_LOG,
+                remoteAliases,
             )
         globalModule.globalDependencies.satisfyDependency(
             bootstrap.bootstrapServices(databaseManagementService)
         )
     }
 
-    /** Neo4j Community's query router, whose transactions run on this server. */
+    /**
+     * Neo4j Community's query router, whose transactions run on this server but those in remote
+     * aliases, which [remoteAliases] runs.
+     */
     protected open fun createQueryRouterBootstrap(
         databaseProvider: DatabaseContextProvider<*>,
         securityLog: AbstractSecurityLog,
-    ): CommunityQueryRouterBootstrap =
-        CommunityQueryRouterBootstrap(
+        remoteAliases: DatabaseTransactionFactory<Location.Remote>,
+    ): DozenDbQueryRouterBootstrap =
+        DozenDbQueryRouterBootstrap(
             globalModule.globalLife,
             globalModule.globalDependencies,
             globalModule.logService,
             databaseProvider,
             databaseReferenceRepo,
             securityLog,
+            remoteAliases,
         )
 
     /** Neo4j Community's procedures, and `dbms.setConfigValue`. */
