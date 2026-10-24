@@ -245,6 +245,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 metrics = metrics,
             )
         replication = replicationService
+        globalModule.globalDependencies.satisfyDependency(replicationService)
         val fileSystem = globalModule.fileSystem
         if (fileSystem is SingleFsyncFileSystem) {
             fileSystem.policy = FsyncPolicy(replicationService::singleFsync)

@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.nio.ByteBuffer
 import java.nio.file.OpenOption
 import java.nio.file.Path
+import java.util.concurrent.CountDownLatch
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.fs.DelegatingStoreChannel
 import org.neo4j.io.fs.FileSystemAbstraction
@@ -10,12 +11,29 @@ import org.neo4j.io.fs.StoreChannel
 
 /**
  * Neo4j's file system, pausing before each write to a transaction log while [slow] is set: a member
- * on it applies what its Raft group commits late, while it still acknowledges Raft's appends.
+ * on it applies what its Raft group commits late, while it still acknowledges Raft's appends. While
+ * [holding] is set, writes to the transaction logs of its database wait until it is released.
  */
 internal class SlowLogFileSystem(
     private val delegate: FileSystemAbstraction = DefaultFileSystemAbstraction()
 ) : FileSystemAbstraction by delegate {
     @Volatile var slow = false
+    @Volatile var holding: Hold? = null
+
+    /** Holds the transaction log writes of [database]: [held] once one waits, until [release]. */
+    class Hold(val database: String) {
+        val held = CountDownLatch(1)
+        private val released = CountDownLatch(1)
+
+        fun await() {
+            held.countDown()
+            released.await()
+        }
+
+        fun release() {
+            released.countDown()
+        }
+    }
 
     override fun write(fileName: Path): StoreChannel = wrap(fileName, delegate.write(fileName))
 
@@ -23,12 +41,16 @@ internal class SlowLogFileSystem(
         wrap(fileName, delegate.open(fileName, options))
 
     private fun wrap(path: Path, channel: StoreChannel): StoreChannel =
-        if (path.fileName.toString().startsWith("neostore.transaction.db")) Slow(channel)
-        else channel
+        if (path.fileName.toString().startsWith("neostore.transaction.db")) {
+            Slow(path.parent.fileName.toString(), channel)
+        } else {
+            channel
+        }
 
-    private inner class Slow(channel: StoreChannel) :
+    private inner class Slow(private val database: String, channel: StoreChannel) :
         DelegatingStoreChannel<StoreChannel>(channel) {
         private fun pause() {
+            holding?.takeIf { it.database == database }?.await()
             if (slow) Thread.sleep(PAUSE_MILLIS)
         }
 

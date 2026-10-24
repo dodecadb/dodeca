@@ -1,8 +1,11 @@
 package org.dozendb.cluster.internal.replication
 
+import java.time.Duration
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlinx.coroutines.runBlocking
 import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.cluster.internal.reads.ReadConsistencyException
@@ -84,7 +87,7 @@ internal class ReplicatedDatabase(
         get() = bootstrapping || adopting
 
     override val leaseService =
-        ClusterLeaseService({ commitsLocally }) { NotLeaderException(notLeaderMessage(leader())) }
+        ClusterLeaseService({ commitsLocally }) { NotLeaderException(refusal(leader())) }
 
     /** The leader of the database as this member knows it, if any. */
     private fun leader(): MemberId? =
@@ -217,6 +220,63 @@ internal class ReplicatedDatabase(
     fun isRunning(): Boolean = synchronized(lock) { statusListener != null }
 
     /**
+     * Whether this member is handing its leadership of the database over to another member; it
+     * grants no lease meanwhile.
+     */
+    @Volatile
+    var handingOver: Boolean = false
+        private set
+
+    /** Held to count the commits under way in [replicate]. */
+    private val commits = ReentrantLock()
+    private val noCommits = commits.newCondition()
+    private var committing = 0
+
+    /**
+     * Hands the leadership of this database over to [to] without failing commits under way: this
+     * member grants no lease from now on, so that new commits fail as on a member that does not
+     * lead, and clients retry them; once the commits under way have finished, it transfers the
+     * leadership (see [ConsensusLog.transferLeadership]). [timeout] bounds each of the two waits.
+     * If the transfer fails while this member still leads, it leads on.
+     *
+     * @return whether [to] leads afterwards.
+     */
+    fun transferLeadership(to: MemberId, reason: String, timeout: Duration): Boolean {
+        synchronized(lock) {
+            if (statusListener == null || writableTerm == NOT_WRITABLE || handingOver) return false
+            handingOver = true
+            leaveWritableTerm()
+        }
+        try {
+            if (!awaitNoCommits(timeout)) {
+                log.info(
+                    "Leadership of %s stays on this member: its commits under way did not " +
+                        "finish within %s",
+                    ref.name,
+                    timeout,
+                )
+                return false
+            }
+            return runBlocking { consensus.transferLeadership(ref, to, reason, timeout) }
+        } finally {
+            synchronized(lock) {
+                handingOver = false
+                // Leads on if the transfer failed.
+                if (statusListener != null) onStatus(consensus.status(ref))
+            }
+        }
+    }
+
+    private fun awaitNoCommits(timeout: Duration): Boolean = commits.withLock {
+        var left = timeout.toNanos()
+        while (committing > 0) {
+            if (left <= 0) return false
+            left = noCommits.awaitNanos(left)
+        }
+        true
+    }
+
+    /**
      * Returns once this member has applied every entry the group had committed when it was called,
      * as confirmed by the leader (a Raft ReadIndex).
      */
@@ -241,6 +301,17 @@ internal class ReplicatedDatabase(
 
     /** Replicates a kernel transaction and returns the append index of its local apply. */
     fun replicate(batch: CommandBatch): Long {
+        // Counted before the lease is checked: a transfer that revokes the lease, then finds no
+        // commit under way, knows that every later one finds the lease revoked.
+        commits.withLock { committing++ }
+        try {
+            return replicateUnderLease(batch)
+        } finally {
+            commits.withLock { if (--committing == 0) noCommits.signalAll() }
+        }
+    }
+
+    private fun replicateUnderLease(batch: CommandBatch): Long {
         counts.replicationNew.increment()
         val started = System.nanoTime()
         val lease = leaseService.currentLease
@@ -299,7 +370,7 @@ internal class ReplicatedDatabase(
     private fun onStatus(status: GroupStatus) {
         synchronized(lock) {
             if (statusListener == null) return
-            val term = if (status.role == Role.Leader) status.term else NOT_WRITABLE
+            val term = if (status.role == Role.Leader && !handingOver) status.term else NOT_WRITABLE
             if (term == writableTerm) return
             leaveWritableTerm()
             if (term != NOT_WRITABLE) enterWritableTerm(term)
@@ -367,7 +438,16 @@ internal class ReplicatedDatabase(
         }
 
     private fun notLeader(leader: MemberId?): TransactionFailureException =
-        CommitFailure.NOT_LEADER.exception(notLeaderMessage(leader))
+        CommitFailure.NOT_LEADER.exception(refusal(leader))
+
+    /** Why this member refuses a write, given the leader it knows of. */
+    private fun refusal(leader: MemberId?): String =
+        if (handingOver) {
+            "This member is handing the leadership of database '${ref.name}' over to another " +
+                "member. Retry: writes succeed once it has taken over."
+        } else {
+            notLeaderMessage(leader)
+        }
 
     private fun leaseExpired(leaseId: Int): TransactionFailureException =
         CommitFailure.LEASE_EXPIRED.exception(
