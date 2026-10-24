@@ -7,6 +7,8 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import kotlin.concurrent.thread
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.assertj.core.api.Assertions.assertThat
@@ -15,6 +17,7 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.during
 import org.awaitility.kotlin.untilAsserted
+import org.awaitility.kotlin.untilNotNull
 import org.dozendb.consensus.CommitResult
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -701,6 +704,41 @@ class RatisConsensusLogTest {
                     )
                 )
                 .isFalse()
+        }
+
+    @Test
+    fun `writes while leadership moves are refused before they reach the log`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            leader.write("one")
+            // A member that is down cannot catch up: the transfer waits for its timeout, and the
+            // leader refuses writes meanwhile.
+            val target = cluster.nodes.first { it != leader }
+            target.stop()
+            val transfer =
+                async(Dispatchers.Default) {
+                    leader.consensus.transferLeadership(
+                        cluster.database,
+                        target.id,
+                        "a test",
+                        Duration.ofSeconds(5),
+                    )
+                }
+
+            val refused =
+                await atMost
+                    Duration.ofSeconds(10) untilNotNull
+                    {
+                        runBlocking { leader.write("during") }
+                            .takeUnless { it is CommitResult.Committed }
+                    }
+
+            assertThat(refused).isInstanceOf(CommitResult.NotLeader::class.java)
+            assertThat(transfer.await()).isFalse()
+            assertThat(leader.write("after")).isInstanceOf(CommitResult.Committed::class.java)
+            assertThat(leader.consensus.progress(cluster.database)?.leadershipTransfers)
+                .isEqualTo(0)
         }
 
     @Test

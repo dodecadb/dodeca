@@ -42,10 +42,12 @@ import org.apache.ratis.protocol.TransferLeadershipRequest
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException
 import org.apache.ratis.protocol.exceptions.GroupMismatchException
 import org.apache.ratis.protocol.exceptions.LeaderNotReadyException
+import org.apache.ratis.protocol.exceptions.LeaderSteppingDownException
 import org.apache.ratis.protocol.exceptions.NotLeaderException
 import org.apache.ratis.protocol.exceptions.ReconfigurationInProgressException
 import org.apache.ratis.protocol.exceptions.ReconfigurationTimeoutException
 import org.apache.ratis.protocol.exceptions.ServerNotReadyException
+import org.apache.ratis.protocol.exceptions.TransferLeadershipException
 import org.apache.ratis.retry.ExceptionDependentRetry
 import org.apache.ratis.retry.RetryPolicies
 import org.apache.ratis.server.DivisionInfo
@@ -543,6 +545,9 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             is NotLeaderException ->
                 CommitResult.NotLeader(failure.suggestedLeader?.let(::memberId))
             is LeaderNotReadyException -> CommitResult.NotLeader(config.memberId)
+            // Refused before appending, while leadership moves to another member.
+            is LeaderSteppingDownException,
+            is TransferLeadershipException -> CommitResult.NotLeader(null)
             is GroupMismatchException,
             is ServerNotReadyException,
             is AlreadyClosedException -> CommitResult.NotLeader(null)
