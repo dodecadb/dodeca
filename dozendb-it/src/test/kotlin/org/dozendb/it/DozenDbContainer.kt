@@ -1,7 +1,9 @@
 package org.dozendb.it
 
 import com.github.dockerjava.api.model.Bind
+import com.github.dockerjava.api.model.ExposedPort
 import com.github.dockerjava.api.model.Volume
+import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -9,8 +11,10 @@ import java.net.http.HttpResponse
 import java.net.http.HttpResponse.BodyHandlers
 import java.nio.file.Files
 import java.nio.file.Path
+import java.security.KeyStore
 import java.time.Duration
 import java.util.Base64
+import javax.crypto.SecretKey
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
@@ -100,6 +104,47 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     }
 
     /**
+     * Serves Bolt over TLS as well as in plaintext, with a certificate for [names] that [authority]
+     * issued, as remote aliases with `+s` schemes reach it.
+     */
+    fun boltTls(authority: TestAuthority, names: List<String> = listOf(alias)): DozenDbContainer {
+        withEnv("NEO4J_dbms_ssl_policy_bolt_enabled", "true")
+        withEnv("NEO4J_dbms_ssl_policy_bolt_client__auth", "NONE")
+        withEnv("NEO4J_server_bolt_tls__level", "OPTIONAL")
+        authority.issue(names = names).files().forEach { (path, text) ->
+            withCopyToContainer(
+                Transferable.of(text.toByteArray(), READABLE),
+                "$BOLT_CERTIFICATES/$path",
+            )
+        }
+        return this
+    }
+
+    /**
+     * Trusts the certificates that [authority] issues, through the JVM's trust store as the
+     * operator guide has it for remote aliases with `+s` schemes: a JKS store, which the JVM reads
+     * without a password.
+     */
+    fun trusting(authority: TestAuthority): DozenDbContainer {
+        val store =
+            KeyStore.getInstance("JKS").apply {
+                load(null, null)
+                setCertificateEntry("test-ca", authority.certificate)
+            }
+        val bytes = ByteArrayOutputStream().also { store.store(it, CharArray(0)) }.toByteArray()
+        withCopyToContainer(Transferable.of(bytes, READABLE), TRUST_STORE)
+        return withEnv("NEO4J_server_jvm_additional", "-Djavax.net.ssl.trustStore=$TRUST_STORE")
+    }
+
+    /** Encrypts the passwords of remote aliases with [key], from a keystore at [path]. */
+    fun aliasKeystore(key: SecretKey, path: String = ALIAS_KEYSTORE): DozenDbContainer {
+        withCopyToContainer(Transferable.of(keystore(key), READABLE), path)
+        withEnv("NEO4J_dbms_security_keystore_path", path)
+        withEnv("NEO4J_dbms_security_keystore_password", ALIAS_KEYSTORE_PASSWORD)
+        return withEnv("NEO4J_dbms_security_key_name", ALIAS_KEY_NAME)
+    }
+
+    /**
      * Publishes Bolt on [hostPort] of this machine and advertises it there, so routing tables lead
      * drivers outside the Docker network to this member.
      */
@@ -159,10 +204,27 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     /** The samples the Prometheus endpoint reports now, by name with labels. */
     fun samples(): Map<String, Double> = Promtool.samples(scrape())
 
+    /**
+     * The port of this machine that Bolt is published on now: Docker may publish it on another one
+     * when the container starts again, unless [boltOnHostPort] fixed it.
+     */
+    private fun boltPort(): Int =
+        DockerClientFactory.instance()
+            .client()
+            .inspectContainerCmd(containerId)
+            .exec()
+            .networkSettings
+            .ports
+            .bindings
+            .getValue(ExposedPort.tcp(BOLT_PORT))
+            .first()
+            .hostPortSpec
+            .toInt()
+
     private fun driver(): Driver =
         driver
             ?: GraphDatabase.driver(
-                    "bolt://$host:${getMappedPort(BOLT_PORT)}",
+                    "bolt://$host:${boltPort()}",
                     AuthTokens.basic("neo4j", PASSWORD),
                 )
                 .also { driver = it }
@@ -187,7 +249,7 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
      */
     fun runAs(user: String, password: String, cypher: String, database: String? = null): Outcome =
         GraphDatabase.driver(
-                "bolt://$host:${getMappedPort(BOLT_PORT)}",
+                "bolt://$host:${boltPort()}",
                 AuthTokens.basic(user, password),
             )
             .use { driver ->
@@ -319,6 +381,26 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
 
         /** Where Neo4j's image looks for the backup SSL policy's certificates. */
         const val BACKUP_CERTIFICATES = "/var/lib/neo4j/certificates/backup"
+        private const val BOLT_CERTIFICATES = "/var/lib/neo4j/certificates/bolt"
+        private const val TRUST_STORE = "/var/lib/neo4j/certificates/trust.jks"
+
+        /** Where [aliasKeystore] puts the keystore by default. */
+        const val ALIAS_KEYSTORE = "/var/lib/neo4j/certificates/aliases.p12"
+        const val ALIAS_KEYSTORE_PASSWORD = "dozendb-it-keystore"
+        const val ALIAS_KEY_NAME = "aliases"
+
+        /** A PKCS12 keystore holding [key], as `keytool -genseckey` makes it. */
+        fun keystore(key: SecretKey): ByteArray {
+            val store = KeyStore.getInstance("PKCS12").apply { load(null, null) }
+            store.setEntry(
+                ALIAS_KEY_NAME,
+                KeyStore.SecretKeyEntry(key),
+                KeyStore.PasswordProtection(ALIAS_KEYSTORE_PASSWORD.toCharArray()),
+            )
+            return ByteArrayOutputStream()
+                .also { store.store(it, ALIAS_KEYSTORE_PASSWORD.toCharArray()) }
+                .toByteArray()
+        }
 
         /** File mode 0644. */
         const val READABLE = 420

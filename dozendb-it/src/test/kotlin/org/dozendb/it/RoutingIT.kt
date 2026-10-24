@@ -242,6 +242,69 @@ class RoutingIT {
 
     @Test
     @Order(6)
+    fun `drivers write by an alias, and in a home database set to one, through any member`() {
+        driver.session(SessionConfig.forDatabase("system")).use { session ->
+            session.run("CREATE ALIAS movies FOR DATABASE neo4j").consume()
+            session
+                .run(
+                    "CREATE USER mia SET PASSWORD 'mia-secret-1' CHANGE NOT REQUIRED SET HOME DATABASE movies"
+                )
+                .consume()
+            session.run("GRANT ROLE publisher TO mia").consume()
+        }
+        // Members learn of the alias a moment after the leader of system.
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                members.forEach { member ->
+                    assertThat(routingTable(member, "movies"))
+                        .isEqualTo(routingTable(member, "neo4j"))
+                }
+            }
+
+        members.forEach { member ->
+            driverSeededAt(member).use { seeded ->
+                seeded.session(SessionConfig.forDatabase("movies")).use { session ->
+                    session.executeWrite { tx ->
+                        tx.run(
+                                "CREATE (:ByAlias {member: \$member})",
+                                mapOf("member" to member.alias),
+                            )
+                            .consume()
+                    }
+                }
+            }
+        }
+        GraphDatabase.driver(
+                "neo4j://${boltAddress(members.first())}",
+                AuthTokens.basic("mia", "mia-secret-1"),
+                Config.builder()
+                    .withResolver { boltPorts.map { ServerAddress.of("127.0.0.1", it) }.toSet() }
+                    .build(),
+            )
+            .use { mia ->
+                mia.session().use { session ->
+                    session.executeWrite { tx ->
+                        tx.run("CREATE (:ByAlias {member: 'home'})").consume()
+                    }
+                }
+            }
+
+        assertThat(
+                members
+                    .first()
+                    .rows("MATCH (n:ByAlias) RETURN n.member AS member ORDER BY member", "movies")
+            )
+            .containsExactly(
+                mapOf("member" to "core1"),
+                mapOf("member" to "core2"),
+                mapOf("member" to "core3"),
+                mapOf("member" to "home"),
+            )
+    }
+
+    @Test
+    @Order(7)
     fun `writes continue on a new leader soon after the leader dies`() {
         val leader = awaitLeader()
         val acknowledged = mutableListOf<Int>()
@@ -261,7 +324,12 @@ class RoutingIT {
                 write("CREATE (:Failover {n: 30})", seededAtLeader)
                 val elapsed = Duration.ofNanos(System.nanoTime() - killed)
                 acknowledged += 30
-                (31 until 60).forEach { n ->
+                // By an alias as well.
+                seededAtLeader.session(SessionConfig.forDatabase("movies")).use { session ->
+                    session.executeWrite { tx -> tx.run("CREATE (:Failover {n: 31})").consume() }
+                }
+                acknowledged += 31
+                (32 until 60).forEach { n ->
                     write("CREATE (:Failover {n: $n})", seededAtLeader)
                     acknowledged += n
                 }
