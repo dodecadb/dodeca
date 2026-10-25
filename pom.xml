@@ -314,6 +314,10 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
           <trimStackTrace>false</trimStackTrace>
+          <!-- Neo4j 5.26.27's Bolt server releases connection memory it never allocated and, with
+               assertions on, logs an AssertionError whenever a connection closes; plain Neo4j
+               Community does the same. -->
+          <argLine>-da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker</argLine>
           <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
           <properties>
             <configurationParameters>
