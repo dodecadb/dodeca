@@ -220,6 +220,81 @@ class ServersTest {
     }
 
     @Test
+    fun `ALTER SERVER replaces every option, and refuses what an enabled server cannot be`() {
+        val cluster = tagged()
+        val leader = cluster.awaitLeader(SYSTEM)
+        val server = cluster.running().first()
+        val id = server.serverId
+        cluster.administer(
+            "ALTER SERVER '$id' SET OPTIONS {tags: ['a', 'b'], modeConstraint: 'PRIMARY'}"
+        )
+        eventually {
+            assertThat(leader.server(server)["tags"]).isEqualTo(listOf("a", "b"))
+            assertThat(leader.server(server)["modeConstraint"]).isEqualTo("PRIMARY")
+        }
+
+        cluster.administer("ALTER SERVER '$id' SET OPTIONS {tags: ['c']}")
+
+        eventually {
+            assertThat(leader.server(server)["tags"]).isEqualTo(listOf("c"))
+            assertThat(leader.server(server)["modeConstraint"]).isEqualTo("NONE")
+        }
+        for (options in
+            listOf(
+                "{modeConstraint: 'SECONDARY'}",
+                "{allowedDatabases: ['neo4j']}",
+                "{tags: ['c', 'c']}",
+            )) {
+            assertThat(
+                    catchThrowable { cluster.administer("ALTER SERVER '$id' SET OPTIONS $options") }
+                )
+                .describedAs(options)
+                .hasMessageStartingWith("Could not alter server '$id'")
+        }
+        assertThat(leader.server(server)["tags"]).isEqualTo(listOf("c"))
+    }
+
+    @Test
+    fun `ALTER SERVER refuses a Free server, which ENABLE SERVER enables`() {
+        val cluster = cluster()
+        val joining = cluster.admit()
+
+        assertThat(
+                catchThrowable {
+                    cluster.administer(
+                        "ALTER SERVER '${joining.serverId}' SET OPTIONS {tags: ['a']}"
+                    )
+                }
+            )
+            .hasMessageContaining("is Free")
+            .hasMessageContaining("ENABLE SERVER")
+    }
+
+    @Test
+    fun `a renamed server goes by its new name, which no other server may take`() {
+        val cluster = tagged()
+        val leader = cluster.awaitLeader(SYSTEM)
+        val (first, second) = cluster.running().take(2)
+
+        cluster.administer("RENAME SERVER '${first.serverId}' TO 'one'")
+        eventually { assertThat(leader.server(first)["name"]).isEqualTo("one") }
+        cluster.administer("ALTER SERVER 'one' SET OPTIONS {tags: ['renamed']}")
+        eventually { assertThat(leader.server(first)["tags"]).isEqualTo(listOf("renamed")) }
+
+        for (name in listOf("one", first.serverId, "")) {
+            assertThat(
+                    catchThrowable {
+                        cluster.administer("RENAME SERVER '${second.serverId}' TO '$name'")
+                    }
+                )
+                .describedAs(name)
+                .hasMessageStartingWith("Could not rename server '${second.serverId}'")
+        }
+        cluster.administer("RENAME SERVER 'one' TO '${first.serverId}'")
+        eventually { assertThat(leader.server(first)["name"]).isEqualTo(first.serverId) }
+    }
+
+    @Test
     fun `server commands that change servers run on the system leader`() {
         val cluster = cluster()
         val joining = cluster.admit()

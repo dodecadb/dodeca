@@ -17,8 +17,10 @@ import org.neo4j.cypher.internal.ast.Options
 import org.neo4j.cypher.internal.ast.OptionsMap
 import org.neo4j.cypher.internal.ast.OptionsParam
 import org.neo4j.cypher.internal.evaluator.Evaluator
+import org.neo4j.cypher.internal.logical.plans.AlterServer
 import org.neo4j.cypher.internal.logical.plans.EnableServer
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
+import org.neo4j.cypher.internal.logical.plans.RenameServer
 import org.neo4j.cypher.internal.logical.plans.ShowServers
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.QueryHandler
@@ -47,9 +49,10 @@ import scala.jdk.javaapi.CollectionConverters
  * The server commands of Neo4j Enterprise. SHOW SERVERS lists the servers that the
  * [TopologyInfoService] knows, with Enterprise's columns: a cluster's members, or this server alone
  * without clustering. ENABLE SERVER records a Free server (see [ServerRecords]), with the options
- * given and, for those left out, the ones its `initial.server.*` settings set. The commands that
- * change records take the records' lock first and check under it, so that they apply one after the
- * other.
+ * given and, for those left out, the ones its `initial.server.*` settings set; ALTER SERVER
+ * replaces the options of an enabled one, RENAME SERVER its name. A server is named by its name or
+ * its id. The commands that change records take the records' lock first and check under it, so that
+ * they apply one after the other.
  *
  * Every enabled server hosts every database as a primary, so the options that would make it host
  * fewer, or as a secondary, are refused for now.
@@ -86,6 +89,8 @@ internal class ServerCommands(
         when (plan) {
             is ShowServers -> Planner { showServers(plan, compile(plan.source(), it)) }
             is EnableServer -> Planner { enable(plan, it) }
+            is AlterServer -> Planner { alter(plan, it) }
+            is RenameServer -> Planner { rename(plan, it) }
             else -> null
         }
 
@@ -130,17 +135,10 @@ internal class ServerCommands(
                 val failed = failure(params)
                 val given = evaluate(plan.options(), params, version, failed)
                 ServerRecords.lock(tx)
-                val records = ServerRecords.records(tx)
-                val id =
-                    (records.values.firstOrNull { it.name == name }?.id
-                        ?: uuid(name)?.takeIf { it in servers.ids() || it in records })
-                        ?: throw InvalidArgumentException(
-                            "$failed: there is no such server. SHOW SERVERS lists the servers."
-                        )
-                val record = records[id]
-                if (record != null || !ServerRecords.initialServersEnabled(tx)) {
-                    val current = record?.options ?: servers.initialOptions(id) ?: ServerOptions()
-                    if (ServerOptionsInput.parse(given, current, failed) != current) {
+                val server = target(tx, name, failed)
+                val id = server.id
+                if (server.enabled) {
+                    if (ServerOptionsInput.parse(given, server.options, failed) != server.options) {
                         throw InvalidArgumentException(
                             "$failed: it is enabled already, with other options. ALTER SERVER " +
                                 "changes them."
@@ -167,6 +165,121 @@ internal class ServerCommands(
             compile(plan.source(), context),
             failure,
         )
+    }
+
+    /** ALTER SERVER: replaces every option of an enabled server with those given. */
+    private fun alter(
+        plan: AlterServer,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val version = context.runtimeContext().cypherVersion()
+        val failure = { params: MapValue ->
+            "Could not alter server '${admin.runtimeStringValue(plan.serverName(), params)}'"
+        }
+        val change =
+            changing("ALTER SERVER", failure) { tx, params ->
+                val failed = failure(params)
+                val given = evaluate(plan.options(), params, version, failed)
+                ServerRecords.lock(tx)
+                val name = admin.runtimeStringValue(plan.serverName(), params)
+                val server = enabled(target(tx, name, failed), failed)
+                val options = ServerOptionsInput.parse(given, ServerOptions(), failed)
+                checkPlaceable(options, failed)
+                ServerRecords.write(tx, ServerRecord(server.id, server.name, options))
+            }
+        return updating(
+            "AlterServer",
+            "ALTER SERVER",
+            change,
+            compile(plan.source(), context),
+            failure,
+        )
+    }
+
+    /**
+     * RENAME SERVER: gives an enabled server a name that is neither empty nor another server's name
+     * or id; the server keeps its id.
+     */
+    private fun rename(
+        plan: RenameServer,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val failure = { params: MapValue ->
+            "Could not rename server '${admin.runtimeStringValue(plan.serverName(), params)}'"
+        }
+        val change =
+            changing("RENAME SERVER", failure) { tx, params ->
+                val failed = failure(params)
+                val newName = admin.runtimeStringValue(plan.newName(), params)
+                ServerRecords.lock(tx)
+                val name = admin.runtimeStringValue(plan.serverName(), params)
+                val server = enabled(target(tx, name, failed), failed)
+                if (newName == server.name) return@changing
+                if (newName.isBlank()) {
+                    throw InvalidArgumentException("$failed: the new name is empty.")
+                }
+                val records = ServerRecords.records(tx)
+                records.values
+                    .firstOrNull { it.name == newName && it.id != server.id }
+                    ?.let {
+                        throw InvalidArgumentException(
+                            "$failed: server ${it.id} has the name '$newName'."
+                        )
+                    }
+                uuid(newName)
+                    ?.takeIf { it != server.id && (it in servers.ids() || it in records) }
+                    ?.let {
+                        throw InvalidArgumentException(
+                            "$failed: '$newName' is the id of another server."
+                        )
+                    }
+                ServerRecords.write(tx, ServerRecord(server.id, newName, server.options))
+            }
+        return updating(
+            "RenameServer",
+            "RENAME SERVER",
+            change,
+            compile(plan.source(), context),
+            failure,
+        )
+    }
+
+    /**
+     * A server as a command finds it: [enabled] with its record, or without one while the servers
+     * the cluster started with are not recorded yet, as always without clustering; Free otherwise.
+     */
+    private data class Target(
+        val id: UUID,
+        val name: String,
+        val options: ServerOptions,
+        val enabled: Boolean,
+    )
+
+    /** The server called [name], by its name or its id. */
+    private fun target(tx: Transaction, name: String, failed: String): Target {
+        val records = ServerRecords.records(tx)
+        val id =
+            (records.values.firstOrNull { it.name == name }?.id
+                ?: uuid(name)?.takeIf { it in servers.ids() || it in records })
+                ?: throw InvalidArgumentException(
+                    "$failed: there is no such server. SHOW SERVERS lists the servers."
+                )
+        val record = records[id]
+        return Target(
+            id,
+            record?.name ?: id.toString(),
+            record?.options ?: servers.initialOptions(id) ?: ServerOptions(),
+            record != null || !ServerRecords.initialServersEnabled(tx),
+        )
+    }
+
+    private fun enabled(server: Target, failed: String): Target {
+        if (!server.enabled) {
+            throw InvalidArgumentException(
+                "$failed: it is Free. ENABLE SERVER enables it, with its options."
+            )
+        }
+        return server
     }
 
     /**

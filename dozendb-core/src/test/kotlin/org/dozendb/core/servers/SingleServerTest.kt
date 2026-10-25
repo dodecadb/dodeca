@@ -38,4 +38,26 @@ class SingleServerTest {
                     .containsExactlyInAnyOrder("name", "address", "state", "health", "hosting")
             }
     }
+
+    @Test
+    fun `the server can be renamed and its options changed, which a restart keeps`() {
+        StandaloneServer(root, mapOf(DozenDbSettings.initialServerTags to listOf("eu"))).use {
+            server ->
+            server.start()
+            val id =
+                server
+                    .rows("SHOW SERVERS YIELD serverId", database = StandaloneServer.SYSTEM)
+                    .single()["serverId"]
+
+            server.administer("RENAME SERVER '$id' TO 'only'")
+            server.administer("ALTER SERVER 'only' SET OPTIONS {tags: ['us']}")
+            server.administer("ENABLE SERVER 'only' OPTIONS {tags: ['us']}")
+            server.restart()
+
+            val row =
+                server.rows("SHOW SERVERS YIELD *", database = StandaloneServer.SYSTEM).single()
+            assertThat(row["name"]).isEqualTo("only")
+            assertThat(row["tags"]).isEqualTo(listOf("us"))
+        }
+    }
 }

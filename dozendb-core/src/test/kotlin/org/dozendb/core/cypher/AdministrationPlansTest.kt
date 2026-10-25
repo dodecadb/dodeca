@@ -140,6 +140,8 @@ class AdministrationPlansTest {
                 // Servers
                 "ShowServers",
                 "EnableServer",
+                "AlterServer",
+                "RenameServer",
             )
 
         /** Planned by Community's runtime, which DozenDB's falls back to. */
@@ -158,15 +160,12 @@ class AdministrationPlansTest {
                 "ShowDatabase",
             )
 
-        const val NOT_YET = "not implemented yet"
         const val PLACEMENT = "every enabled server hosts every database: none moves off one"
 
         /** Planned by neither, so they fail as they do in Community: why. */
         val REFUSED =
             mapOf(
                 "EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it",
-                "AlterServer" to NOT_YET,
-                "RenameServer" to NOT_YET,
                 "DropServer" to PLACEMENT,
                 "DeallocateServer" to PLACEMENT,
                 "ReallocateDatabases" to PLACEMENT,
@@ -178,8 +177,6 @@ class AdministrationPlansTest {
         /** A command for each refused plan that is a command of its own. */
         val REFUSED_COMMANDS =
             listOf(
-                "ALTER SERVER 'one' SET OPTIONS {modeConstraint: 'NONE'}",
-                "RENAME SERVER 'one' TO 'two'",
                 "DROP SERVER 'one'",
                 "DEALLOCATE DATABASES FROM SERVER 'one'",
                 "REALLOCATE DATABASES",
