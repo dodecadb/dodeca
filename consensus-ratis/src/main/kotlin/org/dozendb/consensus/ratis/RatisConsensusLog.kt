@@ -635,7 +635,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             server?.let {
                 runCatching { it.getDivision(RaftGroupId.valueOf(database.id)) }.getOrNull()
             } ?: return null
-        val raftLog = division.raftLog
+        val raftLog = raftLog(division, database)
         val roleInfo = division.info.roleInfoProto
         val leading = status.role == Role.Leader
         val stateMachine = stateMachines[database.id]
@@ -690,7 +690,17 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             runCatching { it.getDivision(RaftGroupId.valueOf(database.id)) }.getOrNull()
         }
         val info = division?.info
-        if (division == null || info == null || !info.isAlive || !isVoter(division.raftConf)) {
+        // Ratis initialises the log of a starting group after it counts as alive.
+        val committed = division?.let {
+            runCatching { raftLog(it, database).lastCommittedIndex }.getOrNull()
+        }
+        if (
+            division == null ||
+                info == null ||
+                committed == null ||
+                !info.isAlive ||
+                !isVoter(division.raftConf)
+        ) {
             return GroupStatus(database, Role.Inactive, null, 0, -1, -1)
         }
         val role =
@@ -716,7 +726,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             role,
             leader,
             info.currentTerm,
-            division.raftLog.lastCommittedIndex,
+            committed,
             info.lastAppliedIndex,
         )
     }
@@ -733,7 +743,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val conf = division.raftConf
         val settled =
             conf.previousPeers.isEmpty() &&
-                conf.logEntryIndex <= division.raftLog.lastCommittedIndex
+                conf.logEntryIndex <= raftLog(division, database).lastCommittedIndex
         // Ratis closes the group of a removed member: the leader once the change is committed,
         // a follower when it finds itself left out of the configuration or the leader says so.
         val removed =
@@ -741,6 +751,14 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 (stateMachines[database.id]?.shutDownAsNonMember == true || !isVoter(conf))
         return GroupMembership(conf.currentPeers.map(::toMember), settled, removed)
     }
+
+    /** The log of [division], which Ratis initialises only as the group starts. */
+    private fun raftLog(division: RaftServer.Division, database: DatabaseRef): RaftLog =
+        try {
+            division.raftLog
+        } catch (e: IllegalStateException) {
+            throw ConsensusUnavailableException("group $database is starting", e)
+        }
 
     /** Whether this member votes in [conf], or in the configuration it changes from. */
     private fun isVoter(conf: RaftConfiguration): Boolean =
