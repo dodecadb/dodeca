@@ -513,12 +513,18 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         globalModule.globalDependencies.satisfyDependency(clusterInitializer)
         globalModule.globalLife.add(clusterInitializer)
         registerDefaultDatabaseInitializer(globalModule)
-        // Once the system and default databases run; stops before the databases stop.
+        // Once the system and default databases run; stops before the databases stop, so that a
+        // member that stops makes no balancing moves and does not create roles meanwhile. The
+        // lifecycle above stops them again, as when this one did not run.
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
                 override fun start() = reconciler.start()
 
-                override fun stop() = reconciler.close()
+                override fun stop() {
+                    balancer.stop()
+                    roles?.close()
+                    reconciler.close()
+                }
             }
         )
     }
