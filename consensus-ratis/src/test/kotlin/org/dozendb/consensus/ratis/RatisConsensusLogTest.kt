@@ -7,6 +7,7 @@ import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -69,11 +70,14 @@ class RatisConsensusLogTest {
                 }
             }
 
-    /** [machine], failing to apply the entry `poison`. */
-    private fun poisoned(machine: ReplicatedStateMachine): ReplicatedStateMachine =
+    /** [machine], failing to apply the entry `poison` while [failing]. */
+    private fun poisoned(
+        machine: ReplicatedStateMachine,
+        failing: () -> Boolean = { true },
+    ): ReplicatedStateMachine =
         object : ReplicatedStateMachine by machine {
             override fun apply(entry: LogEntry): ByteArray {
-                check(entry.payload.decodeToString() != "poison") { "disk on fire" }
+                check(entry.payload.decodeToString() != "poison" || !failing()) { "disk on fire" }
                 return machine.apply(entry)
             }
         }
@@ -705,6 +709,46 @@ class RatisConsensusLogTest {
                     assertThat(calls.callsStarted - calls.callsSucceeded - calls.callsFailed)
                         .isLessThanOrEqualTo(2)
                 }
+        }
+
+    @Test
+    fun `a group that failed on its leader runs again there once started again`() =
+        runBlocking<Unit> {
+            val cluster = RatisTestCluster(root, 3).also { cluster = it }
+            val failing = AtomicReference<RatisTestCluster.Node>()
+            cluster.form { node -> poisoned(node.machine) { failing.get() == node } }
+            val broken = cluster.awaitLeader().also(failing::set)
+            broken.write("poison")
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(broken.consensus.status(cluster.database).role)
+                        .isEqualTo(Role.Inactive)
+                }
+            assertThat(cluster.awaitLeader().write("missed"))
+                .isInstanceOf(CommitResult.Committed::class.java)
+
+            LogCapture().use { log ->
+                // As its database does when stopped and started again, the cause repaired.
+                broken.consensus.detachGroup(cluster.database)
+                broken.consensus.startGroup(cluster.database, broken.machine, emptyList())
+
+                await atMost
+                    RatisTestCluster.AWAIT untilAsserted
+                    {
+                        assertThat(broken.machine.payloads()).containsExactly("poison", "missed")
+                    }
+                assertThat(cluster.awaitLeader().write("after"))
+                    .isInstanceOf(CommitResult.Committed::class.java)
+                await atMost
+                    RatisTestCluster.AWAIT untilAsserted
+                    {
+                        assertThat(broken.machine.payloads())
+                            .containsExactly("poison", "missed", "after")
+                    }
+                // The group closed while it led, but it leads nothing to hand over.
+                assertThat(log.lines().filter { "Could not hand leadership" in it }).isEmpty()
+            }
         }
 
     @Test

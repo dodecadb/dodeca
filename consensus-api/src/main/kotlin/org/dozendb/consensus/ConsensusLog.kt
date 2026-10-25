@@ -62,7 +62,8 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
 
     /**
      * Starts the group of [database] if it is not running here, and attaches [stateMachine] to it,
-     * which then receives every entry it has not applied yet.
+     * which then receives every entry it has not applied yet. A group that stopped here because an
+     * entry failed to apply starts again, from its local state.
      *
      * If the group has local state it is recovered and [bootstrapMembers] is ignored. Otherwise the
      * group is created with [bootstrapMembers] as its voting members. If they include this member,

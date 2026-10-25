@@ -224,6 +224,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         stateMachine: ReplicatedStateMachine,
         bootstrapMembers: List<Member>,
     ) {
+        removeFailedGroup(database)
         groupStateMachine(database.id).attach(database, stateMachine)
         if (RaftGroupId.valueOf(database.id) in requireServer().groupIds) {
             log.info("Raft group {} attached to its state machine", database)
@@ -231,6 +232,44 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             return
         }
         addGroup(database, bootstrapMembers)
+    }
+
+    /**
+     * Ratis closes a group on this member when an entry fails to apply, and does not run it again.
+     * Such a group is removed from the server with its state machine, its storage kept, so that it
+     * is added again from there and catches up. A group closed because this member left it stays.
+     */
+    private fun removeFailedGroup(database: DatabaseRef) {
+        val raftServer = requireServer()
+        val groupId = RaftGroupId.valueOf(database.id)
+        if (groupId !in raftServer.groupIds) return
+        val division = runCatching { raftServer.getDivision(groupId) }.getOrNull() ?: return
+        val left =
+            stateMachines[database.id]?.shutDownAsNonMember == true || !isVoter(division.raftConf)
+        if (division.info.isAlive || left) return
+        // Returns once Ratis finished closing the group, which frees its storage.
+        val reply =
+            raftServer.groupManagement(
+                GroupManagementRequest.newRemove(
+                    clientId,
+                    peerId,
+                    callIds.incrementAndGet(),
+                    groupId,
+                    false,
+                    false,
+                )
+            )
+        if (!reply.isSuccess) {
+            throw IllegalStateException(
+                "could not remove the failed Raft group $database",
+                reply.exception,
+            )
+        }
+        stateMachines.remove(database.id)
+        log.info(
+            "Raft group {} failed on this member; starting it again from its local state",
+            database,
+        )
     }
 
     override fun joinGroup(database: DatabaseRef, bootstrapMembers: List<Member>) {
@@ -325,12 +364,15 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         log.info("Raft group {} detached from its state machine", database)
         val leading =
             server?.let {
-                runCatching { it.getDivision(RaftGroupId.valueOf(database.id)).info.isLeader }
+                runCatching { it.getDivision(RaftGroupId.valueOf(database.id)).info.leads() }
                     .getOrDefault(false)
             } == true
         if (leading && handOverLeadership) handOverLeadership(database.id)
         publishStatus(database.id)
     }
+
+    /** Ratis keeps the role a group had when it closed: a closed group leads nothing. */
+    private fun DivisionInfo.leads(): Boolean = isAlive && isLeader
 
     /**
      * Transfers leadership of [groupId] to another member: a detached member cannot apply what the
@@ -359,7 +401,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             runCatching { raftServer.getDivision(RaftGroupId.valueOf(groupId)) }.getOrNull()
                 ?: return
         val stateMachine = stateMachines[groupId] ?: return
-        if (!division.info.isLeader || !stateMachine.handsOverLeadership) return
+        if (!division.info.leads() || !stateMachine.handsOverLeadership) return
         val database = stateMachine.database
         val others = division.raftConf.currentPeers.map(::memberId).filter { it != config.memberId }
         val candidates =

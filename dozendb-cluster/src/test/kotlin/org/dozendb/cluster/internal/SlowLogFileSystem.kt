@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.file.OpenOption
 import java.nio.file.Path
@@ -12,13 +13,15 @@ import org.neo4j.io.fs.StoreChannel
 /**
  * Neo4j's file system, pausing before each write to a transaction log while [slow] is set: a member
  * on it applies what its Raft group commits late, while it still acknowledges Raft's appends. While
- * [holding] is set, writes to the transaction logs of its database wait until it is released.
+ * [holding] is set, writes to the transaction logs of its database wait until it is released. While
+ * [failing] names a database, writes to its transaction logs fail, as on a broken disk.
  */
 internal class SlowLogFileSystem(
     private val delegate: FileSystemAbstraction = DefaultFileSystemAbstraction()
 ) : FileSystemAbstraction by delegate {
     @Volatile var slow = false
     @Volatile var holding: Hold? = null
+    @Volatile var failing: String? = null
 
     /** Holds the transaction log writes of [database]: [held] once one waits, until [release]. */
     class Hold(val database: String) {
@@ -50,6 +53,7 @@ internal class SlowLogFileSystem(
     private inner class Slow(private val database: String, channel: StoreChannel) :
         DelegatingStoreChannel<StoreChannel>(channel) {
         private fun pause() {
+            if (failing == database) throw IOException("the disk of $database failed")
             holding?.takeIf { it.database == database }?.await()
             if (slow) Thread.sleep(PAUSE_MILLIS)
         }

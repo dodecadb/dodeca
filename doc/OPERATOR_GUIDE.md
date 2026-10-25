@@ -86,6 +86,22 @@ A member's Raft address is part of its membership. To change it, remove the
 member, delete its data directory, and add it again with the new address. With
 hostname verification, its certificate must name the new address.
 
+### A database that failed on one member
+
+A member that cannot apply a transaction of a database, for instance because
+its disk failed, stops its copy of that database; the other members go on as
+long as a majority of them hold theirs. `SHOW DATABASES` then lists the copy on
+that member as `offline`, with the error as `statusMessage`, and drivers are
+sent to the other members for that database. The member's `debug.log` has the
+error, and the leader logs `Failed appendEntries` for that member, saying that
+the group is closed on it, once every 5 seconds.
+
+Once the cause is repaired, run `STOP DATABASE` and then `START DATABASE`: the
+member starts its copy again from its local state, and catches up with the
+others. Both commands act on every member, so the database is unavailable in
+between. Restarting the member repairs the copy as well, along with its other
+databases.
+
 ## TLS between members
 
 Members talk to each other on their Raft port: Raft itself, membership
