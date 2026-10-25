@@ -81,10 +81,7 @@ internal class PowerLossFileSystem(
 
     private fun unforced(database: String): Long =
         logs.entries
-            .filter { (path, _) ->
-                path.parent?.fileName?.toString() == database &&
-                    path.fileName.toString().startsWith(TRANSACTION_LOG)
-            }
+            .filter { (path, _) -> isTransactionLog(path, database) }
             .maxOfOrNull { (_, log) -> synchronized(log) { log.written - log.forced } } ?: 0
 
     /**
@@ -111,12 +108,24 @@ internal class PowerLossFileSystem(
         zero(forced, minOf(forced / SECTOR * SECTOR + SECTOR, written))
     }
 
+    /**
+     * Loses the first [count] bytes that each transaction log of [database] wrote after its last
+     * force and keeps the rest: a hole of a known length, followed by data. Returns how many bytes
+     * it zeroed. Call after [cut], once the DBMS stopped.
+     */
+    fun loseUnforcedBytes(database: String, count: Long): Long =
+        damage({ isTransactionLog(it, database) }) { forced, written, zero ->
+            zero(forced, minOf(forced + count, written))
+        }
+
     private fun damage(
-        lose: (forced: Long, written: Long, zero: (Long, Long) -> Unit) -> Unit
+        affected: (Path) -> Boolean = { true },
+        lose: (forced: Long, written: Long, zero: (Long, Long) -> Unit) -> Unit,
     ): Long {
         check(cut) { "power is still on" }
         var lost = 0L
         for ((path, log) in logs) {
+            if (!affected(path)) continue
             if (log.written <= log.forced || !delegate.fileExists(path)) continue
             FileChannel.open(path, StandardOpenOption.WRITE).use { channel ->
                 lose(log.forced, log.written) { from, to ->
@@ -129,6 +138,10 @@ internal class PowerLossFileSystem(
         }
         return lost
     }
+
+    private fun isTransactionLog(path: Path, database: String): Boolean =
+        path.parent?.fileName?.toString() == database &&
+            path.fileName.toString().startsWith(TRANSACTION_LOG)
 
     private fun isLog(path: Path): Boolean {
         val name = path.fileName?.toString() ?: return false

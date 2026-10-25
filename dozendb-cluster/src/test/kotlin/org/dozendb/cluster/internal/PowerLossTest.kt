@@ -166,6 +166,38 @@ class PowerLossTest {
     }
 
     @Test
+    fun `a member whose log lost a few bytes right after its checkpoint replays the rest from Raft`() {
+        val systems = ConcurrentHashMap<Int, PowerLossFileSystem>()
+        val cluster = powerLossCluster(systems)
+        val leader = cluster.awaitLeader()
+        val victim = cluster.running().first { it != leader }
+        val fs = checkNotNull(systems[victim.index])
+        val acknowledged = mutableSetOf<Long>()
+        fun write(ids: LongRange) {
+            for (id in ids) {
+                leader.database().executeTransactionally("CREATE (:Written {id: $id})")
+                acknowledged += id
+            }
+        }
+        write(1L..5L)
+        cluster.awaitSameData(acknowledged, "before the checkpoint")
+        // The checkpoint forces the log first, up to the checkpoint; what comes after is unforced.
+        victim.checkpoint()
+        write(6L..20L)
+        cluster.awaitSameData(acknowledged, "after the checkpoint")
+
+        // A hole right after the checkpoint, shorter than the stretch beyond the end of a log in
+        // which Neo4j looks for stray bytes, with written transactions behind it.
+        fs.cut()
+        runCatching { victim.stop() }
+        assertThat(fs.loseUnforcedBytes(ClusterHarness.DEFAULT_DATABASE, HOLE)).isEqualTo(HOLE)
+        victim.start()
+
+        cluster.awaitSameData(acknowledged, "after the hole")
+        cluster.assertConsistentStores()
+    }
+
+    @Test
     fun `a member that wrote store pages back just before losing power recovers`() {
         val systems = ConcurrentHashMap<Int, PowerLossFileSystem>()
         val cluster = powerLossCluster(systems)
@@ -265,5 +297,8 @@ class PowerLossTest {
 
     private companion object {
         const val ROUNDS = 6
+
+        /** Bytes lost after a checkpoint: less than the 1 KiB Neo4j checks beyond a log's end. */
+        const val HOLE = 600L
     }
 }
