@@ -49,36 +49,37 @@ internal class ClusterTopologyInfoService(
         val records = ServerRecords.records(transaction)
         val initialRecorded = ServerRecords.initialServersEnabled(transaction)
         val requested = requestedOnline(transaction)
-        return members(systemDatabase).mapTo(LinkedHashSet()) { member ->
-            val record = records[member.uuid]
-            val enabled = record != null || !initialRecorded
-            val reported = report(member)
-            val available = member in answering
-            val options =
-                record?.options
-                    ?: reported
-                        ?.get(MemberMetadata.INITIAL_SERVER_TAGS)
-                        ?.takeIf { enabled }
-                        ?.let { ServerOptions(MemberMetadata.splitList(it)) }
-                    ?: ServerOptions()
-            ServerDetails(
-                ServerId(member.uuid),
-                record?.name ?: member.uuid.toString(),
-                Optional.ofNullable(directory.boltAddress(member)?.let(::socketAddress)),
-                Optional.ofNullable(reported?.get(MemberMetadata.HTTP_ADDRESS)?.let(::parsed)),
-                Optional.ofNullable(reported?.get(MemberMetadata.HTTPS_ADDRESS)?.let(::parsed)),
-                LinkedHashSet(options.tags),
-                if (enabled) ServerDetails.State.ENABLED else ServerDetails.State.FREE,
-                if (available) ServerDetails.RunningState.AVAILABLE
-                else ServerDetails.RunningState.UNAVAILABLE,
-                if (available) running(member) else emptySet(),
-                if (enabled) requested else emptySet(),
-                LinkedHashSet(options.allowedDatabases),
-                LinkedHashSet(options.deniedDatabases),
-                options.modeConstraint,
-                Optional.ofNullable(reported?.get(MemberMetadata.NEO4J_VERSION)),
-            )
-        }
+        return members(systemDatabase) { true }
+            .mapTo(LinkedHashSet()) { member ->
+                val record = records[member.uuid]
+                val enabled = record != null || !initialRecorded
+                val reported = report(member)
+                val available = member in answering
+                val options =
+                    record?.options
+                        ?: reported
+                            ?.get(MemberMetadata.INITIAL_SERVER_TAGS)
+                            ?.takeIf { enabled }
+                            ?.let { ServerOptions(MemberMetadata.splitList(it)) }
+                        ?: ServerOptions()
+                ServerDetails(
+                    ServerId(member.uuid),
+                    record?.name ?: member.uuid.toString(),
+                    Optional.ofNullable(directory.boltAddress(member)?.let(::socketAddress)),
+                    Optional.ofNullable(reported?.get(MemberMetadata.HTTP_ADDRESS)?.let(::parsed)),
+                    Optional.ofNullable(reported?.get(MemberMetadata.HTTPS_ADDRESS)?.let(::parsed)),
+                    LinkedHashSet(options.tags),
+                    if (enabled) ServerDetails.State.ENABLED else ServerDetails.State.FREE,
+                    if (available) ServerDetails.RunningState.AVAILABLE
+                    else ServerDetails.RunningState.UNAVAILABLE,
+                    if (available) running(member) else emptySet(),
+                    if (enabled) requested else emptySet(),
+                    LinkedHashSet(options.allowedDatabases),
+                    LinkedHashSet(options.deniedDatabases),
+                    options.modeConstraint,
+                    Optional.ofNullable(reported?.get(MemberMetadata.NEO4J_VERSION)),
+                )
+            }
     }
 
     /** The members that answer this member now, after asking them all for at most a deadline. */
@@ -125,6 +126,7 @@ internal class ClusterTopologyInfoService(
         requestedExtras: TopologyInfoService.RequestedExtras,
     ): Set<DatabaseDetails> {
         val answering = answering()
+        val hosts = hosting(transaction)
         return community.databases(transaction, databaseIds, requestedExtras).flatMapTo(
             HashSet()
         ) { own ->
@@ -132,7 +134,7 @@ internal class ClusterTopologyInfoService(
             val database = DatabaseRef(id.name(), id.databaseId().uuid())
             DatabaseRows.rows(
                 own,
-                members(database).map { copy(it, it in answering, database) },
+                members(database, hosts).map { copy(it, it in answering, database) },
                 consensus.status(database).leader,
                 requestedExtras.txInfo(),
             )
@@ -140,17 +142,30 @@ internal class ClusterTopologyInfoService(
     }
 
     /**
-     * The members of [database]'s group; of the cluster while the group does not run here; this
-     * member alone while consensus does not run.
+     * The members of [database]'s group; of the cluster that [hosts] while the group does not run
+     * here; this member alone while consensus does not run.
      */
-    private fun members(database: DatabaseRef): List<MemberId> =
-        listOf(database, systemDatabase).firstNotNullOfOrNull { group ->
+    private fun members(database: DatabaseRef, hosts: (MemberId) -> Boolean): List<MemberId> =
+        try {
+            consensus.members(database).map { it.id }
+        } catch (_: ConsensusUnavailableException) {
             try {
-                consensus.members(group).map { it.id }
+                consensus.members(systemDatabase).map { it.id }.filter(hosts)
             } catch (_: ConsensusUnavailableException) {
-                null
+                listOf(consensus.self.id)
             }
-        } ?: listOf(consensus.self.id)
+        }
+
+    /**
+     * Whether a member hosts the databases other than `system`, as the system graph that
+     * [transaction] reads has it: an enabled server, and every member while the initial servers are
+     * not recorded.
+     */
+    private fun hosting(transaction: Transaction): (MemberId) -> Boolean {
+        if (!ServerRecords.initialServersEnabled(transaction)) return { true }
+        val records = ServerRecords.records(transaction)
+        return { it.uuid in records }
+    }
 
     private fun copy(member: MemberId, answering: Boolean, database: DatabaseRef): Copy =
         Copy(

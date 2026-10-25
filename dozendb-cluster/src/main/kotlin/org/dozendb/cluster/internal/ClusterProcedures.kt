@@ -24,6 +24,8 @@ import org.neo4j.procedure.Procedure
 class ClusterProcedures {
     @JvmField @Context var cluster: ClusterService? = null
 
+    @JvmField @Context var servers: ServerReconciler? = null
+
     @SystemProcedure
     @Procedure(name = "dozendb.cluster.status", mode = Mode.DBMS)
     @Description("The Raft status of every database group on this member.")
@@ -101,6 +103,24 @@ class ClusterProcedures {
                 throw ProcedureFailure(e.message.orEmpty(), e)
             }
         return Stream.of(UpgradeRow(upgrade.previous.toLong(), upgrade.current.toLong()))
+    }
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.setAutomaticallyEnableFreeServers", mode = Mode.DBMS)
+    @Description(
+        "Sets whether a server that joins the cluster is enabled at once, so that databases are " +
+            "placed on it, instead of staying Free until ENABLE SERVER; true also enables the " +
+            "servers that are Free now. Runs on the leader of the system database, as Neo4j " +
+            "Enterprise's procedure of the same name."
+    )
+    fun setAutomaticallyEnableFreeServers(@Name("autoEnable") autoEnable: Boolean) {
+        val reconciler = checkNotNull(servers) { "the servers are not known yet" }
+        try {
+            reconciler.setAutoEnable(autoEnable)
+        } catch (e: IllegalStateException) {
+            throw ProcedureFailure(e.message.orEmpty(), e)
+        }
     }
 
     @Admin

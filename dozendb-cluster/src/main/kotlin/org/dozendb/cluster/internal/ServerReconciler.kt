@@ -38,7 +38,7 @@ import org.neo4j.logging.InternalLog
  * @property current whether this member's system graph holds every committed transaction, as the
  *   leader confirms: a new leader may not have applied the last ones of the previous leader yet.
  */
-internal class ServerReconciler(
+class ServerReconciler(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
     private val system: () -> GraphDatabaseService,
@@ -98,6 +98,27 @@ internal class ServerReconciler(
             // Closing.
         }
         nextRetryDelay = minOf(nextRetryDelay.multipliedBy(2), maximumRetryDelay)
+    }
+
+    /**
+     * Sets whether servers that join are enabled at once, true enabling those Free now, as
+     * `dbms.cluster.setAutomaticallyEnableFreeServers` does. Runs on the `system` leader.
+     *
+     * @throws IllegalStateException if this member does not lead `system`.
+     */
+    fun setAutoEnable(autoEnable: Boolean) {
+        check(leading()) {
+            "This member does not lead the system database; run it on the one that does."
+        }
+        reading {
+            system().beginTx().use { tx ->
+                ServerRecords.lock(tx)
+                ServerRecords.setAutoEnable(tx, autoEnable)
+                tx.commit()
+            }
+        }
+        log.info("Servers that join are enabled at once: %s", autoEnable)
+        request()
     }
 
     /** Looks once; returns whether work remains. */

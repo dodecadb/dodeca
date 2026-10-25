@@ -188,6 +188,9 @@ internal class ClusterHarness(
                     .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
                     // Tests about other things keep their leaders; balancing tests turn it on.
                     .set(ClusterSettings.balancingStrategy, BalancingStrategy.NO_BALANCING)
+                    // Members that join host the databases at once; tests of Free servers turn
+                    // it off.
+                    .set(ClusterSettings.autoEnableFreeServers, true)
                     .set(CLUSTER_TLS.enabled, authority != null)
                     .set(BackupSettings.listenAddress, SocketAddress("127.0.0.1", 0))
                     // Bolt's thread pools otherwise wait 5 s each for quiet before they stop.

@@ -16,6 +16,7 @@
  */
 package org.dozendb.core.edition
 
+import java.util.UUID
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.SettingsProcedures
 import org.dozendb.core.logging.QueryLog
@@ -30,6 +31,8 @@ import org.dozendb.core.security.MemberLogins
 import org.dozendb.core.security.MemberRealm
 import org.dozendb.core.security.RefusingMemberRealm
 import org.dozendb.core.security.SystemGraphSecurity
+import org.dozendb.core.servers.ServerOptions
+import org.dozendb.core.servers.Servers
 import org.dozendb.core.servers.SingleServerTopology
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -198,6 +201,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         // For backups taken from this server.
         globalModule.globalDependencies.satisfyDependency(latestWrites())
         seedServers()?.let { globalModule.globalDependencies.satisfyDependency(it) }
+        // For the server commands.
+        globalModule.globalDependencies.satisfyDependency(servers())
         return repository
     }
 
@@ -206,6 +211,21 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
      * none.
      */
     protected open fun seedServers(): SeedServers? = null
+
+    /** The servers the server commands act on: without clustering, this one. */
+    protected open fun servers(): Servers =
+        object : Servers {
+            private val self = identityModule.serverId().uuid()
+
+            override fun ids(): Set<UUID> = setOf(self)
+
+            override fun initialOptions(id: UUID): ServerOptions? =
+                if (id == self) {
+                    ServerOptions(globalModule.globalConfig.get(DozenDbSettings.initialServerTags))
+                } else {
+                    null
+                }
+        }
 
     /** What creates databases from seeds: DozenDB's backup module, once Neo4j created it. */
     protected fun seeder(): DatabaseSeeder? =

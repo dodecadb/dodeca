@@ -137,6 +137,26 @@ internal class Neo4jSystemGraph(
         }
     }
 
+    override fun hosts(member: MemberId): Boolean = replication.readingSystem {
+        system().beginTx().use { tx ->
+            !ServerRecords.initialServersEnabled(tx) || member.uuid in ServerRecords.records(tx)
+        }
+    }
+
+    /** The id of the database [name], or null if the system graph has none of that name. */
+    fun databaseId(name: String): UUID? = replication.readingSystem {
+        system().beginTx().use { tx ->
+            val node =
+                tx.findNode(
+                    TopologyGraphDbmsModel.DATABASE_LABEL,
+                    TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
+                    name,
+                )
+            (node?.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY, null) as? String)
+                ?.let(UUID::fromString)
+        }
+    }
+
     /** The initial members of the group of [database], or null if none are recorded. */
     fun initialMembers(database: NamedDatabaseId): List<Member>? = replication.readingSystem {
         system().beginTx().use { tx ->

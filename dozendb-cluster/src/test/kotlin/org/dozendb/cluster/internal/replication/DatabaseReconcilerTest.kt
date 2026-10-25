@@ -337,6 +337,28 @@ class DatabaseReconcilerTest {
     }
 
     @Test
+    fun `a member that hosts databases but lacks the default one copies it`() {
+        val default = database(DEFAULT)
+        graph.databases = listOf(desired(default))
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.copies.map { it.second }).containsExactly(default)
+        assertThat(local.registered).containsEntry(default, LocalDatabase(true, false))
+    }
+
+    @Test
+    fun `a Free server creates and copies no database`() {
+        graph.hosts = false
+        graph.databases = listOf(desired(database(DEFAULT)), desired(films, creator = self))
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.registered).isEmpty()
+        assertThat(local.copies).isEmpty()
+    }
+
+    @Test
     fun `Raft groups of databases the system graph lacks are deleted`() {
         val orphan = UUID.randomUUID()
         local.groups += orphan
@@ -354,10 +376,13 @@ class DatabaseReconcilerTest {
         var whenConfirmed: List<DesiredDatabase>? = null
         var reachable = true
         var leading = false
+        var hosts = true
         val named = mutableListOf<Pair<NamedDatabaseId, MemberId>>()
         val initialMembers = mutableListOf<List<Member>>()
 
         override fun databases(): List<DesiredDatabase> = databases
+
+        override fun hosts(member: MemberId): Boolean = hosts
 
         override fun awaitCurrent(): Boolean {
             if (!reachable) return false

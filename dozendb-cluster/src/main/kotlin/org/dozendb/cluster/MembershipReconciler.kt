@@ -22,8 +22,8 @@ import org.dozendb.consensus.Role
 import org.neo4j.logging.Log
 
 /**
- * Makes the members of every database's group follow the members of the cluster, the members of the
- * `system` group.
+ * Makes the members of every database's group follow the members of the cluster that host
+ * databases: the members of the `system` group that [hosts], the enabled servers.
  *
  * Every member runs one, but only the `system` leader acts, so that one member changes each group:
  * a configuration change reaches a group's leader from any member, whatever its database does, also
@@ -41,6 +41,7 @@ import org.neo4j.logging.Log
  *
  * @property groups the database groups that run on this member, `system` among them or not.
  * @property changes runs the changes, which wait for the group's leader.
+ * @property hosts whether a member of the cluster hosts the databases other than `system`.
  */
 class MembershipReconciler(
     private val consensus: ConsensusLog,
@@ -51,6 +52,7 @@ class MembershipReconciler(
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
     private val changes: Executor = newChangeExecutor(),
+    private val hosts: (MemberId) -> Boolean = { true },
 ) : AutoCloseable {
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -126,7 +128,7 @@ class MembershipReconciler(
                     // Not running here.
                     continue
                 }
-            val change = nextChange(cluster.members, membership) ?: continue
+            val change = nextChange(cluster.members.filter { hosts(it.id) }, membership) ?: continue
             again = true
             if (group.id !in inFlight) startIfPossible(group, change)
         }

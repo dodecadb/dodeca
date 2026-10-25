@@ -53,6 +53,13 @@ internal interface SystemGraph {
      * group, unless a creator is named already.
      */
     fun nameCreator(database: NamedDatabaseId, creator: MemberId, initialMembers: List<Member>)
+
+    /**
+     * Whether [member] hosts the databases other than `system`: an enabled server, and every member
+     * while the servers the cluster started with are not recorded yet. A Free one hosts only
+     * `system`.
+     */
+    fun hosts(member: MemberId): Boolean = true
 }
 
 /** The state of a database registered on this member. */
@@ -127,7 +134,9 @@ internal interface LocalDatabases {
  * acted on.
  *
  * The default database is created at startup, and like without clustering the reconciler never
- * creates or drops it; it starts and stops it like any other.
+ * drops it; it starts and stops it like any other. A member that hosts only `system`, a Free
+ * server, does not start it at startup, nor creates any other database; once it hosts databases,
+ * the reconciler copies each, the default database too.
  *
  * A member removed from the cluster stops its databases, `system` aside, and changes nothing else.
  *
@@ -135,7 +144,8 @@ internal interface LocalDatabases {
  * such as a copy whose creator has not created the store, is tried again after [retryDelay], and
  * after twice as long each time it still cannot be done, up to [maximumRetryDelay].
  *
- * @property sources the addresses of the members to copy a new database from, its creator first.
+ * @property sources the addresses of the members to copy a new database from, its creator first if
+ *   it has one.
  * @property systemMembers the members of the `system` group, or null while a change of them is not
  *   settled.
  * @property removed whether this member was removed from the cluster.
@@ -145,7 +155,7 @@ internal class DatabaseReconciler(
     private val databases: LocalDatabases,
     private val self: MemberId,
     private val defaultDatabase: String,
-    private val sources: (creator: MemberId) -> List<HostPort>,
+    private val sources: (creator: MemberId?) -> List<HostPort>,
     private val systemMembers: () -> List<Member>?,
     private val removed: () -> Boolean,
     private val log: InternalLog,
@@ -308,7 +318,16 @@ internal class DatabaseReconciler(
         if (databases.catchingUp(id)) return false
         val state = databases.registered()[id]
         when {
-            state == null -> return id.name() == defaultDatabase || create(database)
+            state == null ->
+                return when {
+                    // A Free server creates nothing.
+                    !systemGraph.hosts(self) -> true
+                    // One that started without it, Free then, copies it; it is never replaced.
+                    id.name() == defaultDatabase ->
+                        databases.registered().keys.any { it.name() == defaultDatabase } ||
+                            create(database)
+                    else -> create(database)
+                }
             database.online && !state.started && !state.failed -> {
                 log.info("Starting database %s, online in the system graph", id)
                 databases.start(id, seed(database))
@@ -355,6 +374,8 @@ internal class DatabaseReconciler(
         val id = database.id
         val creator = database.creator
         return when {
+            // Created when the cluster formed, before creators were named.
+            creator == null && id.name() == defaultDatabase -> copyFromCluster(id, null)
             creator == null -> {
                 // The creator is named in a system transaction, which reconciles again.
                 if (systemGraph.leading()) nameCreator(id, database.designatedSeeder ?: self)
@@ -392,7 +413,7 @@ internal class DatabaseReconciler(
         }
     }
 
-    private fun copyFromCluster(id: NamedDatabaseId, creator: MemberId): Boolean {
+    private fun copyFromCluster(id: NamedDatabaseId, creator: MemberId?): Boolean {
         for (source in sources(creator)) {
             try {
                 log.info("Copying new database %s from %s", id, source)

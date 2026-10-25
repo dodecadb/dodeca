@@ -213,7 +213,8 @@ class ClusterServiceTest {
 
         assertThat(joining.state).isEqualTo(MemberState.JOINING)
         assertThat(store.record).isEqualTo(MembershipRecord(MemberState.JOINING))
-        assertThat(stores.copied).containsExactlyElementsOf(FakeStores.ALL_DATABASES)
+        // A Free server: the other databases follow once it is enabled.
+        assertThat(stores.copied).containsExactly("system")
         assertThat(joiningLog.status(system).role).isEqualTo(Role.Inactive)
         assertThat(joining.foundingMembers).isNull()
 

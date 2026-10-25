@@ -82,6 +82,8 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         withEnv("NEO4J_dbms_dozendb_cluster_initial__members", initialMembers.joinToString(","))
         // Tests about other things keep their leaders; see [balancingLeaders].
         withEnv(BALANCING_STRATEGY, "NO_BALANCING")
+        // Members that join host the databases at once; see [freeServers].
+        withEnv(AUTO_ENABLE, "true")
         withEnv("NEO4J_dbms_ssl_policy_cluster_enabled", (authority != null).toString())
         if (authority != null) {
             withEnv("NEO4J_dbms_ssl_policy_cluster_verify__hostname", "true")
@@ -94,6 +96,9 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         }
         return this
     }
+
+    /** Leaves servers that join Free until ENABLE SERVER, as members do by default. */
+    fun freeServers(): DozenDbContainer = withEnv(AUTO_ENABLE, "false")
 
     /**
      * Balances leaders as members do by default, after leaders have stayed put for [delay] instead
@@ -396,6 +401,7 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         const val PROMETHEUS_PORT = 2004
         const val BACKUP_PORT = 6362
         const val PASSWORD = "dozendb-it-secret"
+        private const val AUTO_ENABLE = "NEO4J_initial_dbms_automatically__enable__free__servers"
         private const val BALANCING_STRATEGY =
             "NEO4J_dbms_cluster_raft_leader__transfer_balancing__strategy"
         private const val SHUTDOWN_SECONDS = 120

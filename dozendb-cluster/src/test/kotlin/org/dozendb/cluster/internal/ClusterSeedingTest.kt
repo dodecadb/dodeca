@@ -187,8 +187,8 @@ class ClusterSeedingTest {
                 }
             )
             .hasMessage(
-                "$failed: server $stranger is not a member of this cluster: CALL " +
-                    "dozendb.cluster.members() lists the members."
+                "$failed: server $stranger is not an enabled server of this cluster: SHOW " +
+                    "SERVERS lists the servers."
             )
         assertThat(
                 catchThrowable {

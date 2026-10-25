@@ -154,7 +154,10 @@ class ClusterService(
                     }
                 }
             }
-        val missing = stores.missing()
+        // A member that joins is a Free server, which hosts only `system`; it copies the other
+        // databases once it is enabled.
+        val missing =
+            stores.missing().filter { state != MemberState.JOINING || it == systemDatabase.name }
         if (missing.isNotEmpty()) {
             val source = joined?.storeSource
             if (source != null && source.id == consensus.self.id) {

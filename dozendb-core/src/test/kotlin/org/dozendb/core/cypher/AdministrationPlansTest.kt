@@ -139,6 +139,7 @@ class AdministrationPlansTest {
                 "AssertNotBlockedRemoteAliasManagement",
                 // Servers
                 "ShowServers",
+                "EnableServer",
             )
 
         /** Planned by Community's runtime, which DozenDB's falls back to. */
@@ -164,7 +165,6 @@ class AdministrationPlansTest {
         val REFUSED =
             mapOf(
                 "EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it",
-                "EnableServer" to NOT_YET,
                 "AlterServer" to NOT_YET,
                 "RenameServer" to NOT_YET,
                 "DropServer" to PLACEMENT,
@@ -178,7 +178,6 @@ class AdministrationPlansTest {
         /** A command for each refused plan that is a command of its own. */
         val REFUSED_COMMANDS =
             listOf(
-                "ENABLE SERVER 'one'",
                 "ALTER SERVER 'one' SET OPTIONS {modeConstraint: 'NONE'}",
                 "RENAME SERVER 'one' TO 'two'",
                 "DROP SERVER 'one'",

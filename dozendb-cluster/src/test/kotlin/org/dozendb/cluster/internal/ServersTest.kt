@@ -1,10 +1,13 @@
 package org.dozendb.cluster.internal
 
 import java.nio.file.Path
+import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
+import org.awaitility.kotlin.withPollInterval
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerRecord
@@ -13,6 +16,8 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.graphdb.QueryExecutionException
+import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.internal.Version
 
 /** SHOW SERVERS and the server commands, as Neo4j Enterprise has them, on a cluster. */
@@ -47,6 +52,44 @@ class ServersTest {
         database(SYSTEM).beginTx().use { tx ->
             ServerRecords.records(tx).values.toSet() to ServerRecords.initialServersEnabled(tx)
         }
+
+    /** A cluster of three whose servers that join stay Free until enabled, as by default. */
+    private fun cluster(): ClusterHarness =
+        ClusterHarness(root, 3, settings = mapOf(ClusterSettings.autoEnableFreeServers to false))
+            .also {
+                harness = it
+                it.start()
+            }
+
+    /** Starts a new member, with [tags], and admits it to the cluster. */
+    private fun ClusterHarness.admit(tags: List<String> = emptyList()): ClusterHarness.Member =
+        newMember().also {
+            it.settings = mapOf(DozenDbSettings.initialServerTags to tags)
+            it.start()
+            administer("CALL dozendb.cluster.addMember('127.0.0.1:${it.raftPort}')")
+        }
+
+    /** Runs [query] on the system leader, among the initial members. */
+    private fun ClusterHarness.administer(query: String) {
+        awaitLeader(SYSTEM) { members.take(3) }.database(SYSTEM).executeTransactionally(query)
+    }
+
+    /** The row of [server] in SHOW SERVERS YIELD *, as this member shows it. */
+    private fun ClusterHarness.Member.server(server: ClusterHarness.Member): Map<String, Any?> =
+        showServers().single { it["serverId"] == server.serverId }
+
+    /** The databases whose Raft group runs on this member. */
+    private val ClusterHarness.Member.hosted: List<String>
+        get() = cluster.status().map { it.database.name }.sorted()
+
+    private fun eventually(assertion: () -> Unit) {
+        await withPollInterval
+            Duration.ofMillis(200) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                assertion()
+            }
+    }
 
     private fun ClusterHarness.Member.showServers(): List<Map<String, Any?>> =
         database(SYSTEM).executeTransactionally("SHOW SERVERS YIELD *", emptyMap()) { result ->
@@ -112,6 +155,116 @@ class ServersTest {
                 assertThat(rows.getValue(stoppedId)["hosting"]).isEqualTo(emptyList<String>())
                 assertThat(rows.getValue(leader.serverId)["health"]).isEqualTo("Available")
             }
+    }
+
+    @Test
+    fun `a server that joins is Free and hosts only system, until ENABLE SERVER`() {
+        val cluster = cluster()
+        val joining = cluster.admit(tags = listOf("new"))
+        cluster.administer("CREATE DATABASE films WAIT")
+        val leader = cluster.awaitLeader(SYSTEM) { cluster.members.take(3) }
+        // It applied the creation of films: its system graph has it.
+        eventually {
+            assertThat(joining.server(joining)["requestedHosting"]).isEqualTo(emptyList<String>())
+        }
+        eventually {
+            assertThat(
+                    joining.database(SYSTEM).executeTransactionally(
+                        "SHOW DATABASES YIELD name",
+                        emptyMap(),
+                    ) { r ->
+                        r.asSequence().map { it["name"] }.toSet()
+                    }
+                )
+                .contains("films")
+        }
+
+        assertThat(joining.hosted).containsExactly(SYSTEM)
+        val free = leader.server(joining)
+        assertThat(free["state"]).isEqualTo("Free")
+        assertThat(free["hosting"]).isEqualTo(listOf(SYSTEM))
+        assertThat(free["requestedHosting"]).isEqualTo(emptyList<String>())
+        assertThat(free["tags"]).isEqualTo(emptyList<String>())
+
+        cluster.administer("ENABLE SERVER '${joining.serverId}'")
+
+        eventually {
+            assertThat(joining.hosted).containsExactly("films", NEO4J, SYSTEM)
+            val enabled = leader.server(joining)
+            assertThat(enabled["state"]).isEqualTo("Enabled")
+            assertThat(enabled["tags"]).isEqualTo(listOf("new"))
+            assertThat(enabled["hosting"]).isEqualTo(listOf(SYSTEM, "films", NEO4J))
+            assertThat(enabled["requestedHosting"]).isEqualTo(listOf(SYSTEM, "films", NEO4J))
+        }
+    }
+
+    @Test
+    fun `ENABLE SERVER takes the options given over the initial ones, once`() {
+        val cluster = cluster()
+        val joining = cluster.admit(tags = listOf("new"))
+        val enable = "ENABLE SERVER '${joining.serverId}' OPTIONS {tags: ['given']}"
+
+        cluster.administer(enable)
+        cluster.administer(enable)
+        val again = catchThrowable {
+            cluster.administer("ENABLE SERVER '${joining.serverId}' OPTIONS {tags: ['other']}")
+        }
+
+        assertThat(again)
+            .hasMessageContaining("is enabled already")
+            .hasMessageContaining("ALTER SERVER")
+        val leader = cluster.awaitLeader(SYSTEM) { cluster.members.take(3) }
+        eventually { assertThat(leader.server(joining)["tags"]).isEqualTo(listOf("given")) }
+        assertThat(catchThrowable { cluster.administer("ENABLE SERVER 'nobody'") })
+            .hasMessageContaining("nobody")
+    }
+
+    @Test
+    fun `server commands that change servers run on the system leader`() {
+        val cluster = cluster()
+        val joining = cluster.admit()
+        val leader = cluster.awaitLeader(SYSTEM) { cluster.members.take(3) }
+        val follower = cluster.members.take(3).first { it != leader }
+
+        val refused = catchThrowable {
+            follower.database(SYSTEM).executeTransactionally("ENABLE SERVER '${joining.serverId}'")
+        }
+
+        assertThat((refused as QueryExecutionException).statusCode)
+            .isEqualTo(Status.Cluster.NotALeader.code().serialize())
+        assertThat(leader.server(joining)["state"]).isEqualTo("Free")
+    }
+
+    @Test
+    fun `with servers enabled at once, one that joins gets every database`() {
+        val cluster =
+            ClusterHarness(root, 3, settings = mapOf(ClusterSettings.autoEnableFreeServers to true))
+                .also {
+                    harness = it
+                    it.start()
+                }
+
+        val joining = cluster.admit(tags = listOf("new"))
+
+        eventually {
+            assertThat(joining.hosted).containsExactly(NEO4J, SYSTEM)
+            assertThat(joining.server(joining)["state"]).isEqualTo("Enabled")
+            assertThat(joining.server(joining)["tags"]).isEqualTo(listOf("new"))
+        }
+    }
+
+    @Test
+    fun `enabling servers at once enables those that are Free`() {
+        val cluster = cluster()
+        val joining = cluster.admit()
+        eventually { assertThat(joining.server(joining)["state"]).isEqualTo("Free") }
+
+        cluster.administer("CALL dbms.cluster.setAutomaticallyEnableFreeServers(true)")
+
+        eventually {
+            assertThat(joining.hosted).containsExactly(NEO4J, SYSTEM)
+            assertThat(joining.server(joining)["state"]).isEqualTo("Enabled")
+        }
     }
 
     private companion object {

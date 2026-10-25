@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal
 
 import java.io.IOException
+import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.runBlocking
@@ -54,6 +55,8 @@ import org.dozendb.core.edition.HostingServer
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
 import org.dozendb.core.security.MemberLogins
+import org.dozendb.core.servers.ServerOptions
+import org.dozendb.core.servers.Servers
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.connectors.ConnectorType
@@ -131,6 +134,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
     private lateinit var servers: ServerReconciler
+
+    /** The id of the default database as the system graph has it, read once `system` runs. */
+    @Volatile private var clusterId: UUID? = null
     private var roles: RolesInitializer? = null
 
     init {
@@ -173,7 +179,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         MemberMetadata.HTTPS_ADDRESS to it.toHostPort().toString()
                     },
                     routingHostPort()?.let { MemberMetadata.ROUTING_ADDRESS to it.toString() },
-                    replicationService.defaultDatabaseId?.let {
+                    (replicationService.defaultDatabaseId ?: clusterId)?.let {
                         MemberMetadata.CLUSTER_ID to it.toString()
                     },
                 )
@@ -351,6 +357,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 override fun databaseStart(eventContext: DatabaseEventContext) {
                     if (eventContext.databaseName == systemDatabase.name) {
                         cluster.requestFormatLevelRefresh()
+                        // A Free server reports it before it hosts the default database.
+                        clusterId =
+                            runCatching { systemGraph.databaseId(defaultDatabase) }.getOrNull()
                     }
                 }
             }
@@ -361,6 +370,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 systemDatabase,
                 { replicationService.created() },
                 logService.getInternalLog(MembershipReconciler::class.java),
+                hosts = { systemGraph.hosts(it) },
             )
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
@@ -485,7 +495,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 { block -> replication.readingSystem(block) },
                 leading = { replication.systemWritable },
                 current = replication::awaitSystemCurrent,
-                report = directory::reported,
+                // A member that joined may not have been probed yet.
+                report = { member ->
+                    directory.reported(member)
+                        ?: run {
+                            directory.refresh(PROBE_DEADLINE)
+                            directory.reported(member)
+                        }
+                },
                 autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
                 log = globalModule.logService.getInternalLog(ServerReconciler::class.java),
             )
@@ -536,11 +553,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 .also { it.start() }
     }
 
-    /** The members to copy a new database from, [creator] first. */
-    private fun copySources(creator: MemberId): List<HostPort> =
+    /**
+     * The members to copy a new database from, the members that host databases, [creator] first.
+     */
+    private fun copySources(creator: MemberId?): List<HostPort> =
         consensus
             .members(systemDatabase)
-            .filter { it.id != memberId }
+            .filter { it.id != memberId && systemGraph.hosts(it.id) }
             .sortedBy { it.id != creator }
             .map { it.raftAddress }
 
@@ -602,7 +621,19 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 override fun start() {
                     // A removed member serves no database.
                     if (cluster.state == MemberState.REMOVED) return
-                    replication.readingSystem { starter.start() }
+                    replication.readingSystem {
+                        if (systemGraph.hosts(memberId)) {
+                            starter.start()
+                        } else {
+                            globalModule.logService
+                                .getUserLog(ClusterEditionModule::class.java)
+                                .info(
+                                    "This server is Free: it hosts only the system database " +
+                                        "until ENABLE SERVER '%s' enables it",
+                                    memberId,
+                                )
+                        }
+                    }
                 }
             }
         )
@@ -668,37 +699,76 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /**
-     * The members of the cluster, which WAIT waits for. Each reports its databases when probed;
-     * this member reads its own.
+     * The members of the cluster that host databases, which WAIT waits for. Each reports its
+     * databases when probed; this member reads its own.
      */
     override fun hostingServers(): List<HostingServer> =
-        consensus.members(systemDatabase).map { member ->
-            object : HostingServer {
-                override val address: String =
-                    (directory.boltAddress(member.id) ?: member.raftAddress).toString()
+        consensus
+            .members(systemDatabase)
+            .filter { systemGraph.hosts(it.id) }
+            .map { member ->
+                object : HostingServer {
+                    override val address: String =
+                        (directory.boltAddress(member.id) ?: member.raftAddress).toString()
 
-                override fun databases(): List<DatabaseState> {
-                    if (member.id == memberId) return databaseStates()
-                    val peer = runBlocking { consensus.probe(member.raftAddress) }
-                    check(peer.member.id == member.id) {
-                        "${member.raftAddress} is ${peer.member.id} now, not ${member.id}"
-                    }
-                    val reported =
-                        checkNotNull(peer.metadata[MemberMetadata.DATABASES]) {
-                            "it does not report its databases"
+                    override fun databases(): List<DatabaseState> {
+                        if (member.id == memberId) return databaseStates()
+                        val peer = runBlocking { consensus.probe(member.raftAddress) }
+                        check(peer.member.id == member.id) {
+                            "${member.raftAddress} is ${peer.member.id} now, not ${member.id}"
                         }
-                    return DatabaseStatesCodec.decode(reported)
+                        val reported =
+                            checkNotNull(peer.metadata[MemberMetadata.DATABASES]) {
+                                "it does not report its databases"
+                            }
+                        return DatabaseStatesCodec.decode(reported)
+                    }
                 }
             }
-        }
 
-    /** The members, which a database can be created from with existingDataSeedServer. */
+    /**
+     * The members that host databases, which a database can be created from with
+     * existingDataSeedServer.
+     */
     override fun seedServers(): SeedServers = SeedServers { id ->
-        require(consensus.members(systemDatabase).any { it.id.uuid == id }) {
-            "server $id is not a member of this cluster: CALL dozendb.cluster.members() lists " +
-                "the members"
+        require(
+            consensus.members(systemDatabase).any { it.id.uuid == id && systemGraph.hosts(it.id) }
+        ) {
+            "server $id is not an enabled server of this cluster: SHOW SERVERS lists the servers"
         }
     }
+
+    /** The members of the cluster, with the options they report from `initial.server.*`. */
+    override fun servers(): Servers =
+        object : Servers {
+            override fun ids(): Set<UUID> =
+                consensus.members(systemDatabase).mapTo(HashSet()) { it.id.uuid }
+
+            // Asked now: the directory may not have probed a member that just joined.
+            override fun initialOptions(id: UUID): ServerOptions? {
+                if (id == memberId.uuid) {
+                    return ServerOptions(
+                        globalModule.globalConfig.get(DozenDbSettings.initialServerTags)
+                    )
+                }
+                val member =
+                    consensus.members(systemDatabase).firstOrNull { it.id.uuid == id }
+                        ?: return null
+                val peer =
+                    try {
+                        runBlocking {
+                            withTimeoutOrNull(PROBE_DEADLINE.toMillis()) {
+                                consensus.probe(member.raftAddress)
+                            }
+                        }
+                    } catch (_: ConsensusUnavailableException) {
+                        null
+                    } ?: return null
+                if (peer.member.id != member.id) return null
+                val tags = peer.metadata[MemberMetadata.INITIAL_SERVER_TAGS] ?: return null
+                return ServerOptions(MemberMetadata.splitList(tags))
+            }
+        }
 
     /**
      * Waits until this member has applied what its database's Raft group had committed: a Raft
@@ -858,12 +928,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     ) {
         super.registerEditionSpecificProcedures(globalProcedures, databaseContextProvider)
         globalProcedures.registerComponent(ClusterService::class.java, { cluster }, true)
+        globalProcedures.registerComponent(ServerReconciler::class.java, { servers }, true)
         globalProcedures.registerProcedure(ClusterProcedures::class.java)
     }
 
     private companion object {
         /** This member's [org.dozendb.cluster.MembershipRecord], in the Raft directory. */
         const val MEMBERSHIP_FILE = "membership"
+
+        /** How long a member that is asked what it reports may take to answer. */
+        val PROBE_DEADLINE: Duration = Duration.ofSeconds(2)
 
         fun SocketAddress.toHostPort(): HostPort = HostPort(hostname, port)
 
