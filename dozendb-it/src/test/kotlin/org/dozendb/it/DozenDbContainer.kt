@@ -53,6 +53,12 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         withEnv("NEO4J_server_memory_heap_max__size", "512m")
         withEnv("NEO4J_server_memory_pagecache_size", "64m")
         withEnv("NEO4J_server_default__advertised__address", alias)
+        // A reply lost on its way, as OrbStack's port forwarding loses some at times, fails the
+        // request after 10 s instead of waiting for ever: the server tells drivers to close a
+        // connection that waits that long for a reply (keep-alive times probes), and keeps the
+        // connections of long requests from going quiet.
+        withEnv("NEO4J_server_bolt_connection__keep__alive", "5s")
+        withEnv("NEO4J_server_bolt_connection__keep__alive__streaming__scheduling__interval", "1s")
         withExposedPorts(BOLT_PORT)
         waitingFor(
             Wait.forLogMessage(".*Started\\.\\s*", 1).withStartupTimeout(Duration.ofMinutes(3))

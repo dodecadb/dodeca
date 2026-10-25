@@ -2,6 +2,8 @@ package org.dozendb.it
 
 import com.github.dockerjava.api.DockerClient
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -10,6 +12,7 @@ import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.TestMethodOrder
+import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.startupcheck.StartupCheckStrategy
 import org.testcontainers.containers.startupcheck.StartupCheckStrategy.StartupStatus
@@ -91,6 +94,25 @@ class StandaloneIT {
         assertThat(dozenDb.rows(setting, "system")).containsExactly(mapOf("value" to "false"))
         assertThat(community.logs).contains("Anonymous Usage Data is being sent to Neo4j")
         assertThat(dozenDb.logs).doesNotContain("Anonymous Usage Data")
+    }
+
+    /**
+     * As when a reply gets lost on its way to the test, which OrbStack's port forwarding does at
+     * times.
+     */
+    @Test
+    fun `a request that gets no reply fails within seconds`() {
+        dozenDb.rows("RETURN 1 AS one")
+        val docker = DockerClientFactory.instance().client()
+        // The kernel takes the request in; the frozen server never answers it.
+        docker.pauseContainerCmd(dozenDb.containerId).exec()
+        try {
+            val reply = CompletableFuture.supplyAsync { dozenDb.run("RETURN 1 AS one") }
+            assertThat(reply.get(30, TimeUnit.SECONDS)).isInstanceOf(Outcome.Failed::class.java)
+        } finally {
+            docker.unpauseContainerCmd(dozenDb.containerId).exec()
+        }
+        assertThat(dozenDb.rows("RETURN 1 AS one")).containsExactly(mapOf("one" to 1L))
     }
 
     @Test
