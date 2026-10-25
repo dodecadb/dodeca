@@ -16,6 +16,8 @@
   <properties>
     <!-- Its promtool checks the metrics the plugin reports. -->
     <prometheus.image>prom/prometheus:v3.5.0</prometheus.image>
+    <!-- Tests only: no jar to install (see maven-jar-plugin below). -->
+    <maven.install.skip>true</maven.install.skip>
   </properties>
 
   <dependencies>
