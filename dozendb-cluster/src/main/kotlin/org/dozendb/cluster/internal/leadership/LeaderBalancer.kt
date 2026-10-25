@@ -19,24 +19,29 @@ import org.neo4j.logging.InternalLog
 
 /**
  * Moves the leadership of databases this member leads to other members, where Neo4j Enterprise
- * documents that leadership moves: away from a member where the database is read-only, and, with
+ * documents that leadership moves: away from a member where the database is read-only, to a member
+ * with the database's priority tag (see [LeaderMoves.priority]), and, with
  * [BalancingStrategy.EQUAL_BALANCING], so that every member leads as many databases as the others,
  * give or take one (see [LeaderMoves.balancing]).
  *
  * Looks every [interval], and soon after [request]. Balancing waits until leaders have stayed put
  * everywhere for [stabilityDelay], every database has a leader and no group changes its members;
- * moving off a read-only member does not wait. A database goes to the member, among those that
- * could lead it (see [Leadership.eligible]), that leads the fewest databases; this member checks
- * first that the member answers it and keeps up with its log (see [LeaderMoves.keepsUp]), and hands
- * the leadership over without failing commits under way (see
- * `ReplicatedDatabase.transferLeadership`). It also ranks the members a leadership is handed over
- * to when this member stops applying a database.
+ * moving off a read-only member or to one with the priority tag does not wait. A database goes to
+ * the member, among those that could lead it (see [Leadership.eligible]), that carries its priority
+ * tag and leads the fewest databases; this member checks first that the member answers it and keeps
+ * up with its log (see [LeaderMoves.keepsUp]), and hands the leadership over without failing
+ * commits under way (see `ReplicatedDatabase.transferLeadership`). It also ranks the members a
+ * leadership is handed over to when this member stops applying a database.
  */
 internal class LeaderBalancer(
     private val consensus: ConsensusLog,
     private val replication: ReplicationService,
     private val directory: MemberDirectory,
     private val strategy: () -> BalancingStrategy,
+    /** The priority tag of the database of a name, if any. */
+    private val priorityTag: (String) -> String?,
+    /** The server tags of each member, from the server records. */
+    private val tags: () -> Map<MemberId, Set<String>>,
     private val stabilityDelay: Duration,
     /** How long a transfer, and the commits under way before it, may take. */
     private val transferTimeout: Duration,
@@ -53,6 +58,12 @@ internal class LeaderBalancer(
 
     /** Databases read-only here that no member could take over, logged once; executor only. */
     private val stuck = mutableSetOf<UUID>()
+
+    /**
+     * Databases led here without their priority tag that no member with it could take over, logged
+     * once; executor only.
+     */
+    private val unprioritized = mutableSetOf<UUID>()
 
     /** The commit index of each database this member led at the last look; executor only. */
     private val committed = mutableMapOf<UUID, Long>()
@@ -89,16 +100,37 @@ internal class LeaderBalancer(
 
     /**
      * The members to hand the leadership of [database] over to, those that could lead it first,
-     * fewest led first.
+     * those with its priority tag first among them, fewest led first.
      */
     override fun rank(database: DatabaseRef, candidates: List<MemberId>): List<MemberId> {
-        val view = view()
-        val eligible = view.databases.firstOrNull { it.database == database }?.eligible.orEmpty()
-        return LeaderMoves.rank(view, candidates.filter { it in eligible })
+        // The handover goes ahead without the tags if the system graph cannot be read.
+        val view = view {
+            try {
+                tags()
+            } catch (e: Exception) {
+                log.warn("Reading the server tags failed", e)
+                emptyMap()
+            }
+        }
+        val leadership = view.databases.firstOrNull { it.database == database }
+        return LeaderMoves.rank(
+            view,
+            candidates.filter { it in leadership?.eligible.orEmpty() },
+            leadership?.priorityTag,
+        )
     }
 
     /** Who leads the databases replicated here and who could, as this member sees it now. */
-    fun view(): LeadershipView = LeadershipView(replication.created().mapNotNull(::leadership))
+    fun view(): LeadershipView = view(tags)
+
+    private fun view(tags: () -> Map<MemberId, Set<String>>): LeadershipView {
+        val databases = replication.created().mapNotNull(::leadership)
+        // The server records are read only when a database has a priority tag.
+        return LeadershipView(
+            databases,
+            if (databases.any { it.priorityTag != null }) tags() else emptyMap(),
+        )
+    }
 
     private fun leadership(database: DatabaseRef): Leadership? {
         val status = consensus.status(database)
@@ -120,6 +152,7 @@ internal class LeaderBalancer(
             writableOnLeader =
                 leader == null || database.id !in directory.readOnlyDatabases(leader),
             settled = membership.settled,
+            priorityTag = priorityTag(database.name),
         )
     }
 
@@ -170,6 +203,30 @@ internal class LeaderBalancer(
                 .filter { it.leader == self && !it.writableOnLeader }
                 .map { it.database.id }
         )
+        var prioritized = LeaderMoves.priority(view, self)
+        if (
+            prioritized.any { (database, candidates) -> candidates.any { keepsUp(database, it) } }
+        ) {
+            // A member that stops hands its leaderships over before it stops answering.
+            directory.refresh()
+            prioritized = LeaderMoves.priority(view(), self)
+        }
+        for ((database, candidates) in prioritized) {
+            if (candidates.isEmpty()) {
+                if (unprioritized.add(database.id)) {
+                    log.info(
+                        "Database %s should be led by a member with the server tag %s, but none " +
+                            "can take it over: this member leads it until one can",
+                        database.name,
+                        priorityTag(database.name),
+                    )
+                }
+                continue
+            }
+            unprioritized -= database.id
+            if (candidates.any { transfer(database, it, MoveReason.PRIORITY) }) moved = true
+        }
+        unprioritized.retainAll(prioritized.filterValues { it.isEmpty() }.keys.map { it.id })
         // Balancing sees the moves first, at the next look, and waits for leaders to stay put.
         if (!moved) balance(view)
     }
@@ -208,8 +265,13 @@ internal class LeaderBalancer(
      */
     private fun transfer(database: DatabaseRef, to: MemberId, reason: MoveReason): Boolean {
         val replica = replication.replica(database) ?: return false
-        val progress = consensus.progress(database) ?: return false
-        if (!LeaderMoves.keepsUp(progress, to, committed[database.id], contactLimit)) return false
+        if (!keepsUp(database, to)) return false
         return replica.transferLeadership(to, reason.text, transferTimeout)
+    }
+
+    /** Whether [to] keeps up with this member's log of [database] (see [LeaderMoves.keepsUp]). */
+    private fun keepsUp(database: DatabaseRef, to: MemberId): Boolean {
+        val progress = consensus.progress(database) ?: return false
+        return LeaderMoves.keepsUp(progress, to, committed[database.id], contactLimit)
     }
 }

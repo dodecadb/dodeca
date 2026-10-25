@@ -18,6 +18,7 @@ import org.neo4j.configuration.SettingValueParsers.DURATION
 import org.neo4j.configuration.SettingValueParsers.INT
 import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
+import org.neo4j.configuration.SettingValueParsers.STRING
 import org.neo4j.configuration.SettingValueParsers.listOf
 import org.neo4j.configuration.SettingValueParsers.ofEnum
 import org.neo4j.configuration.SettingsDeclaration
@@ -190,6 +191,17 @@ class ClusterSettings : SettingsDeclaration {
                 )
                 .dynamic()
                 .build()
+
+        @JvmField
+        @field:Description(
+            "The server tag of the members that should lead every database without a priority " +
+                "tag of its own (db.cluster.raft.leader_transfer.priority_tag.<database>). A " +
+                "member that leads such a database without the tag hands the leadership to one " +
+                "with it, when one can take it over; balancing leaves these databases where they " +
+                "are. Set it alike on every member. Named like Neo4j Enterprise's setting."
+        )
+        val leaderPriorityTag: Setting<String> =
+            newBuilder(DatabasePriorityTag.PREFIX, STRING, null).build()
 
         @JvmField
         @field:Description(

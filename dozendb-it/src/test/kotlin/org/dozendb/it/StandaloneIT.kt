@@ -142,6 +142,7 @@ class StandaloneIT {
                 "dbms.dozendb.cluster.election_timeout_min",
                 "dbms.dozendb.cluster.election_timeout_max",
                 "dbms.cluster.raft.leader_transfer.balancing_strategy",
+                "db.cluster.raft.leader_transfer.priority_tag",
                 "initial.dbms.automatically_enable_free_servers",
                 "initial.server.tags",
                 "dbms.dozendb.routing.reads_on_leader",

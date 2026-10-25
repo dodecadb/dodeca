@@ -81,6 +81,51 @@ class ClusterSettingsTest {
     }
 
     @Test
+    fun `a database has its own priority tag, or else the one for every database`() {
+        val tags =
+            DatabasePriorityTag.lookup(
+                config(
+                    "db.cluster.raft.leader_transfer.priority_tag" to "eu",
+                    // Database names ignore case.
+                    "db.cluster.raft.leader_transfer.priority_tag.Sales" to "us",
+                )
+            )
+
+        assertThat(tags("sales")).isEqualTo("us")
+        assertThat(tags("neo4j")).isEqualTo("eu")
+        assertThat(tags("system")).isEqualTo("eu")
+        assertThat(DatabasePriorityTag.lookup(config())("neo4j")).isNull()
+    }
+
+    @Test
+    fun `refuses two priority tags for one database`() {
+        val twice =
+            config(
+                "db.cluster.raft.leader_transfer.priority_tag.sales" to "us",
+                "db.cluster.raft.leader_transfer.priority_tag.SALES" to "eu",
+            )
+
+        assertThatThrownBy { DatabasePriorityTag.lookup(twice) }
+            .isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("database sales")
+    }
+
+    @Test
+    fun `a database whose name has a dot gets no priority tag of its own`() {
+        // Neo4j reads the name of a group up to the first dot, and drops the setting.
+        val tags =
+            DatabasePriorityTag.lookup(
+                config(
+                    "db.cluster.raft.leader_transfer.priority_tag" to "eu",
+                    "db.cluster.raft.leader_transfer.priority_tag.a.b" to "us",
+                )
+            )
+
+        assertThat(tags("a.b")).isEqualTo("eu")
+        assertThat(tags("a")).isEqualTo("eu")
+    }
+
+    @Test
     fun `rejects election timeouts that are too short`() {
         assertThatThrownBy { config("dbms.dozendb.cluster.election_timeout_min" to "10ms") }
             .isInstanceOf(IllegalArgumentException::class.java)

@@ -22,6 +22,8 @@ import org.dozendb.cluster.internal.ClusterHarness.Companion.DEFAULT_DATABASE
 import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.cluster.internal.replication.ReplicatedDatabase
 import org.dozendb.cluster.internal.replication.ReplicationService
+import org.dozendb.consensus.MemberId
+import org.dozendb.core.DozenDbSettings
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -47,12 +49,14 @@ class LeadershipTest {
     private fun cluster(
         size: Int = 3,
         settings: Map<Setting<*>, Any> = emptyMap(),
+        memberSettings: (ClusterHarness.Member) -> Map<Setting<*>, Any> = { emptyMap() },
         fileSystem: ((ClusterHarness.Member) -> FileSystemAbstraction)? = null,
     ): ClusterHarness {
         println("Cluster harness in $root")
-        return ClusterHarness(root, size, fileSystem, settings).also {
-            harness = it
-            it.start()
+        return ClusterHarness(root, size, fileSystem, settings).also { cluster ->
+            harness = cluster
+            cluster.members.forEach { it.settings = memberSettings(it) }
+            cluster.start()
         }
     }
 
@@ -118,6 +122,40 @@ class LeadershipTest {
                 }
         }
     }
+
+    /** The member that leads each of [DATABASES], once the running members agree; null until. */
+    private fun ClusterHarness.leaders(): Map<String, MemberId>? {
+        val members = running()
+        return DATABASES.associateWith { name ->
+            members.map { it.status(name)?.leader }.distinct().singleOrNull() ?: return null
+        }
+    }
+
+    private val ClusterHarness.Member.id: MemberId
+        get() = cluster.self.id
+
+    /**
+     * A cluster with balancing whose `db1` should be led by members tagged `us`, as member 1 is,
+     * and every other database by members tagged `eu`, as member 2 is. Member 0 has no tag.
+     */
+    private fun prioritized(): ClusterHarness =
+        cluster(
+            settings =
+                BALANCING +
+                    mapOf(
+                        ClusterSettings.leaderPriorityTag to "eu",
+                        DatabasePriorityTag.of("db1") to "us",
+                    ),
+            memberSettings = {
+                mapOf(DozenDbSettings.initialServerTags to TAGS.getValue(it.index))
+            },
+        )
+
+    /** Each of [DATABASES] led by [db1], or else by [others]. */
+    private fun leading(db1: ClusterHarness.Member, others: ClusterHarness.Member) =
+        DATABASES.associateWith {
+            if (it == "db1") db1.id else others.id
+        }
 
     private fun ClusterHarness.Member.setBalancing(strategy: BalancingStrategy) {
         database(SYSTEM)
@@ -404,6 +442,93 @@ class LeadershipTest {
     }
 
     @Test
+    fun `members with the priority tag of a database lead it, and balancing leaves it there`() {
+        val cluster = prioritized()
+        val (_, us, eu) = cluster.members
+        cluster.createDatabases()
+
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.leaders()).isEqualTo(leading(us, eu))
+            }
+        // A transfer away from the tag is undone.
+        val untagged = cluster.members[0]
+        assertThat(
+                eu.replica("db2").transferLeadership(untagged.id, "a test", Duration.ofSeconds(5))
+            )
+            .isTrue()
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(cluster.leaders()).isEqualTo(leading(us, eu))
+            }
+        await during
+            Duration.ofSeconds(3) atMost
+            Duration.ofSeconds(10) untilAsserted
+            {
+                assertThat(cluster.leaders()).isEqualTo(leading(us, eu))
+            }
+        assertThat(Files.readString(root.resolve("raft.log")))
+            .contains("to a member with the database's priority tag")
+    }
+
+    @Test
+    fun `leadership follows the priority tag to the members ALTER SERVER gives it to`() {
+        val cluster = prioritized()
+        val (untagged, us, eu) = cluster.members
+        cluster.createDatabases()
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.leaders()).isEqualTo(leading(us, eu))
+            }
+
+        cluster.administer("ALTER SERVER '${eu.id.uuid}' SET OPTIONS {tags: []}")
+        cluster.administer("ALTER SERVER '${untagged.id.uuid}' SET OPTIONS {tags: ['eu']}")
+
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.leaders()).isEqualTo(leading(us, untagged))
+            }
+    }
+
+    @Test
+    fun `while no member with the priority tag runs, others lead, until one is back`() {
+        val cluster = prioritized()
+        val (untagged, us, eu) = cluster.members
+        cluster.createDatabases()
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.leaders()).isEqualTo(leading(us, eu))
+            }
+
+        val stopped = eu.id
+        eu.stop()
+
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.leaders()?.values).isNotNull.doesNotContain(stopped)
+            }
+        cluster.awaitLeader(DEFAULT_DATABASE).database().executeTransactionally("CREATE ()")
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(untagged.debugLog() + us.debugLog())
+                    .contains("should be led by a member with the server tag eu, but none can")
+            }
+        eu.start()
+        await atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(cluster.leaders()).isEqualTo(leading(us, eu))
+            }
+    }
+
+    @Test
     fun `without balancing leaders stay put, until balancing is turned on`() {
         val cluster =
             cluster(settings = mapOf(ClusterSettings.balancingDelay to Duration.ofSeconds(1)))
@@ -432,6 +557,9 @@ class LeadershipTest {
         const val WRITERS = 4
         const val SYSTEM = "system"
         val DATABASES = listOf(SYSTEM, DEFAULT_DATABASE) + (1..6).map { "db$it" }
+
+        /** The initial server tags of each member of [prioritized]. */
+        val TAGS = mapOf(0 to emptyList(), 1 to listOf("us"), 2 to listOf("eu", "member-2"))
 
         /** Equal balancing, once leaders stayed put for a second. */
         val BALANCING: Map<Setting<*>, Any> =

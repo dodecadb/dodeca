@@ -37,11 +37,16 @@ class LeaderMovesTest {
             check(moves.size < 100) { "no end to moves: $moves" }
             moves += move
             view =
-                LeadershipView(
-                    view.databases.map {
-                        if (it.database != move.database) it
-                        else it.copy(leader = move.to, eligible = it.eligible + move.from - move.to)
-                    }
+                view.copy(
+                    databases =
+                        view.databases.map {
+                            if (it.database != move.database) it
+                            else
+                                it.copy(
+                                    leader = move.to,
+                                    eligible = it.eligible + move.from - move.to,
+                                )
+                        }
                 )
         }
     }
@@ -122,6 +127,85 @@ class LeaderMovesTest {
         assertThat(LeaderMoves.balancing(view)?.database).isNotIn(databases[1], databases[2])
     }
 
+    /** [view] where [prioritized] have the priority tag `eu`, which [carriers] carry. */
+    private fun prioritized(
+        view: LeadershipView,
+        prioritized: Collection<DatabaseRef>,
+        carriers: Set<MemberId>,
+    ) =
+        LeadershipView(
+            view.databases.map {
+                if (it.database in prioritized) it.copy(priorityTag = EU) else it
+            },
+            tags =
+                members.associateWith {
+                    if (it in carriers) setOf("other", EU) else setOf("other")
+                },
+        )
+
+    @Test
+    fun `a database with a priority tag goes to an eligible member that carries it, fewest led first`() {
+        val leaders = databases.associateWith { if (it == databases[4]) b else a }
+        val view = prioritized(view(leaders), listOf(databases[1], databases[2]), setOf(b, c))
+
+        assertThat(LeaderMoves.priority(view, a))
+            .isEqualTo(mapOf(databases[1] to listOf(c, b), databases[2] to listOf(c, b)))
+        assertThat(LeaderMoves.priority(view, b)).isEmpty()
+    }
+
+    @Test
+    fun `a leader that carries the priority tag keeps it, as does one no carrier can relieve`() {
+        val leaders = databases.associateWith { if (it == databases[1]) c else a }
+        // c, the only carrier, leads databases[1]; it is down for databases[2].
+        val view =
+            prioritized(view(leaders), listOf(databases[1], databases[2]), setOf(c)).let { view ->
+                view.copy(
+                    databases =
+                        view.databases.map {
+                            if (it.database == databases[2]) it.copy(eligible = setOf(b)) else it
+                        }
+                )
+            }
+
+        assertThat(LeaderMoves.priority(view, c)).isEmpty()
+        assertThat(LeaderMoves.priority(view, a))
+            .isEqualTo(mapOf(databases[2] to emptyList<MemberId>()))
+    }
+
+    @Test
+    fun `balancing never moves a database with a priority tag, but counts it`() {
+        // b leads the four with a priority tag, which it carries; a leads the other four.
+        val tagged = databases.subList(1, 5)
+        val leaders = databases.associateWith { if (it in tagged) b else a }
+
+        val (end, moves) = settle(prioritized(view(leaders), tagged, setOf(b)))
+
+        assertThat(moves).isNotEmpty.allMatch { it.from == a && it.to == c }
+        assertThat(led(end)).isEqualTo(mapOf(a to 2, b to 4, c to 2))
+        assertThat(end.databases.filter { it.database in tagged }).allMatch { it.leader == b }
+    }
+
+    @Test
+    fun `members that carry the priority tag take a database read-only on its leader over first`() {
+        val leaders = databases.associateWith { if (it == databases[2]) c else a }
+        val view =
+            prioritized(view(leaders), listOf(databases[1]), setOf(c)).let { view ->
+                view.copy(
+                    databases =
+                        view.databases.map {
+                            if (it.database == databases[1]) it.copy(writableOnLeader = false)
+                            else it
+                        }
+                )
+            }
+
+        // c leads one more than b, but carries the tag.
+        assertThat(LeaderMoves.readOnly(view, a)).isEqualTo(mapOf(databases[1] to listOf(c, b)))
+        // The read-only rule moves it.
+        assertThat(LeaderMoves.priority(view, a)).isEmpty()
+        assertThat(LeaderMoves.rank(view, listOf(a, b, c), EU)).containsExactly(c, b, a)
+    }
+
     /** What a leader knows of [b], its follower, which last answered [contact] ms ago. */
     private fun progress(commit: Long, match: Long, contact: Long = 50) =
         GroupProgress(
@@ -170,5 +254,9 @@ class LeaderMovesTest {
         val leaders = mapOf(databases[0] to c, databases[1] to c, databases[2] to a)
 
         assertThat(LeaderMoves.rank(view(leaders), listOf(c, a, b))).containsExactly(b, a, c)
+    }
+
+    private companion object {
+        const val EU = "eu"
     }
 }

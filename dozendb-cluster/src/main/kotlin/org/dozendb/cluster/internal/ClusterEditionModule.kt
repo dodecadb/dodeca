@@ -324,6 +324,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 replicationService,
                 directory,
                 strategy = { config.get(ClusterSettings.balancingStrategy) },
+                priorityTag = DatabasePriorityTag.lookup(config),
+                tags = { systemGraph.serverTags() },
                 stabilityDelay = config.get(ClusterSettings.balancingDelay),
                 transferTimeout = electionTimeout.multipliedBy(2),
                 contactLimit = electionTimeout,

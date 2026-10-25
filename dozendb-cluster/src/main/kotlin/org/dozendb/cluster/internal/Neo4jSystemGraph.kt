@@ -143,6 +143,15 @@ internal class Neo4jSystemGraph(
         }
     }
 
+    /** The server tags of each enabled server, from its server record. */
+    fun serverTags(): Map<MemberId, Set<String>> = replication.readingSystem {
+        system().beginTx().use { tx ->
+            ServerRecords.records(tx).entries.associate { (id, record) ->
+                MemberId(id) to record.options.tags.toSet()
+            }
+        }
+    }
+
     /** The id of the database [name], or null if the system graph has none of that name. */
     fun databaseId(name: String): UUID? = replication.readingSystem {
         system().beginTx().use { tx ->
