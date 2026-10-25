@@ -95,6 +95,30 @@ class LeadershipTest {
         return members.associateWith { member -> leaders.count { it == member.cluster.self.id } }
     }
 
+    /**
+     * Moves the leadership of every one of [DATABASES] to [member]: elections after CREATE DATABASE
+     * do not always make the creator the leader.
+     */
+    private fun ClusterHarness.gatherOn(member: ClusterHarness.Member) {
+        for (name in DATABASES) {
+            await atMost
+                Duration.ofSeconds(30) untilAsserted
+                {
+                    val leader = awaitLeader(name)
+                    if (leader != member) {
+                        leader
+                            .replica(name)
+                            .transferLeadership(
+                                member.cluster.self.id,
+                                "a test",
+                                Duration.ofSeconds(5),
+                            )
+                    }
+                    assertThat(awaitLeader(name)).isEqualTo(member)
+                }
+        }
+    }
+
     private fun ClusterHarness.Member.setBalancing(strategy: BalancingStrategy) {
         database(SYSTEM)
             .dependencyResolver
@@ -384,9 +408,10 @@ class LeadershipTest {
         val cluster =
             cluster(settings = mapOf(ClusterSettings.balancingDelay to Duration.ofSeconds(1)))
         cluster.createDatabases()
+        val gatherer = cluster.awaitLeader(SYSTEM)
+        cluster.gatherOn(gatherer)
         val unbalanced = await atMost Duration.ofSeconds(30) untilNotNull { cluster.led() }
-        // The creator leads every database it created.
-        assertThat(unbalanced.values.max()).isGreaterThanOrEqualTo(DATABASES.size - 2)
+        assertThat(unbalanced.getValue(gatherer)).isEqualTo(DATABASES.size)
 
         await during
             Duration.ofSeconds(3) atMost
