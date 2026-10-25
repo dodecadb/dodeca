@@ -321,10 +321,13 @@ newer formats only once the upgrade is finished.
 
 1. On one member at a time: shut it down, replace the DozenDB jar in Neo4j's
    `lib/`, and start it. Before the next member, wait until it has started
-   (Neo4j logs `Started.`) and `CALL dozendb.cluster.status()` on it shows the
-   group of every database with the role `FOLLOWER` or `LEADER`. With one
-   member down at a time, a cluster of three or more members keeps a majority
-   and goes on serving writes.
+   (Neo4j logs `Started.`), `CALL dozendb.cluster.status()` on it shows the
+   group of every database with the role `FOLLOWER` or `LEADER`, and it has
+   caught up with the writes it missed: for each database, its `appliedIndex`
+   is close to the `commitIndex` that `dozendb.cluster.status()` shows on the
+   database's leader. With one member down at a time, a cluster of three or
+   more members keeps a majority and goes on serving writes; a member still
+   catching up counts towards that majority only once it has.
 2. Check that every member runs the new version: `CALL
    dozendb.cluster.members()` shows each member's `dozendbVersion` and the
    `formatLevels` it supports.
