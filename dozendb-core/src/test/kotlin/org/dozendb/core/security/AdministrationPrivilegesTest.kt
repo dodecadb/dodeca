@@ -337,6 +337,34 @@ class AdministrationPrivilegesTest {
     }
 
     @Test
+    fun `lists servers with SHOW SERVERS, and changes them with SERVER MANAGEMENT`() {
+        val id = server.rows("SHOW SERVERS YIELD serverId", database = SYSTEM).single()["serverId"]
+
+        assertThat(alice.refused("SHOW SERVERS", SYSTEM))
+            .startsWith("Permission has not been granted for SHOW SERVERS.")
+
+        grant("GRANT SHOW SERVERS ON DBMS TO r")
+
+        assertThat(alice.values("SHOW SERVERS YIELD serverId", SYSTEM)).containsExactly(id)
+        assertThat(alice.refused("ALTER SERVER '$id' SET OPTIONS {tags: ['eu']}", SYSTEM))
+            .startsWith("Permission has not been granted for SERVER MANAGEMENT.")
+        assertThat(alice.refused("RENAME SERVER '$id' TO 'only'", SYSTEM))
+            .startsWith("Permission has not been granted for SERVER MANAGEMENT.")
+        assertThat(alice.refused("ENABLE SERVER '$id'", SYSTEM))
+            .startsWith("Permission has not been granted for SERVER MANAGEMENT.")
+
+        grant("REVOKE GRANT SHOW SERVERS ON DBMS FROM r")
+        grant("GRANT SERVER MANAGEMENT ON DBMS TO r")
+
+        alice.run("ALTER SERVER '$id' SET OPTIONS {tags: ['eu']}", SYSTEM)
+        alice.run("RENAME SERVER '$id' TO 'only'", SYSTEM)
+        alice.run("ENABLE SERVER 'only' OPTIONS {tags: ['eu']}", SYSTEM)
+        // SERVER MANAGEMENT includes SHOW SERVERS.
+        assertThat(alice.run("SHOW SERVERS YIELD name, tags", SYSTEM))
+            .containsExactly(mapOf("name" to "only", "tags" to listOf("eu")))
+    }
+
+    @Test
     fun `shows the settings SHOW SETTING allows and does not deny`() {
         assertThat(alice.values("SHOW SETTINGS YIELD name")).isEmpty()
 
