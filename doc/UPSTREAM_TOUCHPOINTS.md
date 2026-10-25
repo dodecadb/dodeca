@@ -87,6 +87,18 @@ lists how DozenDB behaves differently.
 | `DozerDbConstraintSemantics`, `ConstraintChecker`, `ConstraintDelegator` | `DozenDbConstraintSemantics` |
 | `DozerDbSettings` | `DozenDbSettings.maxDatabases` |
 
+## Apache Ratis code DozenDB builds on
+
+`consensus-ratis` runs on Apache Ratis 3.3.1 and changes one of its classes.
+After every Ratis upgrade, diff the classes listed here between the old and the
+new Ratis version and carry relevant changes over; `PatchedGrpcLogAppenderTest`
+fails until the copy below is redone, or dropped once Ratis has its fix.
+
+| Ratis class | DozenDB code | How |
+|---|---|---|
+| `GrpcLogAppender`, `GrpcFactory` | `PatchedGrpcLogAppender`, `PatchedGrpcRpcType` | A copy of `GrpcLogAppender`, in its Ratis package for the package-private `GrpcServerProtocolClient`, and formatted as upstream so that it diffs against it; each change starts with a `DozenDB` comment. After a failed request, Ratis gives up on the leader's two streams to the follower without ending them, and one stayed open for each failed request; DozenDB's leader ends them, and their late failures no longer reset the streams in use. `PatchedGrpcRpcType`, set as `raft.rpc.type`, is Ratis' `GrpcFactory` with this appender. |
+| `GrpcServerProtocolService`, `RaftServerProtocolServiceGrpc`, `GrpcUtil.wrapException` | `RefuseClosedGroups`, `RefuseWhileStopping` | gRPC interceptors in front of Ratis' services. `RefuseClosedGroups` answers the appends and snapshot notifications for a group closed on this member, as after an entry failed to apply, before Ratis sees them, with the failure and call id Ratis answers for a closed group: Ratis would log an error for each. `RefuseWhileStopping` takes no requests once the member stops, as Ratis closes its groups before its server. |
+
 ## Neo4j behaviour that single fsync relies on
 
 `SingleFsyncFileSystem` wraps Neo4j's file system instead of changing Neo4j

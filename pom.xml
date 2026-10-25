@@ -211,7 +211,8 @@
   </dependencies>
 
   <build>
-    <!-- Kotlin only. A module that needs Java adds src/main/java with build-helper. -->
+    <!-- Kotlin only. A module that needs Java compiles src/main/java with maven-compiler-plugin,
+         before Kotlin, as consensus-ratis does. -->
     <sourceDirectory>${project.basedir}/src/main/kotlin</sourceDirectory>
     <testSourceDirectory>${project.basedir}/src/test/kotlin</testSourceDirectory>
     <pluginManagement>

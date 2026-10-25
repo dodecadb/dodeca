@@ -1,6 +1,7 @@
 package org.dozendb.consensus.ratis
 
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.nio.file.Path
 import java.time.Duration
@@ -11,11 +12,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import org.apache.ratis.thirdparty.io.grpc.InternalChannelz
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.during
+import org.awaitility.kotlin.until
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.dozendb.consensus.CommitResult
@@ -52,6 +55,19 @@ class RatisConsensusLogTest {
 
     private suspend fun RatisTestCluster.Node.write(text: String): CommitResult =
         consensus.submit(cluster!!.database, text.encodeToByteArray())
+
+    /** The calls of the gRPC server listening on [port], as gRPC's channelz counts them. */
+    private fun serverCalls(port: Int): InternalChannelz.ServerStats =
+        InternalChannelz.instance()
+            .getServers(0, CHANNELZ_PAGE)
+            .also { check(it.end) { "more than $CHANNELZ_PAGE gRPC servers" } }
+            .servers
+            .map { it.stats.get() }
+            .single { server ->
+                server.listenSockets.any {
+                    (it.stats.get().local as InetSocketAddress).port == port
+                }
+            }
 
     /** [machine], failing to apply the entry `poison`. */
     private fun poisoned(machine: ReplicatedStateMachine): ReplicatedStateMachine =
@@ -661,6 +677,37 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a leader ends the streams it gave up on to a member whose group failed`() =
+        runBlocking<Unit> {
+            val cluster = RatisTestCluster(root, 3).also { cluster = it }
+            val broken = cluster.nodes.first()
+            cluster.form { if (it == broken) poisoned(it.machine) else it.machine }
+            cluster.awaitLeader().write("poison")
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(broken.consensus.status(cluster.database).role)
+                        .isEqualTo(Role.Inactive)
+                }
+
+            // The leader keeps trying the broken member, in two new streams each time.
+            val started = serverCalls(broken.port).callsStarted
+            await atMost
+                Duration.ofSeconds(30) until
+                {
+                    serverCalls(broken.port).callsStarted >= started + 20
+                }
+            // Those of its latest try may still be open; the others end.
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    val calls = serverCalls(broken.port)
+                    assertThat(calls.callsStarted - calls.callsSucceeded - calls.callsFailed)
+                        .isLessThanOrEqualTo(2)
+                }
+        }
+
+    @Test
     fun `a detached member keeps storing entries and applies them once attached again`() =
         runBlocking<Unit> {
             val cluster = formCluster()
@@ -914,5 +961,8 @@ class RatisConsensusLogTest {
          * apart.
          */
         val LONG_STOP: Duration = Duration.ofSeconds(25)
+
+        /** gRPC lists this many servers at most at once; it allocates room for as many. */
+        const val CHANNELZ_PAGE = 100
     }
 }

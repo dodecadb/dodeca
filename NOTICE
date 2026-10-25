@@ -15,6 +15,10 @@ DozenDB contains code derived from:
   https://github.com/dozerdb/dozerdb-core), under the GNU General Public
   License version 3 or later. It was ported to Kotlin into DozenDB on
   2026-10-19, see doc/UPSTREAM_TOUCHPOINTS.md.
+- Apache Ratis, Copyright The Apache Software Foundation
+  (https://ratis.apache.org), under the Apache License 2.0:
+  PatchedGrpcLogAppender in consensus-ratis is a changed copy of its
+  GrpcLogAppender, see doc/UPSTREAM_TOUCHPOINTS.md.
 
 Files derived from them keep their copyright notices and state what DozenDB
 changed and when.

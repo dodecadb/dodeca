@@ -19,6 +19,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
+import org.apache.ratis.RaftConfigKeys
 import org.apache.ratis.client.RaftClient
 import org.apache.ratis.client.RaftClientConfigKeys
 import org.apache.ratis.conf.Parameters
@@ -897,6 +898,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     private fun raftProperties(): RaftProperties {
         val properties = RaftProperties()
+        // Ratis' gRPC transport, with a leader that ends the streams it gives up on.
+        RaftConfigKeys.Rpc.setType(properties, PatchedGrpcRpcType())
         RaftServerConfigKeys.setStorageDir(properties, listOf(config.storageDirectory.toFile()))
         GrpcConfigKeys.Server.setHost(properties, config.listenHost.ifEmpty { null })
         GrpcConfigKeys.Server.setPort(properties, config.listenPort)
