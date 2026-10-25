@@ -34,6 +34,7 @@ import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.internal.routing.ConfirmedReferences
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
+import org.dozendb.cluster.internal.topology.ClusterTopologyInfoService
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -59,6 +60,7 @@ import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DefaultSystemGraphInitializer
 import org.neo4j.dbms.database.SystemGraphInitializer
+import org.neo4j.dbms.database.TopologyInfoService
 import org.neo4j.dbms.database.readonly.SystemGraphReadOnlyDatabaseLookupFactory
 import org.neo4j.dbms.database.readonly.SystemGraphReadOnlyListener
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
@@ -153,6 +155,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.MEMBER_STATE to cluster.state.name,
                 MemberMetadata.DATABASES to DatabaseStatesCodec.encode(databaseStates()),
                 MemberMetadata.READ_ONLY_DATABASES to readOnlyHere().joinToString(","),
+                MemberMetadata.LAST_COMMITTED_TRANSACTIONS to
+                    lastCommittedHere().entries.joinToString(",") { "${it.key}=${it.value}" },
                 MemberMetadata.FORMAT_LEVELS to formatLevels.toString(),
                 MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
             ) +
@@ -294,6 +298,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ::databaseStates,
                 logService.getInternalLog(MemberDirectory::class.java),
                 selfReadOnly = ::readOnlyHere,
+                selfLastCommitted = ::lastCommittedHere,
             )
         val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
         balancer =
@@ -404,6 +409,33 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             .filter { checker.isReadOnlyLocally(DatabaseIdFactory.from(it)) }
             .toSet()
     }
+
+    /** The id of the last transaction committed to each database that runs on this member. */
+    private fun lastCommittedHere(): Map<UUID, Long> =
+        databaseRepository
+            .registeredDatabases()
+            .filterValues { it.database().isStarted }
+            .mapNotNull { (id, context) ->
+                val dependencies = context.dependencies()
+                if (!dependencies.containsDependency(TransactionIdStore::class.java))
+                    return@mapNotNull null
+                id.databaseId().uuid() to
+                    dependencies
+                        .resolveDependency(TransactionIdStore::class.java)
+                        .lastCommittedTransactionId
+            }
+            .toMap()
+
+    /** SHOW DATABASES with a row for each member a database runs on, as Neo4j Enterprise has. */
+    override fun createTopologyInfoService(
+        databaseContextProvider: DatabaseContextProvider<*>
+    ): TopologyInfoService =
+        ClusterTopologyInfoService(
+            super.createTopologyInfoService(databaseContextProvider),
+            consensus,
+            systemDatabase,
+            directory,
+        )
 
     /** The base wiring, with the databases following the replicated system graph. */
     override fun createDatabaseContextProvider(

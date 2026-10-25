@@ -7,6 +7,7 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlinx.coroutines.delay
 import org.dozendb.consensus.BulkSource
 import org.dozendb.consensus.CommitResult
 import org.dozendb.consensus.ConsensusLog
@@ -167,6 +168,9 @@ class InMemoryConsensus {
         override val self: Member,
         @Volatile var metadata: Map<String, String>,
     ) : ConsensusLog {
+        /** How long this member takes to answer a probe. */
+        @Volatile var probeDelay: Duration = Duration.ZERO
+
         private val bulkSources = ConcurrentHashMap<String, BulkSource>()
         private var transportUp = false
         private val localState = mutableSetOf<UUID>()
@@ -251,8 +255,13 @@ class InMemoryConsensus {
             synchronized(lock) { transportUp = true }
         }
 
-        override suspend fun probe(address: HostPort): PeerInfo =
-            synchronized(lock) {
+        override suspend fun probe(address: HostPort): PeerInfo {
+            val delay =
+                synchronized(lock) {
+                    members.values.firstOrNull { it.self.raftAddress == address }?.probeDelay
+                }
+            if (delay != null && !delay.isZero) delay(delay.toMillis())
+            return synchronized(lock) {
                 val target =
                     members.values.firstOrNull { it.self.raftAddress == address && it.transportUp }
                         ?: throw ConsensusUnavailableException("no member reachable at $address")
@@ -262,6 +271,7 @@ class InMemoryConsensus {
                     target.localState.associateWith { groups.getValue(it).members },
                 )
             }
+        }
 
         override fun localGroups(): Set<UUID> = synchronized(lock) { localState.toSet() }
 

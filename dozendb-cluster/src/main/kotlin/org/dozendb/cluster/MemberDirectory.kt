@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
@@ -34,6 +35,7 @@ class MemberDirectory(
     private val log: Log,
     private val refreshInterval: Duration = Duration.ofSeconds(10),
     private val selfReadOnly: () -> Set<UUID> = { emptySet() },
+    private val selfLastCommitted: () -> Map<UUID, Long> = { emptyMap() },
 ) {
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
@@ -111,27 +113,66 @@ class MemberDirectory(
             .toSet()
     }
 
+    /**
+     * The id of the last transaction committed to each database on [member]: this member's as they
+     * are now, another's as it last reported them; none if it has not.
+     */
+    fun lastCommitted(member: MemberId): Map<UUID, Long> {
+        if (member == consensus.self.id) return selfLastCommitted()
+        val entries =
+            reports[member]?.get(MemberMetadata.LAST_COMMITTED_TRANSACTIONS) ?: return emptyMap()
+        return entries
+            .split(',')
+            .mapNotNull { entry ->
+                val (id, transaction) =
+                    entry.split('=').takeIf { it.size == 2 } ?: return@mapNotNull null
+                runCatching { UUID.fromString(id.trim()) to transaction.trim().toLong() }
+                    .getOrNull()
+            }
+            .toMap()
+    }
+
     /** Whether [member] answered the latest probe. This member always does. */
     fun answering(member: MemberId): Boolean = member == consensus.self.id || member in answered
 
-    /** Probes every member once and records the addresses they report. */
-    fun refresh() {
+    /**
+     * Probes every member once and records what they report. With [deadline], waits that long at
+     * most: a member that has not answered by then keeps what it reported last and whether it
+     * answered. Returns the members that answered.
+     */
+    fun refresh(deadline: Duration? = null): Set<MemberId> {
         val others = consensus.members(systemDatabase).filter { it.id != consensus.self.id }
         val answers = runBlocking {
             others
                 .map { member ->
-                    async { member to runCatching { consensus.probe(member.raftAddress) } }
+                    async {
+                        member to
+                            runCatching {
+                                if (deadline == null) consensus.probe(member.raftAddress)
+                                else
+                                    withTimeoutOrNull(deadline.toMillis()) {
+                                        consensus.probe(member.raftAddress)
+                                    }
+                            }
+                    }
                 }
                 .awaitAll()
         }
         answered.retainAll(others.map { it.id }.toSet())
+        val answering = mutableSetOf<MemberId>()
+        var late = false
         for ((member, answer) in answers) {
+            if (answer.isSuccess && answer.getOrNull() == null) {
+                late = true
+                continue
+            }
             val peer = answer.getOrNull()?.takeIf { it.member.id == member.id }
             if (peer == null) {
                 answered -= member.id
                 continue
             }
             answered += member.id
+            answering += member.id
             val routing = peer.metadata[MemberMetadata.ROUTING_ADDRESS]
             if (
                 routing !=
@@ -158,7 +199,8 @@ class MemberDirectory(
                 log.info("Member %s serves Bolt at %s", member.id, address)
             }
         }
-        refreshed = true
+        if (!late) refreshed = true
+        return answering
     }
 
     fun start() {

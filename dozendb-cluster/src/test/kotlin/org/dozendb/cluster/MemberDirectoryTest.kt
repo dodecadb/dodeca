@@ -4,6 +4,7 @@ import java.time.Duration
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.entry
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -53,6 +54,29 @@ class MemberDirectoryTest {
     @AfterEach
     fun stop() {
         directory.stop()
+    }
+
+    @Test
+    fun `a refresh with a deadline leaves out a member that answers later, as it was`() {
+        directory.refresh()
+        logs[2].probeDelay = Duration.ofMinutes(1)
+
+        val answered = directory.refresh(Duration.ofMillis(200))
+
+        assertThat(answered).containsExactly(logs[1].self.id)
+        assertThat(directory.answering(logs[2].self.id)).isTrue()
+    }
+
+    @Test
+    fun `last committed transactions are what members report`() {
+        val films = UUID(0, 7)
+        logs[1].metadata +=
+            MemberMetadata.LAST_COMMITTED_TRANSACTIONS to "$films=42,not=a,=,${UUID(0, 8)}"
+
+        directory.refresh()
+
+        assertThat(directory.lastCommitted(logs[1].self.id)).containsExactly(entry(films, 42L))
+        assertThat(directory.lastCommitted(logs[2].self.id)).isEmpty()
     }
 
     @Test

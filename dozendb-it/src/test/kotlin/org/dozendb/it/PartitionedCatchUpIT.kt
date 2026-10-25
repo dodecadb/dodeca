@@ -273,7 +273,14 @@ class PartitionedCatchUpIT {
             Duration.ofMinutes(3) untilAsserted
             {
                 assertThat(userCount(behind)).isEqualTo(userCount(leader))
-                assertThat(behind.run("SHOW DATABASE docs YIELD currentStatus", "system"))
+                assertThat(
+                        behind.run(
+                            "SHOW DATABASE docs YIELD serverID, currentStatus " +
+                                "WHERE serverID = \$self RETURN currentStatus",
+                            "system",
+                            mapOf("self" to behind.memberId()),
+                        )
+                    )
                     .isEqualTo(Outcome.Rows(listOf(mapOf("currentStatus" to "online"))))
             }
         val loginsAfterHealing = logins().filter { it.at > healedAt }

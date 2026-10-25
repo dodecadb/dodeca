@@ -55,10 +55,12 @@ class ForeignStoreTest {
             .lastCommittedTransaction
             .consensusIndex()
 
+    /** What SHOW DATABASE shows of this member's copy of [database]. */
     private fun ClusterHarness.Member.shown(database: String): Map<String, Any?> =
         database("system").executeTransactionally(
-            "SHOW DATABASE $database YIELD currentStatus, statusMessage",
-            emptyMap(),
+            "SHOW DATABASE $database YIELD serverID, currentStatus, statusMessage " +
+                "WHERE serverID = \$self RETURN currentStatus, statusMessage",
+            mapOf("self" to cluster.self.id.uuid.toString()),
         ) {
             it.next().toMap()
         }

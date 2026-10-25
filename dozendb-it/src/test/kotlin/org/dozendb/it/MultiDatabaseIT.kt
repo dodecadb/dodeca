@@ -93,9 +93,10 @@ class MultiDatabaseIT {
     /** The status of [database] as every live member reports it about itself, null if none. */
     private fun statuses(database: String): List<Any?> =
         live().map { member ->
+            val self = member.memberId()
             member
-                .rows("SHOW DATABASES YIELD name, currentStatus", "system")
-                .singleOrNull { it["name"] == database }
+                .rows("SHOW DATABASES YIELD name, serverID, currentStatus", "system")
+                .singleOrNull { it["name"] == database && it["serverID"] == self }
                 ?.get("currentStatus")
         }
 
@@ -243,6 +244,41 @@ class MultiDatabaseIT {
 
         awaitOnline(SERIES)
         awaitCount(SERIES, "Series", 1)
+    }
+
+    /** As Neo4j Enterprise shows a cluster's databases. */
+    @Test
+    @Order(7)
+    fun `SHOW DATABASES lists the copy on every member, the leader's as the writer`() {
+        val addresses = boltPorts.map { "127.0.0.1:$it" }
+        eventually {
+            for (member in members) {
+                val leaders =
+                    member.rows("CALL dozendb.cluster.status()", "system").associate {
+                        it["database"] to it["leader"]
+                    }
+                val copies =
+                    member
+                        .rows(
+                            "SHOW DATABASES YIELD name, address, serverID, writer, currentStatus",
+                            "system",
+                        )
+                        .groupBy { it["name"] }
+                assertThat(copies.keys).describedAs(member.alias).isEqualTo(leaders.keys)
+                for ((name, rows) in copies) {
+                    val described = "$name on ${member.alias}"
+                    assertThat(rows.map { it["address"] })
+                        .describedAs(described)
+                        .containsExactlyInAnyOrderElementsOf(addresses)
+                    assertThat(rows.map { it["currentStatus"] })
+                        .describedAs(described)
+                        .containsOnly("online")
+                    assertThat(rows.filter { it["writer"] == true }.map { it["serverID"] })
+                        .describedAs(described)
+                        .containsExactly(leaders[name])
+                }
+            }
+        }
     }
 
     private companion object {

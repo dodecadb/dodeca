@@ -121,10 +121,12 @@ class DisasterRecoveryTest {
             AWAIT untilAsserted
             {
                 for (member in recovered.members) {
+                    val self = member.cluster.self.id.uuid.toString()
                     val online =
-                        member.rows("SHOW DATABASES YIELD name, currentStatus").associate {
-                            it["name"] to it["currentStatus"]
-                        }
+                        member
+                            .rows("SHOW DATABASES YIELD name, serverID, currentStatus")
+                            .filter { it["serverID"] == self }
+                            .associate { it["name"] to it["currentStatus"] }
                     assertThat(online)
                         .describedAs("$member")
                         .containsEntry("films", "online")

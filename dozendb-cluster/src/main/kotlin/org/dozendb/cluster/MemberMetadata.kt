@@ -39,6 +39,12 @@ object MemberMetadata {
      */
     const val READ_ONLY_DATABASES = "dozendb.readOnlyDatabases"
 
+    /**
+     * The id of the last transaction committed to each database that runs on the member, as
+     * `<database id>=<transaction id>` separated by commas.
+     */
+    const val LAST_COMMITTED_TRANSACTIONS = "dozendb.lastCommittedTransactions"
+
     /** The [FormatLevels] the member's DozenDB version supports. */
     const val FORMAT_LEVELS = "dozendb.formatLevels"
 

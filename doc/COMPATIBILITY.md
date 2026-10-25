@@ -434,6 +434,15 @@ What clustering does not do yet.
   `Neo.ClientError.Cluster.NotALeader`, naming the leader's Bolt address. A
   database that does not run on the member asked, such as a stopped one, is
   routed to that member only. See `OPERATOR_GUIDE.md`, "Writes on any member".
+- **`SHOW DATABASES`** lists, as Neo4j Enterprise does, a row for each member
+  a database runs on, on whichever member it is run: the member's `serverID`,
+  Bolt `address`, `access`, `currentStatus` and `statusMessage`, the role
+  `primary`, and `writer` true only for the leader, while the database is
+  online and writable there. A member that does not answer within a second
+  shows the role and status `unknown`. `lastCommittedTxn` and
+  `replicationLag` are each copy's, the lag counted from the copy with the
+  newest transaction. A standalone server shows one row, as Neo4j Community
+  does.
 - **Linearizable reads** are requested per transaction with the metadata key
   `dozendb.consistency` set to `linearizable`, or for every transaction with
   `dbms.dozendb.reads.default_consistency`. They apply to Bolt clients

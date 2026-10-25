@@ -70,7 +70,7 @@ class ServerSideRoutingTest {
         administer("GRANT IMPERSONATE (alice) ON DBMS TO impersonator")
         administer("GRANT ROLE impersonator TO carol")
         administer("CREATE DATABASE films WAIT")
-        awaitEverywhere("SHOW DATABASES YIELD name WHERE name = 'films' RETURN name", 1)
+        awaitEverywhere("SHOW DATABASES YIELD name WHERE name = 'films' RETURN DISTINCT name", 1)
     }
 
     @AfterAll
@@ -347,9 +347,10 @@ class ServerSideRoutingTest {
             session.run("CREATE USER dave SET PASSWORD 'dave-secret-1' CHANGE REQUIRED").consume()
             session.run("CREATE DATABASE books WAIT").consume()
         }
+        // Every member shows the copy on every member online.
         awaitEverywhere(
             "SHOW DATABASES YIELD name, currentStatus WHERE name = 'books' AND currentStatus = 'online' RETURN name",
-            1,
+            cluster.members.size.toLong(),
         )
         // A user who must change their password changes it through a follower too.
         awaitEverywhere("SHOW USERS YIELD user WHERE user = 'dave' RETURN user", 1)
