@@ -86,10 +86,11 @@ class DatabaseRowsTest {
     }
 
     @Test
-    fun `a member that does not answer has the role and status unknown`() {
+    fun `a member that does not answer has the role and status unknown, and no address`() {
         val rows = rows(listOf(copy(a), copy(b), copy(c, answering = false)))
 
         val c = rows.getValue(c)
+        assertThat(c.boltAddress()).isEmpty()
         assertThat(c.role()).contains("unknown")
         assertThat(c.status()).isEqualTo(DatabaseDetails.STATUS_UNKNOWN)
         assertThat(c.statusMessage()).isEqualTo(DatabaseDetails.STATUS_MESSAGE_UNKNOWN)
@@ -120,7 +121,8 @@ class DatabaseRowsTest {
             listOf(
                 copy(a, lastCommitted = 90),
                 copy(b, lastCommitted = 100),
-                copy(c, answering = false),
+                // What it reported before it stopped answering.
+                copy(c, answering = false, lastCommitted = 120),
             )
 
         val rows = rows(copies, txInfo = true)

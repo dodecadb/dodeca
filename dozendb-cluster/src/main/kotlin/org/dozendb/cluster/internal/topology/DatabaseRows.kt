@@ -30,10 +30,10 @@ internal object DatabaseRows {
     /**
      * A row for each of [copies]: the member's Bolt address, access and status, and `writer` true
      * only for the [leader], if the database is online and writable there. A member that does not
-     * answer has the role and status `unknown`. With [txInfo], each row has the copy's last
-     * transaction id and how far it is behind the newest copy's. The values that belong to the
-     * database itself, such as its type and store, are those of [own], Neo4j Community's row for
-     * this member.
+     * answer has the role and status `unknown`, and no address, as in Neo4j Enterprise. With
+     * [txInfo], each row of a member that answers has the copy's last transaction id and how far it
+     * is behind the newest copy's. The values that belong to the database itself, such as its type
+     * and store, are those of [own], Neo4j Community's row for this member.
      */
     fun rows(
         own: DatabaseDetails,
@@ -44,7 +44,8 @@ internal object DatabaseRows {
         val online = copies.count {
             it.answering && it.state?.status == DatabaseState.Status.ONLINE
         }
-        val newest = copies.mapNotNull { it.lastCommittedTxId }.maxOrNull()
+        // What a member that does not answer reported last is not its copy now.
+        val newest = copies.filter { it.answering }.mapNotNull { it.lastCommittedTxId }.maxOrNull()
         return copies.map { copy ->
             val status =
                 when {
@@ -59,11 +60,11 @@ internal object DatabaseRows {
                         copy.state.failure.orEmpty()
                     else -> ""
                 }
-            val lastCommitted = copy.lastCommittedTxId.takeIf { txInfo }
+            val lastCommitted = copy.lastCommittedTxId.takeIf { txInfo && copy.answering }
             DatabaseDetails(
                 Optional.of(ServerId(copy.member.uuid)),
                 if (copy.readOnly) DatabaseAccess.READ_ONLY else DatabaseAccess.READ_WRITE,
-                Optional.ofNullable(copy.boltAddress),
+                Optional.ofNullable(copy.boltAddress.takeIf { copy.answering }),
                 Optional.of(if (copy.answering) DatabaseDetails.ROLE_PRIMARY else UNKNOWN_ROLE),
                 copy.member == leader && status == ONLINE && !copy.readOnly,
                 status,
