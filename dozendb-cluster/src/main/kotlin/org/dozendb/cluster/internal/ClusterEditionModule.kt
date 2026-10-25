@@ -486,6 +486,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 defaultDatabase,
                 ::copySources,
                 { consensus.membership(systemDatabase).takeIf { it.settled }?.members },
+                { directory.answering(it) },
                 { cluster.state == MemberState.REMOVED },
                 globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
             )

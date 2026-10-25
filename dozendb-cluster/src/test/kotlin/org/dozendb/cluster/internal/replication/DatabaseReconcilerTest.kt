@@ -24,6 +24,7 @@ class DatabaseReconcilerTest {
     /** The settled members of the system group, null while they change. */
     private var systemMembers: List<Member>? = members
     private var removed = false
+    private var answering: (MemberId) -> Boolean = { true }
     private val reconciler =
         DatabaseReconciler(
             graph,
@@ -34,6 +35,7 @@ class DatabaseReconcilerTest {
                 listOf(if (it == creator) creatorAddress else otherAddress, otherAddress).distinct()
             },
             { systemMembers },
+            { answering(it) },
             { removed },
             NullLog.getInstance(),
         )
@@ -348,8 +350,53 @@ class DatabaseReconcilerTest {
     }
 
     @Test
+    fun `a new database's group starts with the members that host databases`() {
+        val free = Member(MemberId(UUID.randomUUID()), HostPort("free", 7000))
+        systemMembers = members + free
+        graph.free = setOf(free.id)
+        graph.leading = true
+        graph.databases = listOf(desired(films))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).containsExactly(films to self)
+        assertThat(graph.initialMembers).containsExactly(members)
+    }
+
+    @Test
+    fun `a Free system leader names a member that hosts databases and answers the creator`() {
+        // Ahead of the creator by id, but it does not answer.
+        val silent =
+            Member(MemberId(UUID(Long.MIN_VALUE, Long.MIN_VALUE)), HostPort("silent", 7000))
+        systemMembers = members + silent
+        answering = { it != silent.id }
+        graph.free = setOf(self)
+        graph.leading = true
+        graph.databases = listOf(desired(films), desired(database(DEFAULT)))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).containsExactly(films to creator)
+        assertThat(graph.initialMembers).containsExactly(listOf(members[1], silent))
+        assertThat(local.registered).isEmpty()
+    }
+
+    @Test
+    fun `a designated seeder that is Free is not named the creator`() {
+        val free = Member(MemberId(UUID.randomUUID()), HostPort("free", 7000))
+        systemMembers = members + free
+        graph.free = setOf(free.id)
+        graph.leading = true
+        graph.databases = listOf(desired(films, designatedSeeder = free.id))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).isEmpty()
+    }
+
+    @Test
     fun `a Free server creates and copies no database`() {
-        graph.hosts = false
+        graph.free = setOf(self)
         graph.databases = listOf(desired(database(DEFAULT)), desired(films, creator = self))
 
         assertThat(reconciler.reconcile()).isFalse()
@@ -376,13 +423,14 @@ class DatabaseReconcilerTest {
         var whenConfirmed: List<DesiredDatabase>? = null
         var reachable = true
         var leading = false
-        var hosts = true
+        /** The members that host only `system`. */
+        var free = emptySet<MemberId>()
         val named = mutableListOf<Pair<NamedDatabaseId, MemberId>>()
         val initialMembers = mutableListOf<List<Member>>()
 
         override fun databases(): List<DesiredDatabase> = databases
 
-        override fun hosts(member: MemberId): Boolean = hosts
+        override fun hosts(member: MemberId): Boolean = member !in free
 
         override fun awaitCurrent(): Boolean {
             if (!reachable) return false

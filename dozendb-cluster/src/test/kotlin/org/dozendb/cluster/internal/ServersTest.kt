@@ -8,6 +8,8 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.cluster.internal.replication.ReplicatedDatabase
+import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerRecord
@@ -77,6 +79,25 @@ class ServersTest {
     /** The row of [server] in SHOW SERVERS YIELD *, as this member shows it. */
     private fun ClusterHarness.Member.server(server: ClusterHarness.Member): Map<String, Any?> =
         showServers().single { it["serverId"] == server.serverId }
+
+    /** The ids of the members of the Raft group of [database], as this member knows them. */
+    private fun ClusterHarness.Member.groupMembers(database: String): List<*>? =
+        database(SYSTEM).executeTransactionally(
+            "CALL dozendb.cluster.status() YIELD database, members",
+            emptyMap(),
+        ) { result ->
+            result.asSequence().firstOrNull { it["database"] == database }?.get("members")
+                as List<*>?
+        }
+
+    private fun ClusterHarness.Member.replica(name: String): ReplicatedDatabase {
+        val database = database(name)
+        return checkNotNull(
+            database.dependencyResolver
+                .resolveDependency(ReplicationService::class.java)
+                .replica(database.databaseId())
+        )
+    }
 
     /** The databases whose Raft group runs on this member. */
     private val ClusterHarness.Member.hosted: List<String>
@@ -217,6 +238,36 @@ class ServersTest {
         eventually { assertThat(leader.server(joining)["tags"]).isEqualTo(listOf("given")) }
         assertThat(catchThrowable { cluster.administer("ENABLE SERVER 'nobody'") })
             .hasMessageContaining("nobody")
+    }
+
+    @Test
+    fun `a database created while a Free server leads system starts on the enabled servers`() {
+        val cluster = cluster()
+        val enabled = cluster.members.take(3)
+        val free = cluster.admit()
+        eventually { assertThat(free.server(free)["state"]).isEqualTo("Free") }
+
+        // Elections, and balancing, can give a Free server the leadership of system.
+        eventually {
+            val leader = cluster.awaitLeader(SYSTEM)
+            if (leader != free) {
+                leader
+                    .replica(SYSTEM)
+                    .transferLeadership(free.cluster.self.id, "a test", Duration.ofSeconds(5))
+            }
+            assertThat(cluster.awaitLeader(SYSTEM)).isEqualTo(free)
+        }
+        free.database(SYSTEM).executeTransactionally("CREATE DATABASE films")
+
+        eventually {
+            for (member in enabled) {
+                assertThat(member.hosted).describedAs("on $member").contains("films")
+                assertThat(member.groupMembers("films"))
+                    .describedAs("on $member")
+                    .containsExactlyInAnyOrderElementsOf(enabled.map { it.serverId })
+            }
+        }
+        assertThat(free.hosted).containsExactly(SYSTEM)
     }
 
     @Test

@@ -116,14 +116,15 @@ internal interface LocalDatabases {
  * whichever member ran it.
  *
  * The store of a new database is created by one member, its creator, and copied by every other
- * member. The system leader names itself the creator of a database without one, in a replicated
- * system transaction, before it creates the store: so the creator survives restarts and leader
- * changes, and no two members create the same database. The same transaction records the initial
- * members of the database's group, the settled members of the `system` group: every member that
- * creates the group without local state uses them, so that no two members bootstrap it differently
- * while the membership changes. A member creates a store only as the creator, and only if it has no
- * Raft group for the database yet; otherwise it copies the store. Stores are created and copied
- * while their database is online.
+ * member. The system leader names itself the creator of a database without one, or, if it is a Free
+ * server, a member that hosts databases, in a replicated system transaction, before the store is
+ * created: so the creator survives restarts and leader changes, and no two members create the same
+ * database. The same transaction records the initial members of the database's group, the settled
+ * members of the `system` group that host databases: every member that creates the group without
+ * local state uses them, so that no two members bootstrap it differently while the membership
+ * changes. A member creates a store only as the creator, and only if it has no Raft group for the
+ * database yet; otherwise it copies the store. Stores are created and copied while their database
+ * is online.
  *
  * A local store counts only together with the Raft group of its database. A store without one is a
  * leftover: of a database dropped while this member was down that has the same name, or of a copy
@@ -148,6 +149,7 @@ internal interface LocalDatabases {
  *   it has one.
  * @property systemMembers the members of the `system` group, or null while a change of them is not
  *   settled.
+ * @property answering whether a member answers this one.
  * @property removed whether this member was removed from the cluster.
  */
 internal class DatabaseReconciler(
@@ -157,6 +159,7 @@ internal class DatabaseReconciler(
     private val defaultDatabase: String,
     private val sources: (creator: MemberId?) -> List<HostPort>,
     private val systemMembers: () -> List<Member>?,
+    private val answering: (MemberId) -> Boolean,
     private val removed: () -> Boolean,
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
@@ -320,8 +323,19 @@ internal class DatabaseReconciler(
         when {
             state == null ->
                 return when {
-                    // A Free server creates nothing.
-                    !systemGraph.hosts(self) -> true
+                    // A Free server creates nothing; as the system leader, it names creators.
+                    !systemGraph.hosts(self) ->
+                        if (
+                            database.online &&
+                                database.creator == null &&
+                                id.name() != defaultDatabase &&
+                                systemGraph.leading()
+                        ) {
+                            nameCreator(id, database.designatedSeeder)
+                            false
+                        } else {
+                            true
+                        }
                     // One that started without it, Free then, copies it; it is never replaced.
                     id.name() == defaultDatabase ->
                         databases.registered().keys.any { it.name() == defaultDatabase } ||
@@ -378,7 +392,7 @@ internal class DatabaseReconciler(
             creator == null && id.name() == defaultDatabase -> copyFromCluster(id, null)
             creator == null -> {
                 // The creator is named in a system transaction, which reconciles again.
-                if (systemGraph.leading()) nameCreator(id, database.designatedSeeder ?: self)
+                if (systemGraph.leading()) nameCreator(id, database.designatedSeeder)
                 false
             }
             creator == self && id.uuid !in databases.groups() -> {
@@ -389,23 +403,39 @@ internal class DatabaseReconciler(
         }
     }
 
-    private fun nameCreator(id: NamedDatabaseId, creator: MemberId) {
+    /**
+     * Names the creator of [id]: [designated] if given, else this member, or, on a Free server, a
+     * member that hosts databases, those that answer first, then by id.
+     */
+    private fun nameCreator(id: NamedDatabaseId, designated: MemberId?) {
         val members = systemMembers()
         if (members == null) {
             log.info("Naming the creator of %s waits until the change of members settles", id)
             return
         }
+        val hosting = members.filter { systemGraph.hosts(it.id) }
+        val creator =
+            designated
+                ?: self.takeIf { systemGraph.hosts(it) }
+                ?: hosting
+                    .sortedWith(compareBy<Member> { !answering(it.id) }.thenBy { it.id })
+                    .firstOrNull()
+                    ?.id
+        if (creator == null) {
+            log.warn("Naming the creator of %s waits until a member hosts databases", id)
+            return
+        }
         // It starts the database's group, so it must be one of its initial members.
-        if (members.none { it.id == creator }) {
+        if (hosting.none { it.id == creator }) {
             log.warn(
-                "Naming %s the creator of %s waits until it is a member of the cluster",
+                "Naming %s the creator of %s waits until it is an enabled member of the cluster",
                 creator,
                 id,
             )
             return
         }
         try {
-            systemGraph.nameCreator(id, creator, members)
+            systemGraph.nameCreator(id, creator, hosting)
         } catch (e: InterruptedException) {
             throw e
         } catch (e: Exception) {
