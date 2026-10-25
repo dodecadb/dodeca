@@ -137,6 +137,8 @@ class AdministrationPlansTest {
                 "DoNothingIfDatabaseNotExists",
                 "AssertNotBlockedDropAlias",
                 "AssertNotBlockedRemoteAliasManagement",
+                // Servers
+                "ShowServers",
             )
 
         /** Planned by Community's runtime, which DozenDB's falls back to. */
@@ -155,19 +157,19 @@ class AdministrationPlansTest {
                 "ShowDatabase",
             )
 
-        const val SERVERS = "the dozendb.cluster procedures manage the servers"
+        const val NOT_YET = "not implemented yet"
+        const val PLACEMENT = "every enabled server hosts every database: none moves off one"
 
         /** Planned by neither, so they fail as they do in Community: why. */
         val REFUSED =
             mapOf(
                 "EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it",
-                "EnableServer" to SERVERS,
-                "AlterServer" to SERVERS,
-                "RenameServer" to SERVERS,
-                "DropServer" to SERVERS,
-                "ShowServers" to SERVERS,
-                "DeallocateServer" to SERVERS,
-                "ReallocateDatabases" to SERVERS,
+                "EnableServer" to NOT_YET,
+                "AlterServer" to NOT_YET,
+                "RenameServer" to NOT_YET,
+                "DropServer" to PLACEMENT,
+                "DeallocateServer" to PLACEMENT,
+                "ReallocateDatabases" to PLACEMENT,
                 "AlterDatabase" to
                     "databases are read-write, on every member, with the options they were " +
                         "created with",
@@ -180,7 +182,6 @@ class AdministrationPlansTest {
                 "ALTER SERVER 'one' SET OPTIONS {modeConstraint: 'NONE'}",
                 "RENAME SERVER 'one' TO 'two'",
                 "DROP SERVER 'one'",
-                "SHOW SERVERS",
                 "DEALLOCATE DATABASES FROM SERVER 'one'",
                 "REALLOCATE DATABASES",
                 "ALTER DATABASE neo4j SET ACCESS READ ONLY",

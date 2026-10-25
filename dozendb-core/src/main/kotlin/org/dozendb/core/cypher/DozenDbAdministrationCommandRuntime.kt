@@ -137,8 +137,9 @@ internal fun notSupported(feature: String): ErrorGqlStatusObject =
 
 /**
  * Neo4j Community's administration commands, plus CREATE, DROP, START and STOP DATABASE, the role
- * commands and the alias commands, which Community leaves to Neo4j Enterprise. The database
- * commands only change `Database` nodes in `system`; the databases themselves follow those nodes.
+ * commands, the alias commands and the server commands, which Community leaves to Neo4j Enterprise.
+ * The database commands only change `Database` nodes in `system`; the databases themselves follow
+ * those nodes.
  */
 internal class DozenDbAdministrationCommandRuntime
 private constructor(
@@ -151,6 +152,7 @@ private constructor(
     private val showPrivilegeCommands: ShowPrivilegeCommands,
     private val aliasCommands: AliasCommands,
     private val remoteAliasCommands: RemoteAliasCommands,
+    private val serverCommands: ServerCommands,
     private val nameChecks: DatabaseNameChecks,
 ) :
     CommunityAdministrationCommandRuntime(
@@ -163,6 +165,7 @@ private constructor(
             .orElse(showPrivilegeCommands)
             .orElse(aliasCommands)
             .orElse(remoteAliasCommands)
+            .orElse(serverCommands)
             .orElse(nameChecks),
     ) {
     constructor(
@@ -178,6 +181,7 @@ private constructor(
         ShowPrivilegeCommands(engine, dependencies),
         AliasCommands(engine, dependencies),
         RemoteAliasCommands(engine, dependencies),
+        ServerCommands(engine, dependencies),
         DatabaseNameChecks(engine, dependencies),
     )
 
@@ -191,6 +195,7 @@ private constructor(
             .orElse(showPrivilegeCommands)
             .orElse(aliasCommands)
             .orElse(remoteAliasCommands)
+            .orElse(serverCommands)
             .orElse(nameChecks)
             .orElse(logicalToExecutable())
 
@@ -202,6 +207,7 @@ private constructor(
         showPrivilegeCommands.compile = ::compile
         aliasCommands.compile = ::compile
         remoteAliasCommands.compile = ::compile
+        serverCommands.compile = ::compile
         nameChecks.compile = ::compile
     }
 
@@ -227,6 +233,7 @@ private constructor(
             showPrivilegeCommands.isDefinedAt(command) ||
             aliasCommands.isDefinedAt(command) ||
             remoteAliasCommands.isDefinedAt(command) ||
+            serverCommands.isDefinedAt(command) ||
             nameChecks.isDefinedAt(command) ||
             super.isApplicableAdministrationCommand(logicalPlan)
     }

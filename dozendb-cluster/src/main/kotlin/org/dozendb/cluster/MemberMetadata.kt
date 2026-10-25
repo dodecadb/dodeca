@@ -21,6 +21,18 @@ object MemberMetadata {
      */
     const val ROUTING_ADDRESS = "dozendb.routingAddress"
 
+    /** The member's advertised HTTP address, for SHOW SERVERS; absent while HTTP is off. */
+    const val HTTP_ADDRESS = "dozendb.httpAddress"
+
+    /** The member's advertised HTTPS address, for SHOW SERVERS; absent while HTTPS is off. */
+    const val HTTPS_ADDRESS = "dozendb.httpsAddress"
+
+    /**
+     * The member's `initial.server.tags`, separated by commas, which tags cannot contain: the tags
+     * its server record takes when it is enabled.
+     */
+    const val INITIAL_SERVER_TAGS = "dozendb.initialServerTags"
+
     /** The member's [MemberState]: whether it waits to join, is a member, or was removed. */
     const val MEMBER_STATE = "dozendb.memberState"
 
@@ -51,4 +63,7 @@ object MemberMetadata {
     /** The cluster's format level, as the member last saw it. */
     const val FORMAT_LEVEL = "dozendb.formatLevel"
     const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
+
+    /** The items of a list reported separated by commas. */
+    fun splitList(value: String): List<String> = value.split(',').filter { it.isNotEmpty() }
 }

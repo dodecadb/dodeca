@@ -142,6 +142,8 @@ class StandaloneIT {
                 "dbms.dozendb.cluster.election_timeout_min",
                 "dbms.dozendb.cluster.election_timeout_max",
                 "dbms.cluster.raft.leader_transfer.balancing_strategy",
+                "initial.dbms.automatically_enable_free_servers",
+                "initial.server.tags",
                 "dbms.dozendb.routing.reads_on_leader",
                 "dbms.dozendb.routing.forward_bolt_writes",
                 "dbms.dozendb.reads.default_consistency",
@@ -193,10 +195,9 @@ class StandaloneIT {
                     "currentStatus, statusMessage, default, home, constituents RETURN * ORDER BY name",
                 "SHOW DEFAULT DATABASE YIELD name, currentStatus",
                 // DozenDB also shows the roles, status and home database, where Community shows
-                // null, and answers SHOW ROLES, SHOW PRIVILEGES and SHOW ALIASES, which Community
-                // refuses.
+                // null, and answers SHOW ROLES, SHOW PRIVILEGES, SHOW ALIASES and SHOW SERVERS,
+                // which Community refuses.
                 "SHOW USERS YIELD user, passwordChangeRequired",
-                "SHOW SERVERS",
                 "SHOW CURRENT USER YIELD user, passwordChangeRequired",
             )
             .forEach { assertSame(it, "system") }

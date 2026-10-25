@@ -45,6 +45,7 @@ import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.DozenDb
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DozenDbEditionModule
@@ -129,6 +130,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
+    private lateinit var servers: ServerReconciler
     private var roles: RolesInitializer? = null
 
     init {
@@ -159,9 +161,17 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     lastCommittedHere().entries.joinToString(",") { "${it.key}=${it.value}" },
                 MemberMetadata.FORMAT_LEVELS to formatLevels.toString(),
                 MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
+                MemberMetadata.INITIAL_SERVER_TAGS to
+                    config.get(DozenDbSettings.initialServerTags).joinToString(","),
             ) +
                 listOfNotNull(
                     boltHostPort()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
+                    httpAddress()?.let {
+                        MemberMetadata.HTTP_ADDRESS to it.toHostPort().toString()
+                    },
+                    httpsAddress()?.let {
+                        MemberMetadata.HTTPS_ADDRESS to it.toHostPort().toString()
+                    },
                     routingHostPort()?.let { MemberMetadata.ROUTING_ADDRESS to it.toString() },
                     replicationService.defaultDatabaseId?.let {
                         MemberMetadata.CLUSTER_ID to it.toString()
@@ -299,6 +309,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 logService.getInternalLog(MemberDirectory::class.java),
                 selfReadOnly = ::readOnlyHere,
                 selfLastCommitted = ::lastCommittedHere,
+                selfReport = metadata,
             )
         val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
         balancer =
@@ -435,6 +446,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             consensus,
             systemDatabase,
             directory,
+            directory::reported,
         )
 
     /** The base wiring, with the databases following the replicated system graph. */
@@ -465,6 +477,18 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 { cluster.state == MemberState.REMOVED },
                 globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
             )
+        servers =
+            ServerReconciler(
+                consensus,
+                systemDatabase,
+                { repository.getSystemDatabaseContext().databaseFacade() },
+                { block -> replication.readingSystem(block) },
+                leading = { replication.systemWritable },
+                current = replication::awaitSystemCurrent,
+                report = directory::reported,
+                autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
+                log = globalModule.logService.getInternalLog(ServerReconciler::class.java),
+            )
         cluster.onRemoved = reconciler::request
         // Transactions applied from Raft fire no transaction event listeners: refresh what the
         // listeners refresh after local commits.
@@ -476,6 +500,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             reconciler.request()
             // A new database may need members added since its initial members were recorded.
             membership.request()
+            servers.request()
             cluster.requestFormatLevelRefresh()
         }
         return provider
@@ -550,11 +575,15 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         // lifecycle above stops them again, as when this one did not run.
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
-                override fun start() = reconciler.start()
+                override fun start() {
+                    reconciler.start()
+                    servers.start()
+                }
 
                 override fun stop() {
                     balancer.stop()
                     roles?.close()
+                    servers.close()
                     reconciler.close()
                 }
             }

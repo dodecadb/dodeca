@@ -4,12 +4,14 @@ import java.nio.file.Path
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.SettingConstraints.min
+import org.neo4j.configuration.SettingConstraints.noDuplicates
 import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BOOL
 import org.neo4j.configuration.SettingValueParsers.INT
 import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SECURE_STRING
 import org.neo4j.configuration.SettingValueParsers.STRING
+import org.neo4j.configuration.SettingValueParsers.listOf
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.string.SecureString
@@ -71,5 +73,18 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val keyName: Setting<String> =
             newBuilder("dbms.security.key.name", STRING, null).dynamic().build()
+
+        @JvmField
+        @field:Description(
+            "The tags of this server, as SHOW SERVERS shows them, used by " +
+                "db.cluster.raft.leader_transfer.priority_tag. They are taken when the server is " +
+                "enabled, at the cluster's first start or by ENABLE SERVER; after that, ALTER " +
+                "SERVER changes them. Tags have no commas and no duplicates. Named like Neo4j " +
+                "Enterprise's setting."
+        )
+        val initialServerTags: Setting<List<String>> =
+            newBuilder("initial.server.tags", listOf(STRING), emptyList())
+                .addConstraint(noDuplicates())
+                .build()
     }
 }

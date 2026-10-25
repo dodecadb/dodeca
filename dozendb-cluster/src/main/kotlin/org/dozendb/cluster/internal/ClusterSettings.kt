@@ -192,6 +192,16 @@ class ClusterSettings : SettingsDeclaration {
                 .build()
 
         @JvmField
+        @field:Description(
+            "Whether a server that joins the cluster is enabled at once, so that databases are " +
+                "placed on it, instead of staying Free until ENABLE SERVER. Taken at the " +
+                "cluster's first start; dbms.cluster.setAutomaticallyEnableFreeServers changes " +
+                "it later. Named like Neo4j Enterprise's setting."
+        )
+        val autoEnableFreeServers: Setting<Boolean> =
+            newBuilder("initial.dbms.automatically_enable_free_servers", BOOL, false).build()
+
+        @JvmField
         @field:Internal
         @field:Description(
             "For tests: how long leaders must have stayed put on every member before balancing " +

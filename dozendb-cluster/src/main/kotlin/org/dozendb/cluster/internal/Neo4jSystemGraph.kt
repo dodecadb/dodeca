@@ -8,6 +8,7 @@ import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.replication.SystemGraph
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.ServerRecords
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.GraphDatabaseService
@@ -88,12 +89,14 @@ internal class Neo4jSystemGraph(
 
     /**
      * Makes [creator] the creator of every database, with [initialMembers] as the initial members
-     * of its group, replacing what another cluster recorded, and returns the databases. Only for
-     * the member that forms a cluster with a system database of its own, before `system`
-     * replicates: it holds the databases' stores, or creates them.
+     * of its group, replacing what another cluster recorded, servers included, which the new
+     * cluster's leader records anew, and returns the databases. Only for the member that forms a
+     * cluster with a system database of its own, before `system` replicates: it holds the
+     * databases' stores, or creates them.
      */
     fun adopt(creator: MemberId, initialMembers: List<Member>): List<NamedDatabaseId> =
         system().beginTx().use { tx ->
+            ServerRecords.deleteAll(tx)
             val members = initialMembers.map { it.toText() }.toTypedArray()
             val databases =
                 tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->

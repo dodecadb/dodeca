@@ -23,8 +23,8 @@ import org.neo4j.logging.Log
  * themselves. Every member reports its advertised addresses and its databases when probed; the
  * directory probes the members of the `system` group periodically, and soon after someone asks for
  * a member it does not know yet. A member that does not answer keeps its last known address and
- * report. This member's own come from [selfBoltAddress], [selfRoutingAddress], [selfDatabases] and
- * [selfReadOnly].
+ * report. This member's own come from [selfBoltAddress], [selfRoutingAddress], [selfDatabases],
+ * [selfReadOnly], [selfLastCommitted] and [selfReport].
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
@@ -36,6 +36,7 @@ class MemberDirectory(
     private val refreshInterval: Duration = Duration.ofSeconds(10),
     private val selfReadOnly: () -> Set<UUID> = { emptySet() },
     private val selfLastCommitted: () -> Map<UUID, Long> = { emptyMap() },
+    private val selfReport: () -> Map<String, String> = { emptyMap() },
 ) {
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
@@ -74,8 +75,12 @@ class MemberDirectory(
         return reported[MemberMetadata.ROUTING_ADDRESS]?.let { parsed(it) }
     }
 
-    /** What [member] reported when it last answered, such as its versions; see [MemberMetadata]. */
-    fun reported(member: MemberId): Map<String, String>? = reports[member]
+    /**
+     * What [member] reported when it last answered, such as its versions, or what this member
+     * reports now; see [MemberMetadata].
+     */
+    fun reported(member: MemberId): Map<String, String>? =
+        if (member == consensus.self.id) selfReport() else reports[member]
 
     /**
      * The members whose copy of the database [id] failed, such as by a panic: this member's as it
