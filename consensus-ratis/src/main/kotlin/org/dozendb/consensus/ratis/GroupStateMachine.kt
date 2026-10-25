@@ -8,6 +8,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import org.apache.ratis.proto.RaftProtos.LogEntryProto
 import org.apache.ratis.proto.RaftProtos.RaftConfigurationProto
 import org.apache.ratis.proto.RaftProtos.RoleInfoProto
 import org.apache.ratis.protocol.ClientId
@@ -133,6 +134,14 @@ internal class GroupStateMachine(
      */
     @Volatile
     var shutDownAsNonMember: Boolean = false
+        private set
+
+    /**
+     * Whether Ratis closed the group on this member, or is about to because an entry failed to
+     * apply. A leader keeps trying such a member as one that is down; see [RefuseClosedGroups].
+     */
+    @Volatile
+    var closed: Boolean = false
         private set
 
     /** Snapshots have no files; Ratis only asks this storage for the latest one. */
@@ -573,8 +582,16 @@ internal class GroupStateMachine(
         return trx
     }
 
-    override fun applyTransaction(trx: TransactionContext): CompletableFuture<Message> {
-        val entry = trx.logEntry
+    override fun applyTransaction(trx: TransactionContext): CompletableFuture<Message> =
+        try {
+            applyEntry(trx.logEntry)
+        } catch (e: Throwable) {
+            // Ratis closes the group once this returns.
+            closed = true
+            throw e
+        }
+
+    private fun applyEntry(entry: LogEntryProto): CompletableFuture<Message> {
         while (true) {
             val attached =
                 stateLock.withLock {
@@ -774,6 +791,7 @@ internal class GroupStateMachine(
     }
 
     override fun close() {
+        closed = true
         release()
         super.close()
         listener.onGroupChanged(groupId)

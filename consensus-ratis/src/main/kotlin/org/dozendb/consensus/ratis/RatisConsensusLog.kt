@@ -167,6 +167,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                     if (GrpcServices.Type.SERVER in types) {
                         builder
                             .intercept(RefuseWhileStopping { stopping })
+                            .intercept(RefuseClosedGroups { stateMachines[it]?.closed == true })
                             .addService(ProbeService.definition(::describeSelf))
                             .addService(BulkService.definition(bulkSources::get, bulkExecutor))
                             // Bulk clients send keep-alive pings to detect dead peers.

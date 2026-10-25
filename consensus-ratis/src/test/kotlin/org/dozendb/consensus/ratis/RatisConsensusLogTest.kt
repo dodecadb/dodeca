@@ -53,6 +53,15 @@ class RatisConsensusLogTest {
     private suspend fun RatisTestCluster.Node.write(text: String): CommitResult =
         consensus.submit(cluster!!.database, text.encodeToByteArray())
 
+    /** [machine], failing to apply the entry `poison`. */
+    private fun poisoned(machine: ReplicatedStateMachine): ReplicatedStateMachine =
+        object : ReplicatedStateMachine by machine {
+            override fun apply(entry: LogEntry): ByteArray {
+                check(entry.payload.decodeToString() != "poison") { "disk on fire" }
+                return machine.apply(entry)
+            }
+        }
+
     @Test
     fun `forms a group and agrees on one leader`() {
         val cluster = formCluster()
@@ -582,14 +591,7 @@ class RatisConsensusLogTest {
         runBlocking<Unit> {
             val cluster = RatisTestCluster(root, 3).also { cluster = it }
             val broken = cluster.nodes.first()
-            val poisoned =
-                object : ReplicatedStateMachine by broken.machine {
-                    override fun apply(entry: LogEntry): ByteArray {
-                        check(entry.payload.decodeToString() != "poison") { "disk on fire" }
-                        return broken.machine.apply(entry)
-                    }
-                }
-            cluster.form { if (it == broken) poisoned else it.machine }
+            cluster.form { if (it == broken) poisoned(it.machine) else it.machine }
             val healthy = cluster.nodes - broken
 
             // Whoever leads, the entry commits on the healthy majority.
@@ -612,6 +614,50 @@ class RatisConsensusLogTest {
                     }
                 }
             assertThat(broken.machine.payloads()).isEmpty()
+        }
+
+    @Test
+    fun `a member whose group failed refuses the leader's requests for it, without logging each`() =
+        runBlocking<Unit> {
+            val cluster = RatisTestCluster(root, 3).also { cluster = it }
+            val broken = cluster.nodes.first()
+            cluster.form { if (it == broken) poisoned(it.machine) else it.machine }
+            cluster.awaitLeader().write("poison")
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(broken.consensus.status(cluster.database).role)
+                        .isEqualTo(Role.Inactive)
+                }
+            val leader = cluster.awaitLeader()
+
+            LogCapture().use { log ->
+                assertThat(leader.write("after")).isInstanceOf(CommitResult.Committed::class.java)
+                // The leader keeps trying the broken member. Each of these lines is of another
+                // call: Ratis logs the first failed append of every 5 s, which it then counts, and
+                // each failed snapshot notification.
+                val tried =
+                    Regex(
+                        " - ${leader.id}@group-\\w+->${broken.id}-\\S+: " +
+                            "Failed (appendEntries|InstallSnapshot): "
+                    )
+                val attempts =
+                    await atMost
+                        Duration.ofSeconds(30) untilNotNull
+                        {
+                            log.lines()
+                                .withIndex()
+                                .filter { tried.containsMatchIn(it.value) }
+                                .takeIf { it.size >= 2 }
+                        }
+                val brokenLogged = Regex(" (WARN|ERROR) \\S+ - ${broken.id}(@group-\\w+)?: ")
+                assertThat(
+                        log.lines()
+                            .subList(attempts[0].index, attempts[1].index)
+                            .filter(brokenLogged::containsMatchIn)
+                    )
+                    .isEmpty()
+            }
         }
 
     @Test
