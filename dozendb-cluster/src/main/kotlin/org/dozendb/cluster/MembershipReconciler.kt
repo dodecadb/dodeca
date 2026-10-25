@@ -93,6 +93,8 @@ class MembershipReconciler(
             try {
                 reconcile()
             } catch (e: Exception) {
+                // Closing interrupts the look in progress.
+                if (!started) return
                 log.error("Making the database groups follow the cluster's members failed", e)
                 true
             }
@@ -227,12 +229,17 @@ class MembershipReconciler(
             false
         }
 
+    /**
+     * Stops reconciling. Waits for a look in progress, which reads the system graph, so that the
+     * system database can stop once this returns.
+     */
     override fun close() {
         started = false
         statusListener?.close()
         statusListener = null
         scheduler.shutdownNow()
         (changes as? ExecutorService)?.shutdownNow()
+        scheduler.awaitTermination(30, TimeUnit.SECONDS)
     }
 
     private companion object {

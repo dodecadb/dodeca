@@ -593,7 +593,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         globalModule.globalLife.add(clusterInitializer)
         registerDefaultDatabaseInitializer(globalModule)
         // Once the system and default databases run; stops before the databases stop, so that a
-        // member that stops makes no balancing moves and does not create roles meanwhile. The
+        // member that stops makes no balancing moves, does not create roles and does not change
+        // database groups meanwhile, and does not read the system graph while it stops. The
         // lifecycle above stops them again, as when this one did not run.
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
@@ -605,6 +606,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 override fun stop() {
                     balancer.stop()
                     roles?.close()
+                    membership.close()
                     servers.close()
                     reconciler.close()
                 }
