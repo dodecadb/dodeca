@@ -79,6 +79,12 @@ import org.neo4j.router.transaction.DatabaseTransactionFactory
  * replicated system graph instead.
  */
 open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionModule(globalModule) {
+    init {
+        // Neo4j sends usage data to udc.neo4j.com unless told not to, and would report this server
+        // as Neo4j Enterprise: DozenDB sends it only when the operator turns it on.
+        globalModule.globalConfig.setIfNotSet(GraphDatabaseSettings.udc_enabled, false)
+    }
+
     protected lateinit var databaseManager: DatabaseManager
         private set
 

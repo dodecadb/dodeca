@@ -82,6 +82,17 @@ class StandaloneIT {
             .containsExactly(mapOf("edition" to "enterprise"))
     }
 
+    /** Neo4j would report this server to udc.neo4j.com as Neo4j Enterprise. */
+    @Test
+    fun `sends Neo4j usage data only when asked`() {
+        val setting =
+            "SHOW SETTINGS YIELD name, value WHERE name = 'dbms.usage_report.enabled' RETURN value"
+        assertThat(community.rows(setting, "system")).containsExactly(mapOf("value" to "true"))
+        assertThat(dozenDb.rows(setting, "system")).containsExactly(mapOf("value" to "false"))
+        assertThat(community.logs).contains("Anonymous Usage Data is being sent to Neo4j")
+        assertThat(dozenDb.logs).doesNotContain("Anonymous Usage Data")
+    }
+
     @Test
     fun `offers Community's procedures and functions, and setConfigValue`() {
         val communityProcedures = names(community, "SHOW PROCEDURES YIELD name")

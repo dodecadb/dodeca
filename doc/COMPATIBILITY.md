@@ -139,6 +139,11 @@ databases, `ALTER DATABASE`, the server commands (`SHOW SERVERS` and the like; t
 `dozendb.cluster` procedures manage members instead), `CREATE DATABASE`
 options other than seeds, topologies, and external authentication.
 
+Neo4j's anonymous usage data (`dbms.usage_report.enabled`), which Neo4j sends
+to udc.neo4j.com unless told not to, is off in DozenDB unless the operator
+turns it on. Turned on, it reports the server as Neo4j Enterprise, as
+`dbms.components()` does.
+
 ## Roles and privileges
 
 DozenDB implements roles and privileges as Neo4j Enterprise's operations
