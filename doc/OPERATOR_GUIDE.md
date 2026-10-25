@@ -4,8 +4,9 @@
 
 The members of a cluster are the voting members of the Raft group of the
 `system` database. Every other database has its own Raft group, whose members
-follow the cluster's: the leader of `system` adds members to each database's
-group and removes them from it until they match.
+follow the cluster's enabled servers (see [Servers](#servers)): the leader of
+`system` adds members to each database's group and removes them from it until
+they match.
 
 Two procedures show the members, on any member:
 
@@ -32,8 +33,8 @@ must be up to remove one.
    its own `server.dozendb.cluster.advertised_address`, and
    `dbms.dozendb.cluster.initial_members` listing the Raft address of at least
    one current member. Its data directory must be empty.
-2. Start it. It copies `system` and the default database from a member, starts
-   them without taking part in the cluster yet, and logs:
+2. Start it. It copies `system` from a member, starts it without taking part
+   in the cluster yet, and logs:
 
    ```
    This member is not part of the cluster yet. To add it, run
@@ -41,15 +42,19 @@ must be up to remove one.
    ```
 
 3. Run that call on any member. It returns once the new member votes in the
-   group of `system`, which brings it up to date first. The new member then
-   copies every other database and joins the database's group; the database's
-   leader brings it up to date before it votes. `dozendb.cluster.members()`
-   shows each database it joined, and routing tables list it for a database
-   once it votes there. Reads and writes go on throughout.
+   group of `system`, which brings it up to date first. The new member is now
+   a Free server: it hosts no other database yet.
+4. Enable it: `ENABLE SERVER '<its id>'`, with the id `SHOW SERVERS` shows
+   (see [Servers](#servers)). It then copies every other database and joins
+   the database's group; the database's leader brings it up to date before it
+   votes. `dozendb.cluster.members()` shows each database it joined, and
+   routing tables list it for a database once it votes there. Reads and writes
+   go on throughout. With servers enabled as they join, this step is not
+   needed.
 
-A database copied by the new member before it is added is not copied again
+`system`, copied by the new member before it is added, is not copied again
 once it is added, unless the cluster discarded the Raft log since. A database
-that is offline while a member is added is joined once it is started again.
+that is offline while a server is enabled is joined once it is started again.
 
 `addMember` refuses a server that is not reachable, runs another Neo4j
 version, still starts, belongs to another cluster (its databases came from
@@ -101,6 +106,82 @@ member starts its copy again from its local state, and catches up with the
 others. Both commands act on every member, so the database is unavailable in
 between. Restarting the member repairs the copy as well, along with its other
 databases.
+
+## Servers
+
+Each member is a server, as in Neo4j Enterprise. `SHOW SERVERS` lists them on
+any member, with Enterprise's columns: `name`, `address` (its Bolt address),
+`state`, `health` and `hosting`, and with `YIELD *` also `serverId`,
+`httpAddress`, `httpsAddress`, `requestedHosting`, `tags`, `allowedDatabases`,
+`deniedDatabases`, `modeConstraint` and `version`. A server's name is its id
+until `RENAME SERVER` gives it another; the server commands take either.
+
+A server is in one of two states:
+
+- **Enabled**: it hosts every database, and its options are recorded in the
+  system graph. The members a cluster forms with are enabled at its first
+  start, each with the tags of its `initial.server.tags`.
+- **Free**: a member added to a running cluster. It votes in the group of
+  `system` and hosts no other database until `ENABLE SERVER` enables it, so
+  clients connected to it find no other database there.
+
+A Free server can lead `system`, as it votes in its group, and balancing gives
+it that leadership readily, since it leads nothing else. Meanwhile the
+databases' groups do not follow changes of the members: a server enabled, or
+a member removed, joins or leaves them only once an enabled server leads
+`system` (`CALL dozendb.cluster.status()` shows its leader). Enable servers
+soon after adding them.
+
+`health` is `Available` while the server answers the member asked, and
+`Unavailable` otherwise; `hosting` lists the databases running on it, none
+while it does not answer, and `requestedHosting` those it should host. A
+standalone server shows itself alone, enabled, and takes `ALTER SERVER` and
+`RENAME SERVER` too.
+
+### Enabling a server
+
+```
+ENABLE SERVER '<name or id>' OPTIONS {tags: ['eu']}
+```
+
+enables a Free server. The options it is not given come from the server's own
+`initial.server.tags`, which the member asks it for: the server must be
+running, unless every option is given. `ENABLE SERVER` on an enabled server
+with the same options changes nothing, and with other options fails:
+`ALTER SERVER` changes them.
+
+With `initial.dbms.automatically_enable_free_servers=true` at the cluster's
+first start, servers that join are enabled at once, with their initial
+options. `CALL dbms.cluster.setAutomaticallyEnableFreeServers(true)` (or
+`false`) changes this later, for the whole cluster.
+
+### Changing a server
+
+```
+ALTER SERVER '<name>' SET OPTIONS {tags: ['eu', 'fast']}
+RENAME SERVER '<name>' TO '<new name>'
+```
+
+`ALTER SERVER` replaces every option of an enabled server: options it is not
+given take their defaults. `RENAME SERVER` gives an enabled server a name that
+no other server has, and that is not another server's id. Both refuse a Free
+server. The options:
+
+- `tags`: strings without duplicates or commas, which name the server for the
+  leader priority (see [Where databases are led](#where-databases-are-led)).
+  Default: none.
+- `modeConstraint`: `NONE`, the default, or `PRIMARY`. `SECONDARY` is refused:
+  every enabled server hosts every database as a primary.
+- `allowedDatabases` and `deniedDatabases`: refused unless empty, for the same
+  reason.
+
+`SHOW SERVERS` needs the privilege `SHOW SERVERS`, and the other server
+commands `SERVER MANAGEMENT`, which includes it; the `admin` role has both.
+`dbms.cluster.setAutomaticallyEnableFreeServers` needs an administrator. Like
+the other administration commands, the server commands run on the leader of
+`system`. `DROP SERVER`, `DEALLOCATE DATABASES FROM SERVER` and
+`REALLOCATE DATABASES` are not supported yet; `dozendb.cluster.removeMember`
+removes a member (see [Removing a member](#removing-a-member)).
 
 ## TLS between members
 
@@ -280,24 +361,38 @@ Leadership moves:
   election of a new cluster's databases. Any member that votes may win.
 - **When a member stops a database it leads**, or stops itself: it hands each
   leadership to the member leading the fewest databases among those where the
-  database runs and is writable, so that a stopping member spreads its
-  leaderships over the others.
+  database runs and is writable, those with the database's priority tag first
+  (below), so that a stopping member spreads its leaderships over the others.
 - **When a database is read-only on the member that leads it**, by
   `server.databases.read_only`, `server.databases.default_to_read_only` or
   `server.databases.writable`, which are dynamic and set per member: the
   member hands the leadership to the member where the database is writable
-  that leads the fewest databases, within a second or two. Meanwhile routing
+  that leads the fewest databases, those with the database's priority tag
+  first, within a second or two. Meanwhile routing
   tables list no writer for the database, so routing drivers wait and retry.
   A database that is read-only on every member keeps its leader, its writes
   fail with `Neo.ClientError.General.WriteOnReadOnlyAccessDatabase`, and the
   leader logs a warning once.
+- **To a member with the database's priority tag**, a server tag that
+  `db.cluster.raft.leader_transfer.priority_tag` names for every database, or
+  `db.cluster.raft.leader_transfer.priority_tag.<database>` for one, in place
+  of the other: a member that leads such a database without the tag hands the
+  leadership, within a second or two, to the member with the tag that leads
+  the fewest databases, among those where the database runs and is writable.
+  This follows tags that `ALTER SERVER` changes. While no member with the tag
+  can take over, as while all are down, the leader keeps the database and
+  logs that once; the leadership moves once one is back and has caught up.
+  The settings are not dynamic; give every member the same. A database whose
+  name contains a dot cannot have a priority tag of its own: Neo4j reads the
+  setting's name only up to the dot, and ignores the setting.
 - **To balance the leaderships**, with
   `dbms.cluster.raft.leader_transfer.balancing_strategy=EQUAL_BALANCING`, the
   default. Once the leaders have stayed put on every member for 10 seconds,
   the member that leads the most databases hands one over to the member that
   leads the fewest, if they lead at least two apart. One move at a time, until
   every member leads as many databases as the others, give or take one; every
-  database counts the same, `system` too. This is how a member that comes
+  database counts the same, `system` too. Databases with a priority tag count
+  but stay where the priority puts them. This is how a member that comes
   back from a restart gets its share again, once it has caught up with the
   writes it missed, and how a new database, which
   starts led by the member that created it (the leader of `system`), finds

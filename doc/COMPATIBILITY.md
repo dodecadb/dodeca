@@ -133,16 +133,43 @@ example, as DozerDB did, so that tools offer what DozenDB adds to Neo4j
 Community, such as many databases. Of what Neo4j Enterprise adds, DozenDB
 supports many databases, property existence, key and type constraints, user
 status and home databases, roles and privileges, impersonation, local and
-remote database aliases, and clustering of its own. It refuses, with an
-error, the other Enterprise features that reach it, such as composite
-databases, `ALTER DATABASE`, the server commands (`SHOW SERVERS` and the like; the
-`dozendb.cluster` procedures manage members instead), `CREATE DATABASE`
-options other than seeds, topologies, and external authentication.
+remote database aliases, the server commands `SHOW SERVERS`, `ENABLE SERVER`,
+`ALTER SERVER` and `RENAME SERVER`, and clustering of its own. It refuses,
+with an error, the other Enterprise features that reach it, such as composite
+databases, `ALTER DATABASE`, `DROP SERVER`, `DEALLOCATE DATABASES` and
+`REALLOCATE DATABASES` (the `dozendb.cluster` procedures add and remove
+members instead), `CREATE DATABASE` options other than seeds, topologies, and
+external authentication.
 
 Neo4j's anonymous usage data (`dbms.usage_report.enabled`), which Neo4j sends
 to udc.neo4j.com unless told not to, is off in DozenDB unless the operator
 turns it on. Turned on, it reports the server as Neo4j Enterprise, as
 `dbms.components()` does.
+
+## Servers
+
+DozenDB shows and changes servers as Neo4j Enterprise documents: `SHOW SERVERS`
+with Enterprise's columns, `ENABLE SERVER`, `ALTER SERVER` and
+`RENAME SERVER`, the states `Free` and `Enabled`, the server options,
+`initial.server.tags`, and `initial.dbms.automatically_enable_free_servers`
+with `dbms.cluster.setAutomaticallyEnableFreeServers`. See `OPERATOR_GUIDE.md`,
+"Servers". Where DozenDB differs:
+
+- Every enabled server hosts every database as a primary, until topologies
+ : `modeConstraint: 'SECONDARY'` and `allowedDatabases` or
+  `deniedDatabases` that are not empty are refused, and the states
+  `Cordoned`, `Deallocating`, `Deallocated` and `Dropped` do not occur.
+- A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
+  a `Free` server votes in the Raft group of `system`.
+- While a `Free` server leads `system`, which elections and balancing can
+  make it do, `ENABLE SERVER` and `dozendb.cluster.removeMember` reach the
+  Raft groups of the databases only once an enabled server leads `system`
+ .
+- Of the `initial.server.*` settings, DozenDB has `initial.server.tags`. The
+  other ones, like any setting DozenDB does not know, fail Neo4j's strict
+  configuration validation.
+- A standalone server lists itself, enabled, and takes `ALTER SERVER` and
+  `RENAME SERVER` too.
 
 ## Roles and privileges
 
@@ -396,10 +423,16 @@ Where Enterprise's documentation says nothing, DozenDB's choices:
   database that is read-only on every member keeps its leader, whose writes
   fail.
 
-Not supported yet: server tags (`initial.server.tags`, the `tags` option of
-`ALTER SERVER`) and leader priority by tag
-(`db.cluster.raft.leader_transfer.priority_tag`). Like any setting DozenDB does
-not know, these fail Neo4j's strict configuration validation.
+A database's priority tag, a server tag that
+`db.cluster.raft.leader_transfer.priority_tag` or
+`db.cluster.raft.leader_transfer.priority_tag.<database>` names, takes its
+leadership to a member with the tag, as in Enterprise, and excludes it from
+balancing. Where Enterprise's documentation says nothing, DozenDB moves the
+leadership to the member with the tag that leads the fewest databases, counts
+a database with a priority tag when it balances the others, and leaves the
+leadership where it is while no member with the tag can take it over. A
+database whose name contains a dot cannot have a priority tag of its own:
+Neo4j reads the setting's name only up to the dot, and ignores the setting.
 
 ## Clustering limitations
 
@@ -410,11 +443,13 @@ What clustering does not do yet.
   `CREATE DATABASE` and the like) run on the leader of `system` and reach every
   member; a follower forwards them there or rejects them, as it does writes
   (below).
-  `CREATE`, `STOP`, `START` and `DROP DATABASE` apply on every member, and a
-  member that was down applies the ones it missed when it returns.
-- **New databases.** The system leader creates the store of a new database and
-  the other members copy it, which takes a moment: until then the database is
-  not available on them. `CREATE DATABASE ... WAIT` returns once it is. Stores
+  `CREATE`, `STOP`, `START` and `DROP DATABASE` apply on every enabled server
+  (see "Servers"), and one that was down applies the ones it missed when it
+  returns.
+- **New databases.** The system leader creates the store of a new database, or
+  names an enabled server to create it if it is a Free server itself, and the
+  other enabled servers copy it, which takes a moment: until then the database
+  is not available on them. `CREATE DATABASE ... WAIT` returns once it is. Stores
   are copied only while a database is online, so a member that lacks a stopped
   database gets it once it is started again. If the creating member fails
   before it created the store, the others wait until it returns.
