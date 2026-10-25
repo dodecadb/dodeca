@@ -25,11 +25,13 @@ import org.neo4j.kernel.impl.transaction.log.files.TransactionLogFilesHelper
  * Neo4j's file system, able to lose power.
  *
  * It records, for every transaction log and checkpoint file, how far it was written and how far the
- * last real force reached. [cut] is the power loss: from that instant writes, truncations, forces,
- * deletions, renames and new files are dropped, so the files stay as they were while the DBMS shuts
- * down. [loseUnforcedWrites] and [loseFirstUnforcedSector] then zero parts of what each log file
- * wrote after its last force: lost tails, holes, torn transactions. Store files keep what was
- * written before the cut, which a power loss may also leave; Neo4j's recovery covers that.
+ * last real force reached. What a file held when it first opened it for writing, as after a restart
+ * or once a synced copy was moved into place, counts as forced; renames and deletions carry the
+ * records along. [cut] is the power loss: from that instant writes, truncations, forces, deletions,
+ * renames and new files are dropped, so the files stay as they were while the DBMS shuts down.
+ * [loseUnforcedWrites] and [loseFirstUnforcedSector] then zero parts of what each log file wrote
+ * after its last force: lost tails, holes, torn transactions. Store files keep what was written
+ * before the cut, which a power loss may also leave; Neo4j's recovery covers that.
  */
 internal class PowerLossFileSystem(
     private val delegate: FileSystemAbstraction = DefaultFileSystemAbstraction()
@@ -152,6 +154,14 @@ internal class PowerLossFileSystem(
         }
     }
 
+    /** The record of a log file not written here yet: what it holds reached the disk. */
+    private fun existing(path: Path): LogFile =
+        LogFile().apply {
+            val size = if (delegate.fileExists(path)) delegate.getFileSize(path) else 0L
+            written = size
+            forced = size
+        }
+
     /** Runs [action] unless the power is off. */
     private inline fun powered(action: () -> Unit) {
         lock.read { if (!cut) action() }
@@ -161,25 +171,47 @@ internal class PowerLossFileSystem(
         if (cut) OutputStream.nullOutputStream() else delegate.openAsOutputStream(fileName, append)
     }
 
-    override fun deleteFile(fileName: Path) = powered { delegate.deleteFile(fileName) }
+    override fun deleteFile(fileName: Path) = powered {
+        delegate.deleteFile(fileName)
+        forget(fileName)
+    }
 
     override fun deleteRecursively(directory: Path) = powered {
         delegate.deleteRecursively(directory)
+        forget(directory)
     }
 
     override fun deleteRecursively(directory: Path, removeFilePredicate: Predicate<Path>) =
         powered {
             delegate.deleteRecursively(directory, removeFilePredicate)
+            logs.keys.removeIf { it.startsWith(directory) && !delegate.fileExists(it) }
         }
 
-    override fun deleteFileOrThrow(file: Path) = powered { delegate.deleteFileOrThrow(file) }
+    override fun deleteFileOrThrow(file: Path) = powered {
+        delegate.deleteFileOrThrow(file)
+        forget(file)
+    }
 
     override fun renameFile(from: Path, to: Path, vararg copyOptions: CopyOption) = powered {
         delegate.renameFile(from, to, *copyOptions)
+        move(from, to)
     }
 
     override fun moveToDirectory(file: Path, toDirectory: Path) = powered {
         delegate.moveToDirectory(file, toDirectory)
+        move(file, toDirectory.resolve(file.fileName))
+    }
+
+    /** Forgets the records of [path] and of the files below it. */
+    private fun forget(path: Path) {
+        logs.keys.removeIf { it.startsWith(path) }
+    }
+
+    /** Moves the records of [from] and of the files below it to [to]. */
+    private fun move(from: Path, to: Path) {
+        for (path in logs.keys.filter { it.startsWith(from) }) {
+            logs.remove(path)?.let { logs[to.resolve(from.relativize(path))] = it }
+        }
     }
 
     override fun copyToDirectory(file: Path, toDirectory: Path) = powered {
@@ -203,7 +235,7 @@ internal class PowerLossFileSystem(
     private inner class Powered(private val path: Path, channel: StoreChannel) :
         DelegatingStoreChannel<StoreChannel>(channel) {
         private val log: LogFile? =
-            if (isLog(path)) logs.computeIfAbsent(path) { LogFile() } else null
+            if (isLog(path)) logs.computeIfAbsent(path) { existing(it) } else null
 
         private fun written(end: Long) {
             log?.let { synchronized(it) { it.written = maxOf(it.written, end) } }
