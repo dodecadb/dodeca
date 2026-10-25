@@ -129,6 +129,12 @@ class LeaderBalancingIT {
         assertThat(writers.awaitTermination(1, TimeUnit.MINUTES)).isTrue()
 
         assertThat(unknown).isEmpty()
+        // Members that stop gracefully, and those still running, log no errors.
+        for (member in members) {
+            assertThat(member.debugLog().lineSequence().filter { " ERROR " in it }.toList())
+                .describedAs("errors in the debug log of ${member.alias}")
+                .isEmpty()
+        }
         for (database in databases) {
             val written = acknowledged.getValue(database)
             assertThat(written).describedAs(database).isNotEmpty()

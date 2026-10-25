@@ -821,6 +821,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         maintenance.shutdownNow()
         stateMachines.values.forEach(GroupStateMachine::release)
         try {
+            raftServer?.let(::stopServing)
             raftServer?.close()
         } finally {
             bulkExecutor.shutdownNow()
@@ -831,6 +832,19 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                     EVENTS_SHUTDOWN_SECONDS,
                 )
             }
+        }
+    }
+
+    /**
+     * Stops taking requests from other members. Ratis closes the groups first and stops taking
+     * requests last, so each append a leader sends meanwhile fails on a closing group and is logged
+     * as an error. To the other members this member is down from now on, as it is about to be.
+     */
+    private fun stopServing(raftServer: RaftServer) {
+        try {
+            raftServer.serverRpc.close()
+        } catch (e: IOException) {
+            log.warn("Closing the Raft connections of this member failed", e)
         }
     }
 
