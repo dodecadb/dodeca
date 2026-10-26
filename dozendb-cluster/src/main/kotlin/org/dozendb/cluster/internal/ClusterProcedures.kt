@@ -126,6 +126,43 @@ class ClusterProcedures {
 
     @Admin
     @SystemProcedure
+    @Procedure(name = "dbms.setDefaultAllocationNumbers", mode = Mode.DBMS)
+    @Description(
+        "Sets the number of primaries and secondaries that a new database has when CREATE " +
+            "DATABASE gives no TOPOLOGY: 1 to 11 primaries, and 0 secondaries, which DozenDB " +
+            "does not support yet. Runs on the leader of the system database, as Neo4j " +
+            "Enterprise's procedure of the same name."
+    )
+    fun setDefaultAllocationNumbers(
+        @Name("primaries") primaries: Long,
+        @Name("secondaries") secondaries: Long,
+    ) {
+        administering { it.setDefaults(primaries, secondaries) }
+    }
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.showTopologyGraphConfig", mode = Mode.DBMS)
+    @Description(
+        "The settings that place databases: the default numbers of primaries and secondaries, " +
+            "the default database, and whether servers that join are enabled at once, as Neo4j " +
+            "Enterprise's procedure of the same name shows them; allocator is always null."
+    )
+    fun showTopologyGraphConfig(): Stream<TopologyGraphConfigRow> {
+        val config = administering { it.topologyGraphConfig() }
+        return Stream.of(
+            TopologyGraphConfigRow(
+                null,
+                config.defaults.primaries.toLong(),
+                config.defaults.secondaries.toLong(),
+                config.defaultDatabase,
+                config.autoEnable,
+            )
+        )
+    }
+
+    @Admin
+    @SystemProcedure
     @Procedure(name = "dbms.cluster.cordonServer", mode = Mode.DBMS)
     @Description(
         "Cordons a server, named by its name or id: it keeps the databases it hosts and takes no " +
@@ -291,6 +328,16 @@ class ClusterProcedures {
         RuntimeException(message, cause), Status.HasStatus {
         override fun status(): Status = Status.Procedure.ProcedureCallFailed
     }
+
+    /** The settings that place databases, in Neo4j Enterprise's columns. */
+    @JvmRecord
+    data class TopologyGraphConfigRow(
+        val allocator: String?,
+        val defaultPrimariesCount: Long,
+        val defaultSecondariesCount: Long,
+        val defaultDatabase: String?,
+        val autoEnableFreeServers: Boolean,
+    )
 
     /** A copy moved, or to be moved, in Neo4j Enterprise's columns. */
     @JvmRecord

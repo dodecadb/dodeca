@@ -566,6 +566,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 leading = { replication.systemWritable },
                 servers = servers(),
                 placement = placement(),
+                defaults =
+                    Placements.Defaults(
+                        globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
+                        0,
+                    ),
             )
         cluster.onRemoved = reconciler::request
         // A copy no longer placed here is deleted once this member leaves the database's group.

@@ -528,6 +528,45 @@ class ServerLifecycleTest {
     }
 
     @Test
+    fun `the default number of primaries can be changed, and new databases take it`() {
+        val cluster = cluster()
+        assertThat(cluster.rows("CALL dbms.showTopologyGraphConfig()"))
+            .containsExactly(
+                mapOf(
+                    "allocator" to null,
+                    "defaultPrimariesCount" to 1L,
+                    "defaultSecondariesCount" to 0L,
+                    "defaultDatabase" to "neo4j",
+                    "autoEnableFreeServers" to true,
+                )
+            )
+
+        cluster.administer("CALL dbms.setDefaultAllocationNumbers(2, 0)")
+        cluster.administer("CREATE DATABASE films WAIT")
+
+        assertThat(cluster.rows("CALL dbms.showTopologyGraphConfig()").single())
+            .containsEntry("defaultPrimariesCount", 2L)
+        eventually { assertThat(cluster.hosts("films")).hasSize(2) }
+        for ((numbers, refusal) in
+            listOf(
+                "0, 0" to "the number of primaries is 0, not 1 to 11",
+                "12, 0" to "the number of primaries is 12, not 1 to 11",
+                "1, 1" to "databases have no secondaries yet",
+            )) {
+            assertThat(
+                    catchThrowable {
+                        cluster.administer("CALL dbms.setDefaultAllocationNumbers($numbers)")
+                    }
+                )
+                .describedAs(numbers)
+                .hasMessageContaining("Could not set the default numbers of copies")
+                .hasMessageContaining(refusal)
+        }
+        assertThat(cluster.rows("CALL dbms.showTopologyGraphConfig()").single())
+            .containsEntry("defaultPrimariesCount", 2L)
+    }
+
+    @Test
     fun `the initial servers take the mode constraint and databases they start with`() {
         val cluster = cluster {
             it.members[0].settings =
