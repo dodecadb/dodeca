@@ -54,6 +54,19 @@ class ServerRecordsTest {
     }
 
     @Test
+    fun `whether joining servers are enabled is the configured choice until one is recorded`() {
+        StandaloneServer(root).use { server ->
+            server.start()
+            val system = server.database(StandaloneServer.SYSTEM)
+            system.beginTx().use { tx ->
+                assertThat(ServerRecords.autoEnable(tx, configured = true)).isTrue()
+                ServerRecords.setAutoEnable(tx, false)
+                assertThat(ServerRecords.autoEnable(tx, configured = true)).isFalse()
+            }
+        }
+    }
+
+    @Test
     fun `a dropped server is no longer recorded, and keeps its address until it is forgotten`() {
         StandaloneServer(root).use { server ->
             server.start()

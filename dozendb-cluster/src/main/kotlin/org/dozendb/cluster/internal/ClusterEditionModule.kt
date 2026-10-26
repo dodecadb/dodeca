@@ -571,6 +571,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
                         0,
                     ),
+                autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
             )
         cluster.onRemoved = reconciler::request
         // A copy no longer placed here is deleted once this member leaves the database's group.

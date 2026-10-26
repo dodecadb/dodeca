@@ -18,6 +18,8 @@ import org.neo4j.graphdb.Transaction
  *
  * @property reading runs a block while the system graph may be read, as catch-up may replace it.
  * @property defaults the default numbers of copies the configuration sets, while none is recorded.
+ * @property autoEnable whether servers that join are enabled at once, as the configuration sets it,
+ *   while that is not recorded.
  */
 @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for most refusals of server commands.
 class ServerAdministration(
@@ -27,6 +29,7 @@ class ServerAdministration(
     private val servers: Servers,
     private val placement: DatabasePlacement,
     private val defaults: Placements.Defaults,
+    private val autoEnable: Boolean,
 ) {
     /** A copy moved, or to be moved, with the names its servers have. */
     data class NamedMove(val move: Move, val fromName: String, val toName: String)
@@ -59,7 +62,7 @@ class ServerAdministration(
                             )
                             ?.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null)
                             as? String,
-                        ServerRecords.autoEnable(tx),
+                        ServerRecords.autoEnable(tx, autoEnable),
                     )
             }
         }

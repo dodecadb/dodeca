@@ -193,7 +193,7 @@ class ServerReconciler(
                     changed = true
                 }
                 val initial = ServerRecords.initialServersEnabled(tx)
-                if (!initial || ServerRecords.autoEnable(tx)) {
+                if (!initial || ServerRecords.autoEnable(tx, autoEnable)) {
                     val (enabled, all) = enable(tx, members, joined = initial)
                     changed = enabled || changed
                     again = !all || again

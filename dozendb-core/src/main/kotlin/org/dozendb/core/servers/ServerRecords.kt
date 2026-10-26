@@ -141,8 +141,12 @@ object ServerRecords {
     fun initialServersEnabled(tx: Transaction): Boolean =
         settings(tx)?.getProperty(INITIAL_ENABLED, false) == true
 
-    /** Whether servers that join are enabled at once. */
-    fun autoEnable(tx: Transaction): Boolean = settings(tx)?.getProperty(AUTO_ENABLE, false) == true
+    /**
+     * Whether servers that join are enabled at once: the [configured] choice, from
+     * `initial.dbms.automatically_enable_free_servers`, until one is recorded.
+     */
+    fun autoEnable(tx: Transaction, configured: Boolean): Boolean =
+        settings(tx)?.getProperty(AUTO_ENABLE, null) as? Boolean ?: configured
 
     /**
      * Records that the initial servers are recorded, with [autoEnable] as the first auto-enable.
