@@ -804,6 +804,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /** Where the copies of databases go: on the servers the allocator chooses. */
     override fun placement(): DatabasePlacement =
         ClusterPlacement(
+            refresh = {
+                try {
+                    directory.refresh(PROBE_DEADLINE)
+                } catch (_: ConsensusUnavailableException) {
+                    // Placed by what the members answered last.
+                }
+            },
             available = { directory.answering(MemberId(it)) },
             recordInitial = { tx -> servers.recordInitial(tx) },
             defaults =

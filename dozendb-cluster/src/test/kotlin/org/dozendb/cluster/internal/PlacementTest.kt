@@ -301,6 +301,34 @@ class PlacementTest {
     }
 
     @Test
+    fun `a server that was down while its copy moved off deletes it when it starts again`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 3 PRIMARIES WAIT")
+        eventually { assertThat(cluster.voters("films")).hasSize(3) }
+        val stopped =
+            cluster.members.first {
+                it != cluster.awaitLeader(SYSTEM) && it != cluster.awaitLeader("films")
+            }
+        val stoppedId = stopped.serverId
+        stopped.stop()
+
+        // A server that does not answer is the first one fewer copies leave.
+        cluster.administer("ALTER DATABASE films SET TOPOLOGY 2 PRIMARIES")
+        eventually { assertThat(cluster.voters("films")).hasSize(2).doesNotContain(stoppedId) }
+        stopped.start()
+
+        eventually {
+            assertThat(stopped.cluster.status().map { it.database.name }).doesNotContain("films")
+            assertThat(Files.exists(stopped.home.resolve("data/databases/films"))).isFalse
+        }
+        // Its group's leader told it that it left, as it asked for votes.
+        assertThat(stopped.home.resolve("logs/debug.log"))
+            .content()
+            .contains("it is placed on other servers, and this member left its group")
+        assertThat(cluster.statuses("films")).containsOnlyKeys(cluster.voters("films"))
+    }
+
+    @Test
     fun `the default database of a new cluster is placed on the default number of servers`() {
         val cluster = cluster(defaultPrimaries = 2)
 

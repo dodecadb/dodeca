@@ -10,16 +10,20 @@ import org.neo4j.graphdb.Transaction
 /**
  * Places databases on the cluster's enabled servers (see `org.dozendb.core.servers.Allocator`), in
  * the system transaction of the command on the `system` leader, under the records' lock, so that
- * placements change one command at a time. Servers that do not answer this member are chosen last.
- * While the servers the cluster started with are not recorded yet, it records them first.
+ * placements change one command at a time. Servers that do not answer this member are chosen last:
+ * it asks them for each command, as SHOW SERVERS does, so that a server that stopped a moment ago
+ * counts as unavailable. While the servers the cluster started with are not recorded yet, it
+ * records them first.
  *
- * @property available whether a server answers this member.
+ * @property refresh asks the servers now, waiting a moment at most.
+ * @property available whether a server answered this member when last asked.
  * @property recordInitial records the initial servers in a transaction, if they are not yet.
  * @property defaults the default numbers of copies the configuration sets, while none is recorded.
  * @property holders the servers that vote in a database's group, as far as known, which a database
  *   not placed yet stays on first.
  */
 internal class ClusterPlacement(
+    private val refresh: () -> Unit,
     private val available: (UUID) -> Boolean,
     private val recordInitial: (Transaction) -> Unit,
     private val defaults: Placements.Defaults,
@@ -54,5 +58,6 @@ internal class ClusterPlacement(
     private fun prepare(tx: Transaction) {
         ServerRecords.lock(tx)
         recordInitial(tx)
+        refresh()
     }
 }
