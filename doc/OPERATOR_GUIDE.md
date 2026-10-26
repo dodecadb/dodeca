@@ -3,10 +3,10 @@
 ## Cluster members
 
 The members of a cluster are the voting members of the Raft group of the
-`system` database. Every other database has its own Raft group, whose members
-follow the cluster's enabled servers (see [Servers](#servers)): the leader of
-`system` adds members to each database's group and removes them from it until
-they match.
+`system` database: every member hosts `system`. Every other database has its
+own Raft group, whose members are the servers the database is placed on (see
+[Placing databases](#placing-databases)): the leader of `system` adds members
+to each database's group and removes them from it until they match.
 
 Two procedures show the members, on any member:
 
@@ -19,11 +19,10 @@ Two procedures show the members, on any member:
   member asked, the member's role, the leader, Raft indexes, and in `members`
   the ids of the members that vote in the database's group.
 
-Changing the members needs an administrator. The calls below work on any
-member and change one member at a time. A change needs a majority of the
-members before it and a majority after it: in a cluster of three, one member
-may be down while another is added or removed, and in a cluster of two both
-must be up to remove one.
+Changing the members needs an administrator, and changes one member at a time.
+A change needs a majority of the members before it and a majority after it: in
+a cluster of three, one member may be down while another is added or dropped,
+and in a cluster of two both must be up to drop one.
 
 ### Adding a member
 
@@ -43,51 +42,74 @@ must be up to remove one.
 
 3. Run that call on any member. It returns once the new member votes in the
    group of `system`, which brings it up to date first. The new member is now
-   a Free server: it hosts no other database yet.
+   a Free server: it hosts no other database.
 4. Enable it: `ENABLE SERVER '<its id>'`, with the id `SHOW SERVERS` shows
-   (see [Servers](#servers)). It then copies every other database and joins
-   the database's group; the database's leader brings it up to date before it
-   votes. `dozendb.cluster.members()` shows each database it joined, and
-   routing tables list it for a database once it votes there. Reads and writes
-   go on throughout. With servers enabled as they join, this step is not
-   needed.
+   (see [Servers](#servers)). As in Neo4j Enterprise, this places no database
+   on it: new databases, topologies that grow and `REALLOCATE DATABASES` do
+   (see [Placing databases](#placing-databases)). For each database placed on
+   it, it copies the database and joins the database's group; the database's
+   leader brings it up to date before it votes. `dozendb.cluster.members()`
+   shows each database it joined, and routing tables list it for a database
+   once it votes there. Reads and writes go on throughout. With servers
+   enabled as they join, this step is not needed.
 
 `system`, copied by the new member before it is added, is not copied again
 once it is added, unless the cluster discarded the Raft log since. A database
-that is offline while a server is enabled is joined once it is started again.
+that is offline when it is placed on the server is copied there once it is
+started again.
 
 `addMember` refuses a server that is not reachable, runs another Neo4j
 version, still starts, belongs to another cluster (its databases came from
-elsewhere) or was removed from this one. A server whose certificate the
+elsewhere) or was dropped from this one. A server whose certificate the
 members do not trust is not reachable: the error says why, for example
 `unable to find valid certification path`.
 
-### Removing a member
+### Dropping a member
 
 ```
-CALL dozendb.cluster.removeMember('<member id>')
+DEALLOCATE DATABASES FROM SERVER '<name>'
+DROP SERVER '<name>'
 ```
 
-with the id `dozendb.cluster.members()` shows. The call returns once the member
-no longer votes in the group of `system`; the member then leaves the group of
-every database, also of offline ones. A member removed while it is down learns
-it when it starts again.
+with the name or id `SHOW SERVERS` shows. `DEALLOCATE DATABASES FROM SERVER`
+moves every copy the server hosts to other servers (see
+[Moving copies](#moving-copies)); it fails, changing nothing, if a copy has
+nowhere to go. Meanwhile the server is `Deallocating`, and once it holds no
+copy, `Deallocated`. `DROP SERVER` then takes it out of the cluster: the leader
+of `system` removes it from the group of `system`. A Free server hosts no
+database, and is dropped at once. A server dropped while it is down learns it
+when it starts again.
 
-A removed member stops its databases, hands over any leadership it held, logs
-an error saying that it was removed, and takes no further part in the cluster.
-Shut it down. It cannot be added again as it is: to bring the server back,
-delete its whole data directory, `data/server_id` included, and start it; it
-then waits to be added as a new member.
+A dropped server stops its databases, logs an error saying that it was
+removed, and takes no further part in the cluster; `SHOW SERVERS` lists it as
+`Dropped` while it still answers. Shut it down. It cannot be added again as it
+is: to bring the server back, delete its whole data directory,
+`data/server_id` included, and start it; it then waits to be added as a new
+member.
+
+`DROP SERVER` refuses an Enabled or Cordoned server, a deallocating one that
+still holds a copy, and the last server. A copy counts as held as long as the
+server votes in the database's group, as far as the leader of `system` knows:
+a server that is down counts with what it last reported, so that a database
+whose only copy is on it is not lost.
 
 ### Replacing a failed member
 
-Remove the failed member, then add its replacement as above. Adding the
-replacement first works as well, at the cost of more members to reach a
-majority while both are in the cluster.
+Add the replacement and enable it, then deallocate the failed server: its
+copies are made again on the other servers, from the copies they hold, and it
+leaves each database's group. Once `SHOW SERVERS` shows it `Deallocated`, drop
+it. Deallocating first works as well, if the other servers can take its
+copies.
+
+A database whose only copy is on the failed server cannot be copied: it stays
+placed where `DEALLOCATE` moved it, without a copy, and the failed server stays
+`Deallocating`. Start the failed server again, or restore the database from a
+backup (see [Restoring a database](#restoring-a-database)). Databases with more
+than one primary avoid this (see [Raising the default](#raising-the-default)).
 
 ### Changing an address
 
-A member's Raft address is part of its membership. To change it, remove the
+A member's Raft address is part of its membership. To change it, drop the
 member, delete its data directory, and add it again with the new address. With
 hostname verification, its certificate must name the new address.
 
@@ -103,9 +125,9 @@ the group is closed on it, once every 5 seconds.
 
 Once the cause is repaired, run `STOP DATABASE` and then `START DATABASE`: the
 member starts its copy again from its local state, and catches up with the
-others. Both commands act on every member, so the database is unavailable in
-between. Restarting the member repairs the copy as well, along with its other
-databases.
+others. Both commands act on every server the database is placed on, so the
+database is unavailable in between. Restarting the member repairs the copy as
+well, along with its other databases.
 
 ## Servers
 
@@ -116,27 +138,33 @@ any member, with Enterprise's columns: `name`, `address` (its Bolt address),
 `deniedDatabases`, `modeConstraint` and `version`. A server's name is its id
 until `RENAME SERVER` gives it another; the server commands take either.
 
-A server is in one of two states:
+A server is in one of these states:
 
-- **Enabled**: it hosts every database, and its options are recorded in the
-  system graph. The members a cluster forms with are enabled at its first
-  start, each with the tags of its `initial.server.tags`.
+- **Enabled**: databases can be placed on it, and its options are recorded in
+  the system graph. The members a cluster forms with are enabled at its first
+  start, each with the options of its `initial.server.*` settings.
 - **Free**: a member added to a running cluster. It votes in the group of
   `system` and hosts no other database until `ENABLE SERVER` enables it, so
   clients connected to it find no other database there.
+- **Cordoned**: an enabled server that keeps the copies it hosts and takes no
+  new ones.
+- **Deallocating**: its copies move to other servers, and it takes no new
+  ones.
+- **Deallocated**: deallocating, and it holds no copy any more: no database is
+  placed on it and it votes in no database's group. It can be dropped.
+- **Dropped**: dropped from the cluster, and still running.
 
-A Free server can lead `system`, as it votes in its group, and balancing gives
-it that leadership readily, since it leads nothing else. Meanwhile the
-databases' groups do not follow changes of the members: a server enabled, or
-a member removed, joins or leaves them only once an enabled server leads
-`system` (`CALL dozendb.cluster.status()` shows its leader). Enable servers
-soon after adding them.
+A Free server can lead `system`, as it votes in its group, and changes the
+databases' groups as any leader of `system` does, through the members that
+vote in them.
 
 `health` is `Available` while the server answers the member asked, and
 `Unavailable` otherwise; `hosting` lists the databases running on it, none
-while it does not answer, and `requestedHosting` those it should host. A
+while it does not answer, and `requestedHosting` those it should host:
+`system`, and the databases placed on it that are requested online. A
 standalone server shows itself alone, enabled, and takes `ALTER SERVER` and
-`RENAME SERVER` too.
+`RENAME SERVER` too; deallocating or dropping it fails, as no other server can
+host its databases.
 
 ### Enabling a server
 
@@ -144,11 +172,13 @@ standalone server shows itself alone, enabled, and takes `ALTER SERVER` and
 ENABLE SERVER '<name or id>' OPTIONS {tags: ['eu']}
 ```
 
-enables a Free server. The options it is not given come from the server's own
-`initial.server.tags`, which the member asks it for: the server must be
-running, unless every option is given. `ENABLE SERVER` on an enabled server
-with the same options changes nothing, and with other options fails:
-`ALTER SERVER` changes them.
+enables a Free server, and a Cordoned one again. The options it is not given
+come from the server's own `initial.server.tags`,
+`initial.server.mode_constraint`, `initial.server.allowed_databases` and
+`initial.server.denied_databases`, which the member asks it for: the server
+must be running, unless every option is given. `ENABLE SERVER` on an enabled
+server with the same options changes nothing, and with other options fails:
+`ALTER SERVER` changes them. It places no database on the server.
 
 With `initial.dbms.automatically_enable_free_servers=true` at the cluster's
 first start, servers that join are enabled at once, with their initial
@@ -163,25 +193,135 @@ RENAME SERVER '<name>' TO '<new name>'
 ```
 
 `ALTER SERVER` replaces every option of an enabled server: options it is not
-given take their defaults. `RENAME SERVER` gives an enabled server a name that
-no other server has, and that is not another server's id. Both refuse a Free
-server. The options:
+given take their defaults. Copies that the new options do not allow move to
+other servers (see [Moving copies](#moving-copies)); if one has nowhere to go,
+`ALTER SERVER` fails and changes nothing. `RENAME SERVER` gives an enabled
+server a name that no other server has, and that is not another server's id.
+Both refuse a Free server. The options:
 
 - `tags`: strings without duplicates or commas, which name the server for the
   leader priority (see [Where databases are led](#where-databases-are-led)).
   Default: none.
-- `modeConstraint`: `NONE`, the default, or `PRIMARY`. `SECONDARY` is refused:
-  every enabled server hosts every database as a primary.
-- `allowedDatabases` and `deniedDatabases`: refused unless empty, for the same
-  reason.
+- `modeConstraint`: `NONE`, the default, or `PRIMARY`: the server hosts
+  primaries. With `SECONDARY` it hosts no primary, and as DozenDB has no
+  secondaries yet, no database but `system`.
+- `allowedDatabases`: if not empty, the only databases placed on the server.
+  `deniedDatabases`: databases not placed on it. Only one of the two can be
+  set. Default: none.
+
+### Cordoning, deallocating and dropping
+
+```
+CALL dbms.cluster.cordonServer('<name>')
+[DRYRUN] DEALLOCATE DATABASES FROM SERVER[S] '<name>'[, '<name>' ...]
+DROP SERVER '<name>'
+```
+
+A cordoned server keeps its copies and takes no new ones until
+`ENABLE SERVER` (or `dbms.cluster.uncordonServer`, which Enterprise
+deprecates) enables it again. `DEALLOCATE DATABASES FROM SERVER` makes servers
+`Deallocating` and moves all their copies away; `DRYRUN` lists the moves and
+changes nothing, with Enterprise's columns `database`, `fromServerName`,
+`fromServerId`, `toServerName`, `toServerId` and `mode`. These procedures move
+copies off servers without changing their state, and return the same rows:
+
+- `dbms.cluster.deallocateDatabaseFromServer(server, database)` and
+  `dbms.cluster.deallocateDatabaseFromServers(servers, database)`: the copies
+  of one database;
+- `dbms.cluster.deallocateNumberOfDatabases(server, number)`: the copies of
+  that many of the server's databases, by name.
+
+Each takes `dryRun` as an optional last argument. Deallocating fails, changing
+nothing, for a database requested offline, which cannot be copied (start it
+first), for one with a majority of its copies on cordoned servers, and when no
+other server can host a copy. See [Dropping a member](#dropping-a-member) for
+`DROP SERVER`.
 
 `SHOW SERVERS` needs the privilege `SHOW SERVERS`, and the other server
 commands `SERVER MANAGEMENT`, which includes it; the `admin` role has both.
-`dbms.cluster.setAutomaticallyEnableFreeServers` needs an administrator. Like
-the other administration commands, the server commands run on the leader of
-`system`. `DROP SERVER`, `DEALLOCATE DATABASES FROM SERVER` and
-`REALLOCATE DATABASES` are not supported yet; `dozendb.cluster.removeMember`
-removes a member (see [Removing a member](#removing-a-member)).
+The procedures need an administrator. Like the other administration commands,
+the server commands run on the leader of `system`.
+
+## Placing databases
+
+Each database but `system` is placed on some of the enabled servers, as in
+Neo4j Enterprise: it has a copy, a primary, on each, and runs in a Raft group
+of those servers. Every server hosts `system`.
+
+```
+CREATE DATABASE films TOPOLOGY 3 PRIMARIES
+ALTER DATABASE films SET TOPOLOGY 2 PRIMARIES
+```
+
+Without `TOPOLOGY`, a new database gets the default number of primaries: 1,
+as in Neo4j Enterprise, or `initial.dbms.default_primaries_count` (1 to 11) at
+the cluster's first start. `CALL dbms.setDefaultAllocationNumbers(3, 0)`
+changes it later, for new databases, and `CALL dbms.showTopologyGraphConfig()`
+shows it. The second number, of secondaries, must be 0: DozenDB has no
+secondaries yet. The default database of a new cluster gets the default number
+of primaries, or as many as there are servers if fewer.
+
+`ALTER DATABASE films SET ACCESS READ ONLY` (or `READ WRITE`) makes a database
+read-only on every server, as in Neo4j Enterprise. `ALTER DATABASE ... SET
+OPTION` is refused.
+
+### Raising the default
+
+A database with one primary has one copy: while its server is down, the
+database is unavailable, and if the server's disk is lost, so is the database,
+apart from its backups. A database with more primaries takes writes while a
+majority of them run: 2 of 3, 3 of 5. In a cluster of three, give databases
+three primaries: set `initial.dbms.default_primaries_count=3` on the initial
+members, or call `dbms.setDefaultAllocationNumbers(3, 0)` before creating
+databases, and give the default database three copies too:
+`ALTER DATABASE neo4j SET TOPOLOGY 3 PRIMARIES`.
+
+### Where copies go
+
+A copy goes to an enabled server, not Cordoned or Deallocating, whose
+`modeConstraint` allows primaries and whose `allowedDatabases` and
+`deniedDatabases` let it host the database; a server hosts at most one copy of
+a database. New copies go to servers that answer first, then to those that host
+the fewest copies, then by id. When a topology shrinks, copies leave servers
+that are cordoned first, then those that do not answer, then those that host
+the most. A command that cannot place every copy fails and changes nothing,
+such as `CREATE DATABASE` with more primaries than servers can host it.
+
+### Moving copies
+
+Copies move when a topology changes, when `ALTER SERVER` options no longer
+allow a copy, and on `DEALLOCATE` and `REALLOCATE`. A move makes the new copy
+first: the new server copies the database from a server that holds it, and
+joins the database's group once it caught up. Only then does the old copy
+leave the group, and is deleted. A copy that leads the database first hands
+the leadership over to one that stays, waiting at most 30 seconds. Reads and
+writes go on throughout. `SHOW DATABASES` lists each copy, with
+`currentStatus`:
+
+- `store copying` on a server that copies the database;
+- `initial` on a server it is placed on that has no copy yet;
+- `deallocating` on a server it moves off, which may still lead it.
+
+`WAIT` waits for the servers a database is placed on, and for a dropped
+database for every server that still holds it.
+
+`REALLOCATE DATABASES` moves copies so that the servers host about as many
+each: first the copies their servers may no longer host, then one at a time
+from a server that hosts the most to one that hosts at least two fewer.
+`DRYRUN REALLOCATE DATABASES` lists the moves and changes nothing.
+`CALL dbms.cluster.reallocateDatabase('films')` evens out the copies of one
+database, and `CALL dbms.cluster.reallocateNumberOfDatabases(5)` makes at most
+5 moves; both take `dryRun` as an optional last argument and return the moves.
+As enabling a server places nothing on it, reallocate to give it copies.
+
+### Clients
+
+Routing tables, from any server, list the servers a database is placed on, so
+`neo4j://` drivers reach them wherever they connect. A transaction that reaches
+a server that does not host its database runs on one that does, when its
+client lets the server route it (see [Writes on any member](#writes-on-any-member)):
+a write on the leader, a read on any server that runs the database. Otherwise
+it fails, saying where to connect.
 
 ## TLS between members
 
@@ -291,7 +431,8 @@ impersonation, metadata and timeout; the results, notifications, errors and
 bookmarks the client gets are the leader's. The leader's query log and
 security log record it, with `dozendb-forwarding/<version>` as the client's
 user agent, and `SHOW TRANSACTIONS` and `TERMINATE TRANSACTION` on the leader
-see it. Read transactions run on the member they reach, and linearizable reads
+see it. Read transactions run on the member they reach if it hosts the
+database (see [Clients](#clients) otherwise), and linearizable reads
 (`COMPATIBILITY.md`) wait where the transaction runs.
 
 ### Requirements
@@ -578,17 +719,17 @@ cat data/scripts/films/restore_metadata.cypher | bin/cypher-shell -d system --pa
 The script only adds what is missing: users that exist keep their passwords,
 status and home database, and running it twice does no harm.
 
-In a cluster, a restored database cannot be put in place on every member by
-hand. Restore it on one member, which prepares it there and prints the command
-that creates the database from it:
+In a cluster, a restored database cannot be put in place on every server that
+hosts it by hand. Restore it on one member, which prepares it there and prints
+the command that creates the database from it:
 
 ```
 CREATE DATABASE films OPTIONS {existingData: 'use', existingDataSeedServer: '<member id>'}
 ```
 
-That member creates the database from the restored files, and the other
-members copy it from that member. Drop a database before restoring it under
-its old name.
+That member, which the database is placed on first, creates it from the
+restored files, and the other servers it is placed on copy it from that
+member. Drop a database before restoring it under its old name.
 
 ### Creating a database from a backup or a dump
 
@@ -599,9 +740,10 @@ a chain, or a dump made with `neo4j-admin database dump`:
 CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 'file:///backups/films-2026-10-21T13-52-10.backup'}
 ```
 
-Without clustering the server reads the seed. In a cluster, one member reads it
-and creates the database, and the others copy it from that member: the leader
-of `system`, or the member that `existingDataSeedServer` names. That member
+Without clustering the server reads the seed. In a cluster, one of the servers
+the database is placed on reads it and creates the database, and the others
+copy it from that server: the one that `existingDataSeedServer` names, which
+the database is placed on first, or else one the cluster chooses. That server
 must be able to read the seed. `dbms.databases.seed_from_uri_providers` lists
 the kinds of seed URIs servers read: `FileSeedProvider` (`file:`, the default)
 and `URLConnectionSeedProvider` (`http:`, `https:` and `ftp:`). A seed that
@@ -617,9 +759,12 @@ database, `system` included, taken with `"*"`:
    every database: `neo4j-admin database restore --from-path=/backups`.
 2. Configure that server and the other members for a new cluster, each with an
    empty data directory but the first, and start them all. The server that
-   holds the restored databases forms the cluster with the others, creates
-   every database that its `system` database lists, and the other members copy
-   them.
+   holds the restored databases forms the cluster with the others and creates
+   every database that its `system` database lists. Each database is placed
+   again on the default number of servers (see
+   [Placing databases](#placing-databases)), that server first, and the other
+   servers copy the databases placed on them. Topologies are not restored:
+   set them again with `ALTER DATABASE ... SET TOPOLOGY`.
 
 Users, roles, privileges and whether each database is online come with
 `system`.

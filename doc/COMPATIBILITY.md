@@ -52,8 +52,9 @@ DozenDB took over the code.
   `START DATABASE $name`, `STOP DATABASE $name` and the embedded
   `DatabaseManagementService` methods work; names with a dot, such as
   `film.archive`, work in every command; `CREATE OR REPLACE DATABASE` also
-  creates a database that does not exist yet; `CREATE COMPOSITE DATABASE`,
-  `CREATE DATABASE ... TOPOLOGY`, `CREATE DATABASE ... OPTIONS` with an
+  creates a database that does not exist yet; `CREATE DATABASE ... TOPOLOGY`
+  places the database (see "Servers"); `CREATE COMPOSITE DATABASE`,
+  `CREATE DATABASE ... OPTIONS` with an
   option other than `existingData`, `seedURI` and, with clustering,
   `existingDataSeedServer` (such as `seedCredentials`, `storeFormat` or a
   misspelt key), and `DROP DATABASE ... DUMP DATA` fail instead of being
@@ -133,13 +134,12 @@ example, as DozerDB did, so that tools offer what DozenDB adds to Neo4j
 Community, such as many databases. Of what Neo4j Enterprise adds, DozenDB
 supports many databases, property existence, key and type constraints, user
 status and home databases, roles and privileges, impersonation, local and
-remote database aliases, the server commands `SHOW SERVERS`, `ENABLE SERVER`,
-`ALTER SERVER` and `RENAME SERVER`, and clustering of its own. It refuses,
-with an error, the other Enterprise features that reach it, such as composite
-databases, `ALTER DATABASE`, `DROP SERVER`, `DEALLOCATE DATABASES` and
-`REALLOCATE DATABASES` (the `dozendb.cluster` procedures add and remove
-members instead), `CREATE DATABASE` options other than seeds, topologies, and
-external authentication.
+remote database aliases, the server commands, databases placed on servers by
+their topologies with `ALTER DATABASE ... SET TOPOLOGY` and `SET ACCESS`, and
+clustering of its own. It refuses, with an error, the other Enterprise
+features that reach it, such as composite databases, secondaries,
+`ALTER DATABASE ... SET OPTION`, `CREATE DATABASE` options other than seeds,
+and external authentication.
 
 Neo4j's anonymous usage data (`dbms.usage_report.enabled`), which Neo4j sends
 to udc.neo4j.com unless told not to, is off in DozenDB unless the operator
@@ -148,28 +148,43 @@ turns it on. Turned on, it reports the server as Neo4j Enterprise, as
 
 ## Servers
 
-DozenDB shows and changes servers as Neo4j Enterprise documents: `SHOW SERVERS`
-with Enterprise's columns, `ENABLE SERVER`, `ALTER SERVER` and
-`RENAME SERVER`, the states `Free` and `Enabled`, the server options,
-`initial.server.tags`, and `initial.dbms.automatically_enable_free_servers`
-with `dbms.cluster.setAutomaticallyEnableFreeServers`. See `OPERATOR_GUIDE.md`,
-"Servers". Where DozenDB differs:
+DozenDB shows and changes servers, and places databases on them, as Neo4j
+Enterprise documents: `SHOW SERVERS` with Enterprise's columns,
+`ENABLE SERVER`, `ALTER SERVER`, `RENAME SERVER`, `[DRYRUN] DEALLOCATE
+DATABASES FROM SERVER[S]`, `[DRYRUN] REALLOCATE DATABASES` and `DROP SERVER`;
+the states `Free`, `Enabled`, `Cordoned`, `Deallocating`, `Deallocated` and
+`Dropped`; the server options; `CREATE DATABASE ... TOPOLOGY` and
+`ALTER DATABASE ... SET TOPOLOGY`, with a default of one primary; the settings
+`initial.server.tags`, `initial.server.mode_constraint`,
+`initial.server.allowed_databases`, `initial.server.denied_databases`,
+`initial.dbms.default_primaries_count` and
+`initial.dbms.automatically_enable_free_servers`; and the procedures
+`dbms.cluster.cordonServer`, `dbms.cluster.uncordonServer`,
+`dbms.cluster.deallocateDatabaseFromServer(s)`,
+`dbms.cluster.deallocateNumberOfDatabases`, `dbms.cluster.reallocateDatabase`,
+`dbms.cluster.reallocateNumberOfDatabases`,
+`dbms.cluster.setAutomaticallyEnableFreeServers`,
+`dbms.setDefaultAllocationNumbers` and `dbms.showTopologyGraphConfig`. See
+`OPERATOR_GUIDE.md`, "Servers" and "Placing databases". Where DozenDB differs:
 
-- Every enabled server hosts every database as a primary, until topologies
- : `modeConstraint: 'SECONDARY'` and `allowedDatabases` or
-  `deniedDatabases` that are not empty are refused, and the states
-  `Cordoned`, `Deallocating`, `Deallocated` and `Dropped` do not occur.
+- No secondaries: a topology has primaries only, the number of secondaries
+  must be 0, and a server with `modeConstraint: 'SECONDARY'` hosts no database
+  but `system`. `initial.dbms.default_secondaries_count`, like any setting
+  DozenDB does not know, fails Neo4j's strict configuration validation.
+- Enterprise refuses to take a database with more than one primary down to
+  one, and to deallocate a server that hosts a database's only primary.
+  DozenDB does both, as every move makes the new copy before it removes the
+  old one.
+- Enterprise does not document where it places copies; DozenDB's placement is
+  deterministic (see `OPERATOR_GUIDE.md`, "Where copies go").
+  `dbms.showTopologyGraphConfig` shows `allocator` as null.
+- `DROP SERVER` also refuses a deallocating server that still votes in a
+  database's Raft group, as the leader of `system` knows it, also while the
+  server is down, so that a database whose only copy is there is not lost.
 - A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
-  a `Free` server votes in the Raft group of `system`.
-- While a `Free` server leads `system`, which elections and balancing can
-  make it do, `ENABLE SERVER` and `dozendb.cluster.removeMember` reach the
-  Raft groups of the databases only once an enabled server leads `system`
- .
-- Of the `initial.server.*` settings, DozenDB has `initial.server.tags`. The
-  other ones, like any setting DozenDB does not know, fail Neo4j's strict
-  configuration validation.
-- A standalone server lists itself, enabled, and takes `ALTER SERVER` and
-  `RENAME SERVER` too.
+  a `Free` server votes in the Raft group of `system`, as every server does.
+- A cluster recovered from backups places its databases again on the default
+  number of servers: their topologies are not restored.
 
 ## Roles and privileges
 
@@ -443,16 +458,16 @@ What clustering does not do yet.
   `CREATE DATABASE` and the like) run on the leader of `system` and reach every
   member; a follower forwards them there or rejects them, as it does writes
   (below).
-  `CREATE`, `STOP`, `START` and `DROP DATABASE` apply on every enabled server
-  (see "Servers"), and one that was down applies the ones it missed when it
-  returns.
-- **New databases.** The system leader creates the store of a new database, or
-  names an enabled server to create it if it is a Free server itself, and the
-  other enabled servers copy it, which takes a moment: until then the database
-  is not available on them. `CREATE DATABASE ... WAIT` returns once it is. Stores
-  are copied only while a database is online, so a member that lacks a stopped
-  database gets it once it is started again. If the creating member fails
-  before it created the store, the others wait until it returns.
+  `CREATE`, `STOP`, `START` and `DROP DATABASE` apply on every server the
+  database is placed on (see "Servers"), and one that was down applies the
+  ones it missed when it returns.
+- **New databases.** One of the servers a new database is placed on creates
+  its store, and the others copy it, which takes a moment: until then the
+  database is not available on them. `CREATE DATABASE ... WAIT` returns once
+  it is. Stores are copied only while a database is online, so a server that
+  lacks a stopped database gets it once it is started again. If the creating
+  server fails before it created the store, the others wait until it returns,
+  and its copies cannot move elsewhere meanwhile.
 - **Default database.** The default database (`initial_default_database`)
   exists from the first start on and cannot be dropped or replaced;
   `STOP DATABASE` and `START DATABASE` apply to it.
@@ -506,11 +521,12 @@ What clustering does not do yet.
   member ends their history in the other cluster's Raft groups with an empty
   transaction, and records itself in `system` as the member that creates
   them, in place of the other cluster's members.
-- **Members.** Members are added with `dozendb.cluster.addMember` and removed
-  with `dozendb.cluster.removeMember`, one at a time; every database's Raft
-  group follows. See `OPERATOR_GUIDE.md`. A removed member cannot rejoin with
-  its data: its data directory must be deleted first. A database that is
-  offline while a member is added gets the member once it is started again.
+- **Members.** Members are added with `dozendb.cluster.addMember`, and
+  dropped with `DEALLOCATE DATABASES FROM SERVER` and `DROP SERVER`, one at a
+  time; the Raft group of each database follows the servers it is placed on.
+  See `OPERATOR_GUIDE.md`. A dropped member cannot rejoin with its data: its
+  data directory must be deleted first. A copy of a database that is offline
+  is made once it is started again.
 - **Upgrades.** DozenDB is upgraded one member at a time, mixing at most two
   versions; formats that the previous version cannot read are used only once
   an administrator calls `dozendb.cluster.finishUpgrade()`, after which no
