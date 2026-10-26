@@ -186,6 +186,9 @@ class ClusterProcedures {
             "on the leader of the system database, as Neo4j Enterprise's procedure of the same " +
             "name."
     )
+    // Neo4j looks for Java's annotation with deprecatedBy, and warns without it.
+    @Suppress("DEPRECATED_JAVA_ANNOTATION")
+    @java.lang.Deprecated
     fun uncordonServer(@Name("server") server: String) {
         administering { it.uncordon(server) }
     }
