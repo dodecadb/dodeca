@@ -58,6 +58,8 @@ class ServerReconciler(
     private val requested = AtomicBoolean(false)
     private var statusListener: AutoCloseable? = null
 
+    @Volatile private var closed = false
+
     // Used on the scheduler thread only.
     private var nextRetryDelay = retryDelay
     private var retry: ScheduledFuture<*>? = null
@@ -85,6 +87,8 @@ class ServerReconciler(
             try {
                 reconcile()
             } catch (e: Exception) {
+                // Closing interrupts the look in progress.
+                if (closed) return
                 log.info("Recording the cluster's servers failed: %s", e.toString())
                 true
             }
@@ -182,8 +186,14 @@ class ServerReconciler(
         return ServerOptions(tags = MemberMetadata.splitList(tags))
     }
 
+    /**
+     * Stops looking. Waits for a look in progress, which reads the system graph, so that the system
+     * database can stop once this returns.
+     */
     override fun close() {
+        closed = true
         statusListener?.close()
         scheduler.shutdownNow()
+        scheduler.awaitTermination(30, TimeUnit.SECONDS)
     }
 }

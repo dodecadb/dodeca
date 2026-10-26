@@ -5,13 +5,9 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
-import kotlin.concurrent.thread
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
-import org.awaitility.kotlin.atMost
-import org.awaitility.kotlin.await
-import org.awaitility.kotlin.until
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.MemberId
@@ -132,38 +128,17 @@ class MembershipReconcilerTest {
     fun `closing waits for a look in progress, and interrupts it quietly`() {
         formCluster()
         val output = ByteArrayOutputStream()
-        val reading = CountDownLatch(1)
-        val interrupted = CountDownLatch(1)
-        val released = CountDownLatch(1)
+        val look = WaitingLook()
         val reconciler =
             reconciler(log = Log4jLogProvider(output).getLog(MembershipReconciler::class.java)) {
-                reading.countDown()
-                // A read of the system graph that fails once interrupted, when the test lets it.
-                try {
-                    CountDownLatch(1).await()
-                } catch (e: InterruptedException) {
-                    interrupted.countDown()
-                    released.await()
-                    throw e
-                }
+                look.read()
                 true
             }
         reconciler.start()
-        assertThat(reading.await(1, TimeUnit.MINUTES)).isTrue()
 
-        val closing = thread { reconciler.close() }
-        assertThat(interrupted.await(1, TimeUnit.MINUTES)).isTrue()
-        // Closing has returned, or waits for the look to end.
-        await atMost
-            Duration.ofMinutes(1) until
-            {
-                !closing.isAlive || closing.state == Thread.State.TIMED_WAITING
-            }
-        val waited = closing.isAlive
-        released.countDown()
-        closing.join()
-
-        assertThat(waited).describedAs("closing waits for the look in progress").isTrue()
+        assertThat(look.closingWaits(reconciler::close))
+            .describedAs("closing waits for the look in progress")
+            .isTrue()
         assertThat(output.toString()).isEmpty()
     }
 
