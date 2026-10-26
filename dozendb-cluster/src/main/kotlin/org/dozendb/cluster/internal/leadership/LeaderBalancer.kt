@@ -30,7 +30,8 @@ import org.neo4j.logging.InternalLog
  * tag and leads the fewest databases; this member checks first that the member answers it and keeps
  * up with its log (see [LeaderMoves.keepsUp]), and hands the leadership over without failing
  * commits under way (see `ReplicatedDatabase.transferLeadership`). It also ranks the members a
- * leadership is handed over to when this member stops applying a database.
+ * leadership is handed over to when this member stops applying a database, by the server tags its
+ * last look read.
  */
 internal class LeaderBalancer(
     private val consensus: ConsensusLog,
@@ -62,6 +63,9 @@ internal class LeaderBalancer(
     private val requested = AtomicBoolean()
 
     @Volatile private var stopped = false
+
+    /** The server tags as the last look read them, for hand-overs. */
+    @Volatile private var lastTags: Map<MemberId, Set<String>> = emptyMap()
 
     /** Databases read-only here that no member could take over, logged once; executor only. */
     private val stuck = mutableSetOf<UUID>()
@@ -113,18 +117,13 @@ internal class LeaderBalancer(
 
     /**
      * The members to hand the leadership of [database] over to, those that could lead it first,
-     * those with its priority tag first among them, fewest led first.
+     * those with its priority tag first among them, fewest led first. The tags are those the last
+     * look read: a hand-over runs while databases stop, `system` among them, and does not read the
+     * system graph. A member with the tag that did not get the leadership gets it at the next look
+     * of the new leader.
      */
     override fun rank(database: DatabaseRef, candidates: List<MemberId>): List<MemberId> {
-        // The handover goes ahead without the tags if the system graph cannot be read.
-        val view = view {
-            try {
-                tags()
-            } catch (e: Exception) {
-                log.warn("Reading the server tags failed", e)
-                emptyMap()
-            }
-        }
+        val view = view { lastTags }
         val leadership = view.databases.firstOrNull { it.database == database }
         return LeaderMoves.rank(
             view,
@@ -133,8 +132,11 @@ internal class LeaderBalancer(
         )
     }
 
-    /** Who leads the databases replicated here and who could, as this member sees it now. */
-    fun view(): LeadershipView = view(tags)
+    /**
+     * Who leads the databases replicated here and who could, as this member sees it now. Keeps the
+     * server tags it reads for hand-overs.
+     */
+    fun view(): LeadershipView = view { tags().also { lastTags = it } }
 
     private fun view(tags: () -> Map<MemberId, Set<String>>): LeadershipView {
         val databases = created().mapNotNull(::leadership)
