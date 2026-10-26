@@ -304,13 +304,15 @@ class ServerReconciler(
     }
 
     /**
-     * Places the databases not placed yet, best effort; returns whether it placed any, and whether
-     * one waits for a member to hold it.
+     * Places the databases not placed yet, best effort, on as many servers as their topology asks
+     * for, or the default number if larger, as a server that formed a cluster with databases of its
+     * own recorded one primary for each; returns whether it placed any, and whether one waits for a
+     * member to hold it.
      */
     private fun placeUnplaced(tx: Transaction): Pair<Boolean, Boolean> {
         var placed = false
         var waiting = false
-        val count = Placements.defaults(tx, defaults).primaries
+        val defaultPrimaries = Placements.defaults(tx, defaults).primaries
         for (database in Placements.placed(tx).filter { it.hosts.isEmpty() }) {
             val node = Placements.database(tx, database.name) ?: continue
             val ref =
@@ -331,7 +333,12 @@ class ServerReconciler(
             val hosts =
                 try {
                     Placements.allocator(tx) { available(MemberId(it)) }
-                        .place(database.name, count, prefer = prefer, bestEffort = true)
+                        .place(
+                            database.name,
+                            maxOf(database.primaries, defaultPrimaries),
+                            prefer = prefer,
+                            bestEffort = true,
+                        )
                 } catch (e: AllocationException) {
                     if (unplaceable.add(database.name)) {
                         log.warn(

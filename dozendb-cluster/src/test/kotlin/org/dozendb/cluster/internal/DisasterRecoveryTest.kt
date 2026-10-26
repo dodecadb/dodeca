@@ -32,8 +32,15 @@ class DisasterRecoveryTest {
         clusters.forEach { it.close() }
     }
 
-    private fun cluster(name: String): ClusterHarness =
-        ClusterHarness(root.resolve(name), 3).also { clusters += it }
+    private fun cluster(name: String, defaultPrimaries: Int? = null): ClusterHarness =
+        ClusterHarness(
+                root.resolve(name),
+                3,
+                settings =
+                    defaultPrimaries?.let { mapOf(ClusterSettings.defaultPrimaries to it) }
+                        ?: emptyMap(),
+            )
+            .also { clusters += it }
 
     /** Runs a `neo4j-admin` command for the server in [home] and returns what it printed. */
     private fun admin(
@@ -57,13 +64,30 @@ class DisasterRecoveryTest {
         return out.toString()
     }
 
+    /** Backs up every database of [cluster], each from a member that hosts it; returns where. */
+    private fun backUp(cluster: ClusterHarness): Path {
+        val backups = Files.createDirectories(root.resolve("backups"))
+        admin(
+            Files.createDirectories(root.resolve("client")),
+            ::BackupCommand,
+            "--from=${cluster.members.joinToString(",") { "127.0.0.1:${it.backupPort()}" }}",
+            "--to-path=$backups",
+            "--type=FULL",
+            "*",
+        )
+        return backups
+    }
+
     private fun ClusterHarness.administer(cypher: String): List<Map<String, Any?>> =
         awaitLeader("system").database("system").executeTransactionally(cypher, emptyMap()) {
             it.asSequence().map { row -> row.toMap() }.toList()
         }
 
+    /** Runs [cypher] on the leader of [database], among the members that run it. */
     private fun ClusterHarness.write(database: String, cypher: String) {
-        awaitLeader(database).database(database).executeTransactionally(cypher)
+        awaitLeader(database) { running().filter { it.status(database) != null } }
+            .database(database)
+            .executeTransactionally(cypher)
     }
 
     private fun ClusterHarness.Member.count(database: String, label: String): Long =
@@ -95,15 +119,7 @@ class DisasterRecoveryTest {
         lost.write("neo4j", "UNWIND range(1, 100) AS i CREATE (:Thing {i: i})")
         lost.write("films", "UNWIND range(1, 200) AS i CREATE (:Film {i: i})")
         lost.write("books", "UNWIND range(1, 300) AS i CREATE (:Book {i: i})")
-        val backups = Files.createDirectories(root.resolve("backups"))
-        admin(
-            Files.createDirectories(root.resolve("client")),
-            ::BackupCommand,
-            "--from=127.0.0.1:${lost.members.first().backupPort()}",
-            "--to-path=$backups",
-            "--type=FULL",
-            "*",
-        )
+        val backups = backUp(lost)
         lost.members.forEach { it.stop() }
 
         val recovered = cluster("recovered")
@@ -168,6 +184,52 @@ class DisasterRecoveryTest {
                     .isTrue
             }
         }
+    }
+
+    @Test
+    fun `a restored database keeps its number of primaries, or takes the default if larger`() {
+        // One primary by default, as in Neo4j Enterprise.
+        val lost = cluster("lost", defaultPrimaries = 1)
+        lost.start()
+        // Placed once the cluster recorded its servers.
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(lost.administer("SHOW DATABASE neo4j YIELD currentStatus"))
+                    .containsExactly(mapOf("currentStatus" to "online"))
+            }
+        lost.administer("CREATE DATABASE films TOPOLOGY 3 PRIMARIES WAIT")
+        lost.administer("CREATE DATABASE books WAIT")
+        lost.administer("CALL dbms.setDefaultAllocationNumbers(2, 0)")
+        // Their groups serve once they took a write, which WAIT does not wait for.
+        for (database in listOf("neo4j", "films", "books")) lost.write(database, "CREATE ()")
+        val backups = backUp(lost)
+        lost.members.forEach { it.stop() }
+
+        val recovered = cluster("recovered", defaultPrimaries = 1)
+        admin(recovered.members.first().home, ::RestoreCommand, "--from-path=$backups")
+        recovered.start()
+
+        // The default database and books had one primary, fewer than the restored default.
+        val expected = mapOf("films" to 3L, "books" to 2L, "neo4j" to 2L)
+        await atMost
+            AWAIT untilAsserted
+            {
+                val rows =
+                    recovered.administer(
+                        "SHOW DATABASES YIELD name, currentStatus, requestedPrimariesCount"
+                    )
+                for ((database, primaries) in expected) {
+                    val copies = rows.filter { it["name"] == database }
+                    assertThat(copies.map { it["requestedPrimariesCount"] })
+                        .describedAs(database)
+                        .containsOnly(primaries)
+                    assertThat(copies.map { it["currentStatus"] })
+                        .describedAs(database)
+                        .hasSize(primaries.toInt())
+                        .containsOnly("online")
+                }
+            }
     }
 
     private companion object {

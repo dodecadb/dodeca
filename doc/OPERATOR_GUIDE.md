@@ -761,13 +761,13 @@ database, `system` included, taken with `"*"`:
    empty data directory but the first, and start them all. The server that
    holds the restored databases forms the cluster with the others and creates
    every database that its `system` database lists. Each database is placed
-   again on the default number of servers (see
-   [Placing databases](#placing-databases)), that server first, and the other
-   servers copy the databases placed on them. Topologies are not restored:
-   set them again with `ALTER DATABASE ... SET TOPOLOGY`.
+   again on as many servers as its topology asks for, or on the default number
+   if that is larger (see [Placing databases](#placing-databases)), or on
+   every server if there are fewer: that server first, and the other servers
+   copy the databases placed on them.
 
-Users, roles, privileges and whether each database is online come with
-`system`.
+Users, roles, privileges, the default numbers of copies and whether each
+database is online come with `system`.
 
 ## Roles and privileges
 

@@ -183,8 +183,10 @@ the states `Free`, `Enabled`, `Cordoned`, `Deallocating`, `Deallocated` and
   server is down, so that a database whose only copy is there is not lost.
 - A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
   a `Free` server votes in the Raft group of `system`, as every server does.
-- A cluster recovered from backups places its databases again on the default
-  number of servers: their topologies are not restored.
+- A cluster recovered from backups places each database again on as many
+  servers as its topology asks for, or on the default number if that is
+  larger, as a standalone server records one primary for each of its
+  databases.
 
 ## Roles and privileges
 
