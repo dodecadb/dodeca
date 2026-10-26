@@ -7,7 +7,6 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.dozendb.cluster.MemberDirectory
-import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -35,8 +34,14 @@ import org.neo4j.logging.InternalLog
  */
 internal class LeaderBalancer(
     private val consensus: ConsensusLog,
-    private val replication: ReplicationService,
     private val directory: MemberDirectory,
+    /** The databases replicated on this member, running or not. */
+    private val created: () -> List<DatabaseRef>,
+    /**
+     * Hands the leadership of a database over to a member, for a reason, within a timeout; returns
+     * whether the member leads it afterwards.
+     */
+    private val handOver: (DatabaseRef, MemberId, String, Duration) -> Boolean,
     private val strategy: () -> BalancingStrategy,
     /** The priority tag of the database of a name, if any. */
     private val priorityTag: (String) -> String?,
@@ -55,6 +60,8 @@ internal class LeaderBalancer(
         Thread(runnable, "dozendb-leader-balancer").apply { isDaemon = true }
     }
     private val requested = AtomicBoolean()
+
+    @Volatile private var stopped = false
 
     /** Databases read-only here that no member could take over, logged once; executor only. */
     private val stuck = mutableSetOf<UUID>()
@@ -94,8 +101,14 @@ internal class LeaderBalancer(
         }
     }
 
+    /**
+     * Stops looking. Waits for a look in progress, which reads the system graph and may move a
+     * leadership, so that the databases can stop once this returns.
+     */
     fun stop() {
+        stopped = true
         executor.shutdownNow()
+        executor.awaitTermination(30, TimeUnit.SECONDS)
     }
 
     /**
@@ -124,7 +137,7 @@ internal class LeaderBalancer(
     fun view(): LeadershipView = view(tags)
 
     private fun view(tags: () -> Map<MemberId, Set<String>>): LeadershipView {
-        val databases = replication.created().mapNotNull(::leadership)
+        val databases = created().mapNotNull(::leadership)
         // The server records are read only when a database has a priority tag.
         return LeadershipView(
             databases,
@@ -169,6 +182,8 @@ internal class LeaderBalancer(
             look()
             noteCommits()
         } catch (e: Exception) {
+            // Stopping interrupts the look in progress.
+            if (stopped) return
             log.warn("Deciding where databases are led failed", e)
         }
     }
@@ -253,7 +268,7 @@ internal class LeaderBalancer(
     /** Notes the commit index of each database this member leads, for the next look. */
     private fun noteCommits() {
         committed.clear()
-        for (database in replication.created()) {
+        for (database in created()) {
             val progress = consensus.progress(database) ?: continue
             if (progress.leader) committed[database.id] = progress.commitIndex
         }
@@ -264,9 +279,8 @@ internal class LeaderBalancer(
      * [LeaderMoves.keepsUp]); returns whether [to] leads it afterwards.
      */
     private fun transfer(database: DatabaseRef, to: MemberId, reason: MoveReason): Boolean {
-        val replica = replication.replica(database) ?: return false
         if (!keepsUp(database, to)) return false
-        return replica.transferLeadership(to, reason.text, transferTimeout)
+        return handOver(database, to, reason.text, transferTimeout)
     }
 
     /** Whether [to] keeps up with this member's log of [database] (see [LeaderMoves.keepsUp]). */

@@ -321,8 +321,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         balancer =
             LeaderBalancer(
                 consensus,
-                replicationService,
                 directory,
+                replicationService::created,
+                { database, to, reason, timeout ->
+                    replicationService.replica(database)?.transferLeadership(to, reason, timeout)
+                        ?: false
+                },
                 strategy = { config.get(ClusterSettings.balancingStrategy) },
                 priorityTag = DatabasePriorityTag.lookup(config),
                 tags = { systemGraph.serverTags() },
