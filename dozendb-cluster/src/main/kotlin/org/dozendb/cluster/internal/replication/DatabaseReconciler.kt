@@ -25,6 +25,8 @@ internal data class DesiredDatabase(
     val designatedSeeder: MemberId? = null,
     /** The servers it is placed on; none while it is not placed yet. */
     val hosts: Set<MemberId> = emptySet(),
+    /** Whether its store was created: from then on every server copies it, its creator too. */
+    val created: Boolean = false,
 )
 
 /** What the creator of a database creates its store from, instead of an empty one. */
@@ -83,6 +85,12 @@ internal interface LocalDatabases {
      */
     fun votes(id: NamedDatabaseId): Boolean?
 
+    /**
+     * Whether the group of [id] stopped on this member because this member is not one of its
+     * members: the group's leader told it so, or it learnt that it was removed.
+     */
+    fun left(id: NamedDatabaseId): Boolean
+
     /** Registers [id] with the database manager; starting it creates its store if there is none. */
     fun create(id: NamedDatabaseId)
 
@@ -123,10 +131,11 @@ internal interface LocalDatabases {
  * created: so the creator survives restarts and leader changes, and no two members create the same
  * database. The same transaction records the initial members of the database's group, the servers
  * it is placed on: every member that creates the group without local state uses them, so that no
- * two members bootstrap it differently. A member creates a store only as the creator, and only if
- * it has no Raft group for the database yet; otherwise it copies the store, from the members that
- * hold it, and its group waits to be added (see `MembershipReconciler`). Stores are created and
- * copied while their database is online.
+ * two members bootstrap it differently. A member creates a store only as the creator, only while
+ * the system graph does not record the store created, and only if it has no Raft group for the
+ * database yet; otherwise it copies the store, from the members that hold it, and its group waits
+ * to be added (see `MembershipReconciler`): so a creator that the database moved off and back to
+ * copies it too. Stores are created and copied while their database is online.
  *
  * A member that holds a database no longer placed on it keeps it while it votes in the database's
  * group, which the system leader then removes it from once the servers it is placed on vote, and
@@ -338,7 +347,12 @@ internal class DatabaseReconciler(
                     // Placed elsewhere: as the system leader, it names the creator, in a system
                     // transaction, which reconciles again; tried again if it failed.
                     placed ->
-                        if (database.online && database.creator == null && systemGraph.leading()) {
+                        if (
+                            database.online &&
+                                database.creator == null &&
+                                !database.created &&
+                                systemGraph.leading()
+                        ) {
                             nameCreator(database)
                             false
                         } else {
@@ -355,6 +369,21 @@ internal class DatabaseReconciler(
                 )
                 databases.drop(id)
                 return true
+            }
+            // As when it started its group as a member, which the group removed meanwhile.
+            here && databases.left(id) -> {
+                // Only once the system leader confirmed it is placed here: a member that was
+                // removed from the cluster stops its databases instead, and keeps them.
+                if (!systemGraph.awaitCurrent()) return false
+                if (systemGraph.databases().none { it.id == id && self in it.hosts }) return false
+                log.info(
+                    "Deleting database %s here, which is placed on this member: its group " +
+                        "stopped here, as its members do not count this member in. It is copied " +
+                        "again, and joins the group",
+                    id,
+                )
+                databases.drop(id)
+                return false
             }
             database.online && !state.started && !state.failed -> {
                 log.info("Starting database %s, online in the system graph", id)
@@ -403,6 +432,7 @@ internal class DatabaseReconciler(
         val id = database.id
         val creator = database.creator
         return when {
+            database.created -> copyFromCluster(database)
             creator == null -> {
                 // The creator is named in a system transaction, which reconciles again.
                 if (systemGraph.leading()) nameCreator(database)

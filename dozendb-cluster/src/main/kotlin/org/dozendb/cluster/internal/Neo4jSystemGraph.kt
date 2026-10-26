@@ -23,9 +23,10 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * The databases in this member's copy of the system graph: its `Database` nodes, with the servers
  * they are placed on (see [Placements]), Neo4j's `seedURI` and `seeding_servers` properties of a
  * seeded database, a `dozendb_creator` property that names the member creating the database's
- * store, and a `dozendb_initial_members` property that lists the initial members of its group, each
- * as `id@host:port`. A `DozenDB` node holds the cluster's format level in `dozendb_format_level`,
- * once an upgrade raised it.
+ * store, a `dozendb_initial_members` property that lists the initial members of its group, each as
+ * `id@host:port`, and a `dozendb_created` property, true once the store was created, after which
+ * every server it is placed on copies it, its creator too. A `DozenDB` node holds the cluster's
+ * format level in `dozendb_format_level`, once an upgrade raised it.
  */
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
@@ -49,7 +50,7 @@ internal class Neo4jSystemGraph(
         return DesiredDatabase(
             DatabaseIdFactory.from(name, UUID.fromString(uuid)),
             online = status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
-            creator = (node.getProperty(CREATOR_PROPERTY, null) as? String)?.let(MemberId::parse),
+            creator = creator(node),
             seedUri =
                 node.getProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, null)
                     as? String,
@@ -59,6 +60,7 @@ internal class Neo4jSystemGraph(
                     ?.firstOrNull()
                     ?.let { MemberId.parse(it as String) },
             hosts = Placements.hosts(node).mapTo(HashSet(), ::MemberId),
+            created = created(node),
         )
     }
 
@@ -112,10 +114,12 @@ internal class Neo4jSystemGraph(
                             if (holds(id.name())) {
                                 node.setProperty(CREATOR_PROPERTY, creator.id.toString())
                                 node.setProperty(INITIAL_MEMBERS_PROPERTY, members)
+                                node.setProperty(CREATED_PROPERTY, true)
                                 id
                             } else {
                                 node.removeProperty(CREATOR_PROPERTY)
                                 node.removeProperty(INITIAL_MEMBERS_PROPERTY)
+                                node.removeProperty(CREATED_PROPERTY)
                                 null
                             }
                         }
@@ -208,6 +212,20 @@ internal class Neo4jSystemGraph(
     companion object {
         /** The property that names the creator of a database, see [nameCreator]. */
         const val CREATOR_PROPERTY = "dozendb_creator"
+        private const val CREATED_PROPERTY = "dozendb_created"
+
+        /** The member that creates the store of the database [node], once one is named. */
+        fun creator(node: Node): MemberId? =
+            (node.getProperty(CREATOR_PROPERTY, null) as? String)?.let(MemberId::parse)
+
+        /** Whether the store of the database [node] was created. */
+        fun created(node: Node): Boolean = node.getProperty(CREATED_PROPERTY, false) == true
+
+        /** Records that the store of the database [node] was created. */
+        fun markCreated(node: Node) {
+            node.setProperty(CREATED_PROPERTY, true)
+        }
+
         private const val INITIAL_MEMBERS_PROPERTY = "dozendb_initial_members"
         private const val FORMAT_LEVEL_PROPERTY = "dozendb_format_level"
         private val DOZENDB_LABEL: Label = Label.label("DozenDB")

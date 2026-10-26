@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal
 
 import java.util.UUID
+import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placement
 import org.dozendb.core.servers.Placements
@@ -14,6 +15,10 @@ import org.neo4j.graphdb.Transaction
  * it asks them for each command, as SHOW SERVERS does, so that a server that stopped a moment ago
  * counts as unavailable. While the servers the cluster started with are not recorded yet, it
  * records them first.
+ *
+ * A database moves off the member that creates its store, its creator, only once a server runs its
+ * group: the change then records the store created, so that the creator copies it like any other
+ * server if it is placed on it again, and does not create it anew (see `DatabaseReconciler`).
  *
  * @property refresh asks the servers now, waiting a moment at most.
  * @property available whether a server answered this member when last asked.
@@ -52,7 +57,27 @@ internal class ClusterPlacement(
             } else {
                 allocator.resize(name, primaries)
             }
+        leaving(tx, name, hosts)
         return Placement(hosts, primaries)
+    }
+
+    /**
+     * Lets the database [name] be placed on [hosts]: if they leave out its creator, only once a
+     * server runs its group, which records its store created.
+     *
+     * @throws AllocationException if its store may not be created yet.
+     */
+    private fun leaving(tx: Transaction, name: String, hosts: Set<UUID>) {
+        val node = Placements.database(tx, name) ?: return
+        val creator = Neo4jSystemGraph.creator(node) ?: return
+        if (creator.uuid in hosts || Neo4jSystemGraph.created(node)) return
+        if (holders(name).isEmpty()) {
+            throw AllocationException(
+                "'$name' cannot move off server $creator yet, which creates its store: try again " +
+                    "once the database runs"
+            )
+        }
+        Neo4jSystemGraph.markCreated(node)
     }
 
     private fun prepare(tx: Transaction) {

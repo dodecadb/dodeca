@@ -182,6 +182,16 @@ internal class ReplicationService(
         return !membership.removed && membership.members.any { it.id == consensus.self.id }
     }
 
+    /** Whether the group of [namedDatabaseId] stopped here, as this member is not a member. */
+    fun left(namedDatabaseId: NamedDatabaseId): Boolean {
+        val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+        return try {
+            consensus.membership(ref).removed
+        } catch (_: ConsensusUnavailableException) {
+            false
+        }
+    }
+
     /** Whether commits to the database [name] are durable through the Raft log alone. */
     fun singleFsync(name: String): Boolean = databases[name]?.replicating == true
 

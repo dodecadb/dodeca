@@ -37,6 +37,8 @@ internal class Neo4jLocalDatabases(
 
     override fun votes(id: NamedDatabaseId): Boolean? = replication.votes(id)
 
+    override fun left(id: NamedDatabaseId): Boolean = replication.left(id)
+
     override fun create(id: NamedDatabaseId) {
         manager.createDatabase(id)
     }

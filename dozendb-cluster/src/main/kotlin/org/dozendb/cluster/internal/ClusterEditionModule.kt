@@ -258,7 +258,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 defaultDatabase,
                 catchUp,
                 logService.internalLogProvider,
-                ::initialMembers,
+                ::bootstrapMembers,
                 mustDetach = { cluster.mustDetach(it) },
                 detached = { cluster.detached(it) },
                 notLeader = ::notLeaderMessage,
@@ -578,13 +578,28 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /**
-     * The initial members of the group of the database [id], which this member creates with them if
-     * it has no local state for it. A member that is not among them waits to be added.
+     * The members this member starts the group of the database [id] with when it has no local state
+     * for it: those that vote in it, as they report it now, so that a member that copied the
+     * database joins the group as it is, also one that the group removed before, and waits to be
+     * added (see `MembershipReconciler`); while no member runs the group yet, its initial members,
+     * which the system leader recorded with its creator. A member that is not among them waits to
+     * be added.
      */
-    private fun initialMembers(id: NamedDatabaseId): List<Member> =
-        checkNotNull(systemGraph.initialMembers(id)) {
+    private fun bootstrapMembers(id: NamedDatabaseId): List<Member> {
+        if (!id.isSystemDatabase) {
+            try {
+                directory.refresh(PROBE_DEADLINE)
+            } catch (_: ConsensusUnavailableException) {
+                // What the members reported last.
+            }
+            locations.of(DatabaseRef(id.name(), id.databaseId().uuid()))?.voters?.let {
+                return it
+            }
+        }
+        return checkNotNull(systemGraph.initialMembers(id)) {
             "No initial members are recorded for database $id"
         }
+    }
 
     /**
      * Makes the databases whose stores this member holds the new cluster's, as the member that

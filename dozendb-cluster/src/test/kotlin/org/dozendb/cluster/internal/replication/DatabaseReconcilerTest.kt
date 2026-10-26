@@ -57,7 +57,8 @@ class DatabaseReconcilerTest {
         seedUri: String? = null,
         designatedSeeder: MemberId? = null,
         hosts: Set<MemberId> = members.map { it.id }.filter { it !in graph.free }.toSet(),
-    ) = DesiredDatabase(id, online, creator, seedUri, designatedSeeder, hosts)
+        created: Boolean = false,
+    ) = DesiredDatabase(id, online, creator, seedUri, designatedSeeder, hosts, created)
 
     @Test
     fun `the creator of a seeded database creates its store from the seed, the others copy it`() {
@@ -185,6 +186,50 @@ class DatabaseReconcilerTest {
 
         assertThat(reconciler.reconcile()).isFalse()
         assertThat(local.registered).containsKey(films)
+    }
+
+    @Test
+    fun `a copy placed here whose group stopped it as a non-member is copied again`() {
+        local.add(films, started = true)
+        local.notVoting += films
+        local.notMember += films
+        graph.databases = listOf(desired(films, creator = creator, created = true))
+
+        assertThat(reconciler.reconcile()).describedAs("copied at the next look").isTrue()
+
+        assertThat(local.dropped).containsExactly(films)
+        local.notMember.clear()
+        local.notVoting.clear()
+
+        reconciler.reconcile()
+
+        assertThat(local.copies).containsExactly(creatorAddress to films)
+        assertThat(local.registered).containsEntry(films, LocalDatabase(true, false))
+    }
+
+    @Test
+    fun `such a copy is kept while the system graph cannot be confirmed current`() {
+        local.add(films, started = true)
+        local.notVoting += films
+        local.notMember += films
+        graph.databases = listOf(desired(films, creator = creator, created = true))
+        // As on a member removed from the cluster, which has not learnt it yet.
+        graph.reachable = false
+
+        assertThat(reconciler.reconcile()).describedAs("tried again").isTrue()
+
+        assertThat(local.dropped).isEmpty()
+        assertThat(local.registered).containsKey(films)
+    }
+
+    @Test
+    fun `a creator copies a database that was created, as when it moved off it and back`() {
+        graph.databases = listOf(desired(films, creator = self, created = true))
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.copies).containsExactly(otherAddress to films)
+        assertThat(graph.named).isEmpty()
     }
 
     @Test
@@ -544,6 +589,11 @@ class DatabaseReconcilerTest {
 
         override fun votes(id: NamedDatabaseId): Boolean? =
             if (id.databaseId().uuid() in groups) id !in notVoting else null
+
+        /** Databases whose group stopped here, as this member is not one of its members. */
+        val notMember = mutableSetOf<NamedDatabaseId>()
+
+        override fun left(id: NamedDatabaseId): Boolean = id in notMember
 
         override fun create(id: NamedDatabaseId) {
             check(id !in registered) { "$id is registered" }

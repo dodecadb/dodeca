@@ -275,10 +275,7 @@ class ServerReconciler(
                         node.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY) as String
                     ),
                 )
-            val creator =
-                (node.getProperty(Neo4jSystemGraph.CREATOR_PROPERTY, null) as? String)?.let(
-                    MemberId::parse
-                )
+            val creator = Neo4jSystemGraph.creator(node)
             val holding = holders(ref)
             if (creator != null && holding.isEmpty()) {
                 // Its creator holds its store, and has not told it runs its group yet.
