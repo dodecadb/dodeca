@@ -69,6 +69,20 @@ class ServerAdministration(
         return moves
     }
 
+    /**
+     * Moves copies to even out how many each server hosts: of [database] only, or at most [limit]
+     * of them (see [ServerLifecycle.reallocate]); returns the moves, which a [dryRun] only shows.
+     */
+    fun reallocate(database: String?, limit: Int?, dryRun: Boolean): List<NamedMove> {
+        val failed = "Could not reallocate databases"
+        var moves = emptyList<NamedMove>()
+        changing(failed, dryRun) { tx, _ ->
+            val made = ServerLifecycle.reallocate(tx, placement, database, limit, dryRun, failed)
+            moves = named(tx, made)
+        }
+        return moves
+    }
+
     /** [moves], with the names their servers have in [tx]. */
     private fun named(tx: Transaction, moves: List<Move>): List<NamedMove> {
         val records = ServerRecords.records(tx)

@@ -79,6 +79,19 @@ class SingleServerTest {
     }
 
     @Test
+    fun `REALLOCATE moves nothing, as no other server can host a copy`() {
+        StandaloneServer(root).use { server ->
+            server.start()
+
+            val moves =
+                server.rows("DRYRUN REALLOCATE DATABASES", database = StandaloneServer.SYSTEM)
+            server.administer("REALLOCATE DATABASES")
+
+            assertThat(moves).isEmpty()
+        }
+    }
+
+    @Test
     fun `the server can be renamed and its options changed, which a restart keeps`() {
         StandaloneServer(root, mapOf(DozenDbSettings.initialServerTags to listOf("eu"))).use {
             server ->

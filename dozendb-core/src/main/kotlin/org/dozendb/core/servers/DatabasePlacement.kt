@@ -48,6 +48,20 @@ interface DatabasePlacement {
         limit: Int? = null,
         dryRun: Boolean = false,
     ): List<Move>
+
+    /**
+     * Moves copies to even out how many each server hosts, first those their servers may no longer
+     * host: of [database] only if given, at most [limit] moves if given. Records the moves unless
+     * [dryRun]; returns them.
+     *
+     * @throws AllocationException if a copy cannot move; then nothing moves.
+     */
+    fun reallocate(
+        tx: Transaction,
+        database: String? = null,
+        limit: Int? = null,
+        dryRun: Boolean = false,
+    ): List<Move>
 }
 
 /** A server without clustering hosts every database alone: one primary each, on no record. */
@@ -81,6 +95,14 @@ object SingleServerPlacement : DatabasePlacement {
         val record = ServerRecords.records(tx)[id] ?: ServerRecord(id)
         return alone(tx, record).deallocate(from, database, limit)
     }
+
+    /** Moves nothing: no other server can host a copy. */
+    override fun reallocate(
+        tx: Transaction,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+    ): List<Move> = emptyList()
 
     /** An allocator with the server of [record] alone, which hosts every database. */
     private fun alone(tx: Transaction, record: ServerRecord): Allocator {

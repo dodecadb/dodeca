@@ -216,6 +216,40 @@ class ClusterProcedures {
 
     @Admin
     @SystemProcedure
+    @Procedure(name = "dbms.cluster.reallocateDatabase", mode = Mode.DBMS)
+    @Description(
+        "Moves copies of a database to even out how many each server hosts. With dryRun, only " +
+            "shows the moves. Runs on the leader of the system database, as Neo4j Enterprise's " +
+            "procedure of the same name."
+    )
+    fun reallocateDatabase(
+        @Name("database") database: String,
+        @Name(value = "dryRun", defaultValue = "false") dryRun: Boolean,
+    ): Stream<MoveRow> = reallocating(database, null, dryRun)
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.reallocateNumberOfDatabases", mode = Mode.DBMS)
+    @Description(
+        "Moves a number of copies of databases, one at a time, to even out how many each server " +
+            "hosts. With dryRun, only shows the moves. Runs on the leader of the system " +
+            "database, as Neo4j Enterprise's procedure of the same name."
+    )
+    fun reallocateNumberOfDatabases(
+        @Name("number") number: Long,
+        @Name(value = "dryRun", defaultValue = "false") dryRun: Boolean,
+    ): Stream<MoveRow> =
+        reallocating(null, number.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(), dryRun)
+
+    private fun reallocating(database: String?, limit: Int?, dryRun: Boolean): Stream<MoveRow> =
+        administering {
+            it.reallocate(database, limit, dryRun)
+        }
+        .stream()
+        .map(::MoveRow)
+
+    @Admin
+    @SystemProcedure
     @Procedure(name = "dozendb.cluster.addMember", mode = Mode.DBMS)
     @Description(
         "Adds the member at the given Raft address to the cluster. Start it first with " +

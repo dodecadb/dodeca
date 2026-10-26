@@ -131,16 +131,44 @@ object ServerLifecycle {
         failed: String,
     ): List<Move> {
         val ids = names.mapTo(HashSet()) { enabled(target(tx, it, servers, failed), failed).id }
+        val name = database(tx, database, failed)
+        checkLimit(limit, failed)
+        return moving(failed) { placement.deallocate(tx, ids, name, limit, dryRun) }
+    }
+
+    /**
+     * REALLOCATE DATABASES, and the reallocate procedures: moves copies to even out how many each
+     * server hosts, of [database] only, at most [limit] moves, or all (see
+     * [DatabasePlacement.reallocate]); records the moves unless [dryRun]; returns them.
+     */
+    fun reallocate(
+        tx: Transaction,
+        placement: DatabasePlacement,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+        failed: String,
+    ): List<Move> {
+        val name = database(tx, database, failed)
+        checkLimit(limit, failed)
+        return moving(failed) { placement.reallocate(tx, name, limit, dryRun) }
+    }
+
+    /** The normalized name of [database], if given, which must exist. */
+    private fun database(tx: Transaction, database: String?, failed: String): String? {
         val name = database?.let { NormalizedDatabaseName(it).name() }
         if (name != null && Placements.database(tx, name) == null) {
             throw InvalidArgumentException("$failed: there is no database '$database'.")
         }
+        return name
+    }
+
+    private fun checkLimit(limit: Int?, failed: String) {
         if (limit != null && limit < 1) {
             throw InvalidArgumentException(
                 "$failed: the number of databases is $limit, not 1 or more."
             )
         }
-        return moving(failed) { placement.deallocate(tx, ids, name, limit, dryRun) }
     }
 
     /** What [moving] moves, refused as [failed] says if a copy cannot move. */

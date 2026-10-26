@@ -144,6 +144,7 @@ class AdministrationPlansTest {
                 "AlterServer",
                 "RenameServer",
                 "DeallocateServer",
+                "ReallocateDatabases",
             )
 
         /** Planned by Community's runtime, which DozenDB's falls back to. */
@@ -169,14 +170,9 @@ class AdministrationPlansTest {
             mapOf(
                 "EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it",
                 "DropServer" to PLACEMENT,
-                "ReallocateDatabases" to PLACEMENT,
             )
 
         /** A command for each refused plan that is a command of its own. */
-        val REFUSED_COMMANDS =
-            listOf(
-                "DROP SERVER 'one'",
-                "REALLOCATE DATABASES",
-            )
+        val REFUSED_COMMANDS = listOf("DROP SERVER 'one'")
     }
 }

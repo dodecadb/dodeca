@@ -349,6 +349,85 @@ class ServerLifecycleTest {
         eventually { assertThat(cluster.hosts("films")).hasSize(1).doesNotContain(second) }
     }
 
+    /** A member that hosts no database but `system`, once `neo4j` is placed. */
+    private fun ClusterHarness.idle(): ClusterHarness.Member {
+        var placed = emptyList<Any?>()
+        eventually {
+            placed = rows("SHOW DATABASE neo4j YIELD serverID").map { it["serverID"] }
+            assertThat(placed).hasSize(1)
+        }
+        return members.first { it.serverId !in placed }
+    }
+
+    /**
+     * Creates [names] with one copy each while [idle] is cordoned, so that the other servers host
+     * them all, and enables [idle] again.
+     */
+    private fun ClusterHarness.unevenly(idle: ClusterHarness.Member, vararg names: String) {
+        administer("CALL dbms.cluster.cordonServer('${idle.serverId}')")
+        for (name in names) administer("CREATE DATABASE $name TOPOLOGY 1 PRIMARY WAIT")
+        administer("ENABLE SERVER '${idle.serverId}'")
+    }
+
+    /** The databases [member] hosts, `system` aside. */
+    private fun ClusterHarness.hosted(member: ClusterHarness.Member): List<*> =
+        (server(member)["hosting"] as List<*>) - SYSTEM
+
+    @Test
+    fun `REALLOCATE moves copies to a server that hosts fewer, and DRYRUN shows the moves`() {
+        val cluster = cluster()
+        val idle = cluster.idle()
+        // With neo4j, 4 copies on one server and 3 on the other: 2 move to the idle server.
+        cluster.unevenly(idle, *SIX)
+
+        val dry = cluster.rows("DRYRUN REALLOCATE DATABASES")
+
+        assertThat(dry).hasSize(2).allSatisfy {
+            assertThat(it["toServerId"]).isEqualTo(idle.serverId)
+            assertThat(it["mode"]).isEqualTo("primary")
+        }
+        assertThat(cluster.hosted(idle)).isEmpty()
+
+        cluster.administer("REALLOCATE DATABASES")
+
+        eventually {
+            assertThat(cluster.hosted(idle))
+                .containsExactlyInAnyOrderElementsOf(dry.map { it["database"] })
+            val counts = cluster.members.map { cluster.hosted(it).size }
+            assertThat(counts.max() - counts.min()).isEqualTo(1)
+        }
+    }
+
+    @Test
+    fun `the reallocate procedures move a number of copies, or those of one database`() {
+        val cluster = cluster()
+        val idle = cluster.idle()
+        cluster.unevenly(idle, *SIX)
+
+        // One of the 2 moves that REALLOCATE makes, leaving 3, 3 and 1 copies.
+        val one = cluster.rows("CALL dbms.cluster.reallocateNumberOfDatabases(1)")
+
+        assertThat(one).hasSize(1)
+        val moved = one.single()["database"]
+        eventually { assertThat(cluster.hosted(idle)).containsExactly(moved) }
+        val other = (SIX.toList() - moved).first()
+        assertThat(cluster.rows("CALL dbms.cluster.reallocateDatabase('$other', true)"))
+            .extracting<Any?> { it["database"] }
+            .containsExactly(other)
+
+        val rows = cluster.rows("CALL dbms.cluster.reallocateDatabase('$other')")
+
+        assertThat(rows.map { it["database"] to it["toServerId"] })
+            .containsExactly(other to idle.serverId)
+        eventually { assertThat(cluster.hosted(idle)).containsExactlyInAnyOrder(moved, other) }
+        assertThat(catchThrowable { cluster.rows("CALL dbms.cluster.reallocateDatabase('none')") })
+            .hasMessageContaining("Could not reallocate databases: there is no database 'none'")
+        assertThat(
+                catchThrowable { cluster.rows("CALL dbms.cluster.reallocateNumberOfDatabases(0)") }
+            )
+            .hasMessageContaining("the number of databases is 0, not 1 or more")
+    }
+
     @Test
     fun `the initial servers take the mode constraint and databases they start with`() {
         val cluster = cluster {
@@ -371,5 +450,6 @@ class ServerLifecycleTest {
 
     private companion object {
         const val SYSTEM = "system"
+        val SIX = arrayOf("one", "two", "three", "four", "five", "six")
     }
 }

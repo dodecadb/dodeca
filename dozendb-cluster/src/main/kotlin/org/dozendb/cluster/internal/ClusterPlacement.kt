@@ -2,6 +2,7 @@ package org.dozendb.cluster.internal
 
 import java.util.UUID
 import org.dozendb.core.servers.AllocationException
+import org.dozendb.core.servers.Allocator
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Move
 import org.dozendb.core.servers.Placement
@@ -62,13 +63,7 @@ internal class ClusterPlacement(
         return Placement(hosts, primaries)
     }
 
-    override fun conform(tx: Transaction): List<Move> {
-        prepare(tx)
-        val allocator = Placements.allocator(tx, available)
-        val moves = allocator.conform()
-        for (name in moves.map { it.database }.distinct()) leaving(tx, name, allocator.hosts(name))
-        return moves.also { Placements.move(tx, allocator, it) }
-    }
+    override fun conform(tx: Transaction): List<Move> = moving(tx, dryRun = false) { it.conform() }
 
     override fun deallocate(
         tx: Transaction,
@@ -76,16 +71,33 @@ internal class ClusterPlacement(
         database: String?,
         limit: Int?,
         dryRun: Boolean,
+    ): List<Move> = moving(tx, dryRun) { it.deallocate(from, database, limit) }
+
+    override fun reallocate(
+        tx: Transaction,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+    ): List<Move> = moving(tx, dryRun) { it.reallocate(database, limit) }
+
+    /**
+     * The [moves] an allocator of the current placements makes, each letting its database leave its
+     * creator (see [leaving]); records them unless [dryRun].
+     */
+    private fun moving(
+        tx: Transaction,
+        dryRun: Boolean,
+        moves: (Allocator) -> List<Move>,
     ): List<Move> {
         // A dry run writes nothing, as on a member that does not lead system.
         if (dryRun) refresh() else prepare(tx)
         val allocator = Placements.allocator(tx, available)
-        val moves = allocator.deallocate(from, database, limit)
-        for (name in moves.map { it.database }.distinct()) {
+        val made = moves(allocator)
+        for (name in made.map { it.database }.distinct()) {
             leaving(tx, name, allocator.hosts(name), record = !dryRun)
         }
-        if (!dryRun) Placements.move(tx, allocator, moves)
-        return moves
+        if (!dryRun) Placements.move(tx, allocator, made)
+        return made
     }
 
     /**

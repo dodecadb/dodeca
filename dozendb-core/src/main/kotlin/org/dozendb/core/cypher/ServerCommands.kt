@@ -25,6 +25,7 @@ import org.neo4j.cypher.internal.logical.plans.AlterServer
 import org.neo4j.cypher.internal.logical.plans.DeallocateServer
 import org.neo4j.cypher.internal.logical.plans.EnableServer
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
+import org.neo4j.cypher.internal.logical.plans.ReallocateDatabases
 import org.neo4j.cypher.internal.logical.plans.RenameServer
 import org.neo4j.cypher.internal.logical.plans.ShowServers
 import org.neo4j.cypher.internal.procs.ParameterTransformer
@@ -99,6 +100,7 @@ internal class ServerCommands(
             is AlterServer -> Planner { alter(plan, it) }
             is RenameServer -> Planner { rename(plan, it) }
             is DeallocateServer -> Planner { deallocate(plan, it) }
+            is ReallocateDatabases -> Planner { reallocate(plan, it) }
             else -> null
         }
 
@@ -266,6 +268,30 @@ internal class ServerCommands(
             source,
             failure,
         )
+    }
+
+    /**
+     * REALLOCATE DATABASES: moves copies to even out how many each server hosts (see
+     * [ServerLifecycle.reallocate]); DRYRUN shows the moves, and changes nothing.
+     */
+    private fun reallocate(
+        plan: ReallocateDatabases,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val failed = "Could not reallocate databases"
+        val failure = { _: MapValue -> failed }
+        val source = compile(plan.source(), context)
+        if (plan.dryRun()) {
+            return moves("ReallocateDatabases", source) { tx, _ ->
+                ServerLifecycle.reallocate(tx, placement, null, null, dryRun = true, failed)
+            }
+        }
+        val change =
+            changing("REALLOCATE DATABASES", failure) { tx, _ ->
+                ServerRecords.lock(tx)
+                ServerLifecycle.reallocate(tx, placement, null, null, dryRun = false, failed)
+            }
+        return updating("ReallocateDatabases", "REALLOCATE DATABASES", change, source, failure)
     }
 
     /**
