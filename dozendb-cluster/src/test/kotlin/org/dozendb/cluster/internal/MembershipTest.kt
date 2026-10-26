@@ -84,6 +84,34 @@ class MembershipTest {
         }
     }
 
+    /** Waits until SHOW SERVERS shows the server [id] Deallocated, then drops it. */
+    private fun ClusterHarness.dropDeallocated(
+        id: String,
+        among: () -> List<ClusterHarness.Member> = { members.take(3) },
+    ) {
+        eventually {
+            val states =
+                administer("SHOW SERVERS YIELD serverId, state", among).associate {
+                    it["serverId"] to it["state"]
+                }
+            assertThat(states[id]).isEqualTo("Deallocated")
+        }
+        administer("DROP SERVER '$id'", among)
+    }
+
+    /**
+     * Drops [server] as an operator does where every server hosts [databases]: cordoned, so that
+     * its copies go when they shrink to the other servers, then deallocated and dropped.
+     */
+    private fun ClusterHarness.drop(server: ClusterHarness.Member, vararg databases: String) {
+        administer("CALL dbms.cluster.cordonServer('${server.serverId}')")
+        for (database in databases) {
+            administer("ALTER DATABASE $database SET TOPOLOGY ${members.size - 1} PRIMARIES")
+        }
+        administer("DEALLOCATE DATABASES FROM SERVER '${server.serverId}'")
+        dropDeallocated(server.serverId)
+    }
+
     /**
      * Writes to [database] and checkpoints every running member until the leader discarded the
      * start of the database's log, so that a member that joins later cannot catch up from it.
@@ -226,7 +254,7 @@ class MembershipTest {
     }
 
     @Test
-    fun `a removed member leaves every group, stops its databases and cannot be added again`() {
+    fun `a dropped server leaves every group, stops its databases and cannot be added again`() {
         val cluster = cluster(ClusterHarness.METRICS)
         cluster.administer("CREATE DATABASE films")
         eventually {
@@ -235,13 +263,16 @@ class MembershipTest {
         val removed = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
         val remaining = cluster.members - removed
 
-        cluster.administer("CALL dozendb.cluster.removeMember('${removed.id}')")
+        cluster.drop(removed, DEFAULT, "films")
 
         awaitGroups(remaining, SYSTEM, DEFAULT, "films")
         eventually {
             assertThat(removed.cluster.state).isEqualTo(MemberState.REMOVED)
+            // Its copies moved off before it was dropped.
             for (name in listOf(DEFAULT, "films")) {
-                assertThat(removed.database(name).isAvailable(0)).describedAs(name).isFalse()
+                assertThatThrownBy { removed.database(name) }
+                    .describedAs(name)
+                    .isInstanceOf(DatabaseNotFoundException::class.java)
             }
             assertThat(removed.samples().keys)
                 .describedAs("metrics of the removed member")
@@ -273,14 +304,12 @@ class MembershipTest {
     }
 
     @Test
-    fun `the system leader removes itself and the others carry on`() {
+    fun `the system leader can be dropped, and the others carry on`() {
         val cluster = cluster()
         val leader = cluster.awaitLeader(SYSTEM)
         val remaining = cluster.members - leader
 
-        leader
-            .database(SYSTEM)
-            .executeTransactionally("CALL dozendb.cluster.removeMember('${leader.id}')")
+        cluster.drop(leader, DEFAULT)
 
         awaitGroups(remaining, SYSTEM, DEFAULT)
         eventually { assertThat(leader.cluster.state).isEqualTo(MemberState.REMOVED) }
@@ -291,23 +320,31 @@ class MembershipTest {
     }
 
     @Test
-    fun `a stopped member is replaced, and learns it was removed when it starts again`() {
+    fun `a stopped server is replaced, and learns it was dropped when it starts again`() {
         val cluster = cluster()
         val stopped = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
-        val stoppedId = stopped.id
+        val stoppedId = stopped.serverId
         stopped.stop()
         val remaining = cluster.members - stopped
-
-        cluster.administer(
-            "CALL dozendb.cluster.removeMember('$stoppedId')",
-            among = { remaining },
-        )
         val replacement = cluster.newMember().apply { start() }
         cluster.administer(
             "CALL dozendb.cluster.addMember('127.0.0.1:${replacement.raftPort}')",
             among = { remaining },
         )
-        cluster.placeOn(replacement, DEFAULT, among = { remaining })
+        eventually {
+            val states =
+                cluster
+                    .administer("SHOW SERVERS YIELD serverId, state", among = { remaining })
+                    .associate { it["serverId"] to it["state"] }
+            assertThat(states[replacement.serverId]).isEqualTo("Enabled")
+        }
+
+        // Its copies are made again from the others, on the replacement.
+        cluster.administer(
+            "DEALLOCATE DATABASES FROM SERVER '$stoppedId'",
+            among = { remaining },
+        )
+        cluster.dropDeallocated(stoppedId, among = { remaining })
 
         awaitGroups(remaining + replacement, SYSTEM, DEFAULT)
         stopped.start()

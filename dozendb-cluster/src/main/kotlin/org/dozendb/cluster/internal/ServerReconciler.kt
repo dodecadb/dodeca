@@ -8,11 +8,15 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.servers.AllocationException
+import org.dozendb.core.servers.DroppedServer
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerRecord
@@ -32,6 +36,9 @@ import org.neo4j.logging.InternalLog
  * - Afterwards, a member that joins is Free until ENABLE SERVER records it, or at once while
  *   `auto_enable_free_servers` is set.
  * - The record of a server that left `system` is deleted, with the databases placed on it.
+ * - A server that DROP SERVER dropped is removed from `system` (see [remove]), and is never enabled
+ *   again. Once it left, it is asked whether it still answers where it was, as SHOW SERVERS shows
+ *   it Dropped while it does; its address is forgotten once it no longer does.
  * - Once the initial servers are recorded, a database not placed yet is placed (see [Placements]),
  *   best effort, on the default number of servers, those that hold it first: the default database
  *   of a new cluster, and the databases of a member that formed the cluster with databases of its
@@ -51,6 +58,7 @@ import org.neo4j.logging.InternalLog
  * @property available whether a member answers this one, so that copies go to those that do first.
  * @property defaults the default numbers of copies the configuration sets, recorded with the
  *   initial servers.
+ * @property remove removes a member from the cluster, returning once the change is committed.
  */
 class ServerReconciler(
     private val consensus: ConsensusLog,
@@ -65,6 +73,7 @@ class ServerReconciler(
     private val holders: (DatabaseRef) -> List<MemberId> = { emptyList() },
     private val available: (MemberId) -> Boolean = { true },
     private val defaults: Placements.Defaults = Placements.Defaults(1, 0),
+    private val remove: (MemberId) -> Unit = {},
     private val retryDelay: Duration = Duration.ofSeconds(1),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
 ) : AutoCloseable {
@@ -157,7 +166,13 @@ class ServerReconciler(
         if (!membership.settled) return true
         if (!current()) return true
         val members = membership.members.map { it.id }
-        var again = false
+        var dropped = emptyMap<UUID, DroppedServer>()
+        reading { system().beginTx().use { tx -> dropped = ServerRecords.dropped(tx) } }
+        // Asked before the records' lock is taken, as one that does not answer takes a while.
+        val left = dropped.values.filter { it.address != null && MemberId(it.id) !in members }
+        val gone = left.filterNot(::answers)
+        // One that still answers is asked again later.
+        var again = gone.size < left.size
         reading {
             system().beginTx().use { tx ->
                 ServerRecords.lock(tx)
@@ -168,11 +183,20 @@ class ServerReconciler(
                     ServerRecords.delete(tx, id)
                     changed = true
                 }
+                for (server in gone) {
+                    log.info(
+                        "Dropped server %s no longer answers at %s",
+                        server.id,
+                        server.address,
+                    )
+                    ServerRecords.forgetAddress(tx, server.id)
+                    changed = true
+                }
                 val initial = ServerRecords.initialServersEnabled(tx)
                 if (!initial || ServerRecords.autoEnable(tx)) {
                     val (enabled, all) = enable(tx, members, joined = initial)
                     changed = enabled || changed
-                    again = !all
+                    again = !all || again
                 }
                 if (!initial && !again) {
                     log.info("Recorded the servers the cluster started with, %s", members)
@@ -187,7 +211,28 @@ class ServerReconciler(
                 if (changed) tx.commit()
             }
         }
+        for (member in members.filter { it.uuid in dropped }) {
+            log.info("Removing dropped server %s from the cluster", member)
+            remove(member)
+            again = true
+        }
         return again
+    }
+
+    /** Whether the dropped [server] answers at its address, as itself. */
+    private fun answers(server: DroppedServer): Boolean {
+        val address = server.address?.let { runCatching { HostPort.parse(it) }.getOrNull() }
+        return try {
+            address != null &&
+                runBlocking {
+                    withTimeoutOrNull(PROBE_DEADLINE.toMillis()) { consensus.probe(address) }
+                }
+                    ?.member
+                    ?.id
+                    ?.uuid == server.id
+        } catch (_: ConsensusUnavailableException) {
+            false
+        }
     }
 
     /**
@@ -232,9 +277,10 @@ class ServerReconciler(
         joined: Boolean,
     ): Pair<Boolean, Boolean> {
         val records = ServerRecords.records(tx)
+        val dropped = ServerRecords.dropped(tx)
         var changed = false
         var all = true
-        for (member in members.filter { it.uuid !in records }) {
+        for (member in members.filter { it.uuid !in records && it.uuid !in dropped }) {
             val options = initialOptions(member)
             if (options == null) {
                 all = false
@@ -324,5 +370,8 @@ class ServerReconciler(
     private companion object {
         /** No default numbers of copies recorded, as [Placements.defaults] tells. */
         val NONE = Placements.Defaults(0, 0)
+
+        /** How long a dropped server may take to answer. */
+        val PROBE_DEADLINE: Duration = Duration.ofSeconds(2)
     }
 }

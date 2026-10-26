@@ -32,12 +32,14 @@ object ServerLifecycle {
     /** The server called [name], by its name or its id, among the [servers]. */
     fun target(tx: Transaction, name: String, servers: Servers, failed: String): Target {
         val records = ServerRecords.records(tx)
+        val dropped = ServerRecords.dropped(tx)
         val id =
             (records.values.firstOrNull { it.name == name }?.id
-                ?: uuid(name)?.takeIf { it in servers.ids() || it in records })
+                ?: uuid(name)?.takeIf { it in servers.ids() || it in records || it in dropped })
                 ?: throw InvalidArgumentException(
                     "$failed: there is no such server. SHOW SERVERS lists the servers."
                 )
+        if (id in dropped) throw InvalidArgumentException("$failed: it was dropped.")
         val record = records[id]
         return Target(
             id,
@@ -89,6 +91,33 @@ object ServerLifecycle {
                 throw InvalidArgumentException("$failed: it is deallocating.")
             else -> {}
         }
+    }
+
+    /**
+     * DROP SERVER [name]: a Free server, or a Deallocated one, which holds no database but
+     * `system`, leaves the cluster (see [ServerRecords.drop]), which then removes it; it stops its
+     * databases.
+     */
+    fun drop(tx: Transaction, name: String, servers: Servers, failed: String) {
+        val server = target(tx, name, servers, failed)
+        if (server.enabled && server.status != InstanceStatus.DEALLOCATING) {
+            val state = if (server.status == InstanceStatus.CORDONED) "Cordoned" else "Enabled"
+            throw InvalidArgumentException(
+                "$failed: it is $state. DEALLOCATE DATABASES FROM SERVER moves its databases " +
+                    "off first."
+            )
+        }
+        val holding = (Placements.placedOn(tx, server.id) + servers.holding(tx, server.id)).sorted()
+        if (holding.isNotEmpty()) {
+            throw InvalidArgumentException(
+                "$failed: it still holds ${holding.joinToString { "'$it'" }}. Drop it once SHOW " +
+                    "SERVERS shows it Deallocated."
+            )
+        }
+        if ((servers.ids() - server.id).isEmpty()) {
+            throw InvalidArgumentException("$failed: it is the only server.")
+        }
+        ServerRecords.drop(tx, server.id, server.name, servers.address(server.id))
     }
 
     /**

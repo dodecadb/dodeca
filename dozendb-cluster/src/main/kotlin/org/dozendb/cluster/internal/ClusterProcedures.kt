@@ -7,7 +7,6 @@ import org.dozendb.cluster.UpgradeException
 import org.dozendb.cluster.displayName
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
-import org.dozendb.consensus.MemberId
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.api.procedure.SystemProcedure
 import org.neo4j.procedure.Admin
@@ -266,25 +265,6 @@ class ClusterProcedures {
             }
         val member = changingMembers { requireCluster().addMember(address) }
         return Stream.of(AddedMemberRow(member.id.toString(), member.raftAddress.toString()))
-    }
-
-    @Admin
-    @SystemProcedure
-    @Procedure(name = "dozendb.cluster.removeMember", mode = Mode.DBMS)
-    @Description(
-        "Removes the member with the given id from the cluster. Returns once it no longer votes " +
-            "in the group of the system database; the group of every other database follows. " +
-            "The removed member stops its databases; to add it again, delete its data directory " +
-            "first."
-    )
-    fun removeMember(@Name("memberId") memberId: String) {
-        val id =
-            try {
-                MemberId.parse(memberId)
-            } catch (e: IllegalArgumentException) {
-                throw ProcedureFailure("Invalid member id '$memberId': ${e.message}", e)
-            }
-        changingMembers { requireCluster().removeMember(id) }
     }
 
     private fun <T> administering(change: (ServerAdministration) -> T): T {

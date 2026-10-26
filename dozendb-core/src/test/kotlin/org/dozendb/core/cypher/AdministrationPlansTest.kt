@@ -1,15 +1,10 @@
 package org.dozendb.core.cypher
 
 import java.lang.reflect.Modifier
-import java.nio.file.Path
 import java.util.jar.JarFile
 import kotlin.io.path.toPath
 import org.assertj.core.api.Assertions.assertThat
-import org.assertj.core.api.Assertions.catchThrowable
-import org.dozendb.core.StandaloneServer
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.CleanupMode
-import org.junit.jupiter.api.io.TempDir
 import org.neo4j.cypher.internal.logical.plans.AdministrationCommandLogicalPlan
 
 /**
@@ -17,29 +12,11 @@ import org.neo4j.cypher.internal.logical.plans.AdministrationCommandLogicalPlan
  * purpose. A Neo4j upgrade that adds a plan fails here until someone decides which.
  */
 class AdministrationPlansTest {
-    // Kept when a test fails, for the server's logs.
-    @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path
-
     @Test
     fun `every administration plan is run or refused on purpose`() {
         assertThat(DOZENDB intersect COMMUNITY).isEmpty()
         assertThat((DOZENDB + COMMUNITY) intersect REFUSED.keys).isEmpty()
         assertThat(plans()).containsExactlyInAnyOrderElementsOf(DOZENDB + COMMUNITY + REFUSED.keys)
-    }
-
-    @Test
-    fun `refused commands fail as in Community`() {
-        StandaloneServer(root).use { server ->
-            server.start()
-            for (command in REFUSED_COMMANDS) {
-                val error = catchThrowable { server.administer(command) }
-                assertThat(error).describedAs(command).isNotNull()
-                assertThat(error.message).isEqualTo("Unsupported administration command: $command")
-            }
-            assertThat(server.rows("SHOW DATABASES YIELD name", database = StandaloneServer.SYSTEM))
-                .extracting<Any?> { it["name"] }
-                .containsExactlyInAnyOrder("neo4j", "system")
-        }
     }
 
     /** The administration plans Neo4j has, by name. */
@@ -145,6 +122,7 @@ class AdministrationPlansTest {
                 "RenameServer",
                 "DeallocateServer",
                 "ReallocateDatabases",
+                "DropServer",
             )
 
         /** Planned by Community's runtime, which DozenDB's falls back to. */
@@ -163,16 +141,7 @@ class AdministrationPlansTest {
                 "ShowDatabase",
             )
 
-        const val PLACEMENT = "every enabled server hosts every database: none moves off one"
-
         /** Planned by neither, so they fail as they do in Community: why. */
-        val REFUSED =
-            mapOf(
-                "EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it",
-                "DropServer" to PLACEMENT,
-            )
-
-        /** A command for each refused plan that is a command of its own. */
-        val REFUSED_COMMANDS = listOf("DROP SERVER 'one'")
+        val REFUSED = mapOf("EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it")
     }
 }

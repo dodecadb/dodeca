@@ -138,7 +138,7 @@ class MembershipIT {
         )
 
     @Test
-    fun `a member is added and another removed during writes, and nothing acknowledged is lost`() {
+    fun `a member is added and another dropped during writes, and nothing acknowledged is lost`() {
         administer("CREATE DATABASE films")
         eventually {
             for (member in started) {
@@ -174,7 +174,18 @@ class MembershipIT {
                 .single {
                     it["self"] == true
                 }["memberId"]
-        administer("CALL dozendb.cluster.removeMember('$removedId')")
+        // Cordoned, its copies go first when the databases shrink; then it can be dropped.
+        administer("CALL dbms.cluster.cordonServer('$removedId')")
+        for (database in DATABASES) administer("ALTER DATABASE $database SET TOPOLOGY 3 PRIMARIES")
+        administer("DEALLOCATE DATABASES FROM SERVER '$removedId'")
+        eventually {
+            val states =
+                member("core1").rows("SHOW SERVERS YIELD serverId, state", "system").associate {
+                    it["serverId"] to it["state"]
+                }
+            assertThat(states[removedId]).isEqualTo("Deallocated")
+        }
+        administer("DROP SERVER '$removedId'")
         val remaining = started - removed
         eventually {
             assertThat(removed.debugLog()).contains("This member was removed from the cluster")

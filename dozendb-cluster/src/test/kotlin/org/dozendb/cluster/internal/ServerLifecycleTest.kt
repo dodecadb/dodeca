@@ -9,6 +9,7 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.cluster.MemberState
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
@@ -53,18 +54,29 @@ class ServerLifecycleTest {
                 it.start()
             }
 
-    private fun ClusterHarness.administer(query: String) {
-        awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(query)
+    /** Runs [query] on the `system` leader of [among]. */
+    private fun ClusterHarness.administer(
+        query: String,
+        among: () -> List<ClusterHarness.Member> = ::running,
+    ) {
+        awaitLeader(SYSTEM, among).database(SYSTEM).executeTransactionally(query)
     }
 
-    private fun ClusterHarness.rows(query: String): List<Map<String, Any?>> =
-        awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(query, emptyMap()) { result ->
+    private fun ClusterHarness.rows(
+        query: String,
+        among: () -> List<ClusterHarness.Member> = ::running,
+    ): List<Map<String, Any?>> =
+        awaitLeader(SYSTEM, among).database(SYSTEM).executeTransactionally(query, emptyMap()) {
+            result ->
             result.asSequence().map { it.toMap() }.toList()
         }
 
     /** The row of [server] in SHOW SERVERS YIELD *. */
-    private fun ClusterHarness.server(server: ClusterHarness.Member): Map<String, Any?> =
-        rows("SHOW SERVERS YIELD *").single { it["serverId"] == server.serverId }
+    private fun ClusterHarness.server(
+        server: ClusterHarness.Member,
+        among: () -> List<ClusterHarness.Member> = ::running,
+    ): Map<String, Any?> =
+        rows("SHOW SERVERS YIELD *", among).single { it["serverId"] == server.serverId }
 
     /** The members whose copy of [database] runs, and which vote in its group. */
     private fun ClusterHarness.hosts(database: String): Set<ClusterHarness.Member> =
@@ -426,6 +438,93 @@ class ServerLifecycleTest {
                 catchThrowable { cluster.rows("CALL dbms.cluster.reallocateNumberOfDatabases(0)") }
             )
             .hasMessageContaining("the number of databases is 0, not 1 or more")
+    }
+
+    @Test
+    fun `DROP SERVER removes a Deallocated server, which shows Dropped while it answers`() {
+        val cluster = cluster()
+        val leaving = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        val remaining = { cluster.members - leaving }
+        cluster.administer("DEALLOCATE DATABASES FROM SERVER '${leaving.serverId}'")
+        eventually { assertThat(cluster.server(leaving)["state"]).isEqualTo("Deallocated") }
+
+        cluster.administer("DROP SERVER '${leaving.serverId}'")
+
+        eventually {
+            assertThat(leaving.cluster.state).isEqualTo(MemberState.REMOVED)
+            assertThat(cluster.server(leaving, remaining)["state"]).isEqualTo("Dropped")
+        }
+        assertThat(
+                catchThrowable {
+                    cluster.administer("ENABLE SERVER '${leaving.serverId}'", remaining)
+                }
+            )
+            .hasMessageContaining("it was dropped")
+        leaving.stop()
+        eventually {
+            assertThat(cluster.rows("SHOW SERVERS YIELD serverId", remaining))
+                .extracting<Any?> { it["serverId"] }
+                .containsExactlyInAnyOrderElementsOf(remaining().map { it.serverId })
+        }
+    }
+
+    @Test
+    fun `DROP SERVER removes a Free server, and refuses one that is not Deallocated`() {
+        val cluster = cluster()
+        val enabled = cluster.members.first()
+        cluster.administer("CALL dbms.cluster.setAutomaticallyEnableFreeServers(false)")
+
+        assertThat(catchThrowable { cluster.administer("DROP SERVER '${enabled.serverId}'") })
+            .hasMessageStartingWith("Could not drop server '${enabled.serverId}'")
+            .hasMessageContaining("it is Enabled")
+
+        val free = cluster.newMember().apply { start() }
+        val remaining = { cluster.members - free }
+        cluster.administer(
+            "CALL dozendb.cluster.addMember('127.0.0.1:${free.raftPort}')",
+            remaining,
+        )
+        eventually { assertThat(cluster.server(free)["state"]).isEqualTo("Free") }
+
+        cluster.administer("DROP SERVER '${free.serverId}'")
+
+        eventually {
+            assertThat(free.cluster.state).isEqualTo(MemberState.REMOVED)
+            assertThat(cluster.rows("SHOW SERVERS YIELD serverId, state", remaining))
+                .filteredOn { it["serverId"] != free.serverId }
+                .extracting<Any?> { it["state"] }
+                .containsOnly("Enabled")
+        }
+    }
+
+    @Test
+    fun `DROP SERVER refuses a deallocating server that may hold the only copy of a database`() {
+        val cluster = cluster()
+        val holder = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        val others = cluster.members - holder
+        for (other in others) cluster.administer(
+            "CALL dbms.cluster.cordonServer('${other.serverId}')"
+        )
+        cluster.administer("CREATE DATABASE films TOPOLOGY 1 PRIMARY WAIT")
+        for (other in others) cluster.administer("ENABLE SERVER '${other.serverId}'")
+        // The system leader has heard from it that it leads the group of films.
+        eventually {
+            assertThat(cluster.rows("SHOW DATABASE films YIELD serverID, writer"))
+                .containsExactly(mapOf("serverID" to holder.serverId, "writer" to true))
+        }
+        val id = holder.serverId
+        holder.stop()
+
+        cluster.administer("DEALLOCATE DATABASES FROM SERVER '$id'")
+
+        assertThat(
+                cluster.rows("SHOW SERVERS YIELD serverId, state").single { it["serverId"] == id }
+            )
+            .containsEntry("state", "Deallocating")
+        assertThat(catchThrowable { cluster.administer("DROP SERVER '$id'") })
+            .hasMessageStartingWith("Could not drop server '$id'")
+            .hasMessageContaining("'films'")
+            .hasMessageContaining("Deallocated")
     }
 
     @Test

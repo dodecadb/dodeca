@@ -2,6 +2,10 @@ package org.dozendb.cluster.internal.topology
 
 import java.time.Duration
 import java.util.Optional
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.internal.InitialServerOptions
@@ -11,6 +15,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
+import org.dozendb.core.servers.DroppedServer
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerRecords
@@ -19,6 +24,7 @@ import org.neo4j.dbms.database.DatabaseDetails
 import org.neo4j.dbms.database.ServerDetails
 import org.neo4j.dbms.database.TopologyInfoService
 import org.neo4j.dbms.identity.ServerId
+import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.graphdb.Transaction
@@ -47,47 +53,105 @@ internal class ClusterTopologyInfoService(
      * A server for each member of the cluster: Enabled with its record, Free without one, except
      * that every member counts as enabled, with the options it reports, until the servers the
      * cluster started with are recorded (see `ServerReconciler`). It hosts the databases it reports
-     * running, and is to host `system` and the databases placed on it that are requested online.
+     * running, and is to host `system` and the databases placed on it that are requested online. A
+     * deallocating server is Deallocated once no database is placed on it and it votes in no
+     * database's group. A dropped server is Dropped while the cluster still has it, and after that
+     * while it answers where it was.
      */
     override fun servers(transaction: Transaction): Set<ServerDetails> {
         val answering = answering()
         val records = ServerRecords.records(transaction)
+        val dropped = ServerRecords.dropped(transaction)
         val initialRecorded = ServerRecords.initialServersEnabled(transaction)
         val online = requestedOnline(transaction)
-        return systemMembers().mapTo(LinkedHashSet()) { member ->
-            val record = records[member.uuid]
-            val enabled = record != null || !initialRecorded
-            val reported = report(member)
-            val available = member in answering
-            val options =
-                record?.options
-                    ?: reported?.takeIf { enabled }?.let(InitialServerOptions::reported)
-                    ?: ServerOptions()
-            ServerDetails(
-                ServerId(member.uuid),
-                record?.name ?: member.uuid.toString(),
-                Optional.ofNullable(directory.boltAddress(member)?.let(::socketAddress)),
-                Optional.ofNullable(reported?.get(MemberMetadata.HTTP_ADDRESS)?.let(::parsed)),
-                Optional.ofNullable(reported?.get(MemberMetadata.HTTPS_ADDRESS)?.let(::parsed)),
-                LinkedHashSet(options.tags),
-                when {
-                    !enabled -> ServerDetails.State.FREE
-                    record?.status == InstanceStatus.CORDONED -> ServerDetails.State.CORDONED
-                    record?.status == InstanceStatus.DEALLOCATING ->
-                        ServerDetails.State.DEALLOCATING
-                    else -> ServerDetails.State.ENABLED
-                },
-                if (available) ServerDetails.RunningState.AVAILABLE
-                else ServerDetails.RunningState.UNAVAILABLE,
-                if (available) running(member) else emptySet(),
-                if (enabled) requested(transaction, member, online) else emptySet(),
-                LinkedHashSet(options.allowedDatabases),
-                LinkedHashSet(options.deniedDatabases),
-                options.modeConstraint,
-                Optional.ofNullable(reported?.get(MemberMetadata.NEO4J_VERSION)),
-            )
-        }
+        val members = systemMembers()
+        val servers =
+            members.mapTo(LinkedHashSet()) { member ->
+                val record = records[member.uuid]
+                val enabled = record != null || !initialRecorded
+                val reported = report(member)
+                val available = member in answering
+                val options =
+                    record?.options
+                        ?: reported?.takeIf { enabled }?.let(InitialServerOptions::reported)
+                        ?: ServerOptions()
+                ServerDetails(
+                    ServerId(member.uuid),
+                    record?.name ?: dropped[member.uuid]?.name ?: member.uuid.toString(),
+                    Optional.ofNullable(directory.boltAddress(member)?.let(::socketAddress)),
+                    Optional.ofNullable(reported?.get(MemberMetadata.HTTP_ADDRESS)?.let(::parsed)),
+                    Optional.ofNullable(reported?.get(MemberMetadata.HTTPS_ADDRESS)?.let(::parsed)),
+                    LinkedHashSet(options.tags),
+                    when {
+                        member.uuid in dropped -> ServerDetails.State.DROPPED
+                        !enabled -> ServerDetails.State.FREE
+                        record?.status == InstanceStatus.CORDONED -> ServerDetails.State.CORDONED
+                        record?.status == InstanceStatus.DEALLOCATING ->
+                            if (deallocated(transaction, member)) ServerDetails.State.DEALLOCATED
+                            else ServerDetails.State.DEALLOCATING
+                        else -> ServerDetails.State.ENABLED
+                    },
+                    if (available) ServerDetails.RunningState.AVAILABLE
+                    else ServerDetails.RunningState.UNAVAILABLE,
+                    if (available) running(member) else emptySet(),
+                    if (enabled) requested(transaction, member, online) else emptySet(),
+                    LinkedHashSet(options.allowedDatabases),
+                    LinkedHashSet(options.deniedDatabases),
+                    options.modeConstraint,
+                    Optional.ofNullable(reported?.get(MemberMetadata.NEO4J_VERSION)),
+                )
+            }
+        val left = dropped.values.filter { it.address != null && MemberId(it.id) !in members }
+        return servers.apply { addAll(stillAnswering(left)) }
     }
+
+    /** Whether the deallocating [member] is placed on no database, and votes in no group. */
+    private fun deallocated(transaction: Transaction, member: MemberId): Boolean =
+        Placements.placedOn(transaction, member.uuid).isEmpty() &&
+            locations.votedIn(transaction, member).isEmpty()
+
+    /** A Dropped server for each of the servers that left the cluster and still answer. */
+    private fun stillAnswering(left: List<DroppedServer>): List<ServerDetails> = runBlocking {
+        left
+            .map { server ->
+                async {
+                    val address =
+                        server.address?.let { runCatching { HostPort.parse(it) }.getOrNull() }
+                    val peer =
+                        try {
+                            address?.let {
+                                withTimeoutOrNull(probeDeadline.toMillis()) { consensus.probe(it) }
+                            }
+                        } catch (_: ConsensusUnavailableException) {
+                            null
+                        }
+                    peer
+                        ?.takeIf { it.member.id.uuid == server.id }
+                        ?.let { dropped(server, it.metadata) }
+                }
+            }
+            .awaitAll()
+            .filterNotNull()
+    }
+
+    /** The row of the dropped [server], which reports [metadata]. */
+    private fun dropped(server: DroppedServer, metadata: Map<String, String>): ServerDetails =
+        ServerDetails(
+            ServerId(server.id),
+            server.name,
+            Optional.ofNullable(metadata[MemberMetadata.BOLT_ADDRESS]?.let(::parsed)),
+            Optional.ofNullable(metadata[MemberMetadata.HTTP_ADDRESS]?.let(::parsed)),
+            Optional.ofNullable(metadata[MemberMetadata.HTTPS_ADDRESS]?.let(::parsed)),
+            emptySet(),
+            ServerDetails.State.DROPPED,
+            ServerDetails.RunningState.AVAILABLE,
+            emptySet(),
+            emptySet(),
+            emptySet(),
+            emptySet(),
+            InstanceModeConstraint.NONE,
+            Optional.ofNullable(metadata[MemberMetadata.NEO4J_VERSION]),
+        )
 
     /** The members that answer this member now, after asking them all for at most a deadline. */
     private fun answering(): Set<MemberId> =

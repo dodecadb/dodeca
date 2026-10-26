@@ -83,6 +83,7 @@ import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.fabric.bookmark.LocalGraphTransactionIdTracker
 import org.neo4j.fabric.executor.Location
+import org.neo4j.graphdb.Transaction
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.graphdb.factory.module.GlobalModule
@@ -549,6 +550,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
                 log = globalModule.logService.getInternalLog(ServerReconciler::class.java),
+                remove = cluster::removeMember,
                 holders = { database -> locations.of(database)?.voters?.map { it.id }.orEmpty() },
                 available = directory::answering,
                 defaults =
@@ -872,6 +874,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 if (peer.member.id != member.id) return null
                 return InitialServerOptions.reported(peer.metadata)
             }
+
+            override fun address(id: UUID): String? =
+                consensus
+                    .members(systemDatabase)
+                    .firstOrNull { it.id.uuid == id }
+                    ?.raftAddress
+                    ?.toString()
+
+            override fun holding(tx: Transaction, id: UUID): Set<String> =
+                locations.votedIn(tx, MemberId(id))
         }
 
     /**

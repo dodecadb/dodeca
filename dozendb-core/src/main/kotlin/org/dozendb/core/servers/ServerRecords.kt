@@ -26,6 +26,13 @@ data class ServerRecord(
     val status: InstanceStatus = InstanceStatus.ENABLED,
 )
 
+/**
+ * A server that DROP SERVER removed from the cluster.
+ *
+ * @property address where the cluster reached it, kept while it may still answer there.
+ */
+data class DroppedServer(val id: UUID, val name: String, val address: String?)
+
 /** The options of a server that ENABLE SERVER and ALTER SERVER set, all of them each time. */
 data class ServerOptions(
     val tags: List<String> = emptyList(),
@@ -62,10 +69,14 @@ data class ServerOptions(
  * Enterprise keeps them: an `Instance` node for each enabled server, and a `TopologyGraphSettings`
  * node whose `initial_instances_enabled` flag tells that the servers the cluster was formed with,
  * or had when it first recorded servers, are recorded, and whose `auto_enable_free_servers` flag
- * tells whether servers that join are enabled at once.
+ * tells whether servers that join are enabled at once. A dropped server's node is a
+ * `RemovedInstance` with the time it was removed, and DozenDB's `dozendb_raft_address` while it may
+ * still answer there.
  */
 object ServerRecords {
     private val INSTANCE = TopologyGraphDbmsModel.INSTANCE_LABEL
+    private val REMOVED = TopologyGraphDbmsModel.REMOVED_INSTANCE_LABEL
+    private const val ADDRESS = "dozendb_raft_address"
     private val SETTINGS = TopologyGraphDbmsModel.TOPOLOGY_GRAPH_CONFIG_LABEL
     private const val INITIAL_ENABLED =
         TopologyGraphDbmsModel.TOPOLOGY_GRAPH_CONFIG_INITIAL_INSTANCES_ENABLED_FLAG
@@ -181,11 +192,58 @@ object ServerRecords {
     }
 
     /**
-     * Deletes every record, with the databases placed on them, and both flags, as when a cluster
-     * adopts another one's system graph.
+     * Records the server [id] dropped, as DROP SERVER does, with its [name] and the [address] where
+     * the cluster reaches it: its record, if it has one, becomes a `RemovedInstance`.
+     */
+    fun drop(tx: Transaction, id: UUID, name: String, address: String?) {
+        val node =
+            tx.findNode(INSTANCE, TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id")?.also {
+                it.relationships.use { relationships -> relationships.forEach { r -> r.delete() } }
+                it.removeLabel(INSTANCE)
+                it.addLabel(REMOVED)
+            }
+                ?: tx.createNode(REMOVED).also {
+                    it.setProperty(TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id")
+                }
+        node.setProperty(TopologyGraphDbmsModel.INSTANCE_NAME_PROPERTY, name)
+        node.setProperty(
+            TopologyGraphDbmsModel.REMOVED_INSTANCE_REMOVED_AT_PROPERTY,
+            ZonedDateTime.now(),
+        )
+        if (address != null) node.setProperty(ADDRESS, address)
+    }
+
+    /** The dropped servers, by id. */
+    fun dropped(tx: Transaction): Map<UUID, DroppedServer> =
+        tx.findNodes(REMOVED).use { nodes ->
+            nodes
+                .asSequence()
+                .mapNotNull { node ->
+                    val id = id(node) ?: return@mapNotNull null
+                    DroppedServer(
+                        id,
+                        node.getProperty(TopologyGraphDbmsModel.INSTANCE_NAME_PROPERTY, null)
+                            as? String ?: id.toString(),
+                        node.getProperty(ADDRESS, null) as? String,
+                    )
+                }
+                .associateBy { it.id }
+        }
+
+    /** Forgets the address of the dropped server [id], which no longer answers there. */
+    fun forgetAddress(tx: Transaction, id: UUID) {
+        tx.findNodes(REMOVED, TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id").use { nodes ->
+            nodes.forEach { it.removeProperty(ADDRESS) }
+        }
+    }
+
+    /**
+     * Deletes every record, with the databases placed on them, the dropped servers, and both flags,
+     * as when a cluster adopts another one's system graph.
      */
     fun deleteAll(tx: Transaction) {
         tx.findNodes(INSTANCE).use { nodes -> nodes.forEach(::detach) }
+        tx.findNodes(REMOVED).use { nodes -> nodes.forEach(::detach) }
         tx.findNodes(SETTINGS).use { nodes ->
             nodes.forEach {
                 it.removeProperty(INITIAL_ENABLED)
@@ -202,10 +260,13 @@ object ServerRecords {
     private fun settings(tx: Transaction): Node? =
         tx.findNodes(SETTINGS).use { nodes -> nodes.asSequence().firstOrNull() }
 
+    private fun id(node: Node): UUID? =
+        (node.getProperty(TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, null) as? String)?.let {
+            runCatching { UUID.fromString(it) }.getOrNull()
+        }
+
     private fun record(node: Node): ServerRecord? {
-        val id =
-            (node.getProperty(TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, null) as? String)
-                ?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: return null
+        val id = id(node) ?: return null
         return ServerRecord(
             id,
             node.getProperty(TopologyGraphDbmsModel.INSTANCE_NAME_PROPERTY, null) as? String

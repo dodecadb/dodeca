@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal.topology
 
+import java.util.UUID
 import org.dozendb.cluster.GroupViews
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.consensus.ConsensusLog
@@ -7,6 +8,9 @@ import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.neo4j.configuration.GraphDatabaseSettings.SYSTEM_DATABASE_NAME
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.graphdb.Transaction
 
 /**
  * Which members vote in a database's group and which one leads it, as this member knows it: its own
@@ -30,6 +34,29 @@ internal class DatabaseLocations(
         val local: Boolean,
         val settled: Boolean,
     )
+
+    /**
+     * The databases of the system graph that [tx] reads, `system` aside, whose groups [member]
+     * votes in, as far as known: a member that does not answer counts as it last reported.
+     */
+    fun votedIn(tx: Transaction, member: MemberId): Set<String> =
+        tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
+            nodes
+                .asSequence()
+                .mapNotNull { node ->
+                    val name =
+                        node.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null)
+                            as? String
+                    val id =
+                        (node.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY, null)
+                                as? String)
+                            ?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    if (name == null || id == null || name == SYSTEM_DATABASE_NAME) null
+                    else DatabaseRef(name, id)
+                }
+                .filter { database -> of(database)?.voters.orEmpty().any { it.id == member } }
+                .mapTo(HashSet()) { it.name }
+        }
 
     /** Where [database] is, or null while no member is known to vote in its group. */
     fun of(database: DatabaseRef): Location? {

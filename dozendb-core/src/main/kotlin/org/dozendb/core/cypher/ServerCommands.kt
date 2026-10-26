@@ -23,6 +23,7 @@ import org.neo4j.cypher.internal.ast.OptionsParam
 import org.neo4j.cypher.internal.evaluator.Evaluator
 import org.neo4j.cypher.internal.logical.plans.AlterServer
 import org.neo4j.cypher.internal.logical.plans.DeallocateServer
+import org.neo4j.cypher.internal.logical.plans.DropServer
 import org.neo4j.cypher.internal.logical.plans.EnableServer
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.ReallocateDatabases
@@ -101,6 +102,7 @@ internal class ServerCommands(
             is RenameServer -> Planner { rename(plan, it) }
             is DeallocateServer -> Planner { deallocate(plan, it) }
             is ReallocateDatabases -> Planner { reallocate(plan, it) }
+            is DropServer -> Planner { drop(plan, it) }
             else -> null
         }
 
@@ -292,6 +294,29 @@ internal class ServerCommands(
                 ServerLifecycle.reallocate(tx, placement, null, null, dryRun = false, failed)
             }
         return updating("ReallocateDatabases", "REALLOCATE DATABASES", change, source, failure)
+    }
+
+    /**
+     * DROP SERVER: a Free or Deallocated server leaves the cluster (see [ServerLifecycle.drop]).
+     */
+    private fun drop(
+        plan: DropServer,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val name = { params: MapValue -> admin.runtimeStringValue(plan.serverName(), params) }
+        val failure = { params: MapValue -> "Could not drop server '${name(params)}'" }
+        val change =
+            changing("DROP SERVER", failure) { tx, params ->
+                ServerRecords.lock(tx)
+                ServerLifecycle.drop(tx, name(params), servers, failure(params))
+            }
+        return updating(
+            "DropServer",
+            "DROP SERVER",
+            change,
+            compile(plan.source(), context),
+            failure,
+        )
     }
 
     /**

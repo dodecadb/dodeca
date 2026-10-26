@@ -310,10 +310,11 @@ class ServersTest {
                 }
             }
         }
+        // A cordoned server's copies go first when the databases shrink.
         val removed = enabled.last()
-        free
-            .database(SYSTEM)
-            .executeTransactionally("CALL dozendb.cluster.removeMember('${removed.serverId}')")
+        system.executeTransactionally("CALL dbms.cluster.cordonServer('${removed.serverId}')")
+        system.executeTransactionally("ALTER DATABASE films SET TOPOLOGY 3 PRIMARIES")
+        system.executeTransactionally("ALTER DATABASE $NEO4J SET TOPOLOGY 3 PRIMARIES")
         val remaining = voters - removed
         eventually {
             for (member in remaining) {

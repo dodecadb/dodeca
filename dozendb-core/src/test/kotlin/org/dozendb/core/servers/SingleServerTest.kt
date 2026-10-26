@@ -79,6 +79,23 @@ class SingleServerTest {
     }
 
     @Test
+    fun `DROP SERVER fails, as the server is enabled`() {
+        StandaloneServer(root).use { server ->
+            server.start()
+            val id =
+                server
+                    .rows("SHOW SERVERS YIELD serverId", database = StandaloneServer.SYSTEM)
+                    .single()["serverId"]
+
+            val error = catchThrowable { server.administer("DROP SERVER '$id'") }
+
+            assertThat(error)
+                .hasMessageStartingWith("Could not drop server '$id'")
+                .hasMessageContaining("it is Enabled")
+        }
+    }
+
+    @Test
     fun `REALLOCATE moves nothing, as no other server can host a copy`() {
         StandaloneServer(root).use { server ->
             server.start()

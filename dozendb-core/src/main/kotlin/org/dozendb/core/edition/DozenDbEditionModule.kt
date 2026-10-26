@@ -32,6 +32,7 @@ import org.dozendb.core.security.MemberRealm
 import org.dozendb.core.security.RefusingMemberRealm
 import org.dozendb.core.security.SystemGraphSecurity
 import org.dozendb.core.servers.DatabasePlacement
+import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.Servers
 import org.dozendb.core.servers.SingleServerPlacement
@@ -56,6 +57,7 @@ import org.neo4j.dbms.database.SystemGraphComponents
 import org.neo4j.dbms.database.TopologyInfoService
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.fabric.executor.Location
+import org.neo4j.graphdb.Transaction
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
@@ -234,6 +236,11 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 } else {
                     null
                 }
+
+            override fun address(id: UUID): String? = null
+
+            override fun holding(tx: Transaction, id: UUID): Set<String> =
+                if (id == self) Placements.placed(tx).mapTo(HashSet()) { it.name } else emptySet()
         }
 
     /** What creates databases from seeds: DozenDB's backup module, once Neo4j created it. */
