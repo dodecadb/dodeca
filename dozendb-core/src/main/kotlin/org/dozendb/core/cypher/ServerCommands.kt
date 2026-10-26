@@ -3,6 +3,7 @@ package org.dozendb.core.cypher
 import java.util.UUID
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.DatabasePlacement
+import org.dozendb.core.servers.ServerLifecycle
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerOptionsInput
 import org.dozendb.core.servers.ServerRecord
@@ -30,7 +31,6 @@ import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
 import org.neo4j.dbms.database.ServerDetails
 import org.neo4j.dbms.database.TopologyInfoService
-import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.Transaction
@@ -124,7 +124,8 @@ internal class ServerCommands(
 
     /**
      * ENABLE SERVER: records a Free server with its options. An enabled one keeps its options if
-     * those given are the same, and the command fails if they are not: ALTER SERVER changes them.
+     * those given are the same, and the command fails if they are not: ALTER SERVER changes them; a
+     * cordoned one is enabled again.
      */
     private fun enable(
         plan: EnableServer,
@@ -149,6 +150,7 @@ internal class ServerCommands(
                                 "changes them."
                         )
                     }
+                    ServerLifecycle.uncordon(tx, server, failed)
                 } else {
                     val options =
                         ServerOptionsInput.parse(
@@ -261,45 +263,12 @@ internal class ServerCommands(
         )
     }
 
-    /**
-     * A server as a command finds it: [enabled] with its record, or without one while the servers
-     * the cluster started with are not recorded yet, as always without clustering; Free otherwise.
-     */
-    private data class Target(
-        val id: UUID,
-        val name: String,
-        val options: ServerOptions,
-        val enabled: Boolean,
-        val status: InstanceStatus = InstanceStatus.ENABLED,
-    )
-
     /** The server called [name], by its name or its id. */
-    private fun target(tx: Transaction, name: String, failed: String): Target {
-        val records = ServerRecords.records(tx)
-        val id =
-            (records.values.firstOrNull { it.name == name }?.id
-                ?: uuid(name)?.takeIf { it in servers.ids() || it in records })
-                ?: throw InvalidArgumentException(
-                    "$failed: there is no such server. SHOW SERVERS lists the servers."
-                )
-        val record = records[id]
-        return Target(
-            id,
-            record?.name ?: id.toString(),
-            record?.options ?: servers.initialOptions(id) ?: ServerOptions(),
-            record != null || !ServerRecords.initialServersEnabled(tx),
-            record?.status ?: InstanceStatus.ENABLED,
-        )
-    }
+    private fun target(tx: Transaction, name: String, failed: String): ServerLifecycle.Target =
+        ServerLifecycle.target(tx, name, servers, failed)
 
-    private fun enabled(server: Target, failed: String): Target {
-        if (!server.enabled) {
-            throw InvalidArgumentException(
-                "$failed: it is Free. ENABLE SERVER enables it, with its options."
-            )
-        }
-        return server
-    }
+    private fun enabled(server: ServerLifecycle.Target, failed: String) =
+        ServerLifecycle.enabled(server, failed)
 
     /**
      * The [change] of a server [command] in its system transaction. On a member that does not lead
@@ -384,7 +353,7 @@ internal class ServerCommands(
             else -> MapValue.EMPTY
         }
 
-    private fun uuid(text: String): UUID? = runCatching { UUID.fromString(text) }.getOrNull()
+    private fun uuid(text: String): UUID? = ServerLifecycle.uuid(text)
 
     /** A row of SHOW SERVERS; databases `system` first, then by name. */
     private fun row(server: ServerDetails): MapValue {

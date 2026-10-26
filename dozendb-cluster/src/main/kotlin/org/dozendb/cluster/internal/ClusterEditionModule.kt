@@ -139,6 +139,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
     private lateinit var servers: ServerReconciler
+    private lateinit var administration: ServerAdministration
 
     /** The id of the default database as the system graph has it, read once `system` runs. */
     @Volatile private var clusterId: UUID? = null
@@ -555,6 +556,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
                         0,
                     ),
+            )
+        administration =
+            ServerAdministration(
+                { repository.getSystemDatabaseContext().databaseFacade() },
+                { block -> replication.readingSystem(block) },
+                leading = { replication.systemWritable },
+                servers = servers(),
             )
         cluster.onRemoved = reconciler::request
         // A copy no longer placed here is deleted once this member leaves the database's group.
@@ -1036,6 +1044,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         super.registerEditionSpecificProcedures(globalProcedures, databaseContextProvider)
         globalProcedures.registerComponent(ClusterService::class.java, { cluster }, true)
         globalProcedures.registerComponent(ServerReconciler::class.java, { servers }, true)
+        globalProcedures.registerComponent(
+            ServerAdministration::class.java,
+            { administration },
+            true,
+        )
         globalProcedures.registerProcedure(ClusterProcedures::class.java)
     }
 

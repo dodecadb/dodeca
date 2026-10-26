@@ -203,6 +203,45 @@ class ServerLifecycleTest {
     }
 
     @Test
+    fun `a cordoned server keeps its copies and takes no new ones, until it is enabled again`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 1 PRIMARY WAIT")
+        eventually { assertThat(cluster.hosts("films")).hasSize(1) }
+        val host = cluster.hosts("films").single()
+        val id = host.serverId
+
+        cluster.administer("CALL dbms.cluster.cordonServer('$id')")
+
+        assertThat(cluster.server(host)["state"]).isEqualTo("Cordoned")
+        assertThat(
+                catchThrowable { cluster.administer("CREATE DATABASE books TOPOLOGY 3 PRIMARIES") }
+            )
+            .hasMessageContaining(
+                "'books' needs 3 servers that can host it as a primary, and only 2 can"
+            )
+        cluster.administer("ALTER SERVER '$id' SET OPTIONS {tags: ['a']}")
+        assertThat(cluster.server(host)["state"]).describedAs("kept").isEqualTo("Cordoned")
+        assertThat(cluster.hosts("films")).containsExactly(host)
+
+        cluster.administer("CALL dbms.cluster.uncordonServer('$id')")
+
+        assertThat(cluster.server(host)["state"]).isEqualTo("Enabled")
+        cluster.administer("CREATE DATABASE books TOPOLOGY 3 PRIMARIES")
+        cluster.administer("CALL dbms.cluster.cordonServer('$id')")
+        cluster.administer("ENABLE SERVER '$id'")
+        assertThat(cluster.server(host)["state"]).isEqualTo("Enabled")
+    }
+
+    @Test
+    fun `cordoning a server that is not enabled fails`() {
+        val cluster = cluster()
+
+        assertThat(catchThrowable { cluster.administer("CALL dbms.cluster.cordonServer('none')") })
+            .hasMessageStartingWith("Could not cordon server 'none'")
+            .hasMessageContaining("there is no such server")
+    }
+
+    @Test
     fun `the initial servers take the mode constraint and databases they start with`() {
         val cluster = cluster {
             it.members[0].settings =

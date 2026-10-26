@@ -20,6 +20,7 @@ import org.neo4j.dbms.database.ServerDetails
 import org.neo4j.dbms.database.TopologyInfoService
 import org.neo4j.dbms.identity.ServerId
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.NamedDatabaseId
 
@@ -69,7 +70,13 @@ internal class ClusterTopologyInfoService(
                 Optional.ofNullable(reported?.get(MemberMetadata.HTTP_ADDRESS)?.let(::parsed)),
                 Optional.ofNullable(reported?.get(MemberMetadata.HTTPS_ADDRESS)?.let(::parsed)),
                 LinkedHashSet(options.tags),
-                if (enabled) ServerDetails.State.ENABLED else ServerDetails.State.FREE,
+                when {
+                    !enabled -> ServerDetails.State.FREE
+                    record?.status == InstanceStatus.CORDONED -> ServerDetails.State.CORDONED
+                    record?.status == InstanceStatus.DEALLOCATING ->
+                        ServerDetails.State.DEALLOCATING
+                    else -> ServerDetails.State.ENABLED
+                },
                 if (available) ServerDetails.RunningState.AVAILABLE
                 else ServerDetails.RunningState.UNAVAILABLE,
                 if (available) running(member) else emptySet(),

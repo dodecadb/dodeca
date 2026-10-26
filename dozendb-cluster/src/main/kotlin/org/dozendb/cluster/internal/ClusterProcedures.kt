@@ -26,6 +26,8 @@ class ClusterProcedures {
 
     @JvmField @Context var servers: ServerReconciler? = null
 
+    @JvmField @Context var administration: ServerAdministration? = null
+
     @SystemProcedure
     @Procedure(name = "dozendb.cluster.status", mode = Mode.DBMS)
     @Description("The Raft status of every database group on this member.")
@@ -125,6 +127,35 @@ class ClusterProcedures {
 
     @Admin
     @SystemProcedure
+    @Procedure(name = "dbms.cluster.cordonServer", mode = Mode.DBMS)
+    @Description(
+        "Cordons a server, named by its name or id: it keeps the databases it hosts and takes no " +
+            "new ones, until dbms.cluster.uncordonServer or ENABLE SERVER enables it again. Runs " +
+            "on the leader of the system database, as Neo4j Enterprise's procedure of the same " +
+            "name."
+    )
+    fun cordonServer(@Name("server") server: String) {
+        administering { it.cordon(server) }
+    }
+
+    @Admin
+    @SystemProcedure
+    @Procedure(
+        name = "dbms.cluster.uncordonServer",
+        mode = Mode.DBMS,
+        deprecatedBy = "ENABLE SERVER",
+    )
+    @Description(
+        "Enables a cordoned server, named by its name or id, again, as ENABLE SERVER does. Runs " +
+            "on the leader of the system database, as Neo4j Enterprise's procedure of the same " +
+            "name."
+    )
+    fun uncordonServer(@Name("server") server: String) {
+        administering { it.uncordon(server) }
+    }
+
+    @Admin
+    @SystemProcedure
     @Procedure(name = "dozendb.cluster.addMember", mode = Mode.DBMS)
     @Description(
         "Adds the member at the given Raft address to the cluster. Start it first with " +
@@ -160,6 +191,15 @@ class ClusterProcedures {
                 throw ProcedureFailure("Invalid member id '$memberId': ${e.message}", e)
             }
         changingMembers { requireCluster().removeMember(id) }
+    }
+
+    private fun <T> administering(change: (ServerAdministration) -> T): T {
+        val administration = checkNotNull(administration) { "the servers are not known yet" }
+        return try {
+            change(administration)
+        } catch (e: IllegalStateException) {
+            throw ProcedureFailure(e.message.orEmpty(), e)
+        }
     }
 
     private fun <T> changingMembers(change: () -> T): T =
