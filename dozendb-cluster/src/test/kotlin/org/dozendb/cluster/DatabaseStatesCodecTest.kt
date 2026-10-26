@@ -31,6 +31,19 @@ class DatabaseStatesCodecTest {
     }
 
     @Test
+    fun `leaves out a database whose status a later version added, and reads the others`() {
+        val online = DatabaseState("films", UUID.randomUUID(), Status.ONLINE)
+        val later = "books\t${UUID.randomUUID()}\tRESTORING"
+
+        assertThat(
+                DatabaseStatesCodec.decode(
+                    later + "\n" + DatabaseStatesCodec.encode(listOf(online))
+                )
+            )
+            .containsExactly(online)
+    }
+
+    @Test
     fun `refuses what it did not write`() {
         assertThatThrownBy { DatabaseStatesCodec.decode("books") }
             .isInstanceOf(IllegalArgumentException::class.java)
