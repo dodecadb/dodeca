@@ -221,20 +221,37 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
      * change is committed, at once if [member] is a member already. Only one change at a time is
      * possible in a group.
      *
+     * A member that does not run the group changes it through [members], the group's voting members
+     * as the members that run it report them (see [PeerInfo.groups]); where the group runs, its own
+     * view is used instead.
+     *
      * @throws ConsensusUnavailableException if the change was not committed within [timeout], for
      *   example because [member] does not run the group or stopped responding, or another change is
-     *   in progress.
+     *   in progress; or if the group does not run here and [members] is empty.
      */
-    public suspend fun addMember(database: DatabaseRef, member: Member, timeout: Duration)
+    public suspend fun addMember(
+        database: DatabaseRef,
+        member: Member,
+        timeout: Duration,
+        members: List<Member> = emptyList(),
+    )
 
     /**
      * Removes the member [id] from the group of [database], through the group's leader. Returns
      * once the change is committed, at once if [id] is not a member as far as this member knows.
      * The removed member stops running the group (see [GroupMembership.removed]).
      *
+     * A member that does not run the group changes it through [members], as for [addMember]; the
+     * change then applies only if they are still the group's members.
+     *
      * @throws ConsensusUnavailableException if the change was not committed within [timeout], for
      *   example because no leader is reachable, another change is in progress, or this member's
-     *   view of the members is outdated.
+     *   view of the members is outdated; or if the group does not run here and [members] is empty.
      */
-    public suspend fun removeMember(database: DatabaseRef, id: MemberId, timeout: Duration)
+    public suspend fun removeMember(
+        database: DatabaseRef,
+        id: MemberId,
+        timeout: Duration,
+        members: List<Member> = emptyList(),
+    )
 }

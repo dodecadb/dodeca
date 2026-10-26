@@ -539,13 +539,19 @@ class InMemoryConsensus {
             return AutoCloseable { synchronized(lock) { listeners[database.id]?.remove(listener) } }
         }
 
-        override suspend fun addMember(database: DatabaseRef, member: Member, timeout: Duration) {
+        // Every member sees every group here, so the members given are not needed.
+        override suspend fun addMember(
+            database: DatabaseRef,
+            member: Member,
+            timeout: Duration,
+            members: List<Member>,
+        ) {
             val notifications =
                 synchronized(lock) {
                     val group = group(database)
                     if (group.members.any { it.id == member.id }) return
                     requireLeader(group)
-                    val target = members[member.id]
+                    val target = this@InMemoryConsensus.members[member.id]
                     if (
                         target == null || !target.transportUp || database.id !in target.localState
                     ) {
@@ -558,7 +564,12 @@ class InMemoryConsensus {
             notifications.forEach { it() }
         }
 
-        override suspend fun removeMember(database: DatabaseRef, id: MemberId, timeout: Duration) {
+        override suspend fun removeMember(
+            database: DatabaseRef,
+            id: MemberId,
+            timeout: Duration,
+            members: List<Member>,
+        ) {
             val notifications =
                 synchronized(lock) {
                     val group = group(database)
@@ -566,7 +577,7 @@ class InMemoryConsensus {
                     requireLeader(group)
                     group.members = group.members.filterNot { it.id == id }
                     if (group.leader == id) group.leader = null
-                    members[id]?.let { removed ->
+                    this@InMemoryConsensus.members[id]?.let { removed ->
                         removed.running.remove(database.id)
                         removed.delivered.remove(database.id)
                         removed.removedFrom += database.id

@@ -10,6 +10,7 @@ import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.fake.InMemoryConsensus
 import org.dozendb.consensus.fake.RecordingStateMachine
@@ -94,6 +95,34 @@ class MembershipReconcilerTest {
     }
 
     @Test
+    fun `a system leader that hosts no database changes groups that do not run on it`() {
+        val free = logs[0]
+        val hosting = logs.drop(1).map { it.self }
+        for (log in logs) {
+            log.start()
+            log.startGroup(system, RecordingStateMachine(), initial)
+        }
+        for (log in logs.drop(1)) log.startGroup(films, RecordingStateMachine(), hosting)
+        consensus.electLeader(system, free.self.id)
+        consensus.electLeader(films, logs[1].self.id)
+        val added = consensus.newMember().apply { start() }
+        added.joinGroup(system, initial)
+        added.startGroup(films, RecordingStateMachine(), hosting)
+        changeCluster { free.addMember(system, added.self, TIMEOUT) }
+        val reconciler = reconciler(hosts = { it != free.self.id })
+
+        reconciler.reconcile()
+
+        assertThat(logs[1].members(films)).containsExactlyElementsOf(hosting + added.self)
+
+        changeCluster { free.removeMember(system, logs[2].self.id, TIMEOUT) }
+        reconciler.reconcile()
+
+        assertThat(logs[1].members(films)).containsExactly(logs[1].self, added.self)
+        assertThat(free.localGroups()).doesNotContain(films.id)
+    }
+
+    @Test
     fun `only the system leader changes groups`() {
         formCluster()
         changeCluster { leader.removeMember(system, logs[2].self.id, TIMEOUT) }
@@ -154,6 +183,7 @@ class MembershipReconcilerTest {
                     database: DatabaseRef,
                     id: MemberId,
                     timeout: Duration,
+                    members: List<Member>,
                 ) {
                     changing.countDown()
                     awaitCancellation()

@@ -374,9 +374,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             MembershipReconciler(
                 consensus,
                 systemDatabase,
-                { replicationService.created() },
+                {
+                    systemGraph.databases().map {
+                        DatabaseRef(it.id.name(), it.id.databaseId().uuid())
+                    }
+                },
                 logService.getInternalLog(MembershipReconciler::class.java),
                 hosts = { systemGraph.hosts(it) },
+                systemRunning = { replicationService.replica(systemDatabase)?.isRunning() == true },
             )
         globalModule.globalLife.add(
             object : LifecycleAdapter() {

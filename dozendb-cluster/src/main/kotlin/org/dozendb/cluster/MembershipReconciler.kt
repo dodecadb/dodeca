@@ -11,11 +11,12 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
-import org.dozendb.consensus.GroupMembership
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.Role
@@ -30,6 +31,11 @@ import org.neo4j.logging.Log
  * when it is offline or its leader was removed from the cluster. Nothing changes while the
  * cluster's members change.
  *
+ * The `system` leader need not run a group to change it, as a Free server runs none: it asks every
+ * member which groups it runs and whom they have as voting members, and changes a group that does
+ * not run here through the members that vote in it. It waits while those disagree, as while a
+ * change is under way.
+ *
  * For each group the reconciler first removes members the cluster no longer has, then adds the
  * members it lacks, one change at a time in each group and groups in parallel. A member is added
  * only once it runs the group, which it does once it has copied the database; the group's leader
@@ -39,20 +45,23 @@ import org.neo4j.logging.Log
  * Work that remains is looked at again after [retryDelay], and after twice as long each time work
  * still remains, up to [maximumRetryDelay]; a finished change looks at once.
  *
- * @property groups the database groups that run on this member, `system` among them or not.
+ * @property databases the databases of the system graph, `system` among them or not.
  * @property changes runs the changes, which wait for the group's leader.
  * @property hosts whether a member of the cluster hosts the databases other than `system`.
+ * @property systemRunning whether the `system` database runs here, so that [databases] and [hosts]
+ *   can read it: this member may lead `system` before.
  */
 class MembershipReconciler(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
-    private val groups: () -> List<DatabaseRef>,
+    private val databases: () -> List<DatabaseRef>,
     private val log: Log,
     private val changeTimeout: Duration = Duration.ofMinutes(10),
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
     private val changes: Executor = newChangeExecutor(),
     private val hosts: (MemberId) -> Boolean = { true },
+    private val systemRunning: () -> Boolean = { true },
 ) : AutoCloseable {
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -118,23 +127,91 @@ class MembershipReconciler(
      */
     fun reconcile(): Boolean {
         if (consensus.status(systemDatabase).role != Role.Leader) return false
+        if (!systemRunning()) return true
         val cluster = consensus.membership(systemDatabase)
         if (!cluster.settled) return true
+        val hosting = cluster.members.filter { hosts(it.id) }
+        val reports = groupsReported(cluster.members).toMutableMap()
         var again = false
-        for (group in groups()) {
+        for (group in databases()) {
             if (group.id == systemDatabase.id) continue
-            val membership =
-                try {
-                    consensus.membership(group)
-                } catch (_: ConsensusUnavailableException) {
-                    // Not running here.
-                    continue
-                }
-            val change = nextChange(cluster.members.filter { hosts(it.id) }, membership) ?: continue
+            val voters = voters(group, reports)
+            if (voters == null) {
+                // No member that answers votes in it, or they disagree: look again later.
+                again = true
+                continue
+            }
+            val change = nextChange(hosting, voters) { runs(it, group, reports) } ?: continue
             again = true
-            if (group.id !in inFlight) startIfPossible(group, change)
+            if (group.id !in inFlight) startIfPossible(group, change, voters, reports)
         }
         return again
+    }
+
+    /**
+     * The groups that each of [members] runs, with the voting members it knows; a member that does
+     * not answer is left out.
+     */
+    private fun groupsReported(members: List<Member>): Map<MemberId, Map<UUID, List<Member>>> =
+        runBlocking {
+            members
+                .map { member ->
+                    async {
+                        try {
+                            val peer = consensus.probe(member.raftAddress)
+                            if (peer.member.id == member.id) member.id to peer.groups else null
+                        } catch (_: ConsensusUnavailableException) {
+                            null
+                        }
+                    }
+                }
+                .awaitAll()
+        }
+        .filterNotNull()
+        .toMap()
+
+    /**
+     * The voting members of [group]: this member's view where it votes in the group, else the view
+     * of the members that report voting in it, if they agree; null if none does or they disagree.
+     * When no member of the cluster reports voting in it, the members that the others name as its
+     * voters are asked too, and added to [reports]: they may have left the cluster.
+     */
+    private fun voters(
+        group: DatabaseRef,
+        reports: MutableMap<MemberId, Map<UUID, List<Member>>>,
+    ): List<Member>? {
+        val local =
+            try {
+                consensus.membership(group)
+            } catch (_: ConsensusUnavailableException) {
+                null
+            }
+        if (local != null && !local.removed && local.members.any { it.id == consensus.self.id }) {
+            return local.members
+        }
+        var views = votersReported(group, reports)
+        if (views.isEmpty()) {
+            val named =
+                (reports.values.flatMap { it[group.id].orEmpty() } + local?.members.orEmpty())
+                    .distinctBy { it.id }
+                    .filter { it.id !in reports }
+            reports += groupsReported(named)
+            views = votersReported(group, reports)
+        }
+        return views.firstOrNull()?.takeIf { first ->
+            views.all { view -> view.map { it.id }.toSet() == first.map { it.id }.toSet() }
+        }
+    }
+
+    /**
+     * The views of [group]'s voting members that its voters report. A member waiting to be added,
+     * or removed, knows other members than the voters.
+     */
+    private fun votersReported(
+        group: DatabaseRef,
+        reports: Map<MemberId, Map<UUID, List<Member>>>,
+    ): List<List<Member>> = reports.mapNotNull { (member, groups) ->
+        groups[group.id]?.takeIf { voters -> voters.any { it.id == member } }
     }
 
     private sealed interface Change {
@@ -143,20 +220,30 @@ class MembershipReconciler(
         data class Add(val member: Member) : Change
     }
 
-    private fun nextChange(cluster: List<Member>, group: GroupMembership): Change? {
+    /** The next change of a group with [voters]: a member that [runs] it is added first. */
+    private fun nextChange(
+        cluster: List<Member>,
+        voters: List<Member>,
+        runs: (Member) -> Boolean,
+    ): Change? {
         val clusterIds = cluster.map { it.id }.toSet()
-        val groupIds = group.members.map { it.id }.toSet()
-        val extra = group.members.filter { it.id !in clusterIds }
+        val groupIds = voters.map { it.id }.toSet()
+        val extra = voters.filter { it.id !in clusterIds }
         val missing = cluster.filter { it.id !in groupIds }
         return when {
-            extra.isNotEmpty() && extra.size < group.members.size -> Change.Remove(extra.first())
-            missing.isNotEmpty() -> Change.Add(missing.first())
+            extra.isNotEmpty() && extra.size < voters.size -> Change.Remove(extra.first())
+            missing.isNotEmpty() -> Change.Add(missing.firstOrNull(runs) ?: missing.first())
             else -> null
         }
     }
 
-    private fun startIfPossible(group: DatabaseRef, change: Change) {
-        if (change is Change.Add && !runs(change.member, group)) {
+    private fun startIfPossible(
+        group: DatabaseRef,
+        change: Change,
+        voters: List<Member>,
+        reports: Map<MemberId, Map<UUID, List<Member>>>,
+    ) {
+        if (change is Change.Add && !runs(change.member, group, reports)) {
             if (announced.add(group.id to change.member.id)) {
                 log.info(
                     "Member %s joins the group of database %s once it has copied the database",
@@ -168,13 +255,14 @@ class MembershipReconciler(
         }
         inFlight += group.id
         try {
-            changes.execute { apply(group, change) }
+            changes.execute { apply(group, change, voters) }
         } catch (e: RejectedExecutionException) {
             inFlight -= group.id
         }
     }
 
-    private fun apply(group: DatabaseRef, change: Change) {
+    /** Makes [change] to [group], through its [voters] if it does not run here. */
+    private fun apply(group: DatabaseRef, change: Change, voters: List<Member>) {
         var done = false
         try {
             when (change) {
@@ -184,7 +272,9 @@ class MembershipReconciler(
                         change.member,
                         group.name,
                     )
-                    runBlocking { consensus.removeMember(group, change.member.id, changeTimeout) }
+                    runBlocking {
+                        consensus.removeMember(group, change.member.id, changeTimeout, voters)
+                    }
                     log.info(
                         "Removed member %s from the group of database %s",
                         change.member,
@@ -197,7 +287,9 @@ class MembershipReconciler(
                         change.member,
                         group.name,
                     )
-                    runBlocking { consensus.addMember(group, change.member, changeTimeout) }
+                    runBlocking {
+                        consensus.addMember(group, change.member, changeTimeout, voters)
+                    }
                     log.info(
                         "Added member %s to the group of database %s",
                         change.member,
@@ -224,13 +316,12 @@ class MembershipReconciler(
         if (done) request()
     }
 
-    /** Whether [member] runs the group of [database], as it reports itself. */
-    private fun runs(member: Member, database: DatabaseRef): Boolean =
-        try {
-            database.id in runBlocking { consensus.probe(member.raftAddress) }.groups
-        } catch (_: ConsensusUnavailableException) {
-            false
-        }
+    /** Whether [member] runs the group of [database], as it reported at this look. */
+    private fun runs(
+        member: Member,
+        database: DatabaseRef,
+        reports: Map<MemberId, Map<UUID, List<Member>>>,
+    ): Boolean = reports[member.id]?.containsKey(database.id) == true
 
     /**
      * Stops reconciling. Waits for a look in progress, which reads the system graph, so that the

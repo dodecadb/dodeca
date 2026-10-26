@@ -777,9 +777,11 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         database: DatabaseRef,
         member: Member,
         timeout: java.time.Duration,
+        members: List<Member>,
     ) {
         changeConfiguration(
             database,
+            knownMembers(database, members),
             SetConfigurationRequest.Arguments.newBuilder()
                 .setServersInNewConf(listOf(toPeer(member)))
                 .setMode(SetConfigurationRequest.Mode.ADD)
@@ -792,11 +794,13 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         database: DatabaseRef,
         id: MemberId,
         timeout: java.time.Duration,
+        members: List<Member>,
     ) {
-        val current = members(database)
+        val current = knownMembers(database, members)
         if (current.none { it.id == id }) return
         changeConfiguration(
             database,
+            current,
             SetConfigurationRequest.Arguments.newBuilder()
                 .setServersInCurrentConf(current.map(::toPeer))
                 .setServersInNewConf(current.filterNot { it.id == id }.map(::toPeer))
@@ -807,17 +811,35 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     }
 
     /**
-     * Sends a configuration change through a client, which finds the leader. The leader answers
-     * once the change is committed, which may take as long as bringing a new member up to date, so
-     * the client waits up to [timeout] for the answer.
+     * The voting members of the group of [database] as this member knows them where the group runs
+     * and counts it in, else [given]: those that run it report them. A member waiting to be added,
+     * or one the group removed, may know none or old ones.
+     */
+    private fun knownMembers(database: DatabaseRef, given: List<Member>): List<Member> {
+        val local = runCatching { membership(database) }.getOrNull()
+        if (local != null && !local.removed && local.members.any { it.id == self.id }) {
+            return local.members
+        }
+        if (given.isNotEmpty()) return given
+        return local?.members?.takeIf { it.isNotEmpty() }
+            ?: throw ConsensusUnavailableException(
+                "group $database does not run on this member, and no members were given to " +
+                    "reach it through"
+            )
+    }
+
+    /**
+     * Sends a configuration change to the group of [database] through a client, which finds the
+     * leader among [members]. The leader answers once the change is committed, which may take as
+     * long as bringing a new member up to date, so the client waits up to [timeout] for the answer.
      */
     private suspend fun changeConfiguration(
         database: DatabaseRef,
+        members: List<Member>,
         arguments: SetConfigurationRequest.Arguments,
         timeout: java.time.Duration,
     ) {
-        val group =
-            RaftGroup.valueOf(RaftGroupId.valueOf(database.id), members(database).map(::toPeer))
+        val group = RaftGroup.valueOf(RaftGroupId.valueOf(database.id), members.map(::toPeer))
         val clientProperties =
             RaftProperties(properties).also {
                 RaftClientConfigKeys.Rpc.setRequestTimeout(it, timeDuration(timeout))

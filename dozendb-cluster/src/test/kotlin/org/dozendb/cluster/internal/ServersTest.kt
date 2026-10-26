@@ -99,6 +99,22 @@ class ServersTest {
         )
     }
 
+    /**
+     * Makes [member] the system leader, as elections and balancing can make a Free server, which
+     * leads no other database.
+     */
+    private fun ClusterHarness.leadSystem(member: ClusterHarness.Member) {
+        eventually {
+            val leader = awaitLeader(SYSTEM)
+            if (leader != member) {
+                leader
+                    .replica(SYSTEM)
+                    .transferLeadership(member.cluster.self.id, "a test", Duration.ofSeconds(5))
+            }
+            assertThat(awaitLeader(SYSTEM)).isEqualTo(member)
+        }
+    }
+
     /** The databases whose Raft group runs on this member. */
     private val ClusterHarness.Member.hosted: List<String>
         get() = cluster.status().map { it.database.name }.sorted()
@@ -247,16 +263,7 @@ class ServersTest {
         val free = cluster.admit()
         eventually { assertThat(free.server(free)["state"]).isEqualTo("Free") }
 
-        // Elections, and balancing, can give a Free server the leadership of system.
-        eventually {
-            val leader = cluster.awaitLeader(SYSTEM)
-            if (leader != free) {
-                leader
-                    .replica(SYSTEM)
-                    .transferLeadership(free.cluster.self.id, "a test", Duration.ofSeconds(5))
-            }
-            assertThat(cluster.awaitLeader(SYSTEM)).isEqualTo(free)
-        }
+        cluster.leadSystem(free)
         free.database(SYSTEM).executeTransactionally("CREATE DATABASE films")
 
         eventually {
@@ -267,6 +274,50 @@ class ServersTest {
                     .containsExactlyInAnyOrderElementsOf(enabled.map { it.serverId })
             }
         }
+        assertThat(free.hosted).containsExactly(SYSTEM)
+    }
+
+    @Test
+    fun `a Free server that leads system changes the members of every database group`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films WAIT")
+        val enabled = cluster.members.take(3)
+        val free = cluster.admit()
+        val joining = cluster.admit()
+        eventually {
+            assertThat(free.server(free)["state"]).isEqualTo("Free")
+            assertThat(free.server(joining)["state"]).isEqualTo("Free")
+        }
+        cluster.leadSystem(free)
+
+        free.database(SYSTEM).executeTransactionally("ENABLE SERVER '${joining.serverId}'")
+        val voters = enabled + joining
+        eventually {
+            for (member in voters) {
+                for (database in listOf("films", NEO4J)) {
+                    assertThat(member.groupMembers(database))
+                        .describedAs("$database on $member")
+                        .containsExactlyInAnyOrderElementsOf(voters.map { it.serverId })
+                }
+            }
+        }
+        val removed = enabled.last()
+        free
+            .database(SYSTEM)
+            .executeTransactionally("CALL dozendb.cluster.removeMember('${removed.serverId}')")
+        val remaining = voters - removed
+        eventually {
+            for (member in remaining) {
+                for (database in listOf("films", NEO4J)) {
+                    assertThat(member.groupMembers(database))
+                        .describedAs("$database on $member")
+                        .containsExactlyInAnyOrderElementsOf(remaining.map { it.serverId })
+                }
+            }
+        }
+
+        // The Free server made the changes: it led system throughout.
+        assertThat(cluster.awaitLeader(SYSTEM)).isEqualTo(free)
         assertThat(free.hosted).containsExactly(SYSTEM)
     }
 
