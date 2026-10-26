@@ -423,6 +423,24 @@ class StandaloneIT {
 
     @Test
     @Order(ADDITIONS)
+    fun `places a database on one primary and sets its access, which Community refuses`() {
+        refusedByCommunity("CREATE DATABASE places TOPOLOGY 1 PRIMARY", "system")
+        refusedByCommunity("ALTER DATABASE neo4j SET ACCESS READ ONLY", "system")
+        dozenDb.rows("CREATE DATABASE places TOPOLOGY 1 PRIMARY WAIT", "system")
+
+        dozenDb.rows("ALTER DATABASE places SET ACCESS READ ONLY", "system")
+
+        assertThat(
+                dozenDb.rows("SHOW DATABASE places YIELD requestedPrimariesCount, access", "system")
+            )
+            .containsExactly(mapOf("requestedPrimariesCount" to 1L, "access" to "read-only"))
+        assertThat(failed("CREATE (:Place)", "places").message).contains("read-only")
+        assertThat(failed("CREATE DATABASE wide TOPOLOGY 2 PRIMARIES", "system").message)
+            .contains("runs without clustering")
+    }
+
+    @Test
+    @Order(ADDITIONS)
     fun `serves databases by their aliases, which Community refuses to create`() {
         refusedByCommunity("CREATE ALIAS motion FOR DATABASE neo4j", "system")
         refusedByCommunity("SHOW ALIASES FOR DATABASE", "system")

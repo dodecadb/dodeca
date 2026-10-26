@@ -26,7 +26,7 @@ import org.testcontainers.containers.Network
 import org.testcontainers.lifecycle.Startables
 
 /**
- * A member is added to a running cluster and another one removed while a routing driver keeps
+ * A member is added to a running cluster and another one dropped while a routing driver keeps
  * writing to two databases: every acknowledged write survives, and the remaining members end with
  * identical stores.
  */
