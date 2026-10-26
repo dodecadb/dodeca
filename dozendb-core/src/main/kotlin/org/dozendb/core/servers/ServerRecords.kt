@@ -4,6 +4,7 @@ import java.time.ZonedDateTime
 import java.util.UUID
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.Transaction
 
@@ -12,11 +13,14 @@ import org.neo4j.graphdb.Transaction
  * Free: it hosts only `system`, until ENABLE SERVER records it.
  *
  * @property name the name it is known by, its id until RENAME SERVER changes it.
+ * @property status enabled, cordoned (it takes no new copies) or deallocating (its copies move
+ *   away).
  */
 data class ServerRecord(
     val id: UUID,
     val name: String = id.toString(),
     val options: ServerOptions = ServerOptions(),
+    val status: InstanceStatus = InstanceStatus.ENABLED,
 )
 
 /** The options of a server that ENABLE SERVER and ALTER SERVER set, all of them each time. */
@@ -117,10 +121,7 @@ object ServerRecords {
                     )
                 }
         node.setProperty(TopologyGraphDbmsModel.INSTANCE_NAME_PROPERTY, record.name)
-        node.setProperty(
-            TopologyGraphDbmsModel.INSTANCE_STATUS_PROPERTY,
-            TopologyGraphDbmsModel.InstanceStatus.ENABLED.name,
-        )
+        node.setProperty(TopologyGraphDbmsModel.INSTANCE_STATUS_PROPERTY, record.status.name)
         val options = record.options
         node.setProperty(TopologyGraphDbmsModel.INSTANCE_TAGS_PROPERTY, options.tags.toTypedArray())
         node.setProperty(
@@ -173,6 +174,9 @@ object ServerRecords {
                 strings(node, TopologyGraphDbmsModel.INSTANCE_ALLOWED_DATABASES_PROPERTY),
                 strings(node, TopologyGraphDbmsModel.INSTANCE_DENIED_DATABASES_PROPERTY),
             ),
+            (node.getProperty(TopologyGraphDbmsModel.INSTANCE_STATUS_PROPERTY, null) as? String)
+                ?.let { runCatching { InstanceStatus.getInstanceStatus(it) }.getOrNull() }
+                ?: InstanceStatus.ENABLED,
         )
     }
 
