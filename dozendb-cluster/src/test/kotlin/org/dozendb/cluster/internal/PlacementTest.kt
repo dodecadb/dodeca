@@ -329,6 +329,27 @@ class PlacementTest {
     }
 
     @Test
+    fun `SET ACCESS READ ONLY refuses writes where the database leads, until READ WRITE`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 2 PRIMARIES WAIT")
+        eventually { assertThat(cluster.hosts("films")).hasSize(2) }
+        // Led off the system leader, it learns of the change through the log of system.
+        cluster.lead("films", cluster.hosts("films").first { it != cluster.awaitLeader(SYSTEM) })
+        val write = {
+            cluster
+                .awaitLeader("films") { cluster.hosts("films").toList() }
+                .database("films")
+                .executeTransactionally("MERGE (:Probe)")
+        }
+
+        cluster.administer("ALTER DATABASE films SET ACCESS READ ONLY")
+
+        eventually { assertThat(catchThrowable { write() }).hasMessageContaining("read-only") }
+        cluster.administer("ALTER DATABASE films SET ACCESS READ WRITE")
+        eventually { write() }
+    }
+
+    @Test
     fun `the default database of a new cluster is placed on the default number of servers`() {
         val cluster = cluster(defaultPrimaries = 2)
 
