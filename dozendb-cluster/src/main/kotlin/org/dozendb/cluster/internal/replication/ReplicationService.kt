@@ -65,6 +65,12 @@ internal class ReplicationService(
     }
     private val catchingUp: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
+    /** The new databases that run here before their group, which starts after them. */
+    private val starting: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** Why the group of a new database failed to start here, by name, until it starts again. */
+    private val failedToStart = ConcurrentHashMap<String, String>()
+
     /**
      * Held shared by readers of the system database that run in the background, and exclusively
      * while `system` is stopped to be replaced by a copy, so that those readers wait instead of
@@ -161,6 +167,12 @@ internal class ReplicationService(
     /** Ids of the Raft groups with state on this member. */
     fun localGroups(): Set<UUID> = consensus.localGroups()
 
+    /** The names of the new databases that run here before their group, which starts after them. */
+    fun starting(): Set<String> = HashSet(starting)
+
+    /** Why the group of a new database that runs here failed to start, by name. */
+    fun failedToStart(): Map<String, String> = HashMap(failedToStart)
+
     /** Whether [namedDatabaseId] is being replaced by a copy because it fell behind its log. */
     fun catchingUp(namedDatabaseId: NamedDatabaseId): Boolean = namedDatabaseId.name() in catchingUp
 
@@ -239,15 +251,26 @@ internal class ReplicationService(
 
     override fun databaseStart(eventContext: DatabaseEventContext) {
         val replica = databases[eventContext.databaseName] ?: return
-        if (replica.bootstrapping && replica.ref.name == systemDatabase.name) {
+        val name = replica.ref.name
+        failedToStart.remove(name)
+        if (replica.bootstrapping && name == systemDatabase.name) {
             // Neo4j initialises the system graph later, in its own transactions; see
             // [systemGraphInitialized].
+            starting += name
             return
         }
         if (replica.bootstrapping) {
             // Neo4j initialises the new store after this event returns; replicate after that.
-            inBackground("Starting the replication of ${replica.ref.name}") {
-                joining(replica, replica::startAfterBootstrap)
+            starting += name
+            inBackground("Starting the replication of $name") {
+                try {
+                    joining(replica, replica::startAfterBootstrap)
+                } catch (e: Exception) {
+                    failedToStart[name] = "its Raft group failed to start: ${e.message ?: e}"
+                    throw e
+                } finally {
+                    starting -= name
+                }
             }
         } else {
             joining(replica, replica::start)
@@ -292,7 +315,11 @@ internal class ReplicationService(
      */
     fun systemGraphInitialized() {
         val replica = databases[systemDatabase.name] ?: return
-        if (replica.bootstrapping) replica.start()
+        try {
+            if (replica.bootstrapping) replica.start()
+        } finally {
+            starting -= systemDatabase.name
+        }
     }
 
     /** Replaces [replica] with a copy, unless that is already under way. */

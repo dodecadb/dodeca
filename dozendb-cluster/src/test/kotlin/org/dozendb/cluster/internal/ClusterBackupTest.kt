@@ -239,6 +239,20 @@ class ClusterBackupTest {
     }
 
     @Test
+    fun `a database created with WAIT is backed up at once, from any server that hosts it`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+
+        for ((index, member) in cluster.members.withIndex()) {
+            cluster
+                .awaitLeader(SYSTEM)
+                .database(SYSTEM)
+                .executeTransactionally("CREATE DATABASE films$index WAIT")
+            backup(member, "films$index")
+        }
+    }
+
+    @Test
     fun `a pattern backed up through a server that hosts none of them takes every database`() {
         val cluster =
             ClusterHarness(

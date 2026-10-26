@@ -17,7 +17,11 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.driver.GraphDatabase
+import org.neo4j.driver.SessionConfig
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.kernel.database.NamedDatabaseId
@@ -35,8 +39,8 @@ class MultiDatabaseTest {
         harness?.close()
     }
 
-    private fun cluster(): ClusterHarness =
-        ClusterHarness(root, 3).also {
+    private fun cluster(settings: Map<Setting<*>, Any> = emptyMap()): ClusterHarness =
+        ClusterHarness(root, 3, settings = settings).also {
             harness = it
             it.start()
         }
@@ -288,6 +292,23 @@ class MultiDatabaseTest {
             assertThat(it).containsEntry("state", "CaughtUp")
         }
         assertThat(cluster.members).allSatisfy { assertThat(it.registered(FILMS)).isNull() }
+    }
+
+    @Test
+    fun `a database created with WAIT takes writes at once through a driver that routes`() {
+        val cluster = cluster(mapOf(BoltConnector.enabled to true))
+
+        GraphDatabase.driver("neo4j://${cluster.members.first().boltAddress()}").use { driver ->
+            for (name in listOf(FILMS, SERIES, "books")) {
+                driver.session(SessionConfig.forDatabase(SYSTEM)).use {
+                    it.run("CREATE DATABASE $name WAIT").consume()
+                }
+                // Without retrying, as Cypher Shell runs a script.
+                driver.session(SessionConfig.forDatabase(name)).use {
+                    it.run("CREATE (:Film {title: 'Up'})").consume()
+                }
+            }
+        }
     }
 
     @Test

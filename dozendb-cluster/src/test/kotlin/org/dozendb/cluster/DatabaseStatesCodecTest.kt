@@ -13,6 +13,8 @@ class DatabaseStatesCodecTest {
         val states =
             listOf(
                 DatabaseState("system", UUID(0, 1), Status.ONLINE),
+                DatabaseState("series", UUID.randomUUID(), Status.ONLINE, leaderKnown = false),
+                DatabaseState("music", UUID.randomUUID(), Status.STARTING, leaderKnown = false),
                 DatabaseState("film.archive", UUID.randomUUID(), Status.OFFLINE),
                 DatabaseState("books", UUID.randomUUID(), Status.FAILED, "Unable to start books"),
             )
@@ -33,12 +35,22 @@ class DatabaseStatesCodecTest {
     @Test
     fun `leaves out a database whose status a later version added, and reads the others`() {
         val online = DatabaseState("films", UUID.randomUUID(), Status.ONLINE)
-        val later = "books\t${UUID.randomUUID()}\tRESTORING"
+        val later = "books\t${UUID.randomUUID()}\tRESTORING\ttrue\t"
 
         assertThat(
                 DatabaseStatesCodec.decode(
                     later + "\n" + DatabaseStatesCodec.encode(listOf(online))
                 )
+            )
+            .containsExactly(online)
+    }
+
+    @Test
+    fun `reads a database with fields a later version added`() {
+        val online = DatabaseState("films", UUID.randomUUID(), Status.ONLINE)
+
+        assertThat(
+                DatabaseStatesCodec.decode(DatabaseStatesCodec.encode(listOf(online)) + "\tlater")
             )
             .containsExactly(online)
     }

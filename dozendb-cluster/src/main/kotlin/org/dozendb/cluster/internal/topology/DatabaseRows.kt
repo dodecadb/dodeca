@@ -30,7 +30,8 @@ internal object DatabaseRows {
     /**
      * A row for each of [copies]: the member's Bolt address, access and status, and `writer` true
      * only for the [leader], if the database is online and writable there. A member that does not
-     * answer has the role and status `unknown`, and no address, as in Neo4j Enterprise. Where the
+     * answer has the role and status `unknown`, and no address, as in Neo4j Enterprise, and one
+     * whose copy runs before its Raft group does, as a new database's, `starting`. Where the
      * database is placed on servers, [placed], the status says how its copies move, with Neo4j
      * Enterprise's names: `store copying` on a server that copies the database in, `initial` on one
      * it is placed on that has not created it yet, and `deallocating` on one it moves off, which
@@ -57,6 +58,7 @@ internal object DatabaseRows {
                 when {
                     !copy.answering -> DatabaseDetails.STATUS_UNKNOWN
                     copy.state?.status == DatabaseState.Status.COPYING -> STORE_COPYING
+                    copy.state?.status == DatabaseState.Status.STARTING -> STARTING
                     running && placed.isNotEmpty() && copy.member !in placed -> DEALLOCATING
                     running -> ONLINE
                     copy.state == null && copy.member in placed -> INITIAL
@@ -93,6 +95,7 @@ internal object DatabaseRows {
     }
 
     private const val ONLINE = "online"
+    private const val STARTING = "starting"
     private const val OFFLINE = "offline"
     private const val STORE_COPYING = "store copying"
     private const val INITIAL = "initial"

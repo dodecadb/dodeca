@@ -435,21 +435,46 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     /**
      * This member's databases as it reports them to the others: those it copies from another
-     * member, new ones or to catch up, as being copied.
+     * member, new ones or to catch up, as being copied; new ones that run before their group as
+     * starting, or as failed if their group could not start; and whether it knows their leaders.
      */
     private fun reportedStates(): List<DatabaseState> {
         val catchingUp = replication.catchingUp()
         val copying = localStores.copying()
+        val starting = replication.starting()
+        val failedToStart = replication.failedToStart()
+        val led = leaderKnownHere()
         val states =
             databaseStates()
                 .filter { it.name !in copying }
                 .map {
-                    if (it.name in catchingUp) it.copy(status = DatabaseState.Status.COPYING)
-                    else it
+                    when {
+                        it.name in catchingUp -> it.copy(status = DatabaseState.Status.COPYING)
+                        it.status != DatabaseState.Status.ONLINE -> it
+                        it.name in failedToStart ->
+                            it.copy(
+                                status = DatabaseState.Status.FAILED,
+                                failure = failedToStart[it.name],
+                            )
+                        it.name in starting -> it.copy(status = DatabaseState.Status.STARTING)
+                        else -> it
+                    }.copy(leaderKnown = it.name in led)
                 }
         return states +
-            copying.map { (name, id) -> DatabaseState(name, id, DatabaseState.Status.COPYING) }
+            copying.map { (name, id) ->
+                DatabaseState(name, id, DatabaseState.Status.COPYING, leaderKnown = false)
+            }
     }
+
+    /** The names of the replicated databases whose leader this member knows. */
+    private fun leaderKnownHere(): Set<String> =
+        replication
+            .created()
+            .filter { ref ->
+                runCatching { consensus.status(ref).leader != null }.getOrDefault(false)
+            }
+            .map { it.name }
+            .toSet()
 
     /**
      * The ids of the replicated databases that are read-only on this member by its configuration

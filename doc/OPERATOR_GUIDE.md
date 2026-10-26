@@ -300,10 +300,15 @@ writes go on throughout. `SHOW DATABASES` lists each copy, with
 
 - `store copying` on a server that copies the database;
 - `initial` on a server it is placed on that has no copy yet;
+- `starting` on a server where a new database runs but has yet to join its
+  Raft group;
 - `deallocating` on a server it moves off, which may still lead it.
 
 `WAIT` waits for the servers a database is placed on, and for a dropped
-database for every server that still holds it.
+database for every server that still holds it. A server has caught up with a
+database that is to be online once its copy runs and it knows the database's
+leader, so that the database takes writes through the servers that host it
+as soon as `WAIT` returns, and can be backed up from any of them.
 
 `REALLOCATE DATABASES` moves copies so that the servers host about as many
 each: first the copies their servers may no longer host, then one at a time

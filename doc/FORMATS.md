@@ -12,7 +12,7 @@ Format level 1 is every format below at the version shown.
 | Replicated transaction | `TransactionEnvelope` | 1 | Raft log entry: sent, and kept in the Raft log. |
 | Probe request and answer | `ProbeCodec` | 1 | Sent. |
 | What members report when probed | `MemberMetadata` | keys | Sent, inside probe answers. |
-| Database states, for `WAIT` and `SHOW DATABASES` | `DatabaseStatesCodec` | none | Sent, as one of those keys; a copy still being made is `COPYING`. |
+| Database states, for `WAIT` and `SHOW DATABASES` | `DatabaseStatesCodec` | none | Sent, as one of those keys: a line per database with its name, id, status, whether the member knows its leader, and why it failed. A copy still being made is `COPYING`, a new one that has yet to join its Raft group `STARTING`. Later versions may add statuses, which earlier ones read as no copy, and fields after these, which earlier ones leave out. |
 | Member login on the routing connector | `MemberLogins` | 1 | Sent: a Bolt auth token of the scheme `dozendb-member` naming the user whose transaction a member forwards, and the last transaction of `system` the member has (`system_transaction`). Only to members that report `dozendb.routingAddress`. |
 | Forwarded transaction | `RemoteTransactions`, `RemoteTransaction` | Bolt | Sent: Neo4j's Bolt protocol, 5.7 or later, which both members' Neo4j negotiate. DozenDB adds only the member login. |
 | Bulk transfer | `BulkService` | 1 | Sent; carries database copies, and backups on the backup port. |

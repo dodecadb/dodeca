@@ -101,11 +101,13 @@ DozenDB took over the code.
   `OPERATOR_GUIDE.md`.
 - **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
   Neo4j Enterprise. The command commits its transaction, then returns once
-  every server, with clustering every member, has the database running,
-  stopped or dropped as asked, or failed to, or once the time limit passed:
-  300 seconds for `WAIT`, n for `WAIT n SECONDS`. It returns a row per server
-  with `address` (its Bolt address), `state` (`CaughtUp`, `Failed` or
-  `TimedOut`), `message`, and `success`, true only if every server caught up.
+  every server that hosts the database has it running, stopped or dropped as
+  asked, or failed to, or once the time limit passed: 300 seconds for `WAIT`,
+  n for `WAIT n SECONDS`. With clustering, a running copy has also joined the
+  database's Raft group, and the member knows its leader, which then takes
+  writes at once. It returns a row per server with `address` (its Bolt
+  address), `state` (`CaughtUp`, `Failed` or `TimedOut`), `message`, and
+  `success`, true only if every server caught up.
   Without `WAIT` a command returns once committed: without clustering the
   database has then started or failed to, and `SHOW DATABASES` shows why in
   `statusMessage`; with clustering the members follow in the background.
@@ -466,8 +468,10 @@ What clustering does not do yet.
 - **New databases.** One of the servers a new database is placed on creates
   its store, and the others copy it, which takes a moment: until then the
   database is not available on them. `CREATE DATABASE ... WAIT` returns once
-  it is. Stores are copied only while a database is online, so a server that
-  lacks a stopped database gets it once it is started again. If the creating
+  it is, and its leader takes writes. A new database's copy runs before it
+  joins its Raft group; `SHOW DATABASES` shows it as `starting` until then.
+  Stores are copied only while a database is online, so a server that lacks a
+  stopped database gets it once it is started again. If the creating
   server fails before it created the store, the others wait until it returns,
   and its copies cannot move elsewhere meanwhile.
 - **Default database.** The default database (`initial_default_database`)

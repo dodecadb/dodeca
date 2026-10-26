@@ -13,16 +13,20 @@ data class WantedDatabase(val name: String, val id: UUID?, val online: Boolean)
 
 /**
  * A database on one server: running, stopped, being copied from another server, or failed with
- * [failure].
+ * [failure]. [leaderKnown] tells whether the server knows the leader of its copies, which takes its
+ * writes: in a cluster, of its Raft group; a server without clustering leads its own.
  */
 data class DatabaseState(
     val name: String,
     val id: UUID,
     val status: Status,
     val failure: String? = null,
+    val leaderKnown: Boolean = true,
 ) {
     enum class Status {
         ONLINE,
+        /** Started, but not yet replicated: a new database's Raft group starts after it. */
+        STARTING,
         OFFLINE,
         /** Copied from another server of a cluster, before it runs here or to catch up. */
         COPYING,
@@ -122,9 +126,13 @@ class DatabaseProgress(
     }
 
     companion object {
+        private val RUNNING = setOf(DatabaseState.Status.ONLINE, DatabaseState.Status.STARTING)
+
         /**
          * Where a server hosting [databases] stands with [wanted]: caught up, failed, or, as null,
-         * not there yet. A database that failed to start is not running, as a stopped one is.
+         * not there yet. A database that failed to start is not running, as a stopped one is. One
+         * wanted online is caught up once it runs and the server knows its leader, so that it takes
+         * writes at once.
          */
         fun progressOf(
             databases: List<DatabaseState>,
@@ -137,12 +145,10 @@ class DatabaseProgress(
             if (wanted.id == null) return caughtUp.takeIf { hosted == null }
             val same = hosted?.takeIf { it.id == wanted.id }
             if (!wanted.online) {
-                return caughtUp.takeIf {
-                    same == null || same.status != DatabaseState.Status.ONLINE
-                }
+                return caughtUp.takeIf { same == null || same.status !in RUNNING }
             }
             return when (same?.status) {
-                DatabaseState.Status.ONLINE -> caughtUp
+                DatabaseState.Status.ONLINE -> caughtUp.takeIf { same.leaderKnown }
                 DatabaseState.Status.FAILED -> { address ->
                     ServerProgress(
                         address,

@@ -77,6 +77,15 @@ class DatabaseRowsTest {
     }
 
     @Test
+    fun `a copy whose Raft group has yet to start shows starting, and is not counted as online`() {
+        val rows =
+            rows(listOf(copy(a), copy(b, DatabaseState.Status.STARTING), copy(c)), leader = a)
+
+        assertThat(rows.getValue(b).status()).isEqualTo("starting")
+        assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(2)
+    }
+
+    @Test
     fun `a server that copies the database in shows store copying, one without it initial`() {
         val rows =
             rows(
