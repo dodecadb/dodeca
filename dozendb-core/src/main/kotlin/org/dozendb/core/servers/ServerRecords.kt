@@ -2,6 +2,7 @@ package org.dozendb.core.servers
 
 import java.time.ZonedDateTime
 import java.util.UUID
+import org.neo4j.configuration.GraphDatabaseSettings.SYSTEM_DATABASE_NAME
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
@@ -47,11 +48,22 @@ object ServerRecords {
         TopologyGraphDbmsModel.TOPOLOGY_GRAPH_CONFIG_AUTO_ENABLE_FREE_SERVERS_FLAG
 
     /**
-     * Takes the lock that every change of the records takes first, on the settings node, which it
-     * creates if there is none yet: changes on the `system` leader happen one after the other.
+     * Takes the lock that every change of the records takes first, so that changes on the `system`
+     * leader happen one after the other: on the `system` database's node, which every system graph
+     * has, as two changes that each created the settings node could not lock the other out.
      */
     fun lock(tx: Transaction) {
-        tx.acquireWriteLock(settings(tx) ?: tx.createNode(SETTINGS))
+        val system =
+            checkNotNull(
+                tx.findNode(
+                    TopologyGraphDbmsModel.DATABASE_LABEL,
+                    TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
+                    SYSTEM_DATABASE_NAME,
+                )
+            ) {
+                "the system graph has no node for the system database"
+            }
+        tx.acquireWriteLock(system)
     }
 
     /**
