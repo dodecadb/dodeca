@@ -12,6 +12,7 @@ import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.BackupSettings
 import org.dozendb.cluster.ClusterService
+import org.dozendb.cluster.MemberState
 import org.dozendb.cluster.internal.durability.withSingleFsync
 import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.consensus.GroupStatus
@@ -22,6 +23,7 @@ import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.monitoring.MetricsSettings
 import org.dozendb.core.monitoring.metrics
 import org.dozendb.core.monitoring.samples
+import org.dozendb.core.servers.Placements
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
@@ -37,6 +39,7 @@ import org.neo4j.configuration.ssl.SslPolicyConfig
 import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
+import org.neo4j.dbms.api.DatabaseNotFoundException
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
@@ -95,7 +98,16 @@ internal class ClusterHarness(
         /** Settings of this member alone, over the cluster's, from its next start on. */
         @Volatile var settings: Map<Setting<*>, Any> = emptyMap()
 
-        /** Starts the DBMS; blocks until its databases run, which may wait for other members. */
+        /** Whether this member started before, and ran the default database when it stopped. */
+        private var started = false
+        private var hostedDefault = false
+
+        /**
+         * Starts the DBMS; blocks until its databases run, which may wait for other members: the
+         * default database, which the cluster places on every initial member by default, on their
+         * first start, and on a member that ran it when it stopped, unless it was moved away or the
+         * member removed meanwhile.
+         */
         fun start() {
             check(dbms == null) { "member $index is running" }
             val given = Dependencies()
@@ -114,7 +126,46 @@ internal class ClusterHarness(
                                 .databaseEventListeners(databaseEventListeners),
                         ),
                     )
+            val first = !started
+            started = true
+            val expected =
+                if (first) index < size && config.get(ClusterSettings.defaultPrimaries) >= size
+                else hostedDefault
+            if (expected) awaitDefaultDatabase(first)
         }
+
+        private fun awaitDefaultDatabase(first: Boolean) {
+            await withPollInterval
+                Duration.ofMillis(50) atMost
+                START_TIMEOUT untilNotNull
+                {
+                    true.takeIf {
+                        cluster.state == MemberState.REMOVED ||
+                            runsDefault() ||
+                            (!first && !placedHere())
+                    }
+                }
+        }
+
+        /**
+         * Whether this member runs the default database, its Raft group too: Neo4j counts a
+         * database available before the group starts, at the end of its start.
+         */
+        private fun runsDefault(): Boolean =
+            try {
+                database(DEFAULT_DATABASE).isAvailable(0) &&
+                    status(DEFAULT_DATABASE).let { it != null && it.role != Role.Inactive }
+            } catch (_: DatabaseNotFoundException) {
+                false
+            }
+
+        /** Whether this member's system graph places the default database on it. */
+        private fun placedHere(): Boolean =
+            database("system").beginTx().use { tx ->
+                Placements.database(tx, DEFAULT_DATABASE)
+                    ?.let(Placements::hosts)
+                    ?.contains(cluster.self.id.uuid) == true
+            }
 
         /** The first index in this member's Raft log of [database], or null if it has none. */
         fun firstLogIndex(database: UUID): Long? {
@@ -130,6 +181,7 @@ internal class ClusterHarness(
         }
 
         fun stop() {
+            hostedDefault = dbms != null && runsDefault()
             try {
                 dbms?.shutdown()
             } finally {
@@ -152,6 +204,10 @@ internal class ClusterHarness(
         val cluster: ClusterService
             get() =
                 database("system").dependencyResolver.resolveDependency(ClusterService::class.java)
+
+        /** The id of this member's server, as SHOW SERVERS has it. */
+        val serverId: String
+            get() = cluster.self.id.uuid.toString()
 
         fun status(name: String = DEFAULT_DATABASE): GroupStatus? =
             cluster.status().firstOrNull { it.database.name == name }
@@ -191,6 +247,8 @@ internal class ClusterHarness(
                     // Members that join host the databases at once; tests of Free servers turn
                     // it off.
                     .set(ClusterSettings.autoEnableFreeServers, true)
+                    // Databases are placed on every initial member, as before topologies.
+                    .set(ClusterSettings.defaultPrimaries, size.coerceIn(1, 11))
                     .set(CLUSTER_TLS.enabled, authority != null)
                     .set(BackupSettings.listenAddress, SocketAddress("127.0.0.1", 0))
                     // Bolt's thread pools otherwise wait 5 s each for quiet before they stop.

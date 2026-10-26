@@ -49,6 +49,8 @@ import org.neo4j.storageengine.api.CommandBatch
  * @property onSnapshotNeeded called when the group's log no longer holds entries this member needs.
  * @property notLeaderMessage why this member refuses writes while another member, or none, leads.
  * @property counts where its replications are counted, for metrics.
+ * @property afterGroupChange runs after the status of the database's group changed here: its role,
+ *   leader or members, or Ratis stopped it.
  */
 internal class ReplicatedDatabase(
     val namedDatabaseId: NamedDatabaseId,
@@ -65,6 +67,7 @@ internal class ReplicatedDatabase(
     private val onSnapshotNeeded: (ReplicatedDatabase, Member?, Long) -> Unit,
     private val notLeaderMessage: (MemberId?) -> String,
     private val counts: ClusterMetrics.Counters = ClusterMetrics.Counters(),
+    private val afterGroupChange: () -> Unit = {},
 ) : HostedDatabase {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
 
@@ -391,10 +394,12 @@ internal class ReplicatedDatabase(
         synchronized(lock) {
             if (statusListener == null) return
             val term = if (status.role == Role.Leader && !handingOver) status.term else NOT_WRITABLE
-            if (term == writableTerm) return
-            leaveWritableTerm()
-            if (term != NOT_WRITABLE) enterWritableTerm(term)
+            if (term != writableTerm) {
+                leaveWritableTerm()
+                if (term != NOT_WRITABLE) enterWritableTerm(term)
+            }
         }
+        afterGroupChange()
     }
 
     private fun enterWritableTerm(term: Long) {

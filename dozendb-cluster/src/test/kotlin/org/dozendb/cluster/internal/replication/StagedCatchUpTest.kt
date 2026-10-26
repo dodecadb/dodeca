@@ -70,7 +70,6 @@ class StagedCatchUpTest {
     private val catchUp =
         CatchUp(
             self,
-            system,
             { control },
             { source, _, _ -> stage(source) },
             NullLog.getInstance(),
@@ -217,7 +216,6 @@ class StagedCatchUpTest {
         val catchUp =
             CatchUp(
                 self,
-                system,
                 { control },
                 { source, _, _ -> stage(source) },
                 Log4jLogProvider(output).getLog(CatchUp::class.java),

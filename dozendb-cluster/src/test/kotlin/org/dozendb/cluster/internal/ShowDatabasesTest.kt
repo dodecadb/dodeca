@@ -36,9 +36,6 @@ class ShowDatabasesTest {
             result.asSequence().map { it.toMap() }.toList()
         }
 
-    private val ClusterHarness.Member.serverId: String
-        get() = cluster.self.id.uuid.toString()
-
     /** The member whose row for [database] on [on] says it is the writer, or null. */
     private fun ClusterHarness.writer(on: ClusterHarness.Member, database: String): String? =
         on.showDatabases("name, serverID, writer")

@@ -90,16 +90,18 @@ internal class ReplicationService(
     val defaultDatabaseId: UUID?
         get() = databases[defaultDatabaseName]?.ref?.id
 
-    /** Whether the default database is replicating here, so other members can copy it. */
-    val defaultDatabaseStarted: Boolean
-        get() = databases[defaultDatabaseName]?.isRunning() == true
-
     /** Whether this member founds the cluster and has not initialised its system graph yet. */
     val systemBootstrapping: Boolean
         get() = databases[systemDatabase.name]?.bootstrapping == true
 
     /** Runs after every transaction applied to the system database, on its apply thread. */
     @Volatile var afterSystemApply: () -> Unit = {}
+
+    /**
+     * Runs after the status of a database's group changed here: its role, leader or members, or
+     * Ratis stopped it, as for a member removed from it.
+     */
+    @Volatile var afterGroupChange: () -> Unit = {}
 
     /** Whether this member is the system leader and can commit system transactions. */
     val systemWritable: Boolean
@@ -162,6 +164,21 @@ internal class ReplicationService(
     /** Whether [namedDatabaseId] is being replaced by a copy because it fell behind its log. */
     fun catchingUp(namedDatabaseId: NamedDatabaseId): Boolean = namedDatabaseId.name() in catchingUp
 
+    /**
+     * Whether this member votes in the group of [namedDatabaseId] as it knows the group: false once
+     * it was removed or knows voters without itself, null while the group does not run here.
+     */
+    fun votes(namedDatabaseId: NamedDatabaseId): Boolean? {
+        val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+        val membership =
+            try {
+                consensus.membership(ref)
+            } catch (_: ConsensusUnavailableException) {
+                return null
+            }
+        return !membership.removed && membership.members.any { it.id == consensus.self.id }
+    }
+
     /** Whether commits to the database [name] are durable through the Raft log alone. */
     fun singleFsync(name: String): Boolean = databases[name]?.replicating == true
 
@@ -195,6 +212,7 @@ internal class ReplicationService(
                 onSnapshotNeeded = ::catchUp,
                 notLeaderMessage = { leader -> notLeader(namedDatabaseId.name(), leader) },
                 counts = metrics?.of(namedDatabaseId.name()) ?: ClusterMetrics.Counters(),
+                afterGroupChange = { afterGroupChange() },
             )
         databases[namedDatabaseId.name()] = replica
         return replica

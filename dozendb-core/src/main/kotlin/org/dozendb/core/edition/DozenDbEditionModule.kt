@@ -31,8 +31,10 @@ import org.dozendb.core.security.MemberLogins
 import org.dozendb.core.security.MemberRealm
 import org.dozendb.core.security.RefusingMemberRealm
 import org.dozendb.core.security.SystemGraphSecurity
+import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.Servers
+import org.dozendb.core.servers.SingleServerPlacement
 import org.dozendb.core.servers.SingleServerTopology
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -203,6 +205,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         seedServers()?.let { globalModule.globalDependencies.satisfyDependency(it) }
         // For the server commands.
         globalModule.globalDependencies.satisfyDependency(servers())
+        // For the database commands.
+        globalModule.globalDependencies.satisfyDependency(placement())
         return repository
     }
 
@@ -211,6 +215,9 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
      * none.
      */
     protected open fun seedServers(): SeedServers? = null
+
+    /** Where the copies of databases go: without clustering, on this server alone. */
+    protected open fun placement(): DatabasePlacement = SingleServerPlacement
 
     /** The servers the server commands act on: without clustering, this one. */
     protected open fun servers(): Servers =
@@ -236,8 +243,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     /** Waits until this server holds the writes acknowledged before: without clustering, none. */
     protected open fun latestWrites(): LatestWrites = LatestWrites.LOCAL
 
-    /** The servers that host the databases, which WAIT waits for: without clustering, this one. */
-    protected open fun hostingServers(): List<HostingServer> =
+    /** The servers that host [wanted], which WAIT waits for: without clustering, this one. */
+    protected open fun hostingServers(wanted: WantedDatabase): List<HostingServer> =
         listOf(
             object : HostingServer {
                 override val address: String = boltAddress()?.toString() ?: "localhost"

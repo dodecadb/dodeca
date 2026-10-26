@@ -23,6 +23,8 @@ internal data class DesiredDatabase(
     val seedUri: String? = null,
     /** The member to name its creator, which may hold its restored store; null for any. */
     val designatedSeeder: MemberId? = null,
+    /** The servers it is placed on; none while it is not placed yet. */
+    val hosts: Set<MemberId> = emptySet(),
 )
 
 /** What the creator of a database creates its store from, instead of an empty one. */
@@ -53,13 +55,6 @@ internal interface SystemGraph {
      * group, unless a creator is named already.
      */
     fun nameCreator(database: NamedDatabaseId, creator: MemberId, initialMembers: List<Member>)
-
-    /**
-     * Whether [member] hosts the databases other than `system`: an enabled server, and every member
-     * while the servers the cluster started with are not recorded yet. A Free one hosts only
-     * `system`.
-     */
-    fun hosts(member: MemberId): Boolean = true
 }
 
 /** The state of a database registered on this member. */
@@ -81,6 +76,12 @@ internal interface LocalDatabases {
 
     /** Whether [id] is being replaced by a copy because it fell behind its group's log. */
     fun catchingUp(id: NamedDatabaseId): Boolean
+
+    /**
+     * Whether this member votes in the group of [id], as it knows the group; null while it cannot
+     * tell, as before the group runs here.
+     */
+    fun votes(id: NamedDatabaseId): Boolean?
 
     /** Registers [id] with the database manager; starting it creates its store if there is none. */
     fun create(id: NamedDatabaseId)
@@ -115,16 +116,22 @@ internal interface LocalDatabases {
  * with its own databases once it has started and after every system transaction it applies,
  * whichever member ran it.
  *
- * The store of a new database is created by one member, its creator, and copied by every other
- * member. The system leader names itself the creator of a database without one, or, if it is a Free
- * server, a member that hosts databases, in a replicated system transaction, before the store is
+ * A member hosts the databases placed on it (see `org.dozendb.core.servers.Placements`). The store
+ * of a new database is created by one of them, its creator, and copied by the others. The system
+ * leader names the creator of a database without one, itself if the database is placed on it, else
+ * one of the servers it is placed on, in a replicated system transaction, before the store is
  * created: so the creator survives restarts and leader changes, and no two members create the same
- * database. The same transaction records the initial members of the database's group, the settled
- * members of the `system` group that host databases: every member that creates the group without
- * local state uses them, so that no two members bootstrap it differently while the membership
- * changes. A member creates a store only as the creator, and only if it has no Raft group for the
- * database yet; otherwise it copies the store. Stores are created and copied while their database
- * is online.
+ * database. The same transaction records the initial members of the database's group, the servers
+ * it is placed on: every member that creates the group without local state uses them, so that no
+ * two members bootstrap it differently. A member creates a store only as the creator, and only if
+ * it has no Raft group for the database yet; otherwise it copies the store, from the members that
+ * hold it, and its group waits to be added (see `MembershipReconciler`). Stores are created and
+ * copied while their database is online.
+ *
+ * A member that holds a database no longer placed on it keeps it while it votes in the database's
+ * group, which the system leader then removes it from once the servers it is placed on vote, and
+ * deletes it afterwards: a move never lowers the number of copies. A database not placed yet, as
+ * the default database of a new cluster before the system leader places it, is left as it is.
  *
  * A local store counts only together with the Raft group of its database. A store without one is a
  * leftover: of a database dropped while this member was down that has the same name, or of a copy
@@ -134,10 +141,8 @@ internal interface LocalDatabases {
  * copy of the system graph is current: after a restart it may lack transactions this member already
  * acted on.
  *
- * The default database is created at startup, and like without clustering the reconciler never
- * drops it; it starts and stops it like any other. A member that hosts only `system`, a Free
- * server, does not start it at startup, nor creates any other database; once it hosts databases,
- * the reconciler copies each, the default database too.
+ * The default database is created, copied, started and stopped like any other; like without
+ * clustering the reconciler never drops it while the system graph has it.
  *
  * A member removed from the cluster stops its databases, `system` aside, and changes nothing else.
  *
@@ -145,8 +150,8 @@ internal interface LocalDatabases {
  * such as a copy whose creator has not created the store, is tried again after [retryDelay], and
  * after twice as long each time it still cannot be done, up to [maximumRetryDelay].
  *
- * @property sources the addresses of the members to copy a new database from, its creator first if
- *   it has one.
+ * @property sources the addresses of the members to copy a new database from, the members that hold
+ *   it, its creator first if it has one.
  * @property systemMembers the members of the `system` group, or null while a change of them is not
  *   settled.
  * @property answering whether a member answers this one.
@@ -157,7 +162,7 @@ internal class DatabaseReconciler(
     private val databases: LocalDatabases,
     private val self: MemberId,
     private val defaultDatabase: String,
-    private val sources: (creator: MemberId?) -> List<HostPort>,
+    private val sources: (DesiredDatabase) -> List<HostPort>,
     private val systemMembers: () -> List<Member>?,
     private val answering: (MemberId) -> Boolean,
     private val removed: () -> Boolean,
@@ -273,7 +278,6 @@ internal class DatabaseReconciler(
             databases.stored().filter { name ->
                 val database = wanted[name]
                 name != SYSTEM.name() &&
-                    name != defaultDatabase &&
                     registered.none { it.name() == name } &&
                     (database == null || (database.online && !trusted(database.id)))
             }
@@ -320,28 +324,38 @@ internal class DatabaseReconciler(
         val id = database.id
         if (databases.catchingUp(id)) return false
         val state = databases.registered()[id]
+        val placed = database.hosts.isNotEmpty()
+        val here = self in database.hosts
+        val leaving = placed && !here
         when {
             state == null ->
                 return when {
-                    // A Free server creates nothing; as the system leader, it names creators.
-                    !systemGraph.hosts(self) ->
-                        if (
-                            database.online &&
-                                database.creator == null &&
-                                id.name() != defaultDatabase &&
-                                systemGraph.leading()
-                        ) {
-                            nameCreator(id, database.designatedSeeder)
+                    // A copy of another database of the name goes first; the default database's
+                    // is kept instead, as without clustering.
+                    databases.registered().keys.any { it.name() == id.name() } ->
+                        id.name() == defaultDatabase
+                    here -> create(database)
+                    // Placed elsewhere: as the system leader, it names the creator, in a system
+                    // transaction, which reconciles again; tried again if it failed.
+                    placed ->
+                        if (database.online && database.creator == null && systemGraph.leading()) {
+                            nameCreator(database)
                             false
                         } else {
                             true
                         }
-                    // One that started without it, Free then, copies it; it is never replaced.
-                    id.name() == defaultDatabase ->
-                        databases.registered().keys.any { it.name() == defaultDatabase } ||
-                            create(database)
-                    else -> create(database)
+                    // Not placed yet: the system leader places it.
+                    else -> true
                 }
+            leaving && databases.votes(id) == false -> {
+                log.info(
+                    "Deleting database %s here: it is placed on other servers, and this member " +
+                        "left its group",
+                    id,
+                )
+                databases.drop(id)
+                return true
+            }
             database.online && !state.started && !state.failed -> {
                 log.info("Starting database %s, online in the system graph", id)
                 databases.start(id, seed(database))
@@ -352,7 +366,8 @@ internal class DatabaseReconciler(
                 databases.stop(id)
             }
         }
-        return true
+        // A copy no longer placed here waits until this member leaves the database's group.
+        return !leaving
     }
 
     /** Creates [database] here; returns false to be tried again. */
@@ -388,48 +403,44 @@ internal class DatabaseReconciler(
         val id = database.id
         val creator = database.creator
         return when {
-            // Created when the cluster formed, before creators were named.
-            creator == null && id.name() == defaultDatabase -> copyFromCluster(id, null)
             creator == null -> {
                 // The creator is named in a system transaction, which reconciles again.
-                if (systemGraph.leading()) nameCreator(id, database.designatedSeeder)
+                if (systemGraph.leading()) nameCreator(database)
                 false
             }
             creator == self && id.uuid !in databases.groups() -> {
                 log.info("Creating the store of new database %s, as its creator", id)
                 true
             }
-            else -> copyFromCluster(id, creator)
+            else -> copyFromCluster(database)
         }
     }
 
     /**
-     * Names the creator of [id]: [designated] if given, else this member, or, on a Free server, a
-     * member that hosts databases, those that answer first, then by id.
+     * Names the creator of [database] among the servers it is placed on: its designated seeder if
+     * it has one, which is placed on it first, else this member, else those that answer first, then
+     * by id. They are the initial members of its group.
      */
-    private fun nameCreator(id: NamedDatabaseId, designated: MemberId?) {
+    private fun nameCreator(database: DesiredDatabase) {
+        val id = database.id
         val members = systemMembers()
         if (members == null) {
             log.info("Naming the creator of %s waits until the change of members settles", id)
             return
         }
-        val hosting = members.filter { systemGraph.hosts(it.id) }
+        val hosting = members.filter { it.id in database.hosts }
         val creator =
-            designated
-                ?: self.takeIf { systemGraph.hosts(it) }
+            database.designatedSeeder
+                ?: self.takeIf { it in database.hosts }
                 ?: hosting
                     .sortedWith(compareBy<Member> { !answering(it.id) }.thenBy { it.id })
                     .firstOrNull()
                     ?.id
-        if (creator == null) {
-            log.warn("Naming the creator of %s waits until a member hosts databases", id)
-            return
-        }
         // It starts the database's group, so it must be one of its initial members.
-        if (hosting.none { it.id == creator }) {
+        if (creator == null || hosting.none { it.id == creator }) {
             log.warn(
-                "Naming %s the creator of %s waits until it is an enabled member of the cluster",
-                creator,
+                "Naming the creator of %s waits until the servers it is placed on are members of " +
+                    "the cluster",
                 id,
             )
             return
@@ -443,8 +454,9 @@ internal class DatabaseReconciler(
         }
     }
 
-    private fun copyFromCluster(id: NamedDatabaseId, creator: MemberId?): Boolean {
-        for (source in sources(creator)) {
+    private fun copyFromCluster(database: DesiredDatabase): Boolean {
+        val id = database.id
+        for (source in sources(database)) {
             try {
                 log.info("Copying new database %s from %s", id, source)
                 databases.copy(source, id)

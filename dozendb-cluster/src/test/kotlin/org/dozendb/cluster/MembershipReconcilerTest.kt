@@ -27,7 +27,10 @@ class MembershipReconcilerTest {
     private val initial = logs.map { it.self }
     private val leader = logs[0]
 
-    /** The reconciler of [member], changing groups on the calling thread. */
+    /**
+     * The reconciler of [member], changing groups on the calling thread, with films placed on the
+     * members of the cluster that [hosts].
+     */
     private fun reconciler(
         member: ConsensusLog = leader,
         log: Log = NullLog.getInstance(),
@@ -36,10 +39,9 @@ class MembershipReconcilerTest {
         MembershipReconciler(
             member,
             system,
-            { listOf(system, films) },
+            { mapOf(films to member.members(system).map { it.id }.filter(hosts).toSet()) },
             log,
             changes = { it.run() },
-            hosts = hosts,
         )
 
     private fun formCluster() {
@@ -73,7 +75,7 @@ class MembershipReconcilerTest {
     }
 
     @Test
-    fun `a member removed from the cluster leaves every group, before any member joins`() {
+    fun `a member removed from the cluster leaves every group once the one that replaces it votes`() {
         formCluster()
         val added = consensus.newMember().apply { start() }
         added.joinGroup(system, initial)
@@ -86,7 +88,7 @@ class MembershipReconcilerTest {
 
         reconciler.reconcile()
 
-        assertThat(leader.members(films)).containsExactly(logs[0].self, logs[1].self)
+        assertThat(leader.members(films)).containsExactlyElementsOf(initial + added.self)
 
         reconciler.reconcile()
 

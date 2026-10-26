@@ -20,6 +20,8 @@
  * DROP DATABASE refuses to drop a database that local aliases target unless CASCADE ALIASES drops
  * them too, and drops only the names of the database, not those of other databases or aliases.
  * START, STOP and DROP DATABASE take the name of a local alias for its database.
+ * 2026-10-26: CREATE DATABASE takes TOPOLOGY and places the database on servers; ALTER DATABASE
+ * sets its topology and access.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -35,6 +37,10 @@ import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.SeedServers
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.security.PrivilegeRecords
+import org.dozendb.core.servers.AllocationException
+import org.dozendb.core.servers.DatabasePlacement
+import org.dozendb.core.servers.Placement
+import org.dozendb.core.servers.Placements
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.common.DependencyResolver
 import org.neo4j.configuration.Config
@@ -53,11 +59,15 @@ import org.neo4j.cypher.internal.ast.`CascadeAliases$`
 import org.neo4j.cypher.internal.ast.DatabaseName
 import org.neo4j.cypher.internal.ast.`DumpData$`
 import org.neo4j.cypher.internal.ast.`IfExistsReplace$`
+import org.neo4j.cypher.internal.ast.`NoOptions$`
 import org.neo4j.cypher.internal.ast.Options
 import org.neo4j.cypher.internal.ast.OptionsMap
 import org.neo4j.cypher.internal.ast.OptionsParam
+import org.neo4j.cypher.internal.ast.`ReadOnlyAccess$`
+import org.neo4j.cypher.internal.ast.Topology
 import org.neo4j.cypher.internal.evaluator.Evaluator
 import org.neo4j.cypher.internal.expressions.Parameter
+import org.neo4j.cypher.internal.logical.plans.AlterDatabase
 import org.neo4j.cypher.internal.logical.plans.AssertCanDropDatabase
 import org.neo4j.cypher.internal.logical.plans.AssertManagementActionNotBlocked
 import org.neo4j.cypher.internal.logical.plans.CreateDatabase
@@ -88,6 +98,7 @@ import org.neo4j.dbms.api.DatabaseAliasExistsException
 import org.neo4j.dbms.api.DatabaseLimitReachedException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseAccess
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseStatus
 import org.neo4j.exceptions.CantCompileQueryException
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
@@ -97,6 +108,8 @@ import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
 import org.neo4j.gqlstatus.GqlHelper
 import org.neo4j.gqlstatus.GqlParams
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
+import org.neo4j.graphdb.Direction
+import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.AdminActionOnResource
@@ -109,6 +122,7 @@ import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.query.TransactionalContext
+import org.neo4j.values.storable.IntegralValue
 import org.neo4j.values.storable.LongValue
 import org.neo4j.values.storable.TextValue
 import org.neo4j.values.storable.Values
@@ -125,6 +139,8 @@ import scala.Tuple2
 import scala.collection.immutable.Seq
 import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
+import scala.util.Left
+import scala.util.Right
 
 internal typealias Planner = Function1<AdministrationCommandRuntimeContext, ExecutionPlan>
 
@@ -275,6 +291,8 @@ private class DatabaseCommands(
 
     private val admin = `AdministrationCommandRuntime$`.`MODULE$`
 
+    private val placement by lazy { dependencies.resolveDependency(DatabasePlacement::class.java) }
+
     override fun isDefinedAt(plan: LogicalPlan): Boolean = planner(plan) != null
 
     override fun apply(plan: LogicalPlan): Planner =
@@ -285,6 +303,7 @@ private class DatabaseCommands(
             is CreateDatabase -> Planner { createDatabase(plan, it) }
             is EnsureValidNumberOfDatabases -> Planner { ensureValidNumberOfDatabases(plan, it) }
             is DropDatabase -> Planner { dropDatabase(plan, it, aliases = true) }
+            is AlterDatabase -> Planner { alterDatabase(plan, it) }
             is StartDatabase ->
                 Planner {
                     setStatus(plan.source(), plan.databaseName(), DatabaseStatus.ONLINE, it)
@@ -334,12 +353,6 @@ private class DatabaseCommands(
                     "composite databases are not supported."
             }
         }
-        if (plan.topology().isDefined) {
-            return failure(source, "TOPOLOGY") {
-                "Failed to create the specified database '${show(databaseName, it)}': " +
-                    "TOPOLOGY is not supported."
-            }
-        }
         val name = admin.getNameFields("databaseName", databaseName, Function1(::validName))
         val key = parameter(name.nameKey())
         val free =
@@ -355,15 +368,31 @@ private class DatabaseCommands(
             )
         val version = context.runtimeContext().cypherVersion()
         val seed =
-            Function2<Transaction, MapValue, MapValue> { _, params ->
+            Function2<Transaction, MapValue, MapValue> { tx, params ->
                 val database = show(databaseName, params)
                 val seed = seedOptions(plan, database, params, version)
+                val placed =
+                    placed(database, "create") {
+                        placement.place(
+                            tx,
+                            NormalizedDatabaseName(database).name(),
+                            plan.topology().valueOrNull()?.let {
+                                primaries(it, database, params, "create")
+                            },
+                            seed.server?.let(UUID::fromString),
+                        )
+                    }
                 params
                     .updatedWith(SEED_URI, seed.uri?.let(Values::utf8Value) ?: Values.NO_VALUE)
                     .updatedWith(
                         SEEDING_SERVERS,
                         seed.server?.let { Values.stringArray(it) } ?: Values.NO_VALUE,
                     )
+                    .updatedWith(
+                        HOSTS,
+                        Values.stringArray(*placed.hosts.map { it.toString() }.toTypedArray()),
+                    )
+                    .updatedWith(PRIMARIES, Values.longValue(placed.primaries.toLong()))
             }
         return updating(
             "CreateDatabase",
@@ -378,7 +407,19 @@ private class DatabaseCommands(
                 database.uuid = randomUUID(),
                 database.${TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY} = ${parameter(SEED_URI)},
                 database.${TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY} =
-                    ${parameter(SEEDING_SERVERS)}
+                    ${parameter(SEEDING_SERVERS)},
+                database.${TopologyGraphDbmsModel.DATABASE_PRIMARIES_PROPERTY} = ${parameter(PRIMARIES)},
+                database.${TopologyGraphDbmsModel.DATABASE_SECONDARIES_PROPERTY} = 0
+            WITH database
+            CALL {
+                WITH database
+                UNWIND ${parameter(HOSTS)} AS host
+                MATCH (server:${TopologyGraphDbmsModel.INSTANCE_LABEL.name()} {
+                    ${TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY}: host})
+                CREATE (database)-[:${TopologyGraphDbmsModel.HOSTED_ON_RELATIONSHIP.name()} {
+                    ${TopologyGraphDbmsModel.HOSTED_ON_MODE_PROPERTY}: 'raft',
+                    ${TopologyGraphDbmsModel.HOSTED_ON_INSTALLED_AT_PROPERTY}: datetime()}]->(server)
+            }
             RETURN database.name AS name
             """
                 .trimIndent(),
@@ -408,6 +449,159 @@ private class DatabaseCommands(
             transformer().convert(name.nameConverter()).convert(seed),
         )
     }
+
+    /**
+     * ALTER DATABASE: SET TOPOLOGY places the database on as many primaries as asked for (see
+     * [DatabasePlacement]), SET ACCESS makes it read-only or read-write. Options, such as
+     * `txLogEnrichment` for change data capture, are refused.
+     */
+    private fun alterDatabase(
+        plan: AlterDatabase,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val source = compile(plan.source(), context)
+        val databaseName = plan.databaseName()
+        if (plan.options() !is `NoOptions$` || !plan.optionsToRemove().isEmpty) {
+            return failure(source, "ALTER DATABASE options") {
+                "Failed to alter the specified database '${show(databaseName, it)}': options " +
+                    "are not supported."
+            }
+        }
+        val name = admin.getDatabaseNameFields("databaseName", databaseName)
+        val access =
+            plan.access().valueOrNull()?.let {
+                if (it is `ReadOnlyAccess$`) DatabaseAccess.READ_ONLY else DatabaseAccess.READ_WRITE
+            }
+        val topology = plan.topology().valueOrNull()
+        val placing =
+            Function2<Transaction, MapValue, MapValue> { tx, params ->
+                if (topology != null) {
+                    val database = show(databaseName, params)
+                    val primaries = primaries(topology, database, params, "alter")
+                    val node = resolve(tx, database)
+                    // Without a node the query finds none and reports it.
+                    if (primaries != null && node != null) {
+                        val placed =
+                            placed(database, "alter") {
+                                placement.resize(tx, Placements.name(node), primaries)
+                            }
+                        Placements.place(tx, node, placed.hosts, placed.primaries)
+                    }
+                }
+                params
+            }
+        return updating(
+            "AlterDatabase",
+            """
+            ${database(parameter(name.displayNameKey()))}
+            SET database.access = coalesce(${'$'}access, database.access),
+                database.updated_at = datetime()
+            RETURN database.name AS name
+            """
+                .trimIndent(),
+            VirtualValues.map(
+                name.keys() + "access",
+                name.values() + (access?.let { Values.utf8Value(it.name) } ?: Values.NO_VALUE),
+            ),
+            QueryHandler.handleNoResult(notFound("alter", databaseName))
+                .handleError(errors("ALTER DATABASE", "alter", databaseName)),
+            source,
+            transformer().convert(name.nameConverter()).convert(placing),
+        )
+    }
+
+    /** The `Database` node that [name] names, by its name or a local alias, if there is one. */
+    private fun resolve(tx: Transaction, name: String): Node? {
+        val normalized = NormalizedDatabaseName(name).name()
+        tx.findNode(
+                TopologyGraphDbmsModel.DATABASE_LABEL,
+                TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
+                normalized,
+            )
+            ?.let {
+                return it
+            }
+        return tx.findNodes(
+                TopologyGraphDbmsModel.DATABASE_NAME_LABEL,
+                TopologyGraphDbmsModel.NAME_PROPERTY,
+                normalized,
+            )
+            .use { names ->
+                names
+                    .asSequence()
+                    .filter {
+                        it.getProperty(TopologyGraphDbmsModel.NAMESPACE_PROPERTY, null) ==
+                            TopologyGraphDbmsModel.DEFAULT_NAMESPACE &&
+                            it.getProperty(TopologyGraphDbmsModel.PRIMARY_PROPERTY, null) == false
+                    }
+                    .mapNotNull {
+                        it.getSingleRelationship(
+                                TopologyGraphDbmsModel.TARGETS_RELATIONSHIP,
+                                Direction.OUTGOING,
+                            )
+                            ?.endNode
+                    }
+                    .firstOrNull { it.hasLabel(TopologyGraphDbmsModel.DATABASE_LABEL) }
+            }
+    }
+
+    /**
+     * The number of primaries [topology] asks for, null if it names none, checked for the database
+     * [name]: 1 to 11 primaries, as Neo4j Enterprise takes them. Secondaries are refused until
+     * DozenDB has them.
+     */
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for a number out of range.
+    private fun primaries(
+        topology: Topology,
+        name: String,
+        params: MapValue,
+        operation: String,
+    ): Int? {
+        val failed = "Failed to $operation the specified database '$name'"
+        val primaries = topology.primaries().valueOrNull()?.let { number(it, params, failed) }
+        val secondaries = topology.secondaries().valueOrNull()?.let { number(it, params, failed) }
+        if (primaries != null && primaries !in 1..MAX_PRIMARIES) {
+            throw InvalidArgumentException(
+                "$failed: a topology has 1 to $MAX_PRIMARIES primaries, not $primaries."
+            )
+        }
+        if (secondaries != null && secondaries != 0L) {
+            throw InvalidArgumentException(
+                ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_51N31)
+                    .withParam(GqlParams.StringParam.item, "SECONDARIES")
+                    .withParam(GqlParams.StringParam.context, "DozenDB")
+                    .build(),
+                "$failed: secondaries are not supported yet; every copy of a database is a " +
+                    "primary.",
+            )
+        }
+        return primaries?.toInt()
+    }
+
+    /** A number of a topology, given or as a parameter. */
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for it.
+    private fun number(given: Either<Any, Parameter>, params: MapValue, failed: String): Long =
+        when (given) {
+            is Left -> (given.value() as Number).toLong()
+            else -> {
+                val parameter = (given as Right).value()
+                (params.get(parameter.name()) as? IntegralValue)?.longValue()
+                    ?: throw InvalidArgumentException(
+                        "$failed: the topology parameter '${parameter.name()}' is not an integer."
+                    )
+            }
+        }
+
+    /** What [placing] decides, refused as a failed [operation] of the database [name]. */
+    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for it.
+    private fun placed(name: String, operation: String, placing: () -> Placement): Placement =
+        try {
+            placing()
+        } catch (e: AllocationException) {
+            throw InvalidArgumentException(
+                "Failed to $operation the specified database '$name': ${e.message}."
+            )
+        }
 
     /**
      * Compiles the plans before CREATE DATABASE: with OR REPLACE, they drop the database of the
@@ -984,6 +1178,8 @@ private class DatabaseCommands(
 
     private fun parameter(key: String) = "${'$'}`$key`"
 
+    private fun <T> Option<T>.valueOrNull(): T? = if (isDefined) get() else null
+
     private fun <T> seqOf(vararg items: T): Seq<T> =
         CollectionConverters.asScala(items.toList()).toSeq()
 
@@ -995,6 +1191,15 @@ private class DatabaseCommands(
 
         /** The parameter of the servers a clustered database is created on first: one. */
         const val SEEDING_SERVERS = "__dozendb_seedingServers"
+
+        /** The parameter of the servers a new database is placed on, by id. */
+        const val HOSTS = "__dozendb_hosts"
+
+        /** The parameter of the number of primaries a new database requests. */
+        const val PRIMARIES = "__dozendb_primaries"
+
+        /** The most primaries a topology may ask for, as in Neo4j Enterprise. */
+        const val MAX_PRIMARIES = 11
 
         val SUPPORTED_OPTIONS =
             listOf(

@@ -28,7 +28,8 @@ import org.testcontainers.lifecycle.Startables
 /**
  * The servers of a cluster, as Neo4j Enterprise shows and changes them: each initial member is an
  * enabled server with the tags of `initial.server.tags`, a server that joins stays Free and hosts
- * only `system` until ENABLE SERVER, and the members with a database's priority tag lead it.
+ * only `system` until ENABLE SERVER, then the databases placed on it, and the members with a
+ * database's priority tag lead it.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
@@ -154,7 +155,7 @@ class ServersIT {
 
     @Test
     @Order(3)
-    fun `a server that joins stays Free and hosts only system, until ENABLE SERVER`() {
+    fun `a server that joins stays Free until ENABLE SERVER, then hosts what is placed on it`() {
         val joining = member("core4")
         joining.start()
         started += joining
@@ -175,9 +176,15 @@ class ServersIT {
         eventually {
             val enabled = servers().getValue(id)
             assertThat(enabled["state"]).isEqualTo("Enabled")
-            assertThat(enabled["hosting"]).isEqualTo(listOf("system", "neo4j"))
+            assertThat(enabled["requestedHosting"]).isEqualTo(listOf("system"))
             // The tags it started with, as ENABLE SERVER gave no options.
             assertThat(enabled["tags"]).isEqualTo(tags.getValue("core4"))
+        }
+
+        administer("ALTER DATABASE neo4j SET TOPOLOGY 4 PRIMARIES")
+
+        eventually {
+            assertThat(servers().getValue(id)["hosting"]).isEqualTo(listOf("system", "neo4j"))
             assertThat(joining.rows("MATCH (n) RETURN count(n) AS c", "neo4j")).hasSize(1)
         }
         // It does not have the priority tag of neo4j, which core2 still leads.

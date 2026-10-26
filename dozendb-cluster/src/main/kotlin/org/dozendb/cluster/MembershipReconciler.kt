@@ -23,8 +23,8 @@ import org.dozendb.consensus.Role
 import org.neo4j.logging.Log
 
 /**
- * Makes the members of every database's group follow the members of the cluster that host
- * databases: the members of the `system` group that [hosts], the enabled servers.
+ * Makes the voting members of every database's group follow the servers the database is placed on
+ * (see `org.dozendb.core.servers.Placements`), among the members of the cluster.
  *
  * Every member runs one, but only the `system` leader acts, so that one member changes each group:
  * a configuration change reaches a group's leader from any member, whatever its database does, also
@@ -36,31 +36,31 @@ import org.neo4j.logging.Log
  * not run here through the members that vote in it. It waits while those disagree, as while a
  * change is under way.
  *
- * For each group the reconciler first removes members the cluster no longer has, then adds the
- * members it lacks, one change at a time in each group and groups in parallel. A member is added
+ * For each group the reconciler first adds the members it is placed on that do not vote in it, and
+ * only once they all vote removes the others, one change at a time in each group and groups in
+ * parallel: a group never has fewer voters than before while its copies move. A member is added
  * only once it runs the group, which it does once it has copied the database; the group's leader
- * then brings it up to date before it votes. A group keeps at least one of the cluster's members:
- * if it has none, it gains one before it loses any.
+ * then brings it up to date before it votes. A group always keeps one voter. A database not placed
+ * yet keeps its voters.
  *
  * Work that remains is looked at again after [retryDelay], and after twice as long each time work
  * still remains, up to [maximumRetryDelay]; a finished change looks at once.
  *
- * @property databases the databases of the system graph, `system` among them or not.
+ * @property databases the databases of the system graph, `system` among them or not, each with the
+ *   servers it is placed on; none while it is not placed yet.
  * @property changes runs the changes, which wait for the group's leader.
- * @property hosts whether a member of the cluster hosts the databases other than `system`.
- * @property systemRunning whether the `system` database runs here, so that [databases] and [hosts]
- *   can read it: this member may lead `system` before.
+ * @property systemRunning whether the `system` database runs here, so that [databases] can read it:
+ *   this member may lead `system` before.
  */
 class MembershipReconciler(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
-    private val databases: () -> List<DatabaseRef>,
+    private val databases: () -> Map<DatabaseRef, Set<MemberId>>,
     private val log: Log,
     private val changeTimeout: Duration = Duration.ofMinutes(10),
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
     private val changes: Executor = newChangeExecutor(),
-    private val hosts: (MemberId) -> Boolean = { true },
     private val systemRunning: () -> Boolean = { true },
 ) : AutoCloseable {
     private val scheduler: ScheduledExecutorService =
@@ -130,11 +130,11 @@ class MembershipReconciler(
         if (!systemRunning()) return true
         val cluster = consensus.membership(systemDatabase)
         if (!cluster.settled) return true
-        val hosting = cluster.members.filter { hosts(it.id) }
         val reports = groupsReported(cluster.members).toMutableMap()
         var again = false
-        for (group in databases()) {
-            if (group.id == systemDatabase.id) continue
+        for ((group, placed) in databases()) {
+            if (group.id == systemDatabase.id || placed.isEmpty()) continue
+            val hosting = cluster.members.filter { it.id in placed }
             val voters = voters(group, reports)
             if (voters == null) {
                 // No member that answers votes in it, or they disagree: look again later.
@@ -207,19 +207,23 @@ class MembershipReconciler(
         data class Add(val member: Member) : Change
     }
 
-    /** The next change of a group with [voters]: a member that [runs] it is added first. */
+    /**
+     * The next change of a group with [voters] towards [hosting], the members it is placed on: one
+     * of them that does not vote is added, those that [runs] it first; once they all vote, one that
+     * is not among them is removed.
+     */
     private fun nextChange(
-        cluster: List<Member>,
+        hosting: List<Member>,
         voters: List<Member>,
         runs: (Member) -> Boolean,
     ): Change? {
-        val clusterIds = cluster.map { it.id }.toSet()
+        val hostingIds = hosting.map { it.id }.toSet()
         val groupIds = voters.map { it.id }.toSet()
-        val extra = voters.filter { it.id !in clusterIds }
-        val missing = cluster.filter { it.id !in groupIds }
+        val extra = voters.filter { it.id !in hostingIds }
+        val missing = hosting.filter { it.id !in groupIds }
         return when {
-            extra.isNotEmpty() && extra.size < voters.size -> Change.Remove(extra.first())
             missing.isNotEmpty() -> Change.Add(missing.firstOrNull(runs) ?: missing.first())
+            extra.isNotEmpty() && extra.size < voters.size -> Change.Remove(extra.first())
             else -> null
         }
     }

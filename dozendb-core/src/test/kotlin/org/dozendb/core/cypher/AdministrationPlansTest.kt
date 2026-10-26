@@ -117,6 +117,7 @@ class AdministrationPlansTest {
                 "CreateDatabase",
                 "EnsureValidNumberOfDatabases",
                 "DropDatabase",
+                "AlterDatabase",
                 "StartDatabase",
                 "StopDatabase",
                 "EnsureValidNonSystemDatabase",
@@ -169,9 +170,6 @@ class AdministrationPlansTest {
                 "DropServer" to PLACEMENT,
                 "DeallocateServer" to PLACEMENT,
                 "ReallocateDatabases" to PLACEMENT,
-                "AlterDatabase" to
-                    "databases are read-write, on every member, with the options they were " +
-                        "created with",
             )
 
         /** A command for each refused plan that is a command of its own. */
@@ -180,8 +178,6 @@ class AdministrationPlansTest {
                 "DROP SERVER 'one'",
                 "DEALLOCATE DATABASES FROM SERVER 'one'",
                 "REALLOCATE DATABASES",
-                "ALTER DATABASE neo4j SET ACCESS READ ONLY",
-                "ALTER DATABASE neo4j SET TOPOLOGY 1 PRIMARY",
             )
     }
 }

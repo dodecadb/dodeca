@@ -214,6 +214,19 @@ class ClusterSettings : SettingsDeclaration {
             newBuilder("initial.dbms.automatically_enable_free_servers", BOOL, false).build()
 
         @JvmField
+        @field:Description(
+            "The number of primaries a new database has when CREATE DATABASE gives no TOPOLOGY, " +
+                "and the default database of a new cluster at most. Taken at the cluster's first " +
+                "start; dbms.setDefaultAllocationNumbers changes it later. Raise it for " +
+                "fault tolerance: with one primary, a database has a single copy. Named like Neo4j " +
+                "Enterprise's setting."
+        )
+        val defaultPrimaries: Setting<Int> =
+            newBuilder("initial.dbms.default_primaries_count", INT, 1)
+                .addConstraint(range(1, 11))
+                .build()
+
+        @JvmField
         @field:Internal
         @field:Description(
             "For tests: how long leaders must have stayed put on every member before balancing " +

@@ -31,8 +31,12 @@ class DatabaseReconcilerTest {
             local,
             self,
             DEFAULT,
-            {
-                listOf(if (it == creator) creatorAddress else otherAddress, otherAddress).distinct()
+            { database ->
+                listOf(
+                        if (database.creator == creator) creatorAddress else otherAddress,
+                        otherAddress,
+                    )
+                    .distinct()
             },
             { systemMembers },
             { answering(it) },
@@ -45,13 +49,15 @@ class DatabaseReconcilerTest {
     private fun database(name: String): NamedDatabaseId =
         DatabaseIdFactory.from(name, UUID.randomUUID())
 
+    /** A database placed, by default, on every member but the Free ones. */
     private fun desired(
         id: NamedDatabaseId,
         online: Boolean = true,
         creator: MemberId? = null,
         seedUri: String? = null,
         designatedSeeder: MemberId? = null,
-    ) = DesiredDatabase(id, online, creator, seedUri, designatedSeeder)
+        hosts: Set<MemberId> = members.map { it.id }.filter { it !in graph.free }.toSet(),
+    ) = DesiredDatabase(id, online, creator, seedUri, designatedSeeder, hosts)
 
     @Test
     fun `the creator of a seeded database creates its store from the seed, the others copy it`() {
@@ -324,7 +330,7 @@ class DatabaseReconcilerTest {
     }
 
     @Test
-    fun `the default database is never created or dropped, but follows its status`() {
+    fun `the default database is never dropped or replaced, but follows its status`() {
         val running = database(DEFAULT)
         local.add(running, started = true)
         graph.databases = listOf(desired(database(DEFAULT), creator = self))
@@ -339,9 +345,9 @@ class DatabaseReconcilerTest {
     }
 
     @Test
-    fun `a member that hosts databases but lacks the default one copies it`() {
+    fun `a member the default database is placed on copies it from its creator`() {
         val default = database(DEFAULT)
-        graph.databases = listOf(desired(default))
+        graph.databases = listOf(desired(default, creator = creator))
 
         assertThat(reconciler.reconcile()).isFalse()
 
@@ -372,13 +378,65 @@ class DatabaseReconcilerTest {
         answering = { it != silent.id }
         graph.free = setOf(self)
         graph.leading = true
-        graph.databases = listOf(desired(films), desired(database(DEFAULT)))
+        graph.databases = listOf(desired(films, hosts = setOf(creator, silent.id)))
 
         assertThat(reconciler.reconcile()).isTrue()
 
         assertThat(graph.named).containsExactly(films to creator)
         assertThat(graph.initialMembers).containsExactly(listOf(members[1], silent))
         assertThat(local.registered).isEmpty()
+    }
+
+    @Test
+    fun `a member creates and copies only the databases placed on it`() {
+        graph.leading = true
+        graph.databases =
+            listOf(
+                desired(films, creator = creator, hosts = setOf(creator)),
+                desired(database(DEFAULT), hosts = setOf(creator)),
+            )
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(local.registered).isEmpty()
+        assertThat(local.copies).isEmpty()
+        assertThat(graph.named.map { it.second })
+            .describedAs("named among its servers")
+            .containsOnly(creator)
+    }
+
+    @Test
+    fun `a database not placed yet is left as it is`() {
+        val held = database("held")
+        local.add(held, started = true)
+        graph.leading = true
+        graph.databases =
+            listOf(
+                desired(films, hosts = emptySet()),
+                desired(held, online = false, hosts = emptySet()),
+            )
+
+        reconciler.reconcile()
+
+        assertThat(local.registered).containsOnlyKeys(held)
+        assertThat(local.registered[held]).isEqualTo(LocalDatabase(false, false))
+        assertThat(graph.named).isEmpty()
+    }
+
+    @Test
+    fun `a copy no longer placed here is kept while this member votes, then deleted`() {
+        local.add(films, started = true)
+        graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator)))
+
+        assertThat(reconciler.reconcile()).describedAs("tried again").isTrue()
+
+        assertThat(local.registered).containsKey(films)
+        assertThat(local.dropped).isEmpty()
+
+        local.notVoting += films
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.dropped).containsExactly(films)
     }
 
     @Test
@@ -430,8 +488,6 @@ class DatabaseReconcilerTest {
 
         override fun databases(): List<DesiredDatabase> = databases
 
-        override fun hosts(member: MemberId): Boolean = member !in free
-
         override fun awaitCurrent(): Boolean {
             if (!reachable) return false
             whenConfirmed?.let { databases = it }
@@ -482,6 +538,12 @@ class DatabaseReconcilerTest {
         override fun groups(): Set<UUID> = groups.toSet()
 
         override fun catchingUp(id: NamedDatabaseId): Boolean = id in catchingUp
+
+        /** Databases whose group this member was removed from. */
+        val notVoting = mutableSetOf<NamedDatabaseId>()
+
+        override fun votes(id: NamedDatabaseId): Boolean? =
+            if (id.databaseId().uuid() in groups) id !in notVoting else null
 
         override fun create(id: NamedDatabaseId) {
             check(id !in registered) { "$id is registered" }

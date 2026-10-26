@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal
 
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
@@ -12,10 +13,14 @@ import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.AllocationException
+import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerRecord
 import org.dozendb.core.servers.ServerRecords
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.GraphDatabaseService
+import org.neo4j.graphdb.Transaction
 import org.neo4j.logging.InternalLog
 
 /**
@@ -27,7 +32,13 @@ import org.neo4j.logging.InternalLog
  *   new cluster and one formed before DozenDB recorded servers alike.
  * - Afterwards, a member that joins is Free until ENABLE SERVER records it, or at once while
  *   `auto_enable_free_servers` is set.
- * - The record of a server that left `system` is deleted.
+ * - The record of a server that left `system` is deleted, with the databases placed on it.
+ * - Once the initial servers are recorded, a database not placed yet is placed (see [Placements]),
+ *   best effort, on the default number of servers, those that hold it first: the default database
+ *   of a new cluster, and the databases of a member that formed the cluster with databases of its
+ *   own, which it holds alone until then. Such a database is placed only once a member holds it,
+ *   unless it has no creator yet, as the default database of a new cluster, which the creator named
+ *   among the servers it is placed on then creates.
  *
  * It looks when this member becomes the leader, after each applied `system` transaction, and while
  * work remains, again after [retryDelay], twice as long each time up to [maximumRetryDelay].
@@ -37,6 +48,10 @@ import org.neo4j.logging.InternalLog
  *   `initial.dbms.automatically_enable_free_servers`.
  * @property current whether this member's system graph holds every committed transaction, as the
  *   leader confirms: a new leader may not have applied the last ones of the previous leader yet.
+ * @property holders the members that vote in a database's group, as far as known.
+ * @property available whether a member answers this one, so that copies go to those that do first.
+ * @property defaults the default numbers of copies the configuration sets, recorded with the
+ *   initial servers.
  */
 class ServerReconciler(
     private val consensus: ConsensusLog,
@@ -48,6 +63,9 @@ class ServerReconciler(
     private val report: (MemberId) -> Map<String, String>?,
     private val autoEnable: Boolean,
     private val log: InternalLog,
+    private val holders: (DatabaseRef) -> List<MemberId> = { emptyList() },
+    private val available: (MemberId) -> Boolean = { true },
+    private val defaults: Placements.Defaults = Placements.Defaults(1, 0),
     private val retryDelay: Duration = Duration.ofSeconds(1),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
 ) : AutoCloseable {
@@ -59,6 +77,9 @@ class ServerReconciler(
     private var statusListener: AutoCloseable? = null
 
     @Volatile private var closed = false
+
+    /** Databases that no server could be placed on, logged once; scheduler only. */
+    private val unplaceable = mutableSetOf<String>()
 
     // Used on the scheduler thread only.
     private var nextRetryDelay = retryDelay
@@ -142,41 +163,150 @@ class ServerReconciler(
             system().beginTx().use { tx ->
                 ServerRecords.lock(tx)
                 val records = ServerRecords.records(tx)
-                val initial = ServerRecords.initialServersEnabled(tx)
                 var changed = ServerRecords.removeDuplicates(tx)
                 for (id in records.keys - members.map { it.uuid }.toSet()) {
                     log.info("Deleting the record of server %s, which left the cluster", id)
                     ServerRecords.delete(tx, id)
                     changed = true
                 }
-                val enabling = !initial || ServerRecords.autoEnable(tx)
-                val free = members.filter { it.uuid !in records }
-                if (enabling) {
-                    for (member in free) {
-                        val options = initialOptions(member)
-                        if (options == null) {
-                            again = true
-                            continue
-                        }
-                        log.info(
-                            "Enabling server %s with its initial options %s%s",
-                            member,
-                            options,
-                            if (initial) ", as servers that join are enabled at once" else "",
-                        )
-                        ServerRecords.write(tx, ServerRecord(member.uuid, options = options))
-                        changed = true
-                    }
+                val initial = ServerRecords.initialServersEnabled(tx)
+                if (!initial || ServerRecords.autoEnable(tx)) {
+                    val (enabled, all) = enable(tx, members, joined = initial)
+                    changed = enabled || changed
+                    again = !all
                 }
                 if (!initial && !again) {
                     log.info("Recorded the servers the cluster started with, %s", members)
-                    ServerRecords.markInitialServersEnabled(tx, autoEnable)
+                    markInitial(tx)
                     changed = true
+                }
+                if (ServerRecords.initialServersEnabled(tx)) {
+                    val (placed, waiting) = placeUnplaced(tx)
+                    changed = placed || changed
+                    again = waiting || again
                 }
                 if (changed) tx.commit()
             }
         }
         return again
+    }
+
+    /**
+     * Records, in [tx] on the `system` leader, the servers the cluster started with, if they are
+     * not yet, as this reconciler does once it has their reports, so that a command can place
+     * databases on them at once.
+     *
+     * @throws AllocationException if a member's options are not known yet, or the cluster's members
+     *   change.
+     */
+    fun recordInitial(tx: Transaction) {
+        if (ServerRecords.initialServersEnabled(tx)) return
+        val membership =
+            try {
+                consensus.membership(systemDatabase)
+            } catch (e: ConsensusUnavailableException) {
+                throw AllocationException("the cluster's members are not known: ${e.message}")
+            }
+        if (!membership.settled) {
+            throw AllocationException("the cluster's members are changing: try again in a moment")
+        }
+        val members = membership.members.map { it.id }
+        val (_, all) = enable(tx, members, joined = false)
+        if (!all) {
+            throw AllocationException(
+                "not every server the cluster started with has reported its initial options " +
+                    "yet: try again in a moment"
+            )
+        }
+        log.info("Recorded the servers the cluster started with, %s", members)
+        markInitial(tx)
+    }
+
+    /**
+     * Enables the [members] without a record, with the options they report; [joined] if they join a
+     * cluster whose initial servers are recorded. Returns whether it recorded any, and whether
+     * every member has a record now.
+     */
+    private fun enable(
+        tx: Transaction,
+        members: List<MemberId>,
+        joined: Boolean,
+    ): Pair<Boolean, Boolean> {
+        val records = ServerRecords.records(tx)
+        var changed = false
+        var all = true
+        for (member in members.filter { it.uuid !in records }) {
+            val options = initialOptions(member)
+            if (options == null) {
+                all = false
+                continue
+            }
+            log.info(
+                "Enabling server %s with its initial options %s%s",
+                member,
+                options,
+                if (joined) ", as servers that join are enabled at once" else "",
+            )
+            ServerRecords.write(tx, ServerRecord(member.uuid, options = options))
+            changed = true
+        }
+        return changed to all
+    }
+
+    private fun markInitial(tx: Transaction) {
+        ServerRecords.markInitialServersEnabled(tx, autoEnable)
+        if (Placements.defaults(tx, NONE) == NONE) Placements.setDefaults(tx, defaults)
+    }
+
+    /**
+     * Places the databases not placed yet, best effort; returns whether it placed any, and whether
+     * one waits for a member to hold it.
+     */
+    private fun placeUnplaced(tx: Transaction): Pair<Boolean, Boolean> {
+        var placed = false
+        var waiting = false
+        val count = Placements.defaults(tx, defaults).primaries
+        for (database in Placements.placed(tx).filter { it.hosts.isEmpty() }) {
+            val node = Placements.database(tx, database.name) ?: continue
+            val ref =
+                DatabaseRef(
+                    database.name,
+                    UUID.fromString(
+                        node.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY) as String
+                    ),
+                )
+            val creator =
+                (node.getProperty(Neo4jSystemGraph.CREATOR_PROPERTY, null) as? String)?.let(
+                    MemberId::parse
+                )
+            val holding = holders(ref)
+            if (creator != null && holding.isEmpty()) {
+                // Its creator holds its store, and has not told it runs its group yet.
+                waiting = true
+                continue
+            }
+            val prefer = (listOfNotNull(creator) + holding).distinct().map { it.uuid }
+            val hosts =
+                try {
+                    Placements.allocator(tx) { available(MemberId(it)) }
+                        .place(database.name, count, prefer = prefer, bestEffort = true)
+                } catch (e: AllocationException) {
+                    if (unplaceable.add(database.name)) {
+                        log.warn(
+                            "Database %s cannot be placed on any server: %s. It stays where it " +
+                                "is until a server can host it",
+                            database.name,
+                            e.message,
+                        )
+                    }
+                    continue
+                }
+            unplaceable -= database.name
+            log.info("Placing database %s on servers %s", database.name, hosts)
+            Placements.place(tx, node, hosts)
+            placed = true
+        }
+        return placed to waiting
     }
 
     /** The options [member] reports from its `initial.server.*` settings, or null if unknown. */
@@ -195,5 +325,10 @@ class ServerReconciler(
         statusListener?.close()
         scheduler.shutdownNow()
         scheduler.awaitTermination(30, TimeUnit.SECONDS)
+    }
+
+    private companion object {
+        /** No default numbers of copies recorded, as [Placements.defaults] tells. */
+        val NONE = Placements.Defaults(0, 0)
     }
 }

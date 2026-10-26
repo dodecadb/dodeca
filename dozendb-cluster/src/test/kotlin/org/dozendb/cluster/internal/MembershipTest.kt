@@ -63,6 +63,28 @@ class MembershipTest {
         }
 
     /**
+     * Places [databases] on [member] too, with as many primaries as [among] and it, once its server
+     * is enabled.
+     */
+    private fun ClusterHarness.placeOn(
+        member: ClusterHarness.Member,
+        vararg databases: String,
+        among: () -> List<ClusterHarness.Member> = { members.take(3) },
+    ) {
+        eventually {
+            val states =
+                administer("SHOW SERVERS YIELD serverId, state", among).associate {
+                    it["serverId"] to it["state"]
+                }
+            assertThat(states[member.serverId]).isEqualTo("Enabled")
+        }
+        val primaries = among().size + 1
+        for (database in databases) {
+            administer("ALTER DATABASE $database SET TOPOLOGY $primaries PRIMARIES", among)
+        }
+    }
+
+    /**
      * Writes to [database] and checkpoints every running member until the leader discarded the
      * start of the database's log, so that a member that joins later cannot catch up from it.
      */
@@ -115,7 +137,7 @@ class MembershipTest {
             .orEmpty()
 
     @Test
-    fun `an added member joins every database's group, copying each database once`() {
+    fun `an added member joins the groups of the databases placed on it, copying each once`() {
         val cluster =
             ClusterHarness(root, 3, settings = ClusterHarness.METRICS) {
                     it.copy(
@@ -137,7 +159,11 @@ class MembershipTest {
         val joining = cluster.newMember().apply { start() }
 
         cluster.administer("CALL dozendb.cluster.addMember('127.0.0.1:${joining.raftPort}')")
-        cluster.administer("CREATE DATABASE series", among = { cluster.members })
+        cluster.placeOn(joining, "films", DEFAULT)
+        cluster.administer(
+            "CREATE DATABASE series TOPOLOGY 4 PRIMARIES",
+            among = { cluster.members },
+        )
 
         eventually {
             for (member in cluster.members) {
@@ -281,6 +307,7 @@ class MembershipTest {
             "CALL dozendb.cluster.addMember('127.0.0.1:${replacement.raftPort}')",
             among = { remaining },
         )
+        cluster.placeOn(replacement, DEFAULT, among = { remaining })
 
         awaitGroups(remaining + replacement, SYSTEM, DEFAULT)
         stopped.start()

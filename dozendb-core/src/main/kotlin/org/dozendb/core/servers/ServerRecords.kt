@@ -138,20 +138,28 @@ object ServerRecords {
         )
     }
 
-    /** Deletes the record of the server [id], if there is one. */
+    /** Deletes the record of the server [id], if there is one, with the databases placed on it. */
     fun delete(tx: Transaction, id: UUID) {
-        tx.findNode(INSTANCE, TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id")?.delete()
+        tx.findNode(INSTANCE, TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id")?.let(::detach)
     }
 
-    /** Deletes every record and both flags, as when a cluster adopts another one's system graph. */
+    /**
+     * Deletes every record, with the databases placed on them, and both flags, as when a cluster
+     * adopts another one's system graph.
+     */
     fun deleteAll(tx: Transaction) {
-        tx.findNodes(INSTANCE).use { nodes -> nodes.forEach { it.delete() } }
+        tx.findNodes(INSTANCE).use { nodes -> nodes.forEach(::detach) }
         tx.findNodes(SETTINGS).use { nodes ->
             nodes.forEach {
                 it.removeProperty(INITIAL_ENABLED)
                 it.removeProperty(AUTO_ENABLE)
             }
         }
+    }
+
+    private fun detach(node: Node) {
+        node.relationships.use { relationships -> relationships.forEach { it.delete() } }
+        node.delete()
     }
 
     private fun settings(tx: Transaction): Node? =

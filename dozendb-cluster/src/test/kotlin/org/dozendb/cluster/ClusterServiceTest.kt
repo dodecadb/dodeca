@@ -213,7 +213,7 @@ class ClusterServiceTest {
 
         assertThat(joining.state).isEqualTo(MemberState.JOINING)
         assertThat(store.record).isEqualTo(MembershipRecord(MemberState.JOINING))
-        // A Free server: the other databases follow once it is enabled.
+        // The other databases follow their placements.
         assertThat(stores.copied).containsExactly("system")
         assertThat(joiningLog.status(system).role).isEqualTo(Role.Inactive)
         assertThat(joining.foundingMembers).isNull()
@@ -391,7 +391,7 @@ class ClusterServiceTest {
     }
 
     @Test
-    fun `a rejoining member without databases copies them from a member that serves them`() {
+    fun `a rejoining member without databases copies system from a member that serves it`() {
         val services = logs.indices.map { service(it, FakeStores(existed = true)) }
         logs.forEach { it.start() }
         services.forEach { it.start() }
@@ -402,11 +402,12 @@ class ClusterServiceTest {
         service(2, wiped).start()
 
         assertThat(wiped.copies).containsExactly(addresses[1])
-        assertThat(wiped.copied).containsExactlyElementsOf(FakeStores.ALL_DATABASES)
+        // The other databases follow their placements.
+        assertThat(wiped.copied).containsExactly("system")
     }
 
     @Test
-    fun `a rejoining member copies only the databases it lacks`() {
+    fun `a rejoining member that lacks another database copies none as it starts`() {
         val services = logs.indices.map { service(it, FakeStores(existed = true)) }
         logs.forEach { it.start() }
         services.forEach { it.start() }
@@ -415,7 +416,7 @@ class ClusterServiceTest {
 
         service(2, partly).start()
 
-        assertThat(partly.copied).containsExactly("neo4j")
+        assertThat(partly.copied).isEmpty()
         assertThat(logs[2].status(system).role).isEqualTo(Role.Follower)
     }
 

@@ -29,6 +29,7 @@ import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.DatabaseReconciler
+import org.dozendb.cluster.internal.replication.DesiredDatabase
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
@@ -57,7 +58,10 @@ import org.dozendb.core.edition.DozenDbQueryRouterBootstrap
 import org.dozendb.core.edition.HostingServer
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
+import org.dozendb.core.edition.WantedDatabase
 import org.dozendb.core.security.MemberLogins
+import org.dozendb.core.servers.DatabasePlacement
+import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.Servers
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
@@ -90,7 +94,6 @@ import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.internal.Version
-import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.router.transaction.DatabaseTransactionFactory
 import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
@@ -162,7 +165,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.NEO4J_VERSION to neo4jVersion,
                 MemberMetadata.DOZENDB_VERSION to DozenDb.version,
                 MemberMetadata.HAS_STORES to stores.existed.toString(),
-                MemberMetadata.STORES_READY to replicationService.defaultDatabaseStarted.toString(),
+                MemberMetadata.STORES_READY to
+                    (replicationService.replica(systemDatabase)?.isRunning() == true).toString(),
                 MemberMetadata.MEMBER_STATE to cluster.state.name,
                 MemberMetadata.DATABASES to DatabaseStatesCodec.encode(databaseStates()),
                 MemberMetadata.READ_ONLY_DATABASES to readOnlyHere().joinToString(","),
@@ -242,7 +246,6 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         val catchUp =
             CatchUp(
                 consensus,
-                systemDatabase,
                 { databaseControl() },
                 stores::stageReplicated,
                 logService.getInternalLog(CatchUp::class.java),
@@ -259,21 +262,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 mustDetach = { cluster.mustDetach(it) },
                 detached = { cluster.detached(it) },
                 notLeader = ::notLeaderMessage,
-                adoptDatabases = {
-                    val members =
-                        checkNotNull(cluster.foundingMembers) { "this member formed no cluster" }
-                    val databases = systemGraph.adopt(memberId, members)
-                    // A store counts only together with its group, which the creator starts.
-                    for (id in databases.filter { stores.complete(it.name()) }) {
-                        consensus.joinGroup(DatabaseRef(id.name(), id.databaseId().uuid()), members)
-                    }
-                    userLog.info(
-                        "This member formed the cluster with a system database of its own: it " +
-                            "creates the databases listed there, %s, and the other members copy " +
-                            "them",
-                        databases.joinToString { it.name() },
-                    )
-                },
+                adoptDatabases = ::adoptStores,
                 metrics = metrics,
             )
         replication = replicationService
@@ -391,12 +380,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 consensus,
                 systemDatabase,
                 {
-                    systemGraph.databases().map {
-                        DatabaseRef(it.id.name(), it.id.databaseId().uuid())
+                    systemGraph.databases().associate {
+                        DatabaseRef(it.id.name(), it.id.databaseId().uuid()) to it.hosts
                     }
                 },
                 logService.getInternalLog(MembershipReconciler::class.java),
-                hosts = { systemGraph.hosts(it) },
                 systemRunning = { replicationService.replica(systemDatabase)?.isRunning() == true },
             )
         globalModule.globalLife.add(
@@ -544,8 +532,17 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
                 log = globalModule.logService.getInternalLog(ServerReconciler::class.java),
+                holders = { database -> locations.of(database)?.voters?.map { it.id }.orEmpty() },
+                available = directory::answering,
+                defaults =
+                    Placements.Defaults(
+                        globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
+                        0,
+                    ),
             )
         cluster.onRemoved = reconciler::request
+        // A copy no longer placed here is deleted once this member leaves the database's group.
+        replication.afterGroupChange = reconciler::request
         // Transactions applied from Raft fire no transaction event listeners: refresh what the
         // listeners refresh after local commits.
         replication.afterSystemApply = {
@@ -567,14 +564,33 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
      * it has no local state for it. A member that is not among them waits to be added.
      */
     private fun initialMembers(id: NamedDatabaseId): List<Member> =
-        if (id.name() == defaultDatabase) {
-            cluster.foundingMembers
-                ?: consensus.members(systemDatabase).filter { it.id != memberId }
-        } else {
-            checkNotNull(systemGraph.initialMembers(id)) {
-                "No initial members are recorded for database $id"
-            }
+        checkNotNull(systemGraph.initialMembers(id)) {
+            "No initial members are recorded for database $id"
         }
+
+    /**
+     * Makes the databases whose stores this member holds the new cluster's, as the member that
+     * forms it with databases of its own, in local transactions on `system` before it replicates
+     * (see [Neo4jSystemGraph.adopt]): their groups start with this member alone.
+     */
+    private fun adoptStores() {
+        val databases = systemGraph.adopt(consensus.self) { localStores.complete(it) }
+        // A store counts only together with its group.
+        for (id in databases) {
+            consensus.joinGroup(
+                DatabaseRef(id.name(), id.databaseId().uuid()),
+                listOf(consensus.self),
+            )
+        }
+        globalModule.logService
+            .getUserLog(ClusterService::class.java)
+            .info(
+                "This member formed the cluster with databases of its own, %s: it holds them " +
+                    "until the system leader places them, and the servers they are placed on copy " +
+                    "them",
+                databases.joinToString { it.name() },
+            )
+    }
 
     /** Starts creating the roles of a cluster without them, once (see [RolesInitializer]). */
     @Synchronized
@@ -593,14 +609,19 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /**
-     * The members to copy a new database from, the members that host databases, [creator] first.
+     * The members to copy a new [database] from: those that vote in its group, then the servers it
+     * is placed on, its creator first.
      */
-    private fun copySources(creator: MemberId?): List<HostPort> =
-        consensus
-            .members(systemDatabase)
-            .filter { it.id != memberId && systemGraph.hosts(it.id) }
-            .sortedBy { it.id != creator }
+    private fun copySources(database: DesiredDatabase): List<HostPort> {
+        val id = database.id
+        val voters = locations.of(DatabaseRef(id.name(), id.databaseId().uuid()))?.voters.orEmpty()
+        val hosts = consensus.members(systemDatabase).filter { it.id in database.hosts }
+        return (voters + hosts)
+            .distinctBy { it.id }
+            .filter { it.id != memberId }
+            .sortedBy { it.id != database.creator }
             .map { it.raftAddress }
+    }
 
     /**
      * Neo4j's system graph initialiser, run only by the member that founds the cluster: it writes
@@ -620,6 +641,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 override fun initializeSystemGraph() {
                     if (replication.systemBootstrapping) {
                         initializer.start()
+                        // Its databases, the default one for example, live on in the new cluster.
+                        if (localStores.existed) adoptStores()
                         replication.systemGraphInitialized()
                     }
                     startRoles()
@@ -651,34 +674,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /**
-     * The starter of the default database, which reads `system`: it waits while `system` is
-     * replaced by a copy, as when this member restarts behind the leader's log. The reconciler
-     * follows the system graph instead of `StandaloneDatabases`.
+     * Nothing: the reconciler creates, copies and starts the default database on the servers it is
+     * placed on, like every other database, once the system leader placed it.
      */
-    override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {
-        val starter = defaultDatabaseStarter
-        globalModule.globalLife.add(
-            object : Lifecycle by starter {
-                override fun start() {
-                    // A removed member serves no database.
-                    if (cluster.state == MemberState.REMOVED) return
-                    replication.readingSystem {
-                        if (systemGraph.hosts(memberId)) {
-                            starter.start()
-                        } else {
-                            globalModule.logService
-                                .getUserLog(ClusterEditionModule::class.java)
-                                .info(
-                                    "This server is Free: it hosts only the system database " +
-                                        "until ENABLE SERVER '%s' enables it",
-                                    memberId,
-                                )
-                        }
-                    }
-                }
-            }
-        )
-    }
+    override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {}
 
     /** Stops and starts databases through the database manager. */
     private fun databaseControl(): DatabaseControl =
@@ -740,13 +739,15 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /**
-     * The members of the cluster that host databases, which WAIT waits for. Each reports its
+     * The members of the cluster that host [wanted], which WAIT waits for: those it is placed on,
+     * or, for one dropped or not placed, the enabled servers, which may hold it. Each reports its
      * databases when probed; this member reads its own.
      */
-    override fun hostingServers(): List<HostingServer> =
-        consensus
+    override fun hostingServers(wanted: WantedDatabase): List<HostingServer> {
+        val placed = if (wanted.id == null) emptySet() else systemGraph.hosts(wanted.name)
+        return consensus
             .members(systemDatabase)
-            .filter { systemGraph.hosts(it.id) }
+            .filter { if (placed.isEmpty()) systemGraph.enabled(it.id) else it.id in placed }
             .map { member ->
                 object : HostingServer {
                     override val address: String =
@@ -766,18 +767,38 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     }
                 }
             }
+    }
 
     /**
-     * The members that host databases, which a database can be created from with
-     * existingDataSeedServer.
+     * The enabled servers, which a database can be created from with existingDataSeedServer: it is
+     * placed on that server first.
      */
     override fun seedServers(): SeedServers = SeedServers { id ->
         require(
-            consensus.members(systemDatabase).any { it.id.uuid == id && systemGraph.hosts(it.id) }
+            consensus.members(systemDatabase).any {
+                it.id.uuid == id && systemGraph.enabled(it.id)
+            }
         ) {
             "server $id is not an enabled server of this cluster: SHOW SERVERS lists the servers"
         }
     }
+
+    /** Where the copies of databases go: on the servers the allocator chooses. */
+    override fun placement(): DatabasePlacement =
+        ClusterPlacement(
+            available = { directory.answering(MemberId(it)) },
+            recordInitial = { tx -> servers.recordInitial(tx) },
+            defaults =
+                Placements.Defaults(
+                    globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
+                    0,
+                ),
+            holders = { name ->
+                val id = systemGraph.databaseId(name)
+                id?.let { locations.of(DatabaseRef(name, it))?.voters?.map { m -> m.id.uuid } }
+                    .orEmpty()
+            },
+        )
 
     /** The members of the cluster, with the options they report from `initial.server.*`. */
     override fun servers(): Servers =

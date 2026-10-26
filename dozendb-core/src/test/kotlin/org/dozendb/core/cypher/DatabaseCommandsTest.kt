@@ -152,9 +152,18 @@ class DatabaseCommandsTest {
                 "Could not create database with options 'String(\"seedURI\")'. Expected a map value."
             )
         assertThat(gqlStatusesOf(notAMap)).contains("22N27")
-        val topology = server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY")
-        assertThat(topology).hasMessage("$failed: TOPOLOGY is not supported.")
-        assertThat(gqlStatusesOf(topology)).contains("51N31")
+        val topology = server.failure("CREATE DATABASE films TOPOLOGY 2 PRIMARIES")
+        assertThat(topology)
+            .hasMessage(
+                "$failed: 'films' needs 2 servers that can host it as a primary, and this server " +
+                    "runs without clustering."
+            )
+        val secondaries = server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY 1 SECONDARY")
+        assertThat(secondaries)
+            .hasMessage(
+                "$failed: secondaries are not supported yet; every copy of a database is a primary."
+            )
+        assertThat(gqlStatusesOf(secondaries)).contains("51N31")
         assertThat(server.names()).doesNotContain("films")
 
         server.administer("CREATE DATABASE films OPTIONS {}")
@@ -163,6 +172,55 @@ class DatabaseCommandsTest {
             mapOf("options" to emptyMap<String, Any>()),
         )
         assertThat(server.names()).contains("films", "books")
+    }
+
+    @Test
+    fun `takes a topology of one primary, which a server without clustering has`() {
+        val server = start()
+
+        server.administer("CREATE DATABASE films TOPOLOGY 1 PRIMARY 0 SECONDARIES")
+        server.administer(
+            "CREATE DATABASE books TOPOLOGY \$p PRIMARY",
+            mapOf("p" to 1),
+        )
+        server.administer("ALTER DATABASE films SET TOPOLOGY 1 PRIMARY")
+
+        val counts =
+            server.rows(
+                "SHOW DATABASES YIELD name, requestedPrimariesCount, requestedSecondariesCount " +
+                    "WHERE name IN ['films', 'books'] RETURN *",
+                StandaloneServer.SYSTEM,
+            )
+        assertThat(counts.map { it["requestedPrimariesCount"] }).containsOnly(1L)
+        assertThat(counts.map { it["requestedSecondariesCount"] }).containsOnly(0L)
+        assertThat(server.failure("ALTER DATABASE films SET TOPOLOGY 3 PRIMARIES"))
+            .hasMessageContaining("Failed to alter the specified database 'films'")
+        assertThat(server.failure("ALTER DATABASE films SET TOPOLOGY 12 PRIMARIES"))
+            .hasMessageContaining("a topology has 1 to 11 primaries, not 12")
+        assertThat(server.failure("ALTER DATABASE nothing SET TOPOLOGY 1 PRIMARY"))
+            .hasMessageContaining("nothing")
+        server.administer("ALTER DATABASE nothing IF EXISTS SET TOPOLOGY 1 PRIMARY")
+    }
+
+    @Test
+    fun `makes a database read-only and read-write again, by its name or an alias`() {
+        val server = start()
+        server.administer("CREATE DATABASE films WAIT")
+        server.administer("CREATE ALIAS movies FOR DATABASE films")
+
+        server.administer("ALTER DATABASE movies SET ACCESS READ ONLY")
+
+        assertThat(server.rows("SHOW DATABASE films YIELD access", StandaloneServer.SYSTEM))
+            .containsExactly(mapOf("access" to "read-only"))
+        val films = server.database("films")
+        assertThat(catchThrowable { films.executeTransactionally("CREATE (:Film)") })
+            .hasMessageContaining("read-only")
+        server.administer("ALTER DATABASE films SET ACCESS READ WRITE")
+        films.executeTransactionally("CREATE (:Film)")
+        assertThat(server.failure("ALTER DATABASE films SET OPTION txLogEnrichment 'FULL'"))
+            .hasMessage(
+                "Failed to alter the specified database 'films': options are not supported."
+            )
     }
 
     /** The single row WAIT returns without clustering, without its address. */

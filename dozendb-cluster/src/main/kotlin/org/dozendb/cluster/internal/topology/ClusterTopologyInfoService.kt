@@ -10,6 +10,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
+import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerRecords
 import org.neo4j.configuration.helpers.SocketAddress
@@ -44,13 +45,13 @@ internal class ClusterTopologyInfoService(
      * A server for each member of the cluster: Enabled with its record, Free without one, except
      * that every member counts as enabled, with the options it reports, until the servers the
      * cluster started with are recorded (see `ServerReconciler`). It hosts the databases it reports
-     * running, and is to host every database requested online while enabled.
+     * running, and is to host `system` and the databases placed on it that are requested online.
      */
     override fun servers(transaction: Transaction): Set<ServerDetails> {
         val answering = answering()
         val records = ServerRecords.records(transaction)
         val initialRecorded = ServerRecords.initialServersEnabled(transaction)
-        val requested = requestedOnline(transaction)
+        val online = requestedOnline(transaction)
         return systemMembers().mapTo(LinkedHashSet()) { member ->
             val record = records[member.uuid]
             val enabled = record != null || !initialRecorded
@@ -74,7 +75,7 @@ internal class ClusterTopologyInfoService(
                 if (available) ServerDetails.RunningState.AVAILABLE
                 else ServerDetails.RunningState.UNAVAILABLE,
                 if (available) running(member) else emptySet(),
-                if (enabled) requested else emptySet(),
+                if (enabled) requested(transaction, member, online) else emptySet(),
                 LinkedHashSet(options.allowedDatabases),
                 LinkedHashSet(options.deniedDatabases),
                 options.modeConstraint,
@@ -98,6 +99,19 @@ internal class ClusterTopologyInfoService(
             .orEmpty()
             .filter { it.status == DatabaseState.Status.ONLINE }
             .mapTo(HashSet()) { it.name }
+
+    /**
+     * The databases [member] is to host: `system`, and those of [online] placed on it, the
+     * databases requested online.
+     */
+    private fun requested(
+        transaction: Transaction,
+        member: MemberId,
+        online: Set<String>,
+    ): Set<String> =
+        (Placements.placedOn(transaction, member.uuid) + SYSTEM).filterTo(HashSet()) {
+            it in online
+        }
 
     /** The names of the databases the system graph requests online, `system` among them. */
     private fun requestedOnline(transaction: Transaction): Set<String> =
@@ -180,4 +194,8 @@ internal class ClusterTopologyInfoService(
             database.id in directory.readOnlyDatabases(member),
             directory.lastCommitted(member)[database.id],
         )
+
+    private companion object {
+        const val SYSTEM = "system"
+    }
 }

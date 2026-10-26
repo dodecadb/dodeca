@@ -67,12 +67,15 @@ interface HostingServer {
 }
 
 /**
- * Waits until every server that hosts databases did what the system graph asks of one, for WAIT,
+ * Waits until every server that hosts a database did what the system graph asks of it, for WAIT,
  * asking them every [pollInterval]. A server that fails to do it, as when a database fails to
  * start, is done too: WAIT reports it.
+ *
+ * @property servers the servers that are to do what is wanted of a database: those it is placed on,
+ *   or, for one dropped, those that may still hold it.
  */
 class DatabaseProgress(
-    private val servers: () -> List<HostingServer>,
+    private val servers: (WantedDatabase) -> List<HostingServer>,
     private val pollInterval: Duration = Duration.ofMillis(100),
 ) {
     /**
@@ -84,7 +87,7 @@ class DatabaseProgress(
         val done = mutableMapOf<String, ServerProgress>()
         val unreachable = mutableMapOf<String, String>()
         while (true) {
-            val current = servers()
+            val current = servers(wanted)
             for (server in current.filter { it.address !in done }) {
                 val databases =
                     try {

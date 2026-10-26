@@ -154,6 +154,10 @@ class MembershipIT {
         assertThat(joining.logs).contains("CALL dozendb.cluster.addMember('core4:7700')")
         // On a member that may not lead the system database: the change reaches the leader.
         member("core1").rows("CALL dozendb.cluster.addMember('core4:7700')", "system")
+        // Once its server is enabled, it can host a copy of each.
+        for (database in DATABASES) {
+            eventually { administer("ALTER DATABASE $database SET TOPOLOGY 4 PRIMARIES") }
+        }
         eventually {
             for (member in started) {
                 assertThat(membersSeenBy(member))

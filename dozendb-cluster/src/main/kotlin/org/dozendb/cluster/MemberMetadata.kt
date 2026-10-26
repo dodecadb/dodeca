@@ -10,7 +10,7 @@ object MemberMetadata {
     /** "true" if the member had databases before it started; used to pick the store source. */
     const val HAS_STORES = "dozendb.hasStores"
 
-    /** "true" while the member's replicated databases run, so other members can copy them. */
+    /** "true" while the member's system database runs, so other members can copy it. */
     const val STORES_READY = "dozendb.storesReady"
 
     /** The member's advertised Bolt address, for routing tables. */

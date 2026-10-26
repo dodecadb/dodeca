@@ -8,6 +8,7 @@ import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.replication.SystemGraph
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
@@ -19,11 +20,12 @@ import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
- * The databases in this member's copy of the system graph: its `Database` nodes, with Neo4j's
- * `seedURI` and `seeding_servers` properties of a seeded database, a `dozendb_creator` property
- * that names the member creating the database's store, and a `dozendb_initial_members` property
- * that lists the initial members of its group, each as `id@host:port`. A `DozenDB` node holds the
- * cluster's format level in `dozendb_format_level`, once an upgrade raised it.
+ * The databases in this member's copy of the system graph: its `Database` nodes, with the servers
+ * they are placed on (see [Placements]), Neo4j's `seedURI` and `seeding_servers` properties of a
+ * seeded database, a `dozendb_creator` property that names the member creating the database's
+ * store, and a `dozendb_initial_members` property that lists the initial members of its group, each
+ * as `id@host:port`. A `DozenDB` node holds the cluster's format level in `dozendb_format_level`,
+ * once an upgrade raised it.
  */
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
@@ -56,6 +58,7 @@ internal class Neo4jSystemGraph(
                         as? Array<*>)
                     ?.firstOrNull()
                     ?.let { MemberId.parse(it as String) },
+            hosts = Placements.hosts(node).mapTo(HashSet(), ::MemberId),
         )
     }
 
@@ -88,24 +91,32 @@ internal class Neo4jSystemGraph(
     }
 
     /**
-     * Makes [creator] the creator of every database, with [initialMembers] as the initial members
-     * of its group, replacing what another cluster recorded, servers included, which the new
-     * cluster's leader records anew, and returns the databases. Only for the member that forms a
-     * cluster with a system database of its own, before `system` replicates: it holds the
-     * databases' stores, or creates them.
+     * Makes [creator] the creator of every database whose store it [holds], and the only initial
+     * member of its group, and returns those databases; forgets the creators and initial members
+     * that another cluster recorded of the others, and its servers and placements, which the new
+     * cluster's leader records anew. Only for the member that forms a cluster with databases of its
+     * own, before `system` replicates. Their groups start with it alone; the system leader places
+     * the databases once it recorded the servers, those that hold them first, and the other servers
+     * they are placed on copy them and join their groups. The others are created anew.
      */
-    fun adopt(creator: MemberId, initialMembers: List<Member>): List<NamedDatabaseId> =
+    fun adopt(creator: Member, holds: (String) -> Boolean): List<NamedDatabaseId> =
         system().beginTx().use { tx ->
             ServerRecords.deleteAll(tx)
-            val members = initialMembers.map { it.toText() }.toTypedArray()
+            val members = arrayOf(creator.toText())
             val databases =
                 tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
                     nodes
                         .asSequence()
                         .mapNotNull { node ->
-                            desired(node)?.id?.also {
-                                node.setProperty(CREATOR_PROPERTY, creator.toString())
+                            val id = desired(node)?.id ?: return@mapNotNull null
+                            if (holds(id.name())) {
+                                node.setProperty(CREATOR_PROPERTY, creator.id.toString())
                                 node.setProperty(INITIAL_MEMBERS_PROPERTY, members)
+                                id
+                            } else {
+                                node.removeProperty(CREATOR_PROPERTY)
+                                node.removeProperty(INITIAL_MEMBERS_PROPERTY)
+                                null
                             }
                         }
                         .toList()
@@ -137,9 +148,22 @@ internal class Neo4jSystemGraph(
         }
     }
 
-    override fun hosts(member: MemberId): Boolean = replication.readingSystem {
+    /**
+     * Whether [member] is an enabled server, which databases can be placed on, as is every member
+     * while the servers the cluster started with are not recorded yet. A Free one hosts only
+     * `system`.
+     */
+    fun enabled(member: MemberId): Boolean = replication.readingSystem {
         system().beginTx().use { tx ->
             !ServerRecords.initialServersEnabled(tx) || member.uuid in ServerRecords.records(tx)
+        }
+    }
+
+    /** The servers the database [name] is placed on; none if it is not, or does not exist. */
+    fun hosts(name: String): Set<MemberId> = replication.readingSystem {
+        system().beginTx().use { tx ->
+            Placements.database(tx, name)?.let(Placements::hosts)?.mapTo(HashSet(), ::MemberId)
+                ?: emptySet()
         }
     }
 
@@ -181,10 +205,11 @@ internal class Neo4jSystemGraph(
             database.databaseId().uuid().toString(),
         )
 
-    private companion object {
+    companion object {
+        /** The property that names the creator of a database, see [nameCreator]. */
         const val CREATOR_PROPERTY = "dozendb_creator"
-        const val INITIAL_MEMBERS_PROPERTY = "dozendb_initial_members"
-        const val FORMAT_LEVEL_PROPERTY = "dozendb_format_level"
-        val DOZENDB_LABEL: Label = Label.label("DozenDB")
+        private const val INITIAL_MEMBERS_PROPERTY = "dozendb_initial_members"
+        private const val FORMAT_LEVEL_PROPERTY = "dozendb_format_level"
+        private val DOZENDB_LABEL: Label = Label.label("DozenDB")
     }
 }

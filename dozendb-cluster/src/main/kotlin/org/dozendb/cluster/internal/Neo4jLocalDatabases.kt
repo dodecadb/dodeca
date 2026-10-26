@@ -35,6 +35,8 @@ internal class Neo4jLocalDatabases(
 
     override fun catchingUp(id: NamedDatabaseId): Boolean = replication.catchingUp(id)
 
+    override fun votes(id: NamedDatabaseId): Boolean? = replication.votes(id)
+
     override fun create(id: NamedDatabaseId) {
         manager.createDatabase(id)
     }

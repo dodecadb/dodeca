@@ -144,6 +144,7 @@ class StandaloneIT {
                 "dbms.cluster.raft.leader_transfer.balancing_strategy",
                 "db.cluster.raft.leader_transfer.priority_tag",
                 "initial.dbms.automatically_enable_free_servers",
+                "initial.dbms.default_primaries_count",
                 "initial.server.tags",
                 "dbms.dozendb.routing.reads_on_leader",
                 "dbms.dozendb.routing.forward_bolt_writes",

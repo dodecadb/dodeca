@@ -46,9 +46,6 @@ class ServersTest {
     private val ClusterHarness.Member.tags: List<String>
         get() = listOf("member-$index", "eu")
 
-    private val ClusterHarness.Member.serverId: String
-        get() = cluster.self.id.uuid.toString()
-
     /** The server records in this member's system graph, and whether the initial ones are in. */
     private fun ClusterHarness.Member.records(): Pair<Set<ServerRecord>, Boolean> =
         database(SYSTEM).beginTx().use { tx ->
@@ -225,13 +222,22 @@ class ServersTest {
 
         cluster.administer("ENABLE SERVER '${joining.serverId}'")
 
+        // As in Neo4j Enterprise, enabling places no database on it.
         eventually {
-            assertThat(joining.hosted).containsExactly("films", NEO4J, SYSTEM)
             val enabled = leader.server(joining)
             assertThat(enabled["state"]).isEqualTo("Enabled")
             assertThat(enabled["tags"]).isEqualTo(listOf("new"))
-            assertThat(enabled["hosting"]).isEqualTo(listOf(SYSTEM, "films", NEO4J))
-            assertThat(enabled["requestedHosting"]).isEqualTo(listOf(SYSTEM, "films", NEO4J))
+            assertThat(enabled["requestedHosting"]).isEqualTo(listOf(SYSTEM))
+        }
+        assertThat(joining.hosted).containsExactly(SYSTEM)
+
+        cluster.administer("ALTER DATABASE films SET TOPOLOGY 4 PRIMARIES")
+
+        eventually {
+            assertThat(joining.hosted).containsExactly("films", SYSTEM)
+            val placed = leader.server(joining)
+            assertThat(placed["hosting"]).isEqualTo(listOf(SYSTEM, "films"))
+            assertThat(placed["requestedHosting"]).isEqualTo(listOf(SYSTEM, "films"))
         }
     }
 
@@ -290,7 +296,10 @@ class ServersTest {
         }
         cluster.leadSystem(free)
 
-        free.database(SYSTEM).executeTransactionally("ENABLE SERVER '${joining.serverId}'")
+        val system = free.database(SYSTEM)
+        system.executeTransactionally("ENABLE SERVER '${joining.serverId}'")
+        system.executeTransactionally("ALTER DATABASE films SET TOPOLOGY 4 PRIMARIES")
+        system.executeTransactionally("ALTER DATABASE $NEO4J SET TOPOLOGY 4 PRIMARIES")
         val voters = enabled + joining
         eventually {
             for (member in voters) {
@@ -413,7 +422,7 @@ class ServersTest {
     }
 
     @Test
-    fun `with servers enabled at once, one that joins gets every database`() {
+    fun `with servers enabled at once, one that joins can host databases at once`() {
         val cluster =
             ClusterHarness(root, 3, settings = mapOf(ClusterSettings.autoEnableFreeServers to true))
                 .also {
@@ -424,10 +433,11 @@ class ServersTest {
         val joining = cluster.admit(tags = listOf("new"))
 
         eventually {
-            assertThat(joining.hosted).containsExactly(NEO4J, SYSTEM)
             assertThat(joining.server(joining)["state"]).isEqualTo("Enabled")
             assertThat(joining.server(joining)["tags"]).isEqualTo(listOf("new"))
         }
+        cluster.administer("ALTER DATABASE $NEO4J SET TOPOLOGY 4 PRIMARIES")
+        eventually { assertThat(joining.hosted).containsExactly(NEO4J, SYSTEM) }
     }
 
     @Test
@@ -438,10 +448,7 @@ class ServersTest {
 
         cluster.administer("CALL dbms.cluster.setAutomaticallyEnableFreeServers(true)")
 
-        eventually {
-            assertThat(joining.hosted).containsExactly(NEO4J, SYSTEM)
-            assertThat(joining.server(joining)["state"]).isEqualTo("Enabled")
-        }
+        eventually { assertThat(joining.server(joining)["state"]).isEqualTo("Enabled") }
     }
 
     private companion object {

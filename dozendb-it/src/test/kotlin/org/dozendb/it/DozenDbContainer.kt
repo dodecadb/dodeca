@@ -72,17 +72,21 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     /**
      * Makes this server a cluster member that forms a cluster with [initialMembers]. Members talk
      * to each other over mutual TLS with hostname verification, with a certificate for [alias] that
-     * [authority] issued, or in plaintext if it is null.
+     * [authority] issued, or in plaintext if it is null. Databases get [primaries] copies by
+     * default, one on each initial member unless told otherwise.
      */
     fun clusterMember(
         initialMembers: List<String>,
         authority: TestAuthority? = clusterAuthority,
+        primaries: Int = initialMembers.size,
     ): DozenDbContainer {
         withEnv("NEO4J_dbms_dozendb_cluster_enabled", "true")
         withEnv("NEO4J_dbms_dozendb_cluster_initial__members", initialMembers.joinToString(","))
+        withEnv("NEO4J_initial_dbms_default__primaries__count", "$primaries")
         // Tests about other things keep their leaders; see [balancingLeaders].
         withEnv(BALANCING_STRATEGY, "NO_BALANCING")
-        // Members that join host the databases at once; see [freeServers].
+        // Members that join are enabled at once, and host the databases placed on them; see
+        // [freeServers].
         withEnv(AUTO_ENABLE, "true")
         withEnv("NEO4J_dbms_ssl_policy_cluster_enabled", (authority != null).toString())
         if (authority != null) {

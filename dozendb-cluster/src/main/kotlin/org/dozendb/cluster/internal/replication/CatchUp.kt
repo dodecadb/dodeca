@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
@@ -50,7 +51,6 @@ internal fun interface DatabaseCopier {
  */
 internal class CatchUp(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
     private val control: () -> DatabaseControl,
     private val copier: DatabaseCopier,
     private val log: InternalLog,
@@ -160,14 +160,23 @@ internal class CatchUp(
         )
     }
 
-    /** Copies from the leader first, then from the other members; null if all of them failed. */
+    /**
+     * Copies from the leader first, then from the other members of the database's group; null if
+     * all of them failed.
+     */
     private fun copyFromAnyMember(
         database: DatabaseRef,
         leader: Member?,
         minimumIndex: Long,
     ): StagedCopy? {
+        val voters =
+            try {
+                consensus.members(database)
+            } catch (_: ConsensusUnavailableException) {
+                emptyList()
+            }
         val candidates =
-            (listOfNotNull(leader) + consensus.members(systemDatabase))
+            (listOfNotNull(leader) + voters)
                 .filter { it.id != consensus.self.id }
                 .distinctBy { it.id }
         for (member in candidates) {
