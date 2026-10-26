@@ -213,7 +213,10 @@ class MembershipReconciler(
                 e.message,
             )
         } catch (e: Exception) {
-            log.error("Changing the members of the group of database ${group.name} failed", e)
+            // Closing interrupts the change in progress.
+            if (started) {
+                log.error("Changing the members of the group of database ${group.name} failed", e)
+            }
         } finally {
             inFlight -= group.id
         }

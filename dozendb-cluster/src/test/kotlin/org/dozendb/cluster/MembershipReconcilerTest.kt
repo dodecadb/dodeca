@@ -6,11 +6,13 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.until
+import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.fake.InMemoryConsensus
@@ -30,7 +32,7 @@ class MembershipReconcilerTest {
 
     /** The reconciler of [member], changing groups on the calling thread. */
     private fun reconciler(
-        member: InMemoryConsensus.InMemoryConsensusLog = leader,
+        member: ConsensusLog = leader,
         log: Log = NullLog.getInstance(),
         hosts: (MemberId) -> Boolean = { true },
     ) =
@@ -163,6 +165,33 @@ class MembershipReconcilerTest {
 
         assertThat(waited).describedAs("closing waits for the look in progress").isTrue()
         assertThat(output.toString()).isEmpty()
+    }
+
+    @Test
+    fun `closing interrupts a group change in progress quietly`() {
+        formCluster()
+        changeCluster { leader.removeMember(system, logs[2].self.id, TIMEOUT) }
+        val output = ByteArrayOutputStream()
+        val changing = CountDownLatch(1)
+        val waiting =
+            object : ConsensusLog by leader {
+                override suspend fun removeMember(
+                    database: DatabaseRef,
+                    id: MemberId,
+                    timeout: Duration,
+                ) {
+                    changing.countDown()
+                    awaitCancellation()
+                }
+            }
+        val reconciler =
+            reconciler(waiting, Log4jLogProvider(output).getLog(MembershipReconciler::class.java))
+        reconciler.start()
+        assertThat(changing.await(1, TimeUnit.MINUTES)).isTrue()
+
+        reconciler.close()
+
+        assertThat(output.toString().lines().filter { " ERROR " in it }).isEmpty()
     }
 
     private companion object {
