@@ -50,7 +50,6 @@ import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.DozenDb
-import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DozenDbEditionModule
@@ -175,9 +174,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.LEADING to MemberMetadata.numbersText(leadingHere()),
                 MemberMetadata.FORMAT_LEVELS to formatLevels.toString(),
                 MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
-                MemberMetadata.INITIAL_SERVER_TAGS to
-                    config.get(DozenDbSettings.initialServerTags).joinToString(","),
             ) +
+                InitialServerOptions.report(ServerOptions.initial(config)) +
                 listOfNotNull(
                     boltHostPort()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
                     httpAddress()?.let {
@@ -848,11 +846,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
             // Asked now: the directory may not have probed a member that just joined.
             override fun initialOptions(id: UUID): ServerOptions? {
-                if (id == memberId.uuid) {
-                    return ServerOptions(
-                        globalModule.globalConfig.get(DozenDbSettings.initialServerTags)
-                    )
-                }
+                if (id == memberId.uuid) return ServerOptions.initial(globalModule.globalConfig)
                 val member =
                     consensus.members(systemDatabase).firstOrNull { it.id.uuid == id }
                         ?: return null
@@ -867,8 +861,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         null
                     } ?: return null
                 if (peer.member.id != member.id) return null
-                val tags = peer.metadata[MemberMetadata.INITIAL_SERVER_TAGS] ?: return null
-                return ServerOptions(MemberMetadata.splitList(tags))
+                return InitialServerOptions.reported(peer.metadata)
             }
         }
 

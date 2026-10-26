@@ -331,7 +331,7 @@ class ServersTest {
     }
 
     @Test
-    fun `ALTER SERVER replaces every option, and refuses what an enabled server cannot be`() {
+    fun `ALTER SERVER replaces every option, and refuses options that are not valid`() {
         val cluster = tagged()
         val leader = cluster.awaitLeader(SYSTEM)
         val server = cluster.running().first()
@@ -352,8 +352,8 @@ class ServersTest {
         }
         for (options in
             listOf(
-                "{modeConstraint: 'SECONDARY'}",
-                "{allowedDatabases: ['neo4j']}",
+                "{modeConstraint: 'TERTIARY'}",
+                "{allowedDatabases: ['neo4j'], deniedDatabases: ['films']}",
                 "{tags: ['c', 'c']}",
             )) {
             assertThat(

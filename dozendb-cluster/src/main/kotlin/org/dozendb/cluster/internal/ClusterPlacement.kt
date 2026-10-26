@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.util.UUID
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.DatabasePlacement
+import org.dozendb.core.servers.Move
 import org.dozendb.core.servers.Placement
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
@@ -59,6 +60,14 @@ internal class ClusterPlacement(
             }
         leaving(tx, name, hosts)
         return Placement(hosts, primaries)
+    }
+
+    override fun conform(tx: Transaction): List<Move> {
+        prepare(tx)
+        val allocator = Placements.allocator(tx, available)
+        val moves = allocator.conform()
+        for (name in moves.map { it.database }.distinct()) leaving(tx, name, allocator.hosts(name))
+        return moves.also { Placements.move(tx, allocator, it) }
     }
 
     /**

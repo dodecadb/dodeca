@@ -25,6 +25,14 @@ interface DatabasePlacement {
      * @throws AllocationException if the servers cannot host them.
      */
     fun resize(tx: Transaction, name: String, primaries: Int): Placement
+
+    /**
+     * Moves the copies that their servers may no longer host, as after ALTER SERVER changed their
+     * options, to servers that may; returns the moves.
+     *
+     * @throws AllocationException if a copy has nowhere to go; then nothing moves.
+     */
+    fun conform(tx: Transaction): List<Move>
 }
 
 /** A server without clustering hosts every database alone: one primary each, on no record. */
@@ -40,5 +48,12 @@ object SingleServerPlacement : DatabasePlacement {
             )
         }
         return Placement(emptySet(), 1)
+    }
+
+    /** Moves nothing: refuses options that would leave a database without this server. */
+    override fun conform(tx: Transaction): List<Move> {
+        val record = ServerRecords.records(tx).values.singleOrNull() ?: return emptyList()
+        val databases = Placements.placed(tx).map { it.copy(hosts = setOf(record.id)) }
+        return Allocator(listOf(Host(record)), databases).conform()
     }
 }

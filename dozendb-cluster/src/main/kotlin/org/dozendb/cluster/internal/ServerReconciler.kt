@@ -8,7 +8,6 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import org.dozendb.cluster.MemberMetadata
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -308,9 +307,7 @@ class ServerReconciler(
 
     /** The options [member] reports from its `initial.server.*` settings, or null if unknown. */
     private fun initialOptions(member: MemberId): ServerOptions? {
-        val reported = report(member) ?: return null
-        val tags = reported[MemberMetadata.INITIAL_SERVER_TAGS] ?: return null
-        return ServerOptions(tags = MemberMetadata.splitList(tags))
+        return report(member)?.let(InitialServerOptions::reported)
     }
 
     /**

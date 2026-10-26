@@ -97,6 +97,14 @@ object Placements {
         }
     }
 
+    /** Records the hosts that [allocator] gives the databases that [moves] move. */
+    fun move(tx: Transaction, allocator: Allocator, moves: List<Move>) {
+        for (name in moves.map { it.database }.distinct()) {
+            val node = database(tx, name) ?: continue
+            place(tx, node, allocator.hosts(name), primaries(node) ?: allocator.hosts(name).size)
+        }
+    }
+
     /** The database node named [name], `system` aside. */
     fun database(tx: Transaction, name: String): Node? =
         tx.findNode(DATABASE, TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, name)?.takeIf {

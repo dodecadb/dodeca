@@ -93,6 +93,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         // Neo4j sends usage data to udc.neo4j.com unless told not to, and would report this server
         // as Neo4j Enterprise: DozenDB sends it only when the operator turns it on.
         globalModule.globalConfig.setIfNotSet(GraphDatabaseSettings.udc_enabled, false)
+        // Refuses initial.server.* settings that no server could be enabled with.
+        ServerOptions.initial(globalModule.globalConfig)
     }
 
     protected lateinit var databaseManager: DatabaseManager
@@ -228,7 +230,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
 
             override fun initialOptions(id: UUID): ServerOptions? =
                 if (id == self) {
-                    ServerOptions(globalModule.globalConfig.get(DozenDbSettings.initialServerTags))
+                    ServerOptions.initial(globalModule.globalConfig)
                 } else {
                     null
                 }

@@ -2,6 +2,8 @@ package org.dozendb.core.servers
 
 import java.time.ZonedDateTime
 import java.util.UUID
+import org.dozendb.core.DozenDbSettings
+import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings.SYSTEM_DATABASE_NAME
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
@@ -30,7 +32,30 @@ data class ServerOptions(
     val modeConstraint: InstanceModeConstraint = InstanceModeConstraint.NONE,
     val allowedDatabases: List<String> = emptyList(),
     val deniedDatabases: List<String> = emptyList(),
-)
+) {
+    companion object {
+        /**
+         * The options of the `initial.server.*` settings of [config], which a server is enabled
+         * with when it is not given others.
+         *
+         * @throws IllegalArgumentException if they set both allowed and denied databases.
+         */
+        fun initial(config: Config): ServerOptions {
+            val allowed = config.get(DozenDbSettings.initialServerAllowedDatabases)
+            val denied = config.get(DozenDbSettings.initialServerDeniedDatabases)
+            require(allowed.isEmpty() || denied.isEmpty()) {
+                "${DozenDbSettings.initialServerAllowedDatabases.name()} and " +
+                    "${DozenDbSettings.initialServerDeniedDatabases.name()} cannot both be set"
+            }
+            return ServerOptions(
+                config.get(DozenDbSettings.initialServerTags),
+                config.get(DozenDbSettings.initialServerModeConstraint),
+                allowed,
+                denied,
+            )
+        }
+    }
+}
 
 /**
  * The servers in the system graph, with Neo4j's names for them (`TopologyGraphDbmsModel`), as Neo4j

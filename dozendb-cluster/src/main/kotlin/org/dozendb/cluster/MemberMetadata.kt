@@ -35,6 +35,18 @@ object MemberMetadata {
      */
     const val INITIAL_SERVER_TAGS = "dozendb.initialServerTags"
 
+    /** The member's `initial.server.mode_constraint`, which its server record takes likewise. */
+    const val INITIAL_SERVER_MODE_CONSTRAINT = "dozendb.initialServerModeConstraint"
+
+    /**
+     * The member's `initial.server.allowed_databases`, separated by commas, which database names
+     * cannot contain; its server record takes them likewise.
+     */
+    const val INITIAL_SERVER_ALLOWED_DATABASES = "dozendb.initialServerAllowedDatabases"
+
+    /** The member's `initial.server.denied_databases`, as [INITIAL_SERVER_ALLOWED_DATABASES]. */
+    const val INITIAL_SERVER_DENIED_DATABASES = "dozendb.initialServerDeniedDatabases"
+
     /** The member's [MemberState]: whether it waits to join, is a member, or was removed. */
     const val MEMBER_STATE = "dozendb.memberState"
 

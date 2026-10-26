@@ -4,6 +4,7 @@ import java.time.Duration
 import java.util.Optional
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
+import org.dozendb.cluster.internal.InitialServerOptions
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -59,10 +60,7 @@ internal class ClusterTopologyInfoService(
             val available = member in answering
             val options =
                 record?.options
-                    ?: reported
-                        ?.get(MemberMetadata.INITIAL_SERVER_TAGS)
-                        ?.takeIf { enabled }
-                        ?.let { ServerOptions(MemberMetadata.splitList(it)) }
+                    ?: reported?.takeIf { enabled }?.let(InitialServerOptions::reported)
                     ?: ServerOptions()
             ServerDetails(
                 ServerId(member.uuid),

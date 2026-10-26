@@ -2,6 +2,7 @@ package org.dozendb.core.servers
 
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.catchThrowable
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.StandaloneServer
 import org.junit.jupiter.api.Test
@@ -37,6 +38,25 @@ class SingleServerTest {
                     )
                     .containsExactlyInAnyOrder("name", "address", "state", "health", "hosting")
             }
+    }
+
+    @Test
+    fun `options that would leave a database without a server are refused`() {
+        StandaloneServer(root).use { server ->
+            server.start()
+            val id =
+                server
+                    .rows("SHOW SERVERS YIELD serverId", database = StandaloneServer.SYSTEM)
+                    .single()["serverId"]
+
+            val error = catchThrowable {
+                server.administer("ALTER SERVER '$id' SET OPTIONS {deniedDatabases: ['neo4j']}")
+            }
+
+            assertThat(error)
+                .hasMessageStartingWith("Could not alter server '$id'")
+                .hasMessageContaining("no other server can host 'neo4j'")
+        }
     }
 
     @Test

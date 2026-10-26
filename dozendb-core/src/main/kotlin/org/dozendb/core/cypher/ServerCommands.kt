@@ -1,6 +1,8 @@
 package org.dozendb.core.cypher
 
 import java.util.UUID
+import org.dozendb.core.servers.AllocationException
+import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerOptionsInput
 import org.dozendb.core.servers.ServerRecord
@@ -28,7 +30,7 @@ import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
 import org.neo4j.dbms.database.ServerDetails
 import org.neo4j.dbms.database.TopologyInfoService
-import org.neo4j.dbms.systemgraph.InstanceModeConstraint
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.Transaction
@@ -54,8 +56,9 @@ import scala.jdk.javaapi.CollectionConverters
  * its id. The commands that change records take the records' lock first and check under it, so that
  * they apply one after the other.
  *
- * Every enabled server hosts every database as a primary, so the options that would make it host
- * fewer, or as a secondary, are refused for now.
+ * ALTER SERVER moves the copies of databases that the server's new options no longer let it host to
+ * other servers (see [DatabasePlacement.conform]); it fails, changing nothing, if one has nowhere
+ * to go.
  */
 @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for most refusals of server commands.
 internal class ServerCommands(
@@ -77,6 +80,8 @@ internal class ServerCommands(
     }
 
     private val servers by lazy { dependencies.resolveDependency(Servers::class.java) }
+
+    private val placement by lazy { dependencies.resolveDependency(DatabasePlacement::class.java) }
 
     private val admin = `AdministrationCommandRuntime$`.`MODULE$`
 
@@ -154,7 +159,6 @@ internal class ServerCommands(
                                 ", and the server does not answer, so its initial.server.* " +
                                     "settings are not known: give every option, or start it first",
                         )
-                    checkPlaceable(options, failed)
                     ServerRecords.write(tx, ServerRecord(id, options = options))
                 }
             }
@@ -167,7 +171,10 @@ internal class ServerCommands(
         )
     }
 
-    /** ALTER SERVER: replaces every option of an enabled server with those given. */
+    /**
+     * ALTER SERVER: replaces every option of an enabled server with those given, and moves the
+     * copies they no longer allow.
+     */
     private fun alter(
         plan: AlterServer,
         context: AdministrationCommandRuntimeContext,
@@ -184,8 +191,15 @@ internal class ServerCommands(
                 val name = admin.runtimeStringValue(plan.serverName(), params)
                 val server = enabled(target(tx, name, failed), failed)
                 val options = ServerOptionsInput.parse(given, ServerOptions(), failed)
-                checkPlaceable(options, failed)
-                ServerRecords.write(tx, ServerRecord(server.id, server.name, options))
+                ServerRecords.write(
+                    tx,
+                    ServerRecord(server.id, server.name, options, server.status),
+                )
+                try {
+                    placement.conform(tx)
+                } catch (e: AllocationException) {
+                    throw InvalidArgumentException("$failed: ${e.message}.")
+                }
             }
         return updating(
             "AlterServer",
@@ -233,7 +247,10 @@ internal class ServerCommands(
                             "$failed: '$newName' is the id of another server."
                         )
                     }
-                ServerRecords.write(tx, ServerRecord(server.id, newName, server.options))
+                ServerRecords.write(
+                    tx,
+                    ServerRecord(server.id, newName, server.options, server.status),
+                )
             }
         return updating(
             "RenameServer",
@@ -253,6 +270,7 @@ internal class ServerCommands(
         val name: String,
         val options: ServerOptions,
         val enabled: Boolean,
+        val status: InstanceStatus = InstanceStatus.ENABLED,
     )
 
     /** The server called [name], by its name or its id. */
@@ -270,6 +288,7 @@ internal class ServerCommands(
             record?.name ?: id.toString(),
             record?.options ?: servers.initialOptions(id) ?: ServerOptions(),
             record != null || !ServerRecords.initialServersEnabled(tx),
+            record?.status ?: InstanceStatus.ENABLED,
         )
     }
 
@@ -280,25 +299,6 @@ internal class ServerCommands(
             )
         }
         return server
-    }
-
-    /**
-     * Refuses [options] that would make a server host fewer databases than every one, or host them
-     * other than as a primary: every enabled server hosts every database as a primary.
-     */
-    private fun checkPlaceable(options: ServerOptions, failure: String) {
-        if (options.modeConstraint == InstanceModeConstraint.SECONDARY) {
-            throw InvalidArgumentException(
-                "$failure: 'modeConstraint' 'SECONDARY' is not supported yet. Every enabled " +
-                    "server hosts every database as a primary."
-            )
-        }
-        if (options.allowedDatabases.isNotEmpty() || options.deniedDatabases.isNotEmpty()) {
-            throw InvalidArgumentException(
-                "$failure: 'allowedDatabases' and 'deniedDatabases' are not supported yet. " +
-                    "Every enabled server hosts every database."
-            )
-        }
     }
 
     /**

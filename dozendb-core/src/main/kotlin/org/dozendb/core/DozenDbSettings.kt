@@ -12,7 +12,9 @@ import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SECURE_STRING
 import org.neo4j.configuration.SettingValueParsers.STRING
 import org.neo4j.configuration.SettingValueParsers.listOf
+import org.neo4j.configuration.SettingValueParsers.ofEnum
 import org.neo4j.configuration.SettingsDeclaration
+import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.string.SecureString
 
@@ -84,6 +86,43 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val initialServerTags: Setting<List<String>> =
             newBuilder("initial.server.tags", listOf(STRING), emptyList())
+                .addConstraint(noDuplicates())
+                .build()
+
+        @JvmField
+        @field:Description(
+            "Which copies of databases this server may host: NONE for any, PRIMARY for " +
+                "primaries only, SECONDARY for secondaries only. Taken when the server is " +
+                "enabled, as initial.server.tags is; after that, ALTER SERVER changes it. Named " +
+                "like Neo4j Enterprise's setting."
+        )
+        val initialServerModeConstraint: Setting<InstanceModeConstraint> =
+            newBuilder(
+                    "initial.server.mode_constraint",
+                    ofEnum(InstanceModeConstraint::class.java),
+                    InstanceModeConstraint.NONE,
+                )
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The databases this server may host, if not every database; not together with " +
+                "initial.server.denied_databases. Taken when the server is enabled, as " +
+                "initial.server.tags is. Named like Neo4j Enterprise's setting."
+        )
+        val initialServerAllowedDatabases: Setting<List<String>> =
+            newBuilder("initial.server.allowed_databases", listOf(STRING), emptyList())
+                .addConstraint(noDuplicates())
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The databases this server may not host; not together with " +
+                "initial.server.allowed_databases. Taken when the server is enabled, as " +
+                "initial.server.tags is. Named like Neo4j Enterprise's setting."
+        )
+        val initialServerDeniedDatabases: Setting<List<String>> =
+            newBuilder("initial.server.denied_databases", listOf(STRING), emptyList())
                 .addConstraint(noDuplicates())
                 .build()
     }
