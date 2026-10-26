@@ -23,10 +23,11 @@ import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
  * What SHOW DATABASES and SHOW SERVERS show of a cluster, as Neo4j Enterprise shows them: for each
- * database a row for each member of its Raft group (see [DatabaseRows]), and a server for each
- * member of the cluster. Other members' rows are what they report when this member asks them, as it
- * does for each command, waiting at most [probeDeadline]: a member that has not answered by then
- * shows as unknown, or as an unavailable server.
+ * database a row for each member of its Raft group, also where it does not run here (see
+ * [DatabaseRows], [DatabaseLocations]), and a server for each member of the cluster. Other members'
+ * rows are what they report when this member asks them, as it does for each command, waiting at
+ * most [probeDeadline]: a member that has not answered by then shows as unknown, or as an
+ * unavailable server.
  *
  * @property report what a member reports about itself, this member included; null while unknown.
  */
@@ -35,6 +36,7 @@ internal class ClusterTopologyInfoService(
     private val consensus: ConsensusLog,
     private val systemDatabase: DatabaseRef,
     private val directory: MemberDirectory,
+    private val locations: DatabaseLocations,
     private val report: (MemberId) -> Map<String, String>?,
     private val probeDeadline: Duration = Duration.ofSeconds(1),
 ) : TopologyInfoService {
@@ -49,37 +51,36 @@ internal class ClusterTopologyInfoService(
         val records = ServerRecords.records(transaction)
         val initialRecorded = ServerRecords.initialServersEnabled(transaction)
         val requested = requestedOnline(transaction)
-        return members(systemDatabase) { true }
-            .mapTo(LinkedHashSet()) { member ->
-                val record = records[member.uuid]
-                val enabled = record != null || !initialRecorded
-                val reported = report(member)
-                val available = member in answering
-                val options =
-                    record?.options
-                        ?: reported
-                            ?.get(MemberMetadata.INITIAL_SERVER_TAGS)
-                            ?.takeIf { enabled }
-                            ?.let { ServerOptions(MemberMetadata.splitList(it)) }
-                        ?: ServerOptions()
-                ServerDetails(
-                    ServerId(member.uuid),
-                    record?.name ?: member.uuid.toString(),
-                    Optional.ofNullable(directory.boltAddress(member)?.let(::socketAddress)),
-                    Optional.ofNullable(reported?.get(MemberMetadata.HTTP_ADDRESS)?.let(::parsed)),
-                    Optional.ofNullable(reported?.get(MemberMetadata.HTTPS_ADDRESS)?.let(::parsed)),
-                    LinkedHashSet(options.tags),
-                    if (enabled) ServerDetails.State.ENABLED else ServerDetails.State.FREE,
-                    if (available) ServerDetails.RunningState.AVAILABLE
-                    else ServerDetails.RunningState.UNAVAILABLE,
-                    if (available) running(member) else emptySet(),
-                    if (enabled) requested else emptySet(),
-                    LinkedHashSet(options.allowedDatabases),
-                    LinkedHashSet(options.deniedDatabases),
-                    options.modeConstraint,
-                    Optional.ofNullable(reported?.get(MemberMetadata.NEO4J_VERSION)),
-                )
-            }
+        return systemMembers().mapTo(LinkedHashSet()) { member ->
+            val record = records[member.uuid]
+            val enabled = record != null || !initialRecorded
+            val reported = report(member)
+            val available = member in answering
+            val options =
+                record?.options
+                    ?: reported
+                        ?.get(MemberMetadata.INITIAL_SERVER_TAGS)
+                        ?.takeIf { enabled }
+                        ?.let { ServerOptions(MemberMetadata.splitList(it)) }
+                    ?: ServerOptions()
+            ServerDetails(
+                ServerId(member.uuid),
+                record?.name ?: member.uuid.toString(),
+                Optional.ofNullable(directory.boltAddress(member)?.let(::socketAddress)),
+                Optional.ofNullable(reported?.get(MemberMetadata.HTTP_ADDRESS)?.let(::parsed)),
+                Optional.ofNullable(reported?.get(MemberMetadata.HTTPS_ADDRESS)?.let(::parsed)),
+                LinkedHashSet(options.tags),
+                if (enabled) ServerDetails.State.ENABLED else ServerDetails.State.FREE,
+                if (available) ServerDetails.RunningState.AVAILABLE
+                else ServerDetails.RunningState.UNAVAILABLE,
+                if (available) running(member) else emptySet(),
+                if (enabled) requested else emptySet(),
+                LinkedHashSet(options.allowedDatabases),
+                LinkedHashSet(options.deniedDatabases),
+                options.modeConstraint,
+                Optional.ofNullable(reported?.get(MemberMetadata.NEO4J_VERSION)),
+            )
+        }
     }
 
     /** The members that answer this member now, after asking them all for at most a deadline. */
@@ -132,28 +133,31 @@ internal class ClusterTopologyInfoService(
         ) { own ->
             val id = own.namedDatabaseId()
             val database = DatabaseRef(id.name(), id.databaseId().uuid())
+            val location = locations.of(database)
             DatabaseRows.rows(
                 own,
-                members(database, hosts).map { copy(it, it in answering, database) },
-                consensus.status(database).leader,
+                members(location, hosts).map { copy(it, it in answering, database) },
+                location?.leader,
                 requestedExtras.txInfo(),
             )
         }
     }
 
     /**
-     * The members of [database]'s group; of the cluster that [hosts] while the group does not run
-     * here; this member alone while consensus does not run.
+     * The voting members of a database's group at [location]; while none is known, the members of
+     * the cluster that [hosts]; this member alone while consensus does not run.
      */
-    private fun members(database: DatabaseRef, hosts: (MemberId) -> Boolean): List<MemberId> =
+    private fun members(
+        location: DatabaseLocations.Location?,
+        hosts: (MemberId) -> Boolean,
+    ): List<MemberId> = location?.voters?.map { it.id } ?: systemMembers().filter(hosts)
+
+    /** The members of the cluster; this member alone while consensus does not run. */
+    private fun systemMembers(): List<MemberId> =
         try {
-            consensus.members(database).map { it.id }
+            consensus.members(systemDatabase).map { it.id }
         } catch (_: ConsensusUnavailableException) {
-            try {
-                consensus.members(systemDatabase).map { it.id }.filter(hosts)
-            } catch (_: ConsensusUnavailableException) {
-                listOf(consensus.self.id)
-            }
+            listOf(consensus.self.id)
         }
 
     /**

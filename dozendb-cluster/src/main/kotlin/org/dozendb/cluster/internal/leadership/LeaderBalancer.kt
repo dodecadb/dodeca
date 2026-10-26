@@ -7,12 +7,11 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.dozendb.cluster.MemberDirectory
+import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.ConsensusLog
-import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.LeaderPlacement
 import org.dozendb.consensus.MemberId
-import org.dozendb.consensus.Role
 import org.dozendb.core.edition.DatabaseState
 import org.neo4j.logging.InternalLog
 
@@ -36,8 +35,14 @@ import org.neo4j.logging.InternalLog
 internal class LeaderBalancer(
     private val consensus: ConsensusLog,
     private val directory: MemberDirectory,
+    private val locations: DatabaseLocations,
     /** The databases replicated on this member, running or not. */
     private val created: () -> List<DatabaseRef>,
+    /**
+     * Every database of the cluster, also those not hosted here, so that every member sees the
+     * same; those replicated here while the system graph cannot be read yet.
+     */
+    private val databases: () -> List<DatabaseRef>,
     /**
      * Hands the leadership of a database over to a member, for a reason, within a timeout; returns
      * whether the member leads it afterwards.
@@ -123,7 +128,7 @@ internal class LeaderBalancer(
      * of the new leader.
      */
     override fun rank(database: DatabaseRef, candidates: List<MemberId>): List<MemberId> {
-        val view = view { lastTags }
+        val view = view(created()) { lastTags }
         val leadership = view.databases.firstOrNull { it.database == database }
         return LeaderMoves.rank(
             view,
@@ -133,13 +138,16 @@ internal class LeaderBalancer(
     }
 
     /**
-     * Who leads the databases replicated here and who could, as this member sees it now. Keeps the
-     * server tags it reads for hand-overs.
+     * Who leads the cluster's databases and who could, as this member sees it now. Keeps the server
+     * tags it reads for hand-overs.
      */
-    fun view(): LeadershipView = view { tags().also { lastTags = it } }
+    fun view(): LeadershipView = view(databases()) { tags().also { lastTags = it } }
 
-    private fun view(tags: () -> Map<MemberId, Set<String>>): LeadershipView {
-        val databases = created().mapNotNull(::leadership)
+    private fun view(
+        of: List<DatabaseRef>,
+        tags: () -> Map<MemberId, Set<String>>,
+    ): LeadershipView {
+        val databases = of.mapNotNull(::leadership)
         // The server records are read only when a database has a priority tag.
         return LeadershipView(
             databases,
@@ -147,26 +155,20 @@ internal class LeaderBalancer(
         )
     }
 
+    /** Who leads [database] and who could: from its group here, or from what others report. */
     private fun leadership(database: DatabaseRef): Leadership? {
-        val status = consensus.status(database)
-        if (status.role == Role.Inactive) return null
-        val membership =
-            try {
-                consensus.membership(database)
-            } catch (_: ConsensusUnavailableException) {
-                return null
-            }
-        val leader = status.leader
+        val location = locations.of(database) ?: return null
+        val leader = location.leader
         return Leadership(
             database,
             leader,
-            membership.members
+            location.voters
                 .map { it.id }
                 .filter { it != leader && canLead(it, database.id) }
                 .toSet(),
             writableOnLeader =
                 leader == null || database.id !in directory.readOnlyDatabases(leader),
-            settled = membership.settled,
+            settled = location.settled,
             priorityTag = priorityTag(database.name),
         )
     }

@@ -32,16 +32,19 @@ import org.dozendb.cluster.internal.replication.DatabaseReconciler
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
+import org.dozendb.cluster.internal.routing.ClusterRoutingValidator
 import org.dozendb.cluster.internal.routing.ConfirmedReferences
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.internal.topology.ClusterTopologyInfoService
+import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.Role
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.dozendb.consensus.ratis.TlsConfig
@@ -70,7 +73,6 @@ import org.neo4j.dbms.database.readonly.SystemGraphReadOnlyListener
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
 import org.neo4j.dbms.routing.DefaultDatabaseAvailabilityChecker
 import org.neo4j.dbms.routing.DefaultRoutingService
-import org.neo4j.dbms.routing.LocalRoutingTableServiceValidator
 import org.neo4j.dbms.routing.RoutingOption
 import org.neo4j.dbms.routing.RoutingService
 import org.neo4j.dbms.routing.RoutingTableTTLProvider
@@ -108,6 +110,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val cluster: ClusterService
     private val replication: ReplicationService
     private val directory: MemberDirectory
+    private val locations: DatabaseLocations
     private val consensus: ConsensusLog
     private val membership: MembershipReconciler
     private val balancer: LeaderBalancer
@@ -164,7 +167,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.DATABASES to DatabaseStatesCodec.encode(databaseStates()),
                 MemberMetadata.READ_ONLY_DATABASES to readOnlyHere().joinToString(","),
                 MemberMetadata.LAST_COMMITTED_TRANSACTIONS to
-                    lastCommittedHere().entries.joinToString(",") { "${it.key}=${it.value}" },
+                    MemberMetadata.numbersText(lastCommittedHere()),
+                MemberMetadata.LEADING to MemberMetadata.numbersText(leadingHere()),
                 MemberMetadata.FORMAT_LEVELS to formatLevels.toString(),
                 MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
                 MemberMetadata.INITIAL_SERVER_TAGS to
@@ -317,12 +321,24 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 selfLastCommitted = ::lastCommittedHere,
                 selfReport = metadata,
             )
+        locations = DatabaseLocations(consensus, directory)
         val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
         balancer =
             LeaderBalancer(
                 consensus,
                 directory,
+                locations,
                 replicationService::created,
+                {
+                    if (replicationService.replica(systemDatabase)?.isRunning() == true) {
+                        listOf(systemDatabase) +
+                            systemGraph.databases().map {
+                                DatabaseRef(it.id.name(), it.id.databaseId().uuid())
+                            }
+                    } else {
+                        replicationService.created()
+                    }
+                },
                 { database, to, reason, timeout ->
                     replicationService.replica(database)?.transferLeadership(to, reason, timeout)
                         ?: false
@@ -442,6 +458,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             .toSet()
     }
 
+    /** The groups this member leads, with their terms. */
+    private fun leadingHere(): Map<UUID, Long> =
+        replication
+            .created()
+            .mapNotNull { ref ->
+                val status = runCatching { consensus.status(ref) }.getOrNull()
+                status?.takeIf { it.role == Role.Leader }?.let { ref.id to it.term }
+            }
+            .toMap()
+
     /** The id of the last transaction committed to each database that runs on this member. */
     private fun lastCommittedHere(): Map<UUID, Long> =
         databaseRepository
@@ -467,6 +493,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             consensus,
             systemDatabase,
             directory,
+            locations,
             directory::reported,
         )
 
@@ -834,8 +861,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             )
         val routing =
             ClusterRoutingTableProvider(
-                replication,
-                consensus,
+                locations,
                 directory,
                 config.get(ClusterSettings.readsOnLeader),
                 ttl,
@@ -844,8 +870,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             )
         return DefaultRoutingService(
             logProvider,
-            LocalRoutingTableServiceValidator(
-                DefaultDatabaseAvailabilityChecker(databaseContextProvider)
+            ClusterRoutingValidator(
+                DefaultDatabaseAvailabilityChecker(databaseContextProvider),
+                locations,
+                directory,
             ),
             routing,
             routing,
@@ -896,6 +924,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             replication::awaitLinearizable,
             forwarding(),
             remoteAliases,
+            ::hostedHere,
         )
 
     /** How this member forwards writes to the leaders of their databases, if it does. */
@@ -913,20 +942,30 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 logs,
             )
         val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
-        val locations =
+        val forwarding =
             ForwardingLocations(
-                { id -> replication.replica(id)?.ref },
+                ::hostedHere,
+                locations,
                 consensus,
                 directory::routingAddress,
                 { member -> directory.reported(member) != null },
+                { member, id ->
+                    directory.databaseStates(member).orEmpty().any {
+                        it.id == id && it.status == DatabaseState.Status.ONLINE
+                    }
+                },
                 electionTimeout,
                 logs.getLog(ForwardingLocations::class.java),
             )
         globalModule.globalLife.add(
-            ForwardingWatch(locations, remote, electionTimeout.multipliedBy(2))
+            ForwardingWatch(forwarding, remote, electionTimeout.multipliedBy(2))
         )
-        return ClusterQueryRouterBootstrap.Forwarding(locations::locationService, remote)
+        return ClusterQueryRouterBootstrap.Forwarding(forwarding::locationService, remote)
     }
+
+    /** Whether the database [id] is hosted here: its copy is registered on this member. */
+    private fun hostedHere(id: NamedDatabaseId): Boolean =
+        databaseRepository.getDatabaseContext(id).isPresent
 
     /** The last transaction of `system` on this member, which its forwarded logins carry. */
     private fun lastSystemTransaction(): Long =

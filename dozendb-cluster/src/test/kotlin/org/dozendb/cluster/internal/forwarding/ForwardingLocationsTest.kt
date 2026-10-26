@@ -5,6 +5,9 @@ import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.assertj.core.api.Assertions.catchThrowable
+import org.dozendb.cluster.MemberDirectory
+import org.dozendb.cluster.MemberMetadata
+import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
@@ -24,33 +27,69 @@ import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.NullLog
 import org.neo4j.router.transaction.RoutingInfo
 
-/** Where write transactions run: on the leader of their database, when they may be routed. */
+/**
+ * Where transactions run: write transactions on the leader of their database when they may be
+ * routed, and transactions of a database not hosted here on the members that host it.
+ */
 class ForwardingLocationsTest {
     private val consensus = InMemoryConsensus()
-    private val logs = List(3) { consensus.newMember() }
-    private val self = logs[0]
+    private val system = DatabaseRef("system", UUID(0, 1))
     private val films = DatabaseRef("films", UUID(0, 7))
     private val filmsId: NamedDatabaseId = DatabaseIdFactory.from(films.name, films.id)
     private val books: NamedDatabaseId = DatabaseIdFactory.from("books", UUID(0, 8))
+    // The second member leads films, and says so when probed.
+    private val logs =
+        List(3) {
+            consensus.newMember(
+                metadata =
+                    if (it == 1) mapOf(MemberMetadata.LEADING to "${films.id}=1") else emptyMap()
+            )
+        }
+    private val self = logs[0]
+    /** A member that hosts only system. */
+    private val outsider = consensus.newMember()
     private val addresses = HashMap<MemberId, HostPort>()
     private val reported = HashSet<MemberId>()
-    private val locations =
-        ForwardingLocations(
-            { id -> films.takeIf { id == filmsId } },
-            self,
+
+    private fun forwarding(
+        member: InMemoryConsensus.InMemoryConsensusLog = self,
+        hosted: (NamedDatabaseId) -> Boolean = { it == filmsId },
+    ): ForwardingLocations {
+        val directory =
+            MemberDirectory(
+                member,
+                system,
+                { null },
+                { null },
+                { emptyList() },
+                NullLog.getInstance(),
+                Duration.ofHours(1),
+            )
+        directory.refresh()
+        return ForwardingLocations(
+            hosted,
+            DatabaseLocations(member, directory),
+            member,
             { addresses[it] },
             { it in reported },
+            { _, _ -> true },
             Duration.ofMillis(100),
             NullLog.getInstance(),
         )
+    }
+
+    private val locations by lazy { forwarding() }
 
     init {
-        logs.forEach { it.start() }
+        val all = logs + outsider
+        all.forEach { it.start() }
+        all.forEach { it.startGroup(system, RecordingStateMachine(), all.map { log -> log.self }) }
         logs.forEach { it.startGroup(films, RecordingStateMachine(), logs.map { log -> log.self }) }
         for ((i, log) in logs.withIndex()) {
             addresses[log.self.id] = HostPort("core$i", 7688)
             reported += log.self.id
         }
+        consensus.electLeader(system, logs[0].self.id)
         consensus.electLeader(films, logs[1].self.id)
     }
 
@@ -61,10 +100,36 @@ class ForwardingLocationsTest {
         id: NamedDatabaseId = filmsId,
         mode: AccessMode = AccessMode.WRITE,
         routing: Boolean = true,
+        at: ForwardingLocations = locations,
     ): Location =
-        locations
-            .locationService(RoutingInfo(reference(id), RoutingContext(routing, emptyMap()), mode))
+        at.locationService(RoutingInfo(reference(id), RoutingContext(routing, emptyMap()), mode))
             .locationOf(reference(id))
+
+    @Test
+    fun `a database not hosted here runs on its hosts when it may be routed`() {
+        val outside = forwarding(outsider) { false }
+
+        val write = locationOf(at = outside) as Location.Remote.Internal.Direct
+        val read =
+            locationOf(mode = AccessMode.READ, at = outside) as Location.Remote.Internal.Direct
+
+        assertThat(write.uri.addresses.single().hostname).isEqualTo("core1")
+        val follower = logs.filter { it != logs[1] }.minBy { it.self.id }
+        assertThat(read.uri.addresses.single().hostname)
+            .isEqualTo(addresses.getValue(follower.self.id).host)
+    }
+
+    @Test
+    fun `a database not hosted here fails when it may not be routed, saying how to reach it`() {
+        val outside = forwarding(outsider) { false }
+
+        for (mode in AccessMode.entries) {
+            assertThatThrownBy { locationOf(mode = mode, routing = false, at = outside) }
+                .isInstanceOf(RemoteFailure::class.java)
+                .hasMessageContaining("Database 'films' is not hosted on this server")
+                .hasMessageContaining("neo4j://")
+        }
+    }
 
     @Test
     fun `writes that may be routed run on the leader`() {
@@ -78,7 +143,6 @@ class ForwardingLocationsTest {
     fun `reads, writes that may not be routed and writes of the leader run here`() {
         assertThat(locationOf(mode = AccessMode.READ)).isInstanceOf(Location.Local::class.java)
         assertThat(locationOf(routing = false)).isInstanceOf(Location.Local::class.java)
-        assertThat(locationOf(books)).isInstanceOf(Location.Local::class.java)
         consensus.electLeader(films, self.self.id)
         assertThat(locationOf()).isInstanceOf(Location.Local::class.java)
     }
@@ -135,6 +199,7 @@ class ForwardingLocationsTest {
     private class Watched(
         override val member: HostPort,
         override val databaseId: NamedDatabaseId,
+        override val write: Boolean = true,
     ) : ForwardedTransaction {
         override val database: String = databaseId.name()
         val gone = mutableListOf<String>()
@@ -148,13 +213,23 @@ class ForwardingLocationsTest {
     fun `transactions of a member that stopped leading are given up`() {
         val onLeader = Watched(HostPort("core1", 7688), filmsId)
         val elsewhere = Watched(HostPort("core2", 7688), filmsId)
-        val dropped = Watched(HostPort("core1", 7688), books)
+        val read = Watched(HostPort("core2", 7688), filmsId, write = false)
 
-        locations.watch(listOf(onLeader, elsewhere, dropped), Duration.ofMinutes(1))
+        locations.watch(listOf(onLeader, elsewhere, read), Duration.ofMinutes(1))
 
         assertThat(onLeader.gone).isEmpty()
         assertThat(elsewhere.gone.single()).contains("leads database films now")
-        assertThat(dropped.gone.single()).contains("not replicated here")
+        assertThat(read.gone).describedAs("reads run on any host").isEmpty()
+    }
+
+    @Test
+    fun `transactions of a database no member is known to run are given up once that lasts`() {
+        val dropped = Watched(HostPort("core1", 7688), books)
+
+        locations.watch(listOf(dropped), Duration.ofMinutes(1))
+        assertThat(dropped.gone).isEmpty()
+        locations.watch(listOf(dropped), Duration.ZERO)
+        assertThat(dropped.gone.single()).contains("no member has led database books")
     }
 
     @Test

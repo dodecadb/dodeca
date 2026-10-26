@@ -11,6 +11,10 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilAsserted
+import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.cli.BackupCommand
 import org.dozendb.backup.cli.RestoreCommand
 import org.dozendb.core.edition.LatestWrites
@@ -232,5 +236,61 @@ class ClusterBackupTest {
             assertThat(max).describedAs("the last write in $backup").isGreaterThanOrEqualTo(before)
             assertThat(count).describedAs("the writes in $backup").isEqualTo(max + 1)
         }
+    }
+
+    @Test
+    fun `a pattern backed up through a server that hosts none of them takes every database`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings = mapOf(ClusterSettings.autoEnableFreeServers to false),
+                )
+                .also { harness = it }
+        cluster.start()
+        val hosts = cluster.members.take(3)
+        val leader = cluster.awaitLeader(SYSTEM) { hosts }
+        leader.database(SYSTEM).executeTransactionally("CREATE DATABASE films WAIT")
+        // A Free server, which hosts only system.
+        val free = cluster.newMember().also { it.start() }
+        leader
+            .database(SYSTEM)
+            .executeTransactionally("CALL dozendb.cluster.addMember('127.0.0.1:${free.raftPort}')")
+        await withPollInterval
+            Duration.ofMillis(100) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                assertThat(
+                        free.database(SYSTEM).executeTransactionally(
+                            "SHOW DATABASE films YIELD name",
+                            emptyMap(),
+                        ) {
+                            it.stream().count()
+                        }
+                    )
+                    .isPositive
+            }
+
+        val result =
+            admin(
+                Files.createDirectories(root.resolve("client")),
+                ::BackupCommand,
+                "--from=127.0.0.1:${free.backupPort()},127.0.0.1:${hosts[0].backupPort()}",
+                "--to-path=$backups",
+                "*",
+            )
+
+        assertThat(result.exitCode).describedAs(result.toString()).isZero
+        assertThat(
+                Files.list(backups).use { files -> files.map { it.fileName.toString() }.toList() }
+            )
+            .anyMatch { it.startsWith("films-") }
+            .anyMatch { it.startsWith("neo4j-") }
+            .anyMatch { it.startsWith("system-") }
+        assertThat(result.err).contains("database 'films' is not hosted on this server")
+    }
+
+    private companion object {
+        const val SYSTEM = "system"
     }
 }

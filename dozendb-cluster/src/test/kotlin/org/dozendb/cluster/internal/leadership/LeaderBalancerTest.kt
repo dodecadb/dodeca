@@ -9,6 +9,7 @@ import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.WaitingLook
+import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.fake.InMemoryConsensus
@@ -74,7 +75,9 @@ class LeaderBalancerTest {
         LeaderBalancer(
             leader,
             directory,
+            DatabaseLocations(leader, directory),
             created = { listOf(films) },
+            databases = { listOf(films) },
             handOver = { _, _, _, _ -> false },
             strategy = { BalancingStrategy.NO_BALANCING },
             priorityTag = { "us" },

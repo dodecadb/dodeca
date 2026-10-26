@@ -14,6 +14,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
 import org.neo4j.logging.Log
@@ -40,6 +41,7 @@ class MemberDirectory(
 ) {
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
+    private val groups = ConcurrentHashMap<MemberId, Map<UUID, List<Member>>>()
     private val answered: MutableSet<MemberId> = ConcurrentHashMap.newKeySet()
 
     /** Whether every member was probed at least once since this directory started. */
@@ -126,16 +128,24 @@ class MemberDirectory(
         if (member == consensus.self.id) return selfLastCommitted()
         val entries =
             reports[member]?.get(MemberMetadata.LAST_COMMITTED_TRANSACTIONS) ?: return emptyMap()
-        return entries
-            .split(',')
-            .mapNotNull { entry ->
-                val (id, transaction) =
-                    entry.split('=').takeIf { it.size == 2 } ?: return@mapNotNull null
-                runCatching { UUID.fromString(id.trim()) to transaction.trim().toLong() }
-                    .getOrNull()
-            }
-            .toMap()
+        return MemberMetadata.numbersById(entries)
     }
+
+    /**
+     * The groups that [member] leads, with their terms: this member's as they are now, another's as
+     * it last reported them; none if it has not.
+     */
+    fun leading(member: MemberId): Map<UUID, Long> =
+        reported(member)?.get(MemberMetadata.LEADING)?.let(MemberMetadata::numbersById).orEmpty()
+
+    /**
+     * The groups that the other members run, with the voting members each knows, as they last
+     * reported them; members that have not reported are left out.
+     */
+    fun groups(): Map<MemberId, Map<UUID, List<Member>>> = HashMap(groups)
+
+    /** Probes the members soon, as when what they reported may be out of date. */
+    fun refreshSoon() = requestRefresh()
 
     /** Whether [member] answered the latest probe. This member always does. */
     fun answering(member: MemberId): Boolean = member == consensus.self.id || member in answered
@@ -164,6 +174,7 @@ class MemberDirectory(
                 .awaitAll()
         }
         answered.retainAll(others.map { it.id }.toSet())
+        groups.keys.retainAll(others.map { it.id }.toSet())
         val answering = mutableSetOf<MemberId>()
         var late = false
         for ((member, answer) in answers) {
@@ -178,6 +189,7 @@ class MemberDirectory(
             }
             answered += member.id
             answering += member.id
+            groups[member.id] = peer.groups
             val routing = peer.metadata[MemberMetadata.ROUTING_ADDRESS]
             if (
                 routing !=

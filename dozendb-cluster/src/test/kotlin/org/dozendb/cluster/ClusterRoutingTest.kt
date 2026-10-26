@@ -2,24 +2,19 @@ package org.dozendb.cluster
 
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
-import org.dozendb.consensus.DatabaseRef
-import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
-import org.dozendb.consensus.Role
 import org.junit.jupiter.api.Test
 
 class ClusterRoutingTest {
-    private val database = DatabaseRef("neo4j", UUID(0, 2))
     private val members =
         (1..3).map { Member(MemberId(UUID(0, it.toLong())), HostPort("core$it", 7700)) }
     private val bolt = members.associate {
         it.id to HostPort("core${members.indexOf(it) + 1}", 7687)
     }
 
-    private fun status(leader: Member?) =
-        GroupStatus(database, Role.Follower, leader?.id, 4, 10, 10)
+    private fun leader(member: Member?) = member?.id
 
     private fun address(index: Int) = HostPort("core$index", 7687)
 
@@ -27,7 +22,7 @@ class ClusterRoutingTest {
     fun `writes go to the leader and reads to every member`() {
         val endpoints =
             ClusterRouting.endpoints(
-                status(members[1]),
+                leader(members[1]),
                 members,
                 bolt::get,
                 readsOnLeader = true,
@@ -43,7 +38,7 @@ class ClusterRoutingTest {
     fun `a leader where the database is read-only takes no writes, but reads`() {
         val endpoints =
             ClusterRouting.endpoints(
-                status(members[1]),
+                leader(members[1]),
                 members,
                 bolt::get,
                 readsOnLeader = true,
@@ -59,7 +54,7 @@ class ClusterRoutingTest {
     fun `the leader can be kept free of reads`() {
         val endpoints =
             ClusterRouting.endpoints(
-                status(members[1]),
+                leader(members[1]),
                 members,
                 bolt::get,
                 readsOnLeader = false,
@@ -73,7 +68,7 @@ class ClusterRoutingTest {
     fun `a lone leader still takes reads`() {
         val endpoints =
             ClusterRouting.endpoints(
-                status(members[0]),
+                leader(members[0]),
                 members.take(1),
                 bolt::get,
                 readsOnLeader = false,
@@ -88,7 +83,7 @@ class ClusterRoutingTest {
     fun `during an election there is no writer`() {
         val endpoints =
             ClusterRouting.endpoints(
-                status(null),
+                leader(null),
                 members,
                 bolt::get,
                 readsOnLeader = true,
@@ -103,7 +98,7 @@ class ClusterRoutingTest {
     fun `members whose copy failed neither write nor read, but route`() {
         val endpoints =
             ClusterRouting.endpoints(
-                status(members[1]),
+                leader(members[1]),
                 members,
                 bolt::get,
                 readsOnLeader = true,
@@ -119,7 +114,7 @@ class ClusterRoutingTest {
     fun `a leader whose copy failed is no writer`() {
         val endpoints =
             ClusterRouting.endpoints(
-                status(members[1]),
+                leader(members[1]),
                 members,
                 bolt::get,
                 readsOnLeader = true,
@@ -136,7 +131,7 @@ class ClusterRoutingTest {
 
         val endpoints =
             ClusterRouting.endpoints(
-                status(members[2]),
+                leader(members[2]),
                 members,
                 known::get,
                 readsOnLeader = true,
@@ -154,7 +149,7 @@ class ClusterRoutingTest {
 
         val endpoints =
             ClusterRouting.endpoints(
-                status(stranger),
+                leader(stranger),
                 members,
                 bolt::get,
                 readsOnLeader = true,

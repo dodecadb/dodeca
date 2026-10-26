@@ -22,6 +22,7 @@ import org.dozendb.core.store.StoreSnapshots
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.DatabaseNamePattern
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
 import org.neo4j.logging.InternalLogProvider
@@ -74,10 +75,31 @@ internal class BackupSource(
 
     private fun list(request: Request.List, out: OutputStream) {
         val pattern = DatabaseNamePattern(request.pattern)
-        val names =
-            databases.registeredDatabases().keys.map { it.name() }.filter(pattern::matches).sorted()
+        val names = known().filter(pattern::matches).sorted()
         BackupProtocol.writeStatus(out, Status.OK)
         BackupProtocol.writeNames(out, names)
+    }
+
+    /**
+     * The databases of the DBMS: those registered here, and those the system graph has, which in a
+     * cluster other servers may host instead of this one.
+     */
+    private fun known(): Set<String> {
+        val registered = databases.registeredDatabases().keys.map { it.name() }
+        val system =
+            databases.getDatabaseContext(SYSTEM).orElse(null)?.databaseFacade()
+                ?: return registered.toSet()
+        return system.beginTx().use { tx ->
+            tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
+                nodes
+                    .asSequence()
+                    .mapNotNull {
+                        it.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null)
+                            as? String
+                    }
+                    .toSet()
+            }
+        } + registered
     }
 
     /**
@@ -87,7 +109,12 @@ internal class BackupSource(
     private fun database(name: String, out: OutputStream): Database? {
         val context = databases.getDatabaseContext(name).orElse(null)
         if (context == null) {
-            BackupProtocol.writeStatus(out, Status.NO_DATABASE, "there is no database '$name'")
+            BackupProtocol.writeStatus(
+                out,
+                Status.NO_DATABASE,
+                if (name in known()) "database '$name' is not hosted on this server"
+                else "there is no database '$name'",
+            )
             return null
         }
         val database = context.database() as? Database

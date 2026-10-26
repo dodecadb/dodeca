@@ -1,5 +1,7 @@
 package org.dozendb.cluster
 
+import java.util.UUID
+
 /** The keys members use to report facts about themselves to each other. */
 object MemberMetadata {
     const val NEO4J_VERSION = "neo4j.version"
@@ -57,6 +59,12 @@ object MemberMetadata {
      */
     const val LAST_COMMITTED_TRANSACTIONS = "dozendb.lastCommittedTransactions"
 
+    /**
+     * The groups the member leads, as `<group id>=<term>` separated by commas, so that members that
+     * do not run a group know its leader; the higher term wins while two report one.
+     */
+    const val LEADING = "dozendb.leading"
+
     /** The [FormatLevels] the member's DozenDB version supports. */
     const val FORMAT_LEVELS = "dozendb.formatLevels"
 
@@ -66,4 +74,19 @@ object MemberMetadata {
 
     /** The items of a list reported separated by commas. */
     fun splitList(value: String): List<String> = value.split(',').filter { it.isNotEmpty() }
+
+    /** Entries reported as `<id>=<number>` separated by commas; malformed ones are left out. */
+    fun numbersById(value: String): Map<UUID, Long> =
+        value
+            .split(',')
+            .mapNotNull { entry ->
+                val (id, number) =
+                    entry.split('=').takeIf { it.size == 2 } ?: return@mapNotNull null
+                runCatching { UUID.fromString(id.trim()) to number.trim().toLong() }.getOrNull()
+            }
+            .toMap()
+
+    /** [numbers] as [numbersById] reads them. */
+    fun numbersText(numbers: Map<UUID, Long>): String =
+        numbers.entries.joinToString(",") { "${it.key}=${it.value}" }
 }

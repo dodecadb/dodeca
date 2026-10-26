@@ -28,6 +28,7 @@ import org.neo4j.bolt.connection.exception.BoltFailureException
 import org.neo4j.bolt.connection.netty.NettyBoltConnectionProviderFactory
 import org.neo4j.bolt.connection.pooled.AuthTokenManager
 import org.neo4j.bolt.connection.pooled.PooledBoltConnectionSource
+import org.neo4j.bolt.protocol.common.message.AccessMode
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.SocketAddress
@@ -116,7 +117,13 @@ internal class RemoteTransactions(
                 LeaderFailures(address),
                 { open.remove(it) },
             )
-        open[transaction] = Forwarded(transaction, member, address)
+        open[transaction] =
+            Forwarded(
+                transaction,
+                member,
+                address,
+                transactionInfo.accessMode() == AccessMode.WRITE,
+            )
         return transaction
     }
 
@@ -220,6 +227,7 @@ private class Forwarded(
     private val transaction: RemoteTransaction,
     location: Location.Remote.Internal.Direct,
     address: SocketAddress,
+    override val write: Boolean,
 ) : ForwardedTransaction {
     override val database: String = location.databaseName
 

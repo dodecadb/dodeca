@@ -3,8 +3,8 @@ package org.dozendb.cluster.internal.forwarding
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.ConsensusLog
-import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
@@ -35,6 +35,9 @@ internal interface ForwardedTransaction {
     /** The routing address of the member the transaction runs on. */
     val member: HostPort
 
+    /** Whether it may write, so that it runs on the leader; a read runs on any host. */
+    val write: Boolean
+
     /**
      * Gives up on the member, which stopped leading the database or cannot be reached: a commit it
      * did not answer yet may or may not have been applied; anything else was not, and the client
@@ -45,18 +48,24 @@ internal interface ForwardedTransaction {
 
 /**
  * Where Neo4j's query router runs each database's part of a transaction: on the leader of the
- * database for write transactions that may be routed on the server, here otherwise. A transaction
- * keeps the place it chose for a database, or the failure to find one, so it waits only once for a
- * leader, up to [leaderWait].
+ * database for write transactions that may be routed on the server, here otherwise. A database not
+ * hosted here runs on the members that host it, as in Neo4j Enterprise: writes on its leader, reads
+ * on a member that runs it, if the client allows routing on the server; without that, the
+ * transaction fails, saying how to reach it. A transaction keeps the place it chose for a database,
+ * or the failure to find one, so it waits only once for a leader, up to [leaderWait].
  *
- * The leaders come from the Raft groups of the databases replicated here ([replica]), and their
- * routing connectors from what members report ([routingAddress], [reported]).
+ * The leaders and hosts come from the database's Raft group ([locations]), and their routing
+ * connectors from what members report ([routingAddress], [reported], [running]).
+ *
+ * @property hosted whether a database is hosted here, its copy registered on this member.
  */
 internal class ForwardingLocations(
-    private val replica: (NamedDatabaseId) -> DatabaseRef?,
+    private val hosted: (NamedDatabaseId) -> Boolean,
+    private val locations: DatabaseLocations,
     private val consensus: ConsensusLog,
     private val routingAddress: (MemberId) -> HostPort?,
     private val reported: (MemberId) -> Boolean,
+    private val running: (MemberId, UUID) -> Boolean,
     private val leaderWait: Duration,
     private val log: InternalLog,
 ) {
@@ -68,9 +77,8 @@ internal class ForwardingLocations(
 
     /** The locations of a transaction with [routingInfo]. */
     fun locationService(routingInfo: RoutingInfo): LocationService {
-        val forwards =
-            routingInfo.accessMode() == AccessMode.WRITE &&
-                routingInfo.routingContext().isServerRoutingEnabled
+        val routes = routingInfo.routingContext().isServerRoutingEnabled
+        val writes = routingInfo.accessMode() == AccessMode.WRITE
         // The router asks for the session's database at BEGIN and again with the first query.
         val chosen = HashMap<UUID, Result<Location>>()
         return LocationService { reference ->
@@ -78,9 +86,7 @@ internal class ForwardingLocations(
             chosen
                 .getOrPut(internal.id()) {
                     try {
-                        Result.success(
-                            if (forwards) locationOf(internal) else Location.Local(-1, internal)
-                        )
+                        Result.success(locationOf(internal, routes, writes))
                     } catch (e: RuntimeException) {
                         Result.failure(e)
                     }
@@ -89,24 +95,28 @@ internal class ForwardingLocations(
         }
     }
 
-    private fun locationOf(reference: DatabaseReferenceImpl.Internal): Location {
+    private fun locationOf(
+        reference: DatabaseReferenceImpl.Internal,
+        routes: Boolean,
+        writes: Boolean,
+    ): Location {
         val local = Location.Local(-1, reference)
-        val ref = replica(reference.databaseId()) ?: return local
+        val id = reference.databaseId()
         val name = reference.alias().name()
-        val leader =
-            try {
-                awaitLeader(ref)
-            } catch (_: ConsensusUnavailableException) {
-                // The group does not run here: the transaction fails here as it would anyway.
-                return local
-            } ?: throw FabricException.noLeaderAddress(name)
-        if (leader == consensus.self.id) return local
-        val address = awaitRoutingAddress(leader) ?: throw takesNoForwardedWrites(name, leader)
-        if (targets.put(ref.id, address) != address) {
+        val here = hosted(id)
+        if (here && !(routes && writes)) return local
+        if (!routes) throw notHosted(name)
+        val ref = DatabaseRef(id.name(), id.databaseId().uuid())
+        val member =
+            if (writes) awaitLeader(ref) ?: throw FabricException.noLeaderAddress(name)
+            else host(ref) ?: throw noHost(name)
+        if (member == consensus.self.id) return local
+        val address = awaitRoutingAddress(member) ?: throw takesNoForwardedWrites(name, member)
+        if (writes && targets.put(ref.id, address) != address) {
             log.info(
                 "Forwarding writes of database %s to its leader %s at %s",
                 name,
-                leader,
+                member,
                 address,
             )
         }
@@ -121,12 +131,25 @@ internal class ForwardingLocations(
     private fun awaitLeader(ref: DatabaseRef): MemberId? {
         val deadline = System.nanoTime() + leaderWait.toNanos()
         while (true) {
-            consensus.status(ref).leader?.let {
+            locations.of(ref)?.leader?.let {
                 return it
             }
             if (System.nanoTime() > deadline) return null
             Thread.sleep(POLL_MILLIS)
         }
+    }
+
+    /**
+     * A member that runs [ref] for reads that are not hosted here: a follower that takes forwarded
+     * transactions, else the leader, by id.
+     */
+    private fun host(ref: DatabaseRef): MemberId? {
+        val location = locations.of(ref) ?: return null
+        return location.voters
+            .map { it.id }
+            .filter { running(it, ref.id) && routingAddress(it) != null }
+            .sortedWith(compareBy<MemberId> { it == location.leader }.thenBy { it })
+            .firstOrNull()
     }
 
     /** The routing address of [leader], waiting up to [leaderWait] for its first report. */
@@ -142,25 +165,18 @@ internal class ForwardingLocations(
     }
 
     /**
-     * Gives up on those of [transactions] whose member no longer leads their database here, or that
-     * no member has led for [leaderlessFor]: a partition may leave them waiting for a member that
-     * cannot answer.
+     * Gives up on those of [transactions] that write and whose member no longer leads their
+     * database, or that no member has led for [leaderlessFor]: a partition may leave them waiting
+     * for a member that cannot answer.
      */
     fun watch(transactions: Collection<ForwardedTransaction>, leaderlessFor: Duration) {
         val now = System.nanoTime()
         val stillLeaderless = HashSet<UUID>()
         for (transaction in transactions) {
-            val ref = replica(transaction.databaseId)
-            if (ref == null) {
-                transaction.leaderGone("database ${transaction.database} is not replicated here")
-                continue
-            }
-            val leader =
-                try {
-                    consensus.status(ref).leader
-                } catch (_: ConsensusUnavailableException) {
-                    null
-                }
+            if (!transaction.write) continue
+            val id = transaction.databaseId
+            val ref = DatabaseRef(id.name(), id.databaseId().uuid())
+            val leader = locations.of(ref)?.leader
             if (leader == null) {
                 stillLeaderless += ref.id
                 val since = leaderless.computeIfAbsent(ref.id) { now }
@@ -192,10 +208,38 @@ internal class ForwardingLocations(
                 .build(),
         )
 
-    private companion object {
+    private fun noHost(database: String) =
+        RemoteFailure(
+            Status.General.DatabaseUnavailable,
+            "No member that hosts database '$database' is known to run it and take forwarded " +
+                "transactions.",
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N09)
+                .withParam(GqlParams.StringParam.db, database)
+                .build(),
+        )
+
+    companion object {
         const val POLL_MILLIS = 10L
 
-        fun internal(reference: DatabaseReference): DatabaseReferenceImpl.Internal =
+        /**
+         * Why a transaction of [database], which is not hosted on this member, cannot run here: a
+         * client that does not allow routing on the server, as over `bolt://`, must connect to a
+         * member that hosts it.
+         */
+        fun notHosted(database: String) =
+            RemoteFailure(
+                Status.Cluster.Routing,
+                "Database '$database' is not hosted on this server. Connect with neo4j:// to be " +
+                    "routed to a server that hosts it, as SHOW DATABASES lists them, or to such " +
+                    "a server directly. Server-side routing, with mutual TLS between members, " +
+                    "also runs its transactions there.",
+                ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N02)
+                    .withParam(GqlParams.StringParam.db, database)
+                    .withParam(GqlParams.StringParam.cfgSetting, "dbms.routing.enabled")
+                    .build(),
+            )
+
+        private fun internal(reference: DatabaseReference): DatabaseReferenceImpl.Internal =
             reference as? DatabaseReferenceImpl.Internal
                 ?: throw IllegalArgumentException("Unexpected database reference: $reference")
     }

@@ -1,0 +1,48 @@
+package org.dozendb.cluster.internal.routing
+
+import org.dozendb.cluster.MemberDirectory
+import org.dozendb.cluster.internal.topology.DatabaseLocations
+import org.dozendb.consensus.DatabaseRef
+import org.dozendb.core.edition.DatabaseState
+import org.neo4j.dbms.routing.DatabaseAvailabilityChecker
+import org.neo4j.dbms.routing.LocalRoutingTableServiceValidator
+import org.neo4j.dbms.routing.RoutingTableServiceHelpers
+import org.neo4j.dbms.routing.RoutingTableServiceValidator
+import org.neo4j.kernel.database.DatabaseReferenceImpl
+
+/**
+ * Whether a database can be routed: as Community checks it where it is hosted here, else whether a
+ * member that votes in its group runs it ([DatabaseLocations]). Community's check alone refuses
+ * every database this member does not host.
+ */
+internal class ClusterRoutingValidator(
+    private val local: DatabaseAvailabilityChecker,
+    private val locations: DatabaseLocations,
+    private val directory: MemberDirectory,
+) : RoutingTableServiceValidator {
+    private val community = LocalRoutingTableServiceValidator(local)
+
+    override fun isValidForServerSideRouting(databaseReference: DatabaseReferenceImpl.Internal) =
+        check(databaseReference) { community.isValidForServerSideRouting(it) }
+
+    override fun isValidForClientSideRouting(databaseReference: DatabaseReferenceImpl.Internal) =
+        check(databaseReference) { community.isValidForClientSideRouting(it) }
+
+    private fun check(
+        reference: DatabaseReferenceImpl.Internal,
+        here: (DatabaseReferenceImpl.Internal) -> Unit,
+    ) {
+        if (local.isPresent(reference)) return here(reference)
+        val id = reference.databaseId()
+        val location = locations.of(DatabaseRef(id.name(), id.databaseId().uuid()))
+        val running =
+            location?.voters.orEmpty().any { member ->
+                directory.databaseStates(member.id).orEmpty().any {
+                    it.id == id.databaseId().uuid() && it.status == DatabaseState.Status.ONLINE
+                }
+            }
+        if (!running) {
+            throw RoutingTableServiceHelpers.databaseNotAvailableException(reference.alias().name())
+        }
+    }
+}

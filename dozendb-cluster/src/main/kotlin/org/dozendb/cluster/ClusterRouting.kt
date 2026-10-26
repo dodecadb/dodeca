@@ -1,6 +1,5 @@
 package org.dozendb.cluster
 
-import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
@@ -15,14 +14,14 @@ data class RoutingEndpoints(
 /** Routing tables of replicated databases, from the Raft view of this member. */
 object ClusterRouting {
     /**
-     * Writers: the leader. Readers: the followers, plus the leader if [readsOnLeader], or when no
+     * Writers: the [leader]. Readers: the followers, plus the leader if [readsOnLeader], or when no
      * follower can be listed. Routers: every member. Members whose Bolt address is not known yet
      * are left out; during an election there is no writer, so drivers retry until there is one.
      * Members whose copy of the database [failed], such as by a panic, neither write nor read it,
      * but still route: their routing tables send drivers to the others.
      */
     fun endpoints(
-        status: GroupStatus,
+        leader: MemberId?,
         members: List<Member>,
         boltAddress: (MemberId) -> HostPort?,
         readsOnLeader: Boolean,
@@ -31,9 +30,9 @@ object ClusterRouting {
     ): RoutingEndpoints {
         val ordered = members.sortedBy { it.id }
         val serving = ordered.filter { it.id !in failed }
-        val leader = status.leader?.takeIf { id -> serving.any { it.id == id } }
-        val leaderAddress = leader?.let(boltAddress)
-        val followers = serving.filter { it.id != leader }.mapNotNull { boltAddress(it.id) }
+        val writer = leader?.takeIf { id -> serving.any { it.id == id } }
+        val leaderAddress = writer?.let(boltAddress)
+        val followers = serving.filter { it.id != writer }.mapNotNull { boltAddress(it.id) }
         val readers =
             when {
                 leaderAddress == null -> followers
@@ -44,7 +43,7 @@ object ClusterRouting {
             routers = ordered.mapNotNull { boltAddress(it.id) },
             // A leader where the database is read-only takes no writes; it hands its leadership
             // over to a member where it is writable, if there is one.
-            writers = listOfNotNull(leaderAddress.takeIf { leader !in readOnly }),
+            writers = listOfNotNull(leaderAddress.takeIf { writer !in readOnly }),
             readers = readers,
         )
     }

@@ -189,29 +189,16 @@ class MembershipReconciler(
         if (local != null && !local.removed && local.members.any { it.id == consensus.self.id }) {
             return local.members
         }
-        var views = votersReported(group, reports)
+        var views = GroupViews.reportedByVoters(group.id, reports)
         if (views.isEmpty()) {
             val named =
                 (reports.values.flatMap { it[group.id].orEmpty() } + local?.members.orEmpty())
                     .distinctBy { it.id }
                     .filter { it.id !in reports }
             reports += groupsReported(named)
-            views = votersReported(group, reports)
+            views = GroupViews.reportedByVoters(group.id, reports)
         }
-        return views.firstOrNull()?.takeIf { first ->
-            views.all { view -> view.map { it.id }.toSet() == first.map { it.id }.toSet() }
-        }
-    }
-
-    /**
-     * The views of [group]'s voting members that its voters report. A member waiting to be added,
-     * or removed, knows other members than the voters.
-     */
-    private fun votersReported(
-        group: DatabaseRef,
-        reports: Map<MemberId, Map<UUID, List<Member>>>,
-    ): List<List<Member>> = reports.mapNotNull { (member, groups) ->
-        groups[group.id]?.takeIf { voters -> voters.any { it.id == member } }
+        return GroupViews.agreed(views.values)
     }
 
     private sealed interface Change {
