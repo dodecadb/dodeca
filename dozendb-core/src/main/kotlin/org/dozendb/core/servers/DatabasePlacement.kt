@@ -33,6 +33,21 @@ interface DatabasePlacement {
      * @throws AllocationException if a copy has nowhere to go; then nothing moves.
      */
     fun conform(tx: Transaction): List<Move>
+
+    /**
+     * Moves the copies on the servers [from] to other servers: of every database they host, of
+     * [database] only, or of [limit] of their databases, by name. Records the moves unless
+     * [dryRun]; returns them.
+     *
+     * @throws AllocationException if a copy cannot move; then nothing moves.
+     */
+    fun deallocate(
+        tx: Transaction,
+        from: Set<UUID>,
+        database: String? = null,
+        limit: Int? = null,
+        dryRun: Boolean = false,
+    ): List<Move>
 }
 
 /** A server without clustering hosts every database alone: one primary each, on no record. */
@@ -51,9 +66,25 @@ object SingleServerPlacement : DatabasePlacement {
     }
 
     /** Moves nothing: refuses options that would leave a database without this server. */
-    override fun conform(tx: Transaction): List<Move> {
-        val record = ServerRecords.records(tx).values.singleOrNull() ?: return emptyList()
+    override fun conform(tx: Transaction): List<Move> =
+        ServerRecords.records(tx).values.singleOrNull()?.let { alone(tx, it).conform() }.orEmpty()
+
+    /** Moves nothing: refuses to move a database off this server, as no other can host it. */
+    override fun deallocate(
+        tx: Transaction,
+        from: Set<UUID>,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+    ): List<Move> {
+        val id = from.singleOrNull() ?: return emptyList()
+        val record = ServerRecords.records(tx)[id] ?: ServerRecord(id)
+        return alone(tx, record).deallocate(from, database, limit)
+    }
+
+    /** An allocator with the server of [record] alone, which hosts every database. */
+    private fun alone(tx: Transaction, record: ServerRecord): Allocator {
         val databases = Placements.placed(tx).map { it.copy(hosts = setOf(record.id)) }
-        return Allocator(listOf(Host(record)), databases).conform()
+        return Allocator(listOf(Host(record)), databases)
     }
 }

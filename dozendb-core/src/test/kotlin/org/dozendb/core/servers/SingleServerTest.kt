@@ -60,6 +60,25 @@ class SingleServerTest {
     }
 
     @Test
+    fun `DEALLOCATE fails, as no other server can host the databases`() {
+        StandaloneServer(root).use { server ->
+            server.start()
+            val id =
+                server
+                    .rows("SHOW SERVERS YIELD serverId", database = StandaloneServer.SYSTEM)
+                    .single()["serverId"]
+
+            val error = catchThrowable {
+                server.administer("DEALLOCATE DATABASES FROM SERVER '$id'")
+            }
+
+            assertThat(error)
+                .hasMessageStartingWith("Could not deallocate databases from server '$id'")
+                .hasMessageContaining("no other server can host 'neo4j'")
+        }
+    }
+
+    @Test
     fun `the server can be renamed and its options changed, which a restart keeps`() {
         StandaloneServer(root, mapOf(DozenDbSettings.initialServerTags to listOf("eu"))).use {
             server ->

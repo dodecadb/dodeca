@@ -156,6 +156,66 @@ class ClusterProcedures {
 
     @Admin
     @SystemProcedure
+    @Procedure(name = "dbms.cluster.deallocateDatabaseFromServer", mode = Mode.DBMS)
+    @Description(
+        "Moves the copy of a database on a server, named by its name or id, to another server; " +
+            "the server stays as it is. With dryRun, only shows the move. Runs on the leader of " +
+            "the system database, as Neo4j Enterprise's procedure of the same name."
+    )
+    fun deallocateDatabaseFromServer(
+        @Name("server") server: String,
+        @Name("database") database: String,
+        @Name(value = "dryRun", defaultValue = "false") dryRun: Boolean,
+    ): Stream<MoveRow> = deallocating(listOf(server), database, null, dryRun)
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.deallocateDatabaseFromServers", mode = Mode.DBMS)
+    @Description(
+        "Moves the copies of a database on servers, named by their names or ids, to other " +
+            "servers; the servers stay as they are. With dryRun, only shows the moves. Runs on " +
+            "the leader of the system database, as Neo4j Enterprise's procedure of the same name."
+    )
+    fun deallocateDatabaseFromServers(
+        @Name("servers") servers: List<String>,
+        @Name("database") database: String,
+        @Name(value = "dryRun", defaultValue = "false") dryRun: Boolean,
+    ): Stream<MoveRow> = deallocating(servers, database, null, dryRun)
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.deallocateNumberOfDatabases", mode = Mode.DBMS)
+    @Description(
+        "Moves the copies of a number of the databases on a server, named by its name or id, by " +
+            "name, to other servers; the server stays as it is. With dryRun, only shows the " +
+            "moves. Runs on the leader of the system database, as Neo4j Enterprise's procedure " +
+            "of the same name."
+    )
+    fun deallocateNumberOfDatabases(
+        @Name("server") server: String,
+        @Name("number") number: Long,
+        @Name(value = "dryRun", defaultValue = "false") dryRun: Boolean,
+    ): Stream<MoveRow> =
+        deallocating(
+            listOf(server),
+            null,
+            number.coerceIn(0, Int.MAX_VALUE.toLong()).toInt(),
+            dryRun,
+        )
+
+    private fun deallocating(
+        servers: List<String>,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+    ): Stream<MoveRow> = administering {
+        it.deallocate(servers, database, limit, dryRun)
+    }
+        .stream()
+        .map(::MoveRow)
+
+    @Admin
+    @SystemProcedure
     @Procedure(name = "dozendb.cluster.addMember", mode = Mode.DBMS)
     @Description(
         "Adds the member at the given Raft address to the cluster. Start it first with " +
@@ -216,6 +276,28 @@ class ClusterProcedures {
     private class ProcedureFailure(message: String, cause: Throwable) :
         RuntimeException(message, cause), Status.HasStatus {
         override fun status(): Status = Status.Procedure.ProcedureCallFailed
+    }
+
+    /** A copy moved, or to be moved, in Neo4j Enterprise's columns. */
+    @JvmRecord
+    data class MoveRow(
+        val database: String,
+        val fromServerName: String,
+        val fromServerId: String,
+        val toServerName: String,
+        val toServerId: String,
+        val mode: String,
+    ) {
+        constructor(
+            named: ServerAdministration.NamedMove
+        ) : this(
+            named.move.database,
+            named.fromName,
+            named.move.from.toString(),
+            named.toName,
+            named.move.to.toString(),
+            "primary",
+        )
     }
 
     @JvmRecord

@@ -4,6 +4,7 @@ import java.util.UUID
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.Transaction
+import org.neo4j.kernel.database.NormalizedDatabaseName
 
 /**
  * The servers as the server commands and procedures find and change them, in a system transaction
@@ -89,6 +90,66 @@ object ServerLifecycle {
             else -> {}
         }
     }
+
+    /**
+     * DEALLOCATE DATABASES FROM SERVERS [names]: unless [dryRun], they become deallocating, so that
+     * they take no new copies, and every copy they host moves to other servers (see
+     * [DatabasePlacement.deallocate]); returns the moves.
+     */
+    fun deallocate(
+        tx: Transaction,
+        names: List<String>,
+        servers: Servers,
+        placement: DatabasePlacement,
+        dryRun: Boolean,
+        failed: String,
+    ): List<Move> {
+        val targets = names.map { enabled(target(tx, it, servers, failed), failed) }
+        if (!dryRun) {
+            for (server in targets.filter { it.status != InstanceStatus.DEALLOCATING }) {
+                ServerRecords.write(tx, server.record(InstanceStatus.DEALLOCATING))
+            }
+        }
+        return moving(failed) {
+            placement.deallocate(tx, targets.mapTo(HashSet()) { it.id }, dryRun = dryRun)
+        }
+    }
+
+    /**
+     * Moves copies off the servers [names], which stay as they are, as the deallocate procedures
+     * do: of [database] only, of [limit] of their databases, or of all; records the moves unless
+     * [dryRun]; returns them.
+     */
+    fun deallocateCopies(
+        tx: Transaction,
+        names: List<String>,
+        servers: Servers,
+        placement: DatabasePlacement,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+        failed: String,
+    ): List<Move> {
+        val ids = names.mapTo(HashSet()) { enabled(target(tx, it, servers, failed), failed).id }
+        val name = database?.let { NormalizedDatabaseName(it).name() }
+        if (name != null && Placements.database(tx, name) == null) {
+            throw InvalidArgumentException("$failed: there is no database '$database'.")
+        }
+        if (limit != null && limit < 1) {
+            throw InvalidArgumentException(
+                "$failed: the number of databases is $limit, not 1 or more."
+            )
+        }
+        return moving(failed) { placement.deallocate(tx, ids, name, limit, dryRun) }
+    }
+
+    /** What [moving] moves, refused as [failed] says if a copy cannot move. */
+    fun <T> moving(failed: String, moving: () -> T): T =
+        try {
+            moving()
+        } catch (e: AllocationException) {
+            throw InvalidArgumentException("$failed: ${e.message}.")
+        }
 
     /** [text] as a server id, if it is one. */
     fun uuid(text: String): UUID? = runCatching { UUID.fromString(text) }.getOrNull()

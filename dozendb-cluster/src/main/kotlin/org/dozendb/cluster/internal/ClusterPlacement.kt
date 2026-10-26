@@ -70,13 +70,31 @@ internal class ClusterPlacement(
         return moves.also { Placements.move(tx, allocator, it) }
     }
 
+    override fun deallocate(
+        tx: Transaction,
+        from: Set<UUID>,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+    ): List<Move> {
+        // A dry run writes nothing, as on a member that does not lead system.
+        if (dryRun) refresh() else prepare(tx)
+        val allocator = Placements.allocator(tx, available)
+        val moves = allocator.deallocate(from, database, limit)
+        for (name in moves.map { it.database }.distinct()) {
+            leaving(tx, name, allocator.hosts(name), record = !dryRun)
+        }
+        if (!dryRun) Placements.move(tx, allocator, moves)
+        return moves
+    }
+
     /**
      * Lets the database [name] be placed on [hosts]: if they leave out its creator, only once a
-     * server runs its group, which records its store created.
+     * server runs its group, which records its store created if [record].
      *
      * @throws AllocationException if its store may not be created yet.
      */
-    private fun leaving(tx: Transaction, name: String, hosts: Set<UUID>) {
+    private fun leaving(tx: Transaction, name: String, hosts: Set<UUID>, record: Boolean = true) {
         val node = Placements.database(tx, name) ?: return
         val creator = Neo4jSystemGraph.creator(node) ?: return
         if (creator.uuid in hosts || Neo4jSystemGraph.created(node)) return
@@ -86,7 +104,7 @@ internal class ClusterPlacement(
                     "once the database runs"
             )
         }
-        Neo4jSystemGraph.markCreated(node)
+        if (record) Neo4jSystemGraph.markCreated(node)
     }
 
     private fun prepare(tx: Transaction) {

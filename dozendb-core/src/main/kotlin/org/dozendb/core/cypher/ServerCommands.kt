@@ -3,6 +3,7 @@ package org.dozendb.core.cypher
 import java.util.UUID
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.DatabasePlacement
+import org.dozendb.core.servers.Move
 import org.dozendb.core.servers.ServerLifecycle
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerOptionsInput
@@ -21,6 +22,7 @@ import org.neo4j.cypher.internal.ast.OptionsMap
 import org.neo4j.cypher.internal.ast.OptionsParam
 import org.neo4j.cypher.internal.evaluator.Evaluator
 import org.neo4j.cypher.internal.logical.plans.AlterServer
+import org.neo4j.cypher.internal.logical.plans.DeallocateServer
 import org.neo4j.cypher.internal.logical.plans.EnableServer
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.RenameServer
@@ -96,6 +98,7 @@ internal class ServerCommands(
             is EnableServer -> Planner { enable(plan, it) }
             is AlterServer -> Planner { alter(plan, it) }
             is RenameServer -> Planner { rename(plan, it) }
+            is DeallocateServer -> Planner { deallocate(plan, it) }
             else -> null
         }
 
@@ -209,6 +212,104 @@ internal class ServerCommands(
             change,
             compile(plan.source(), context),
             failure,
+        )
+    }
+
+    /**
+     * [DRYRUN] DEALLOCATE DATABASES FROM SERVER[S]: the servers become deallocating and their
+     * copies move to other servers (see [ServerLifecycle.deallocate]); DRYRUN shows the moves, and
+     * changes nothing.
+     */
+    private fun deallocate(
+        plan: DeallocateServer,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val names = { params: MapValue ->
+            CollectionConverters.asJava(plan.serverNames()).map {
+                admin.runtimeStringValue(it, params)
+            }
+        }
+        val failure = { params: MapValue ->
+            val given = names(params)
+            "Could not deallocate databases from server${if (given.size == 1) "" else "s"} " +
+                given.joinToString { "'$it'" }
+        }
+        val source = compile(plan.source(), context)
+        if (plan.dryRun()) {
+            return moves("DeallocateServer", source) { tx, params ->
+                ServerLifecycle.deallocate(
+                    tx,
+                    names(params),
+                    servers,
+                    placement,
+                    dryRun = true,
+                    failure(params),
+                )
+            }
+        }
+        val change =
+            changing("DEALLOCATE DATABASES FROM SERVER", failure) { tx, params ->
+                ServerRecords.lock(tx)
+                ServerLifecycle.deallocate(
+                    tx,
+                    names(params),
+                    servers,
+                    placement,
+                    dryRun = false,
+                    failure(params),
+                )
+            }
+        return updating(
+            "DeallocateServer",
+            "DEALLOCATE DATABASES FROM SERVER",
+            change,
+            source,
+            failure,
+        )
+    }
+
+    /**
+     * A DRYRUN command: the [moves] it would make, a row each, in Neo4j Enterprise's columns of
+     * DRYRUN DEALLOCATE and REALLOCATE.
+     */
+    private fun moves(
+        name: String,
+        source: ExecutionPlan,
+        moves: (Transaction, MapValue) -> List<Move>,
+    ): ExecutionPlan {
+        val rows = ParameterTransformer.apply { tx, _, params ->
+            val records = ServerRecords.records(tx)
+            val serverName = { id: UUID -> records[id]?.name ?: id.toString() }
+            val rows =
+                moves(tx, params).map { move ->
+                    VirtualValues.map(
+                        MOVE_COLUMNS.toTypedArray(),
+                        arrayOf<AnyValue>(
+                            Values.stringValue(move.database),
+                            Values.stringValue(serverName(move.from)),
+                            Values.stringValue(move.from.toString()),
+                            Values.stringValue(serverName(move.to)),
+                            Values.stringValue(move.to.toString()),
+                            Values.stringValue(PRIMARY),
+                        ),
+                    )
+                }
+            VirtualValues.map(arrayOf(MOVES_KEY), arrayOf(VirtualValues.fromList(rows)))
+        }
+        return SystemCommandExecutionPlan(
+            name,
+            engine,
+            authorization,
+            """
+            UNWIND ${'$'}`$MOVES_KEY` AS move
+            RETURN ${MOVE_COLUMNS.joinToString { "move.$it AS $it" }}
+            """
+                .trimIndent(),
+            VirtualValues.EMPTY_MAP,
+            Option.apply(source),
+            SystemCommandExecutionPlan.`apply$default$7`(),
+            rows,
+            SystemCommandExecutionPlan.`apply$default$9`(),
         )
     }
 
@@ -393,7 +494,22 @@ internal class ServerCommands(
 
     private companion object {
         const val SERVERS_KEY = "__dozendb_servers"
+        const val MOVES_KEY = "__dozendb_moves"
         const val SYSTEM = "system"
+
+        /** The `mode` of a copy moved by DEALLOCATE or REALLOCATE: every copy is a primary. */
+        const val PRIMARY = "primary"
+
+        /** Neo4j Enterprise's columns of DRYRUN DEALLOCATE and DRYRUN REALLOCATE, in its order. */
+        val MOVE_COLUMNS =
+            listOf(
+                "database",
+                "fromServerName",
+                "fromServerId",
+                "toServerName",
+                "toServerId",
+                "mode",
+            )
 
         /** Neo4j Enterprise's columns of SHOW SERVERS YIELD *, in its order. */
         val COLUMNS =

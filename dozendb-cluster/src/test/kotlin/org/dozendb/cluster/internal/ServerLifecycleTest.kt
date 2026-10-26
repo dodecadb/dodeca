@@ -242,6 +242,114 @@ class ServerLifecycleTest {
     }
 
     @Test
+    fun `DEALLOCATE moves every copy off the servers, which then take no new ones`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 2 PRIMARIES WAIT")
+        eventually { assertThat(cluster.hosts("films")).hasSize(2) }
+        cluster
+            .awaitLeader("films") { cluster.hosts("films").toList() }
+            .database("films")
+            .executeTransactionally("CREATE (:Film {title: 'Alien'})")
+        val leaving = cluster.hosts("films").first()
+
+        cluster.administer("DEALLOCATE DATABASES FROM SERVER '${leaving.serverId}'")
+
+        assertThat(cluster.server(leaving)["state"]).isEqualTo("Deallocating")
+        eventually {
+            assertThat(cluster.hosts("films")).hasSize(2).doesNotContain(leaving)
+            assertThat(cluster.hosts("neo4j")).doesNotContain(leaving)
+            for (host in cluster.hosts("films")) assertThat(host.films()).isEqualTo(1)
+        }
+        assertThat(
+                catchThrowable { cluster.administer("CREATE DATABASE books TOPOLOGY 3 PRIMARIES") }
+            )
+            .hasMessageContaining("only 2 can")
+    }
+
+    @Test
+    fun `DRYRUN DEALLOCATE shows the moves, and changes nothing`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 2 PRIMARIES WAIT")
+        eventually { assertThat(cluster.hosts("films")).hasSize(2) }
+        val hosts = cluster.hosts("films")
+        val leaving = hosts.first()
+        val free = (cluster.members - hosts).single()
+
+        val rows = cluster.rows("DRYRUN DEALLOCATE DATABASES FROM SERVER '${leaving.serverId}'")
+
+        assertThat(rows.filter { it["database"] == "films" })
+            .containsExactly(
+                mapOf(
+                    "database" to "films",
+                    "fromServerName" to leaving.serverId,
+                    "fromServerId" to leaving.serverId,
+                    "toServerName" to free.serverId,
+                    "toServerId" to free.serverId,
+                    "mode" to "primary",
+                )
+            )
+        assertThat(cluster.server(leaving)["state"]).isEqualTo("Enabled")
+        assertThat(cluster.hosts("films")).isEqualTo(hosts)
+    }
+
+    @Test
+    fun `DEALLOCATE fails, changing nothing, if a copy cannot move or is offline`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 3 PRIMARIES WAIT")
+        val server = cluster.members.first()
+
+        assertThat(
+                catchThrowable {
+                    cluster.administer("DEALLOCATE DATABASES FROM SERVER '${server.serverId}'")
+                }
+            )
+            .hasMessageContaining("no other server can host 'films'")
+        assertThat(cluster.server(server)["state"]).isEqualTo("Enabled")
+
+        cluster.administer("ALTER DATABASE films SET TOPOLOGY 1 PRIMARY")
+        eventually { assertThat(cluster.hosts("films")).hasSize(1) }
+        cluster.administer("STOP DATABASE films WAIT")
+        eventually { assertThat(cluster.hosts("films")).isEmpty() }
+        val placed = cluster.rows("SHOW DATABASE films YIELD serverID").map { it["serverID"] }
+        val host = cluster.members.single { it.serverId in placed }
+
+        assertThat(
+                catchThrowable {
+                    cluster.administer("DEALLOCATE DATABASES FROM SERVER '${host.serverId}'")
+                }
+            )
+            .hasMessageContaining("'films' is offline")
+        assertThat(cluster.server(host)["state"]).isEqualTo("Enabled")
+    }
+
+    @Test
+    fun `the deallocate procedures move copies, and leave the servers enabled`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 1 PRIMARY WAIT")
+        eventually { assertThat(cluster.hosts("films")).hasSize(1) }
+        val host = cluster.hosts("films").single()
+
+        val dry =
+            cluster.rows(
+                "CALL dbms.cluster.deallocateDatabaseFromServer('${host.serverId}', 'films', true)"
+            )
+        assertThat(dry.map { it["database"] }).containsExactly("films")
+        assertThat(cluster.hosts("films")).containsExactly(host)
+
+        val rows =
+            cluster.rows(
+                "CALL dbms.cluster.deallocateDatabaseFromServer('${host.serverId}', 'films')"
+            )
+
+        assertThat(rows.map { it["fromServerId"] }).containsExactly(host.serverId)
+        assertThat(cluster.server(host)["state"]).isEqualTo("Enabled")
+        eventually { assertThat(cluster.hosts("films")).hasSize(1).doesNotContain(host) }
+        val second = cluster.hosts("films").single()
+        cluster.rows("CALL dbms.cluster.deallocateNumberOfDatabases('${second.serverId}', 1)")
+        eventually { assertThat(cluster.hosts("films")).hasSize(1).doesNotContain(second) }
+    }
+
+    @Test
     fun `the initial servers take the mode constraint and databases they start with`() {
         val cluster = cluster {
             it.members[0].settings =
