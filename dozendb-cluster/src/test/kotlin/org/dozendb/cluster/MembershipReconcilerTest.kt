@@ -124,6 +124,54 @@ class MembershipReconcilerTest {
         assertThat(free.localGroups()).doesNotContain(films.id)
     }
 
+    /** A reconciler of [leader] with films placed on it alone, on a clock that reads [now]. */
+    private fun shrinking(now: () -> Long) =
+        MembershipReconciler(
+            leader,
+            system,
+            { mapOf(films to setOf(leader.self.id)) },
+            NullLog.getInstance(),
+            changes = { it.run() },
+            handOverGrace = GRACE,
+            nanoTime = now,
+        )
+
+    @Test
+    fun `the leader of a group leaves it last, once it handed the leadership over`() {
+        formCluster()
+        val reconciler = shrinking { 0 }
+
+        reconciler.reconcile()
+
+        assertThat(leader.members(films)).containsExactly(logs[0].self, logs[1].self)
+        assertThat(reconciler.reconcile()).describedAs("waits for the hand-over").isTrue()
+        assertThat(leader.members(films)).containsExactly(logs[0].self, logs[1].self)
+
+        consensus.electLeader(films, logs[0].self.id)
+        reconciler.reconcile()
+
+        assertThat(leader.members(films)).containsExactly(logs[0].self)
+    }
+
+    @Test
+    fun `a leader that does not hand the leadership over leaves after a grace period`() {
+        formCluster()
+        var now = 0L
+        val reconciler = shrinking { now }
+        reconciler.reconcile()
+        reconciler.reconcile()
+
+        now += GRACE.toNanos() - 1
+        reconciler.reconcile()
+
+        assertThat(leader.members(films)).containsExactly(logs[0].self, logs[1].self)
+
+        now += 1
+        reconciler.reconcile()
+
+        assertThat(leader.members(films)).containsExactly(logs[0].self)
+    }
+
     @Test
     fun `only the system leader changes groups`() {
         formCluster()
@@ -203,5 +251,6 @@ class MembershipReconcilerTest {
 
     private companion object {
         val TIMEOUT: Duration = Duration.ofSeconds(5)
+        val GRACE: Duration = Duration.ofSeconds(30)
     }
 }

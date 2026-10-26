@@ -206,6 +206,48 @@ class LeaderMovesTest {
         assertThat(LeaderMoves.rank(view, listOf(a, b, c), EU)).containsExactly(c, b, a)
     }
 
+    @Test
+    fun `a database that moves off its leader goes to an eligible member, its carriers first`() {
+        val leaders = databases.associateWith { if (it == databases[2]) c else a }
+        val view =
+            prioritized(view(leaders), listOf(databases[1]), setOf(c)).let { view ->
+                view.copy(
+                    databases =
+                        view.databases.map {
+                            if (it.database == databases[1]) it.copy(placed = setOf(b, c)) else it
+                        }
+                )
+            }
+
+        // c leads one more than b, but carries the tag.
+        assertThat(LeaderMoves.leaving(view, a)).isEqualTo(mapOf(databases[1] to listOf(c, b)))
+        assertThat(LeaderMoves.leaving(view, c)).isEmpty()
+    }
+
+    @Test
+    fun `the other rules leave a database that moves off its leader to that move`() {
+        val leaders = databases.associateWith { a }
+        // databases[1] has a priority tag that only c carries, which cannot lead it yet.
+        val view =
+            prioritized(view(leaders), listOf(databases[1]), setOf(c)).let { view ->
+                view.copy(
+                    databases =
+                        view.databases.map {
+                            when (it.database) {
+                                databases[1] -> it.copy(eligible = setOf(b), placed = setOf(b, c))
+                                databases[2] -> it.copy(placed = setOf(b))
+                                else -> it
+                            }
+                        }
+                )
+            }
+
+        assertThat(LeaderMoves.priority(view, a)).isEmpty()
+        val (_, moves) = settle(view)
+        assertThat(moves).isNotEmpty
+        assertThat(moves.map { it.database }).doesNotContain(databases[1], databases[2])
+    }
+
     /** What a leader knows of [b], its follower, which last answered [contact] ms ago. */
     private fun progress(commit: Long, match: Long, contact: Long = 50) =
         GroupProgress(

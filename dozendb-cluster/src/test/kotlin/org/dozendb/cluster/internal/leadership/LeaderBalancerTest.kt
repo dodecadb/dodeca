@@ -77,7 +77,7 @@ class LeaderBalancerTest {
             directory,
             DatabaseLocations(leader, directory),
             created = { listOf(films) },
-            databases = { listOf(films) },
+            databases = { mapOf(films to emptySet()) },
             handOver = { _, _, _, _ -> false },
             strategy = { BalancingStrategy.NO_BALANCING },
             priorityTag = { "us" },

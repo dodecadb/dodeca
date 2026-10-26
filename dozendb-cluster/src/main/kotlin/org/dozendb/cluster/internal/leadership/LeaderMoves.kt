@@ -29,6 +29,8 @@ internal data class LeadershipView(
  * @property writableOnLeader false when [database] is read-only on [leader].
  * @property settled whether no change of the group's members is in progress.
  * @property priorityTag the server tag of the members that should lead [database], if any.
+ * @property placed the members [database] is placed on; none if it is not placed, as `system`,
+ *   which every member hosts.
  */
 internal data class Leadership(
     val database: DatabaseRef,
@@ -37,7 +39,12 @@ internal data class Leadership(
     val writableOnLeader: Boolean = true,
     val settled: Boolean = true,
     val priorityTag: String? = null,
-)
+    val placed: Set<MemberId> = emptySet(),
+) {
+    /** Whether [leader] leads [database] although it is placed on other members. */
+    val movesOffLeader: Boolean
+        get() = leader != null && placed.isNotEmpty() && leader !in placed
+}
 
 /** A transfer of the leadership of [database] from [from] to [to]. */
 internal data class Move(
@@ -49,13 +56,14 @@ internal data class Move(
 
 internal enum class MoveReason(val text: String) {
     READ_ONLY("the database is read-only on this member"),
+    LEAVING("the database moves off this member"),
     PRIORITY("to a member with the database's priority tag"),
     BALANCING("to even out how many databases each member leads"),
 }
 
 /**
  * Where leadership goes: the rules of `dbms.cluster.raft.leader_transfer.balancing_strategy` and
- * `db.cluster.raft.leader_transfer.priority_tag`.
+ * `db.cluster.raft.leader_transfer.priority_tag`, and off a member a database moves off.
  */
 internal object LeaderMoves {
     /**
@@ -81,15 +89,27 @@ internal object LeaderMoves {
             .associate { it.database to rank(view, it.eligible, it.priorityTag) }
 
     /**
+     * The databases that [self] leads although they are placed on other members, as while their
+     * copies move off it, each with the eligible members in the order to try them; empty when none
+     * could take it over yet. Those read-only on [self] are left to [readOnly].
+     */
+    fun leaving(view: LeadershipView, self: MemberId): Map<DatabaseRef, List<MemberId>> =
+        view.databases
+            .filter { it.leader == self && it.writableOnLeader && it.movesOffLeader }
+            .associate { it.database to rank(view, it.eligible, it.priorityTag) }
+
+    /**
      * The databases with a priority tag that [self] leads without carrying the tag, each with the
      * eligible members that carry it in the order to try them; empty when none could take it over,
-     * and [self] keeps leading it. Those read-only on [self] are left to [readOnly].
+     * and [self] keeps leading it. Those read-only on [self] are left to [readOnly], those that
+     * move off it to [leaving].
      */
     fun priority(view: LeadershipView, self: MemberId): Map<DatabaseRef, List<MemberId>> =
         view.databases
             .filter {
                 it.leader == self &&
                     it.writableOnLeader &&
+                    !it.movesOffLeader &&
                     it.priorityTag != null &&
                     !view.carries(self, it.priorityTag)
             }
@@ -107,7 +127,8 @@ internal object LeaderMoves {
      * one that an eligible member leading at least two fewer can take over; it moves the first such
      * database (by name, `system` last) to the eligible member that leads the fewest. Each move
      * lowers the sum of the squared counts, so moves stop. Databases with a priority tag count, but
-     * are never moved: [priority] decides where they go.
+     * are never moved: [priority] decides where they go; nor are those that move off their leader,
+     * which [leaving] moves.
      */
     fun balancing(view: LeadershipView): Move? {
         val leaders = view.databases.mapNotNull { it.leader }.toSet()
@@ -118,7 +139,10 @@ internal object LeaderMoves {
             val databases =
                 view.databases
                     .filter {
-                        it.leader == giver && it.writableOnLeader && it.priorityTag == null
+                        it.leader == giver &&
+                            it.writableOnLeader &&
+                            !it.movesOffLeader &&
+                            it.priorityTag == null
                     }
                     .sortedWith(
                         compareBy<Leadership> { it.database.name == SYSTEM }

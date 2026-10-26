@@ -19,6 +19,7 @@ import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.PeerInfo
 import org.dozendb.consensus.Role
 import org.neo4j.logging.Log
 
@@ -43,12 +44,19 @@ import org.neo4j.logging.Log
  * then brings it up to date before it votes. A group always keeps one voter. A database not placed
  * yet keeps its voters.
  *
+ * The group's leader is removed last, once it has handed the leadership over to a member the
+ * database is placed on, as its leader balancer does (see `LeaderMoves.leaving`), so that the group
+ * need not elect a leader; if it still leads after [handOverGrace], it is removed anyway.
+ *
  * Work that remains is looked at again after [retryDelay], and after twice as long each time work
- * still remains, up to [maximumRetryDelay]; a finished change looks at once.
+ * still remains, up to [maximumRetryDelay], except while a hand-over is awaited; a finished change
+ * looks at once.
  *
  * @property databases the databases of the system graph, `system` among them or not, each with the
  *   servers it is placed on; none while it is not placed yet.
  * @property changes runs the changes, which wait for the group's leader.
+ * @property handOverGrace how long a leader that is to leave a group may take to hand the
+ *   leadership over.
  * @property systemRunning whether the `system` database runs here, so that [databases] can read it:
  *   this member may lead `system` before.
  */
@@ -62,6 +70,8 @@ class MembershipReconciler(
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
     private val changes: Executor = newChangeExecutor(),
     private val systemRunning: () -> Boolean = { true },
+    private val handOverGrace: Duration = Duration.ofSeconds(30),
+    private val nanoTime: () -> Long = System::nanoTime,
 ) : AutoCloseable {
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -78,6 +88,10 @@ class MembershipReconciler(
     // Used on the scheduler thread only.
     private var nextRetryDelay = retryDelay
     private var retry: ScheduledFuture<*>? = null
+    /** When each group began to wait for its leader to hand the leadership over. */
+    private val handOvers = mutableMapOf<UUID, Long>()
+    /** Groups whose leader is removed although it did not hand the leadership over. */
+    private val overdue = mutableSetOf<UUID>()
 
     /** Reconciles now, whenever `system`'s leader or members change, and when [request]ed. */
     fun start() {
@@ -113,6 +127,8 @@ class MembershipReconciler(
             nextRetryDelay = retryDelay
             return
         }
+        // A hand-over takes about as long as the first delay.
+        if (handOvers.isNotEmpty()) nextRetryDelay = retryDelay
         try {
             retry = scheduler.schedule(::request, nextRetryDelay.toMillis(), TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
@@ -132,7 +148,10 @@ class MembershipReconciler(
         if (!cluster.settled) return true
         val reports = groupsReported(cluster.members).toMutableMap()
         var again = false
-        for ((group, placed) in databases()) {
+        val databases = databases()
+        handOvers.keys.retainAll(databases.keys.map { it.id }.toSet())
+        overdue.retainAll(handOvers.keys)
+        for ((group, placed) in databases) {
             if (group.id == systemDatabase.id || placed.isEmpty()) continue
             val hosting = cluster.members.filter { it.id in placed }
             val voters = voters(group, reports)
@@ -141,32 +160,100 @@ class MembershipReconciler(
                 again = true
                 continue
             }
-            val change = nextChange(hosting, voters) { runs(it, group, reports) } ?: continue
+            val leader = leader(group, voters, reports)
+            val change = nextChange(hosting, voters, leader) { runs(it, group, reports) }
+            if (change !is Change.Remove || change.member.id != leader) {
+                handOvers -= group.id
+                overdue -= group.id
+            }
+            if (change == null) continue
             again = true
+            if (change is Change.Remove && change.member.id == leader) {
+                if (awaitsHandOver(group, change.member)) continue
+            }
             if (group.id !in inFlight) startIfPossible(group, change, voters, reports)
         }
         return again
     }
 
     /**
-     * The groups that each of [members] runs, with the voting members it knows; a member that does
-     * not answer is left out.
+     * Whether removing [leader], which leads [group], waits for it to hand the leadership over: for
+     * at most [handOverGrace] from the first time it was due.
      */
-    private fun groupsReported(members: List<Member>): Map<MemberId, Map<UUID, List<Member>>> =
-        runBlocking {
-            members
-                .map { member ->
-                    async {
-                        try {
-                            val peer = consensus.probe(member.raftAddress)
-                            if (peer.member.id == member.id) member.id to peer.groups else null
-                        } catch (_: ConsensusUnavailableException) {
-                            null
-                        }
+    private fun awaitsHandOver(group: DatabaseRef, leader: Member): Boolean {
+        val now = nanoTime()
+        val since =
+            handOvers.getOrPut(group.id) {
+                log.info(
+                    "Member %s leads database %s, which moves off it: it leaves the database's " +
+                        "group once it has handed the leadership over, within %s",
+                    leader,
+                    group.name,
+                    handOverGrace,
+                )
+                now
+            }
+        if (now - since < handOverGrace.toNanos()) return true
+        if (overdue.add(group.id)) {
+            log.warn(
+                "Member %s still leads database %s, which moved off it, after %s: removing it " +
+                    "from the database's group anyway, and the others elect a leader",
+                leader,
+                group.name,
+                handOverGrace,
+            )
+        }
+        return false
+    }
+
+    /**
+     * The leader of [group], which has [voters]: as this member knows it where it votes in the
+     * group, else the voter that reported leading it at this look with the highest term, as one
+     * that lost the leadership may not have said so yet.
+     */
+    private fun leader(
+        group: DatabaseRef,
+        voters: List<Member>,
+        reports: Map<MemberId, PeerInfo>,
+    ): MemberId? {
+        if (voters.any { it.id == consensus.self.id }) {
+            return try {
+                consensus.status(group).leader
+            } catch (_: ConsensusUnavailableException) {
+                null
+            }
+        }
+        return voters
+            .mapNotNull { voter ->
+                reports[voter.id]
+                    ?.metadata
+                    ?.get(MemberMetadata.LEADING)
+                    ?.let(MemberMetadata::numbersById)
+                    ?.get(group.id)
+                    ?.let { voter.id to it }
+            }
+            .maxByOrNull { it.second }
+            ?.first
+    }
+
+    /**
+     * What each of [members] reports: the groups it runs, with the voting members it knows, and
+     * those it leads; a member that does not answer is left out.
+     */
+    private fun groupsReported(members: List<Member>): Map<MemberId, PeerInfo> = runBlocking {
+        members
+            .map { member ->
+                async {
+                    try {
+                        val peer = consensus.probe(member.raftAddress)
+                        if (peer.member.id == member.id) member.id to peer else null
+                    } catch (_: ConsensusUnavailableException) {
+                        null
                     }
                 }
-                .awaitAll()
-        }
+            }
+            .awaitAll()
+    }
         .filterNotNull()
         .toMap()
 
@@ -176,10 +263,7 @@ class MembershipReconciler(
      * When no member of the cluster reports voting in it, the members that the others name as its
      * voters are asked too, and added to [reports]: they may have left the cluster.
      */
-    private fun voters(
-        group: DatabaseRef,
-        reports: MutableMap<MemberId, Map<UUID, List<Member>>>,
-    ): List<Member>? {
+    private fun voters(group: DatabaseRef, reports: MutableMap<MemberId, PeerInfo>): List<Member>? {
         val local =
             try {
                 consensus.membership(group)
@@ -189,14 +273,15 @@ class MembershipReconciler(
         if (local != null && !local.removed && local.members.any { it.id == consensus.self.id }) {
             return local.members
         }
-        var views = GroupViews.reportedByVoters(group.id, reports)
+        var views = GroupViews.reportedByVoters(group.id, groups(reports))
         if (views.isEmpty()) {
             val named =
-                (reports.values.flatMap { it[group.id].orEmpty() } + local?.members.orEmpty())
+                (reports.values.flatMap { it.groups[group.id].orEmpty() } +
+                        local?.members.orEmpty())
                     .distinctBy { it.id }
                     .filter { it.id !in reports }
             reports += groupsReported(named)
-            views = GroupViews.reportedByVoters(group.id, reports)
+            views = GroupViews.reportedByVoters(group.id, groups(reports))
         }
         return GroupViews.agreed(views.values)
     }
@@ -207,19 +292,26 @@ class MembershipReconciler(
         data class Add(val member: Member) : Change
     }
 
+    /** The groups each member reports running, with the voting members it knows. */
+    private fun groups(reports: Map<MemberId, PeerInfo>): Map<MemberId, Map<UUID, List<Member>>> =
+        reports.mapValues {
+            it.value.groups
+        }
+
     /**
      * The next change of a group with [voters] towards [hosting], the members it is placed on: one
      * of them that does not vote is added, those that [runs] it first; once they all vote, one that
-     * is not among them is removed.
+     * is not among them is removed, its [leader] last.
      */
     private fun nextChange(
         hosting: List<Member>,
         voters: List<Member>,
+        leader: MemberId?,
         runs: (Member) -> Boolean,
     ): Change? {
         val hostingIds = hosting.map { it.id }.toSet()
         val groupIds = voters.map { it.id }.toSet()
-        val extra = voters.filter { it.id !in hostingIds }
+        val extra = voters.filter { it.id !in hostingIds }.sortedBy { it.id == leader }
         val missing = hosting.filter { it.id !in groupIds }
         return when {
             missing.isNotEmpty() -> Change.Add(missing.firstOrNull(runs) ?: missing.first())
@@ -232,7 +324,7 @@ class MembershipReconciler(
         group: DatabaseRef,
         change: Change,
         voters: List<Member>,
-        reports: Map<MemberId, Map<UUID, List<Member>>>,
+        reports: Map<MemberId, PeerInfo>,
     ) {
         if (change is Change.Add && !runs(change.member, group, reports)) {
             if (announced.add(group.id to change.member.id)) {
@@ -311,8 +403,8 @@ class MembershipReconciler(
     private fun runs(
         member: Member,
         database: DatabaseRef,
-        reports: Map<MemberId, Map<UUID, List<Member>>>,
-    ): Boolean = reports[member.id]?.containsKey(database.id) == true
+        reports: Map<MemberId, PeerInfo>,
+    ): Boolean = reports[member.id]?.groups?.containsKey(database.id) == true
 
     /**
      * Stops reconciling. Waits for a look in progress, which reads the system graph, so that the

@@ -320,12 +320,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 replicationService::created,
                 {
                     if (replicationService.replica(systemDatabase)?.isRunning() == true) {
-                        listOf(systemDatabase) +
-                            systemGraph.databases().map {
-                                DatabaseRef(it.id.name(), it.id.databaseId().uuid())
+                        mapOf(systemDatabase to emptySet<MemberId>()) +
+                            systemGraph.databases().associate {
+                                DatabaseRef(it.id.name(), it.id.databaseId().uuid()) to it.hosts
                             }
                     } else {
-                        replicationService.created()
+                        replicationService.created().associateWith { emptySet() }
                     }
                 },
                 { database, to, reason, timeout ->

@@ -9,6 +9,8 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
+import org.dozendb.cluster.internal.replication.ReplicationService
+import org.dozendb.core.servers.Placements
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -70,6 +72,36 @@ class PlacementTest {
         database(SYSTEM).executeTransactionally(query, emptyMap()) { result ->
             result.asSequence().map { it.toMap() }.toList()
         }
+
+    /** The members that SET TOPOLOGY [primaries] keeps [database] on, as the allocator decides. */
+    private fun ClusterHarness.keptBy(
+        database: String,
+        primaries: Int,
+    ): Set<ClusterHarness.Member> {
+        val kept =
+            awaitLeader(SYSTEM).database(SYSTEM).beginTx().use { tx ->
+                Placements.allocator(tx) { true }.resize(database, primaries)
+            }
+        return members.filter { it.cluster.self.id.uuid in kept }.toSet()
+    }
+
+    /** Makes [member] the leader of [database]. */
+    private fun ClusterHarness.lead(database: String, member: ClusterHarness.Member) {
+        eventually {
+            val leader = awaitLeader(database) { hosts(database).toList() }
+            if (leader != member) {
+                val replica =
+                    leader
+                        .database(database)
+                        .dependencyResolver
+                        .resolveDependency(ReplicationService::class.java)
+                        .replica(leader.database(database).databaseId())
+                checkNotNull(replica)
+                    .transferLeadership(member.cluster.self.id, "a test", Duration.ofSeconds(5))
+            }
+            assertThat(awaitLeader(database) { hosts(database).toList() }).isEqualTo(member)
+        }
+    }
 
     private fun eventually(assertion: () -> Unit) {
         await withPollInterval
@@ -168,6 +200,27 @@ class PlacementTest {
                 }
             )
             .isEqualTo(100L)
+    }
+
+    @Test
+    fun `a copy that leads its database hands the leadership over before it leaves`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE films TOPOLOGY 2 PRIMARIES WAIT")
+        eventually { assertThat(cluster.hosts("films")).hasSize(2) }
+        val kept = cluster.keptBy("films", 1).single()
+        val leaving = (cluster.hosts("films") - kept).single()
+        cluster.lead("films", leaving)
+
+        cluster.administer("ALTER DATABASE films SET TOPOLOGY 1 PRIMARY")
+
+        eventually { assertThat(cluster.voters("films")).containsExactly(kept.serverId) }
+        assertThat(cluster.awaitLeader("films") { listOf(kept) }).isEqualTo(kept)
+        assertThat(root.resolve("raft.log"))
+            .content()
+            .contains("to ${kept.cluster.self.id}: the database moves off this member")
+        assertThat(cluster.awaitLeader(SYSTEM).home.resolve("logs/debug.log"))
+            .content()
+            .doesNotContain("still leads database films")
     }
 
     @Test
