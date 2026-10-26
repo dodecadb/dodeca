@@ -11,7 +11,10 @@ import org.neo4j.dbms.database.StandaloneDatabaseContext
  */
 data class WantedDatabase(val name: String, val id: UUID?, val online: Boolean)
 
-/** A database on one server: running, stopped, or failed with [failure]. */
+/**
+ * A database on one server: running, stopped, being copied from another server, or failed with
+ * [failure].
+ */
 data class DatabaseState(
     val name: String,
     val id: UUID,
@@ -21,6 +24,8 @@ data class DatabaseState(
     enum class Status {
         ONLINE,
         OFFLINE,
+        /** Copied from another server of a cluster, before it runs here or to catch up. */
+        COPYING,
         FAILED,
     }
 }

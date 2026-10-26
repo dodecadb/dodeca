@@ -164,6 +164,9 @@ internal class ReplicationService(
     /** Whether [namedDatabaseId] is being replaced by a copy because it fell behind its log. */
     fun catchingUp(namedDatabaseId: NamedDatabaseId): Boolean = namedDatabaseId.name() in catchingUp
 
+    /** The names of the databases being replaced by a copy because they fell behind their log. */
+    fun catchingUp(): Set<String> = HashSet(catchingUp)
+
     /**
      * Whether this member votes in the group of [namedDatabaseId] as it knows the group: false once
      * it was removed or knows voters without itself, null while the group does not run here.

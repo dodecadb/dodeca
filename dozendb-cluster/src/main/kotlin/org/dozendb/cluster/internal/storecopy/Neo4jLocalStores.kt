@@ -2,6 +2,7 @@ package org.dozendb.cluster.internal.storecopy
 
 import java.io.IOException
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import org.dozendb.cluster.LocalStores
 import org.dozendb.cluster.internal.replication.StagedCopy
 import org.dozendb.consensus.BulkTransfer
@@ -39,6 +40,7 @@ internal class Neo4jLocalStores(
     private val seed: (DatabaseRef, Snapshot) -> Unit,
 ) : LocalStores {
     private val placement = StorePlacement(fs, layout)
+    private val copying = ConcurrentHashMap<String, UUID>()
 
     override val existed: Boolean =
         databaseNames.none(::incomplete) && databaseNames.any(::storageExists)
@@ -93,10 +95,18 @@ internal class Neo4jLocalStores(
 
     /** Copies the database [database], which this member lacks, from [source]. */
     fun copyNew(source: HostPort, database: DatabaseRef) {
-        val staged = fetch(source, database.name, database.id, NO_MINIMUM)
-        moveIntoPlace(staged)
-        leaveSeed(staged)
+        copying[database.name] = database.id
+        try {
+            val staged = fetch(source, database.name, database.id, NO_MINIMUM)
+            moveIntoPlace(staged)
+            leaveSeed(staged)
+        } finally {
+            copying.remove(database.name)
+        }
     }
+
+    /** The ids of the databases that [copyNew] copies now, by name. */
+    fun copying(): Map<String, UUID> = HashMap(copying)
 
     private fun leaveSeed(copy: Staged) {
         val snapshot = copy.snapshot ?: return

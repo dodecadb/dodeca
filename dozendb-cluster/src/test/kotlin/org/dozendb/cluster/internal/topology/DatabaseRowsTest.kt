@@ -56,10 +56,40 @@ class DatabaseRowsTest {
             lastCommitted,
         )
 
-    private fun rows(copies: List<Copy>, leader: MemberId? = b, txInfo: Boolean = false) =
-        DatabaseRows.rows(own, copies, leader, txInfo).associateBy {
+    private fun rows(
+        copies: List<Copy>,
+        leader: MemberId? = b,
+        txInfo: Boolean = false,
+        placed: Set<MemberId> = emptySet(),
+    ) =
+        DatabaseRows.rows(own, copies, leader, txInfo, placed).associateBy {
             MemberId(it.serverId().orElseThrow().uuid())
         }
+
+    @Test
+    fun `a copy on a server the database moves off is deallocating, and may still be the writer`() {
+        val rows = rows(listOf(copy(a), copy(b), copy(c)), leader = c, placed = setOf(a, b))
+
+        assertThat(rows.getValue(c).status()).isEqualTo("deallocating")
+        assertThat(rows.getValue(c).writer()).isTrue()
+        assertThat(rows.getValue(a).status()).isEqualTo("online")
+        assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(3)
+    }
+
+    @Test
+    fun `a server that copies the database in shows store copying, one without it initial`() {
+        val rows =
+            rows(
+                listOf(copy(a), copy(b, DatabaseState.Status.COPYING), copy(c, status = null)),
+                leader = a,
+                placed = setOf(a, b, c),
+            )
+
+        assertThat(rows.getValue(b).status()).isEqualTo("store copying")
+        assertThat(rows.getValue(c).status()).isEqualTo("initial")
+        assertThat(rows.filterValues { it.writer() }.keys).containsExactly(a)
+        assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(1)
+    }
 
     @Test
     fun `each member has a row with its address, and only the leader's is the writer`() {

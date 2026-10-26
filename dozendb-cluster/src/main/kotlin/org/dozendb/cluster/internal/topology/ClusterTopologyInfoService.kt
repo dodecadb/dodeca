@@ -24,11 +24,11 @@ import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
  * What SHOW DATABASES and SHOW SERVERS show of a cluster, as Neo4j Enterprise shows them: for each
- * database a row for each member of its Raft group, also where it does not run here (see
- * [DatabaseRows], [DatabaseLocations]), and a server for each member of the cluster. Other members'
- * rows are what they report when this member asks them, as it does for each command, waiting at
- * most [probeDeadline]: a member that has not answered by then shows as unknown, or as an
- * unavailable server.
+ * database a row for each server it is placed on and each member of its Raft group, also where it
+ * does not run here (see [DatabaseRows], [DatabaseLocations]), and a server for each member of the
+ * cluster. Other members' rows are what they report when this member asks them, as it does for each
+ * command, waiting at most [probeDeadline]: a member that has not answered by then shows as
+ * unknown, or as an unavailable server.
  *
  * @property report what a member reports about itself, this member included; null while unknown.
  */
@@ -148,23 +148,38 @@ internal class ClusterTopologyInfoService(
             val id = own.namedDatabaseId()
             val database = DatabaseRef(id.name(), id.databaseId().uuid())
             val location = locations.of(database)
+            val placed = placed(transaction, id.name())
             DatabaseRows.rows(
                 own,
-                members(location, hosts).map { copy(it, it in answering, database) },
+                members(location, placed, hosts).map { copy(it, it in answering, database) },
                 location?.leader,
                 requestedExtras.txInfo(),
+                placed,
             )
         }
     }
 
+    /** The servers that the database [name] is placed on; none for `system` or while unplaced. */
+    private fun placed(transaction: Transaction, name: String): Set<MemberId> =
+        Placements.database(transaction, name)
+            ?.let(Placements::hosts)
+            ?.mapTo(LinkedHashSet(), ::MemberId)
+            .orEmpty()
+
     /**
-     * The voting members of a database's group at [location]; while none is known, the members of
-     * the cluster that [hosts]; this member alone while consensus does not run.
+     * The voting members of a database's group at [location] and the servers it is [placed] on;
+     * while neither is known, the members of the cluster that [hosts]; this member alone while
+     * consensus does not run.
      */
     private fun members(
         location: DatabaseLocations.Location?,
+        placed: Set<MemberId>,
         hosts: (MemberId) -> Boolean,
-    ): List<MemberId> = location?.voters?.map { it.id } ?: systemMembers().filter(hosts)
+    ): List<MemberId> {
+        val voters = location?.voters?.map { it.id }
+        if (voters == null && placed.isEmpty()) return systemMembers().filter(hosts)
+        return (voters.orEmpty() + placed).distinct()
+    }
 
     /** The members of the cluster; this member alone while consensus does not run. */
     private fun systemMembers(): List<MemberId> =

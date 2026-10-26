@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
@@ -15,6 +16,9 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.io.fs.FileSystemAbstraction
 
 /**
  * Databases are placed on as many servers as their topology asks for, as in Neo4j Enterprise, and
@@ -30,10 +34,14 @@ class PlacementTest {
         harness?.close()
     }
 
-    private fun cluster(defaultPrimaries: Int? = null): ClusterHarness =
+    private fun cluster(
+        defaultPrimaries: Int? = null,
+        fileSystem: ((ClusterHarness.Member) -> FileSystemAbstraction)? = null,
+    ): ClusterHarness =
         ClusterHarness(
                 root,
                 3,
+                fileSystem,
                 settings =
                     defaultPrimaries?.let { mapOf(ClusterSettings.defaultPrimaries to it) }
                         ?: emptyMap(),
@@ -221,6 +229,75 @@ class PlacementTest {
         assertThat(cluster.awaitLeader(SYSTEM).home.resolve("logs/debug.log"))
             .content()
             .doesNotContain("still leads database films")
+    }
+
+    /** SHOW DATABASE [database]'s status and writer on each server, by server id. */
+    private fun ClusterHarness.statuses(database: String): Map<String, Pair<String, Boolean>> =
+        awaitLeader(SYSTEM)
+            .rows("SHOW DATABASE $database YIELD serverID, currentStatus, writer")
+            .associate {
+                it["serverID"] as String to
+                    (it["currentStatus"] as String to it["writer"] as Boolean)
+            }
+
+    private fun ClusterHarness.Member.readOnly(vararg databases: String) {
+        database(SYSTEM)
+            .dependencyResolver
+            .resolveDependency(Config::class.java)
+            .setDynamic(GraphDatabaseSettings.read_only_databases, databases.toSet(), "a test")
+    }
+
+    @Test
+    fun `SHOW DATABASES shows copies that are copied in and those that move off`() {
+        val fileSystems = ConcurrentHashMap<Int, SlowLogFileSystem>()
+        val cluster =
+            cluster(fileSystem = { fileSystems.getOrPut(it.index) { SlowLogFileSystem() } })
+        cluster.administer("CREATE DATABASE films TOPOLOGY 1 PRIMARY WAIT")
+        eventually { assertThat(cluster.hosts("films")).hasSize(1) }
+        val first = cluster.awaitLeader("films") { cluster.hosts("films").toList() }
+        first.database("films").executeTransactionally("CREATE (:Film {title: 'Alien'})")
+        val holds =
+            (cluster.members - first).associateWith { member ->
+                SlowLogFileSystem.Hold("films").also {
+                    fileSystems.getValue(member.index).holding = it
+                }
+            }
+
+        cluster.administer("ALTER DATABASE films SET TOPOLOGY 2 PRIMARIES")
+
+        eventually { assertThat(holds.values.filter { it.held.count == 0L }).hasSize(1) }
+        val copying = holds.entries.single { it.value.held.count == 0L }.key
+        eventually {
+            assertThat(cluster.statuses("films"))
+                .containsEntry(copying.serverId, "store copying" to false)
+                .containsEntry(first.serverId, "online" to true)
+        }
+        holds.values.forEach { it.release() }
+        eventually {
+            assertThat(cluster.statuses("films"))
+                .containsOnlyKeys(first.serverId, copying.serverId)
+                .allSatisfy { _, (status, _) -> assertThat(status).isEqualTo("online") }
+        }
+
+        // The copy that stays cannot take the leadership over while the database is read-only on
+        // it, so the one that leaves keeps leading it.
+        val kept = cluster.keptBy("films", 1).single()
+        val leaving = setOf(first, copying).single { it != kept }
+        cluster.lead("films", leaving)
+        kept.readOnly("films")
+        cluster.administer("ALTER DATABASE films SET TOPOLOGY 1 PRIMARY")
+
+        eventually {
+            assertThat(cluster.statuses("films"))
+                .containsEntry(leaving.serverId, "deallocating" to true)
+                .containsEntry(kept.serverId, "online" to false)
+        }
+        kept.readOnly()
+        eventually {
+            assertThat(cluster.statuses("films"))
+                .containsOnlyKeys(kept.serverId)
+                .containsEntry(kept.serverId, "online" to true)
+        }
     }
 
     @Test

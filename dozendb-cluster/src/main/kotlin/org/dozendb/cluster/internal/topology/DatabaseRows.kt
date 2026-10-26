@@ -30,16 +30,21 @@ internal object DatabaseRows {
     /**
      * A row for each of [copies]: the member's Bolt address, access and status, and `writer` true
      * only for the [leader], if the database is online and writable there. A member that does not
-     * answer has the role and status `unknown`, and no address, as in Neo4j Enterprise. With
-     * [txInfo], each row of a member that answers has the copy's last transaction id and how far it
-     * is behind the newest copy's. The values that belong to the database itself, such as its type
-     * and store, are those of [own], Neo4j Community's row for this member.
+     * answer has the role and status `unknown`, and no address, as in Neo4j Enterprise. Where the
+     * database is placed on servers, [placed], the status says how its copies move, with Neo4j
+     * Enterprise's names: `store copying` on a server that copies the database in, `initial` on one
+     * it is placed on that has not created it yet, and `deallocating` on one it moves off, which
+     * still runs it, and may still lead it until it hands the leadership over. With [txInfo], each
+     * row of a member that answers has the copy's last transaction id and how far it is behind the
+     * newest copy's. The values that belong to the database itself, such as its type and store, are
+     * those of [own], Neo4j Community's row for this member.
      */
     fun rows(
         own: DatabaseDetails,
         copies: Collection<Copy>,
         leader: MemberId?,
         txInfo: Boolean,
+        placed: Set<MemberId> = emptySet(),
     ): List<DatabaseDetails> {
         val online = copies.count {
             it.answering && it.state?.status == DatabaseState.Status.ONLINE
@@ -47,10 +52,14 @@ internal object DatabaseRows {
         // What a member that does not answer reported last is not its copy now.
         val newest = copies.filter { it.answering }.mapNotNull { it.lastCommittedTxId }.maxOrNull()
         return copies.map { copy ->
+            val running = copy.answering && copy.state?.status == DatabaseState.Status.ONLINE
             val status =
                 when {
                     !copy.answering -> DatabaseDetails.STATUS_UNKNOWN
-                    copy.state?.status == DatabaseState.Status.ONLINE -> ONLINE
+                    copy.state?.status == DatabaseState.Status.COPYING -> STORE_COPYING
+                    running && placed.isNotEmpty() && copy.member !in placed -> DEALLOCATING
+                    running -> ONLINE
+                    copy.state == null && copy.member in placed -> INITIAL
                     else -> OFFLINE
                 }
             val message =
@@ -66,7 +75,7 @@ internal object DatabaseRows {
                 if (copy.readOnly) DatabaseAccess.READ_ONLY else DatabaseAccess.READ_WRITE,
                 Optional.ofNullable(copy.boltAddress.takeIf { copy.answering }),
                 Optional.of(if (copy.answering) DatabaseDetails.ROLE_PRIMARY else UNKNOWN_ROLE),
-                copy.member == leader && status == ONLINE && !copy.readOnly,
+                copy.member == leader && running && !copy.readOnly,
                 status,
                 message,
                 Optional.ofNullable(lastCommitted),
@@ -85,5 +94,8 @@ internal object DatabaseRows {
 
     private const val ONLINE = "online"
     private const val OFFLINE = "offline"
+    private const val STORE_COPYING = "store copying"
+    private const val INITIAL = "initial"
+    private const val DEALLOCATING = "deallocating"
     private const val UNKNOWN_ROLE = "unknown"
 }

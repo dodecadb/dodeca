@@ -168,7 +168,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.STORES_READY to
                     (replicationService.replica(systemDatabase)?.isRunning() == true).toString(),
                 MemberMetadata.MEMBER_STATE to cluster.state.name,
-                MemberMetadata.DATABASES to DatabaseStatesCodec.encode(databaseStates()),
+                MemberMetadata.DATABASES to DatabaseStatesCodec.encode(reportedStates()),
                 MemberMetadata.READ_ONLY_DATABASES to readOnlyHere().joinToString(","),
                 MemberMetadata.LAST_COMMITTED_TRANSACTIONS to
                     MemberMetadata.numbersText(lastCommittedHere()),
@@ -304,7 +304,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 systemDatabase,
                 ::boltHostPort,
                 ::routingHostPort,
-                ::databaseStates,
+                ::reportedStates,
                 logService.getInternalLog(MemberDirectory::class.java),
                 selfReadOnly = ::readOnlyHere,
                 selfLastCommitted = ::lastCommittedHere,
@@ -431,6 +431,24 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             SystemGraphReadOnlyListener(globalModule.transactionEventListeners, checker)
         )
         globalModule.globalDependencies.satisfyDependency(checker)
+    }
+
+    /**
+     * This member's databases as it reports them to the others: those it copies from another
+     * member, new ones or to catch up, as being copied.
+     */
+    private fun reportedStates(): List<DatabaseState> {
+        val catchingUp = replication.catchingUp()
+        val copying = localStores.copying()
+        val states =
+            databaseStates()
+                .filter { it.name !in copying }
+                .map {
+                    if (it.name in catchingUp) it.copy(status = DatabaseState.Status.COPYING)
+                    else it
+                }
+        return states +
+            copying.map { (name, id) -> DatabaseState(name, id, DatabaseState.Status.COPYING) }
     }
 
     /**
@@ -754,7 +772,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         (directory.boltAddress(member.id) ?: member.raftAddress).toString()
 
                     override fun databases(): List<DatabaseState> {
-                        if (member.id == memberId) return databaseStates()
+                        if (member.id == memberId) return reportedStates()
                         val peer = runBlocking { consensus.probe(member.raftAddress) }
                         check(peer.member.id == member.id) {
                             "${member.raftAddress} is ${peer.member.id} now, not ${member.id}"
