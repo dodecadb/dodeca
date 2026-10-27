@@ -161,8 +161,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 config.get(ClusterSettings.newestFormatLevel),
             )
         // What this member reports when probed; read once consensus runs.
+        val reportNumbers = MemberMetadata.ReportNumbers()
         val metadata = {
             mapOf(
+                MemberMetadata.REPORT_NUMBER to reportNumbers.next(),
                 MemberMetadata.NEO4J_VERSION to neo4jVersion,
                 MemberMetadata.DOZENDB_VERSION to DozenDb.version,
                 MemberMetadata.HAS_STORES to stores.existed.toString(),

@@ -11,6 +11,7 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -21,6 +22,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.PeerInfo
 import org.dozendb.core.edition.DatabaseState
 import org.neo4j.logging.Log
 
@@ -29,7 +31,8 @@ import org.neo4j.logging.Log
  * themselves. Every member reports its advertised addresses and its databases when probed; the
  * directory probes the members of the `system` group periodically, soon after someone asks for a
  * member it does not know yet, and when someone waits for it ([awaitRefresh]). A member that does
- * not answer keeps its last known address and report. This member's own come from
+ * not answer keeps its last known address and report, and a report that arrives after a later one
+ * of the same member is left out ([MemberMetadata.REPORT_NUMBER]). This member's own come from
  * [selfBoltAddress], [selfRoutingAddress], [selfDatabases], [selfReadOnly], [selfLastCommitted] and
  * [selfReport].
  */
@@ -49,6 +52,17 @@ class MemberDirectory(
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
     private val groups = ConcurrentHashMap<MemberId, Map<UUID, List<Member>>>()
     private val answered: MutableSet<MemberId> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * Numbers probes in the order they start, so that what an earlier one found out is left out.
+     */
+    private val probes = AtomicLong()
+
+    /** The latest probe of each member whose outcome [answered] holds. */
+    private val outcomes = ConcurrentHashMap<MemberId, Long>()
+
+    /** Held while what members answered is recorded, as probes may overlap. */
+    private val recording = Any()
 
     /** Whether every member was probed at least once since this directory started. */
     @Volatile
@@ -189,6 +203,7 @@ class MemberDirectory(
      * answered. Returns the members that answered.
      */
     fun refresh(deadline: Duration? = null): Set<MemberId> {
+        val probe = probes.incrementAndGet()
         val others = consensus.members(systemDatabase).filter { it.id != consensus.self.id }
         val answers = runBlocking {
             others
@@ -206,51 +221,58 @@ class MemberDirectory(
                 }
                 .awaitAll()
         }
-        answered.retainAll(others.map { it.id }.toSet())
-        groups.keys.retainAll(others.map { it.id }.toSet())
         val answering = mutableSetOf<MemberId>()
         var late = false
-        for ((member, answer) in answers) {
-            if (answer.isSuccess && answer.getOrNull() == null) {
-                late = true
-                continue
-            }
-            val peer = answer.getOrNull()?.takeIf { it.member.id == member.id }
-            if (peer == null) {
-                answered -= member.id
-                continue
-            }
-            answered += member.id
-            answering += member.id
-            groups[member.id] = peer.groups
-            val routing = peer.metadata[MemberMetadata.ROUTING_ADDRESS]
-            if (
-                routing !=
-                    reports.put(member.id, peer.metadata)?.get(MemberMetadata.ROUTING_ADDRESS)
-            ) {
-                when {
-                    routing == null -> log.info("Member %s takes no forwarded writes", member.id)
-                    parsed(routing) == null ->
-                        log.warn(
-                            "Member %s reports an invalid routing address: %s",
-                            member,
-                            routing,
-                        )
-                    else -> log.info("Member %s takes forwarded writes at %s", member.id, routing)
+        synchronized(recording) {
+            val ids = others.map { it.id }.toSet()
+            answered.retainAll(ids)
+            groups.keys.retainAll(ids)
+            outcomes.keys.retainAll(ids)
+            for ((member, answer) in answers) {
+                if (answer.isSuccess && answer.getOrNull() == null) {
+                    late = true
+                    continue
                 }
-            }
-            val reported = peer.metadata[MemberMetadata.BOLT_ADDRESS] ?: continue
-            val address = runCatching { HostPort.parse(reported) }.getOrNull()
-            if (address == null) {
-                log.warn("Member %s reports an invalid Bolt address: %s", member, reported)
-                continue
-            }
-            if (addresses.put(member.id, address) != address) {
-                log.info("Member %s serves Bolt at %s", member.id, address)
+                // Probes overlap: what an earlier one found out is out of date.
+                val latest = outcomes.getOrDefault(member.id, 0) < probe
+                if (latest) outcomes[member.id] = probe
+                val peer = answer.getOrNull()?.takeIf { it.member.id == member.id }
+                if (peer == null) {
+                    if (latest) answered -= member.id
+                    continue
+                }
+                if (latest) answered += member.id
+                answering += member.id
+                record(peer)
             }
         }
         if (!late) refreshed = true
         return answering
+    }
+
+    /** Records what [peer] reports, unless a later report of it is recorded already. */
+    private fun record(peer: PeerInfo) {
+        val member = peer.member
+        if (!MemberMetadata.laterReport(peer.metadata, reports[member.id])) return
+        groups[member.id] = peer.groups
+        val routing = peer.metadata[MemberMetadata.ROUTING_ADDRESS]
+        if (routing != reports.put(member.id, peer.metadata)?.get(MemberMetadata.ROUTING_ADDRESS)) {
+            when {
+                routing == null -> log.info("Member %s takes no forwarded writes", member.id)
+                parsed(routing) == null ->
+                    log.warn("Member %s reports an invalid routing address: %s", member, routing)
+                else -> log.info("Member %s takes forwarded writes at %s", member.id, routing)
+            }
+        }
+        val reported = peer.metadata[MemberMetadata.BOLT_ADDRESS] ?: return
+        val address = runCatching { HostPort.parse(reported) }.getOrNull()
+        if (address == null) {
+            log.warn("Member %s reports an invalid Bolt address: %s", member, reported)
+            return
+        }
+        if (addresses.put(member.id, address) != address) {
+            log.info("Member %s serves Bolt at %s", member.id, address)
+        }
     }
 
     fun start() {

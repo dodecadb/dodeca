@@ -14,6 +14,7 @@ import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.until
 import org.awaitility.kotlin.untilAsserted
+import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.fake.InMemoryConsensus
@@ -174,6 +175,63 @@ class MemberDirectoryTest {
     }
 
     @Test
+    fun `an answer that arrives after a later one is left out`() {
+        val run = UUID.randomUUID()
+        logs[1].metadata = report(run, 1, "earlier:7687")
+        val answers = AtomicInteger()
+        val delayed = CountDownLatch(1)
+        val held = CompletableDeferred<Unit>()
+        logs[1].onAnswered = {
+            if (answers.incrementAndGet() == 1) {
+                delayed.countDown()
+                held.await()
+            }
+        }
+        val earlier = thread { directory.refresh() }
+        delayed.await()
+        logs[1].metadata = report(run, 2, "later:7687")
+
+        directory.refresh()
+        held.complete(Unit)
+        earlier.join()
+
+        assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("later", 7687))
+    }
+
+    @Test
+    fun `a report of a new run of a member counts, whatever its number`() {
+        logs[1].metadata = report(UUID.randomUUID(), 5, "before:7687")
+        directory.refresh()
+        logs[1].metadata = report(UUID.randomUUID(), 1, "restarted:7687")
+
+        directory.refresh()
+
+        assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("restarted", 7687))
+    }
+
+    @Test
+    fun `a probe that fails after a later one was answered leaves the member answering`() {
+        val probes = AtomicInteger()
+        val probed = CountDownLatch(1)
+        val held = CompletableDeferred<Unit>()
+        logs[2].onProbe = {
+            if (probes.incrementAndGet() == 1) {
+                probed.countDown()
+                held.await()
+                throw ConsensusUnavailableException("lost on the way")
+            }
+        }
+        val earlier = thread { directory.refresh() }
+        probed.await()
+
+        directory.refresh()
+        held.complete(Unit)
+        earlier.join()
+
+        assertThat(directory.answering(logs[2].self.id)).isTrue()
+    }
+
+    @Test
     fun `awaiting a refresh sees what members report once asked`() {
         val films = UUID(0, 7)
         directory.start()
@@ -268,4 +326,10 @@ class MemberDirectoryTest {
     }
 
     private fun Thread.waiting() = state == Thread.State.TIMED_WAITING
+
+    private fun report(run: UUID, number: Long, bolt: String) =
+        mapOf(
+            MemberMetadata.BOLT_ADDRESS to bolt,
+            MemberMetadata.REPORT_NUMBER to "$run/$number",
+        )
 }

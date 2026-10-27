@@ -1,6 +1,7 @@
 package org.dozendb.cluster
 
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicLong
 
 /** The keys members use to report facts about themselves to each other. */
 object MemberMetadata {
@@ -82,7 +83,38 @@ object MemberMetadata {
 
     /** The cluster's format level, as the member last saw it. */
     const val FORMAT_LEVEL = "dozendb.formatLevel"
+
+    /**
+     * Which report of the member this is, as `<run>/<number>`: the member numbers its reports in
+     * order under a random id of its process's run ([ReportNumbers]), so that the others keep its
+     * latest one when an earlier one arrives late. Reports of different runs are not ordered.
+     */
+    const val REPORT_NUMBER = "dozendb.reportNumber"
     const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
+
+    /**
+     * Whether [report] is later than [last], by their [REPORT_NUMBER]s: also when they are of
+     * different runs, or either has none, as from a version without them.
+     */
+    fun laterReport(report: Map<String, String>, last: Map<String, String>?): Boolean {
+        val number = reportNumber(report) ?: return true
+        val lastNumber = last?.let(::reportNumber) ?: return true
+        return number.first != lastNumber.first || number.second > lastNumber.second
+    }
+
+    private fun reportNumber(report: Map<String, String>): Pair<UUID, Long>? {
+        val (run, number) =
+            report[REPORT_NUMBER]?.split('/')?.takeIf { it.size == 2 } ?: return null
+        return runCatching { UUID.fromString(run) to number.toLong() }.getOrNull()
+    }
+
+    /** Numbers the reports of this run of the member's process, for [REPORT_NUMBER]. */
+    class ReportNumbers {
+        private val run = UUID.randomUUID()
+        private val last = AtomicLong()
+
+        fun next(): String = "$run/${last.incrementAndGet()}"
+    }
 
     /** The items of a list reported separated by commas. */
     fun splitList(value: String): List<String> = value.split(',').filter { it.isNotEmpty() }

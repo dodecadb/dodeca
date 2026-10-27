@@ -174,6 +174,9 @@ class InMemoryConsensus {
         /** What this member does when probed, before it answers. */
         @Volatile var onProbe: suspend () -> Unit = {}
 
+        /** What this member's answer to a probe meets on its way back. */
+        @Volatile var onAnswered: suspend () -> Unit = {}
+
         private val bulkSources = ConcurrentHashMap<String, BulkSource>()
         private var transportUp = false
         private val localState = mutableSetOf<UUID>()
@@ -266,16 +269,20 @@ class InMemoryConsensus {
             probed?.onProbe?.invoke()
             val delay = probed?.probeDelay
             if (delay != null && !delay.isZero) delay(delay.toMillis())
-            return synchronized(lock) {
-                val target =
-                    members.values.firstOrNull { it.self.raftAddress == address && it.transportUp }
-                        ?: throw ConsensusUnavailableException("no member reachable at $address")
-                PeerInfo(
-                    target.self,
-                    target.metadata,
-                    target.localState.associateWith { groups.getValue(it).members },
-                )
-            }
+            val answer =
+                synchronized(lock) {
+                    val target =
+                        members.values.firstOrNull {
+                            it.self.raftAddress == address && it.transportUp
+                        } ?: throw ConsensusUnavailableException("no member reachable at $address")
+                    PeerInfo(
+                        target.self,
+                        target.metadata,
+                        target.localState.associateWith { groups.getValue(it).members },
+                    )
+                }
+            probed?.onAnswered?.invoke()
+            return answer
         }
 
         override fun localGroups(): Set<UUID> = synchronized(lock) { localState.toSet() }
