@@ -5,6 +5,7 @@ import java.util.UUID
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
@@ -29,12 +30,14 @@ import org.neo4j.logging.Log
 /**
  * The Bolt and routing addresses of the cluster's members, and what else they report about
  * themselves. Every member reports its advertised addresses and its databases when probed; the
- * directory probes the members of the `system` group periodically, soon after someone asks for a
- * member it does not know yet, and when someone waits for it ([awaitRefresh]). A member that does
- * not answer keeps its last known address and report, and a report that arrives after a later one
- * of the same member is left out ([MemberMetadata.REPORT_NUMBER]). This member's own come from
- * [selfBoltAddress], [selfRoutingAddress], [selfDatabases], [selfReadOnly], [selfLastCommitted] and
- * [selfReport].
+ * directory probes the members of the `system` group periodically, and on demand: soon after
+ * someone asks for a member it does not know yet, and when someone waits for it ([awaitRefresh]). A
+ * probe on demand waits for each member for at most [demandDeadline], on a thread of its own, so
+ * that a member that answers nothing at all holds up only the periodic probe, which finds out that
+ * it no longer answers. A member that does not answer keeps its last known address and report, and
+ * a report that arrives after a later one of the same member is left out
+ * ([MemberMetadata.REPORT_NUMBER]). This member's own come from [selfBoltAddress],
+ * [selfRoutingAddress], [selfDatabases], [selfReadOnly], [selfLastCommitted] and [selfReport].
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
@@ -47,6 +50,7 @@ class MemberDirectory(
     private val selfReadOnly: () -> Set<UUID> = { emptySet() },
     private val selfLastCommitted: () -> Map<UUID, Long> = { emptyMap() },
     private val selfReport: () -> Map<String, String> = { emptyMap() },
+    private val demandDeadline: Duration = Duration.ofSeconds(1),
 ) {
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
@@ -71,10 +75,13 @@ class MemberDirectory(
 
     private val refreshPending = AtomicBoolean()
 
-    /** Completed when the probe that starts next ends, for [awaitRefresh]. */
+    /** Completed when the probe on demand that starts next ends, for [awaitRefresh]. */
     private val nextRefresh = AtomicReference(CompletableFuture<Unit>())
 
     @Volatile private var scheduler: ScheduledExecutorService? = null
+
+    /** Runs the probes on demand. */
+    @Volatile private var demand: ExecutorService? = null
 
     /** The advertised Bolt address of [member], or null while it is not known. */
     fun boltAddress(member: MemberId): HostPort? {
@@ -168,7 +175,10 @@ class MemberDirectory(
      */
     fun groups(): Map<MemberId, Map<UUID, List<Member>>> = HashMap(groups)
 
-    /** Probes the members soon, as when what they reported may be out of date. */
+    /**
+     * Probes the members soon, as when what they reported may be out of date, waiting for each for
+     * at most [demandDeadline].
+     */
     fun refreshSoon() = requestRefresh()
 
     /**
@@ -178,7 +188,7 @@ class MemberDirectory(
      * they asked. Returns whether it ended in time; while this directory is stopped, false at once.
      */
     fun awaitRefresh(timeout: Duration): Boolean {
-        if (scheduler == null) return false
+        if (demand == null) return false
         val refreshed = nextRefresh.get()
         requestRefresh()
         return try {
@@ -276,6 +286,9 @@ class MemberDirectory(
     }
 
     fun start() {
+        demand = Executors.newSingleThreadExecutor { runnable ->
+            Thread(runnable, "dozendb-member-directory-demand").apply { isDaemon = true }
+        }
         val executor = Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "dozendb-member-directory").apply { isDaemon = true }
         }
@@ -291,6 +304,10 @@ class MemberDirectory(
     fun stop() {
         scheduler?.shutdownNow()
         scheduler = null
+        val executor = demand
+        // First, so that a probe on demand under way, interrupted, ends no one's wait as if done.
+        demand = null
+        executor?.shutdownNow()
         nextRefresh.get().cancel(false)
     }
 
@@ -300,12 +317,12 @@ class MemberDirectory(
         .getOrNull()
 
     private fun requestRefresh() {
-        val executor = scheduler ?: return
+        val executor = demand ?: return
         if (refreshPending.compareAndSet(false, true)) {
             try {
                 executor.execute {
                     refreshPending.set(false)
-                    refreshQuietly()
+                    refreshOnDemand()
                 }
             } catch (_: RejectedExecutionException) {
                 // Stopped.
@@ -314,15 +331,21 @@ class MemberDirectory(
         }
     }
 
-    private fun refreshQuietly() {
+    private fun refreshOnDemand() {
         // Ends the wait of those who asked before this probe started.
         val waiting = nextRefresh.getAndSet(CompletableFuture())
         try {
-            refresh()
+            refreshQuietly(demandDeadline)
+        } finally {
+            if (demand != null) waiting.complete(Unit) else waiting.cancel(false)
+        }
+    }
+
+    private fun refreshQuietly(deadline: Duration? = null) {
+        try {
+            refresh(deadline)
         } catch (e: Exception) {
             log.warn("Refreshing the Bolt addresses of members failed: %s", e.toString())
-        } finally {
-            waiting.complete(Unit)
         }
     }
 }

@@ -59,9 +59,13 @@ class MemberDirectoryTest {
         }
     }
 
+    /** Directories that tests made, stopped after each. */
+    private val others = mutableListOf<MemberDirectory>()
+
     @AfterEach
     fun stop() {
         directory.stop()
+        others.forEach(MemberDirectory::stop)
     }
 
     @Test
@@ -244,6 +248,7 @@ class MemberDirectoryTest {
 
     @Test
     fun `those who await a refresh at the same time share one probe, started after they asked`() {
+        val directory = directory(demandDeadline = Duration.ofMinutes(1))
         val probes = AtomicInteger()
         val held = CompletableDeferred<Unit>()
         logs[2].onProbe = {
@@ -251,18 +256,32 @@ class MemberDirectoryTest {
             held.await()
         }
         directory.start()
-        // The probe on start is under way.
+        // The periodic probe on start, then a probe on demand, are under way.
         await atMost Duration.ofSeconds(30) until { probes.get() == 1 }
+        val first = thread { directory.awaitRefresh(Duration.ofMinutes(1)) }
+        await atMost Duration.ofSeconds(30) until { probes.get() == 2 }
         val refreshed = ConcurrentHashMap.newKeySet<Boolean>()
         val waiting =
             List(3) { thread { refreshed += directory.awaitRefresh(Duration.ofMinutes(1)) } }
         await atMost Duration.ofSeconds(30) until { waiting.all { it.waiting() } }
 
         held.complete(Unit)
-        waiting.forEach { it.join() }
+        (waiting + first).forEach { it.join() }
 
         assertThat(refreshed).containsExactly(true)
-        assertThat(probes.get()).isEqualTo(2)
+        assertThat(probes.get()).isEqualTo(3)
+    }
+
+    @Test
+    fun `a member that answers nothing holds up no probe on demand`() {
+        val films = UUID(0, 7)
+        logs[2].onProbe = { CompletableDeferred<Unit>().await() }
+        directory.start()
+        logs[1].metadata += MemberMetadata.LEADING to "$films=3"
+
+        assertThat(directory.awaitRefresh(Duration.ofSeconds(10))).isTrue()
+
+        assertThat(directory.leading(logs[1].self.id)).containsExactly(entry(films, 3L))
     }
 
     @Test
@@ -278,13 +297,18 @@ class MemberDirectoryTest {
 
     @Test
     fun `a stopped directory keeps no one waiting for a refresh`() {
-        val probed = CountDownLatch(1)
+        val directory = directory(demandDeadline = Duration.ofMinutes(1))
+        val probes = AtomicInteger()
         logs[2].onProbe = {
-            probed.countDown()
+            probes.incrementAndGet()
             CompletableDeferred<Unit>().await()
         }
         directory.start()
-        probed.await()
+        // Those waiting for a probe on demand under way, and those waiting for the next.
+        await atMost Duration.ofSeconds(30) until { probes.get() == 1 }
+        var first: Boolean? = null
+        val under = thread { first = directory.awaitRefresh(Duration.ofMinutes(1)) }
+        await atMost Duration.ofSeconds(30) until { probes.get() == 2 }
         assertTimeoutPreemptively(Duration.ofSeconds(30)) {
             var refreshed: Boolean? = null
             val waiting = thread { refreshed = directory.awaitRefresh(Duration.ofMinutes(1)) }
@@ -292,8 +316,10 @@ class MemberDirectoryTest {
 
             directory.stop()
             waiting.join()
+            under.join()
 
             assertThat(refreshed).isFalse()
+            assertThat(first).isFalse()
             assertThat(directory.awaitRefresh(Duration.ofMinutes(1))).isFalse()
         }
     }
@@ -326,6 +352,20 @@ class MemberDirectoryTest {
     }
 
     private fun Thread.waiting() = state == Thread.State.TIMED_WAITING
+
+    private fun directory(demandDeadline: Duration) =
+        MemberDirectory(
+                logs[0],
+                system,
+                { HostPort("self", 7687) },
+                { HostPort("self", 7688) },
+                { selfDatabases },
+                NullLog.getInstance(),
+                Duration.ofHours(1),
+                { selfReadOnly },
+                demandDeadline = demandDeadline,
+            )
+            .also { others += it }
 
     private fun report(run: UUID, number: Long, bolt: String) =
         mapOf(

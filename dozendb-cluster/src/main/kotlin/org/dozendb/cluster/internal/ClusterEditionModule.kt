@@ -971,7 +971,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ClusterRoutingTableProvider(
                 locations,
                 directory,
-                PROBE_DEADLINE,
+                ROUTING_REFRESH_WAIT,
                 config.get(ClusterSettings.readsOnLeader),
                 ttl,
                 singleAddress,
@@ -983,7 +983,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 DefaultDatabaseAvailabilityChecker(databaseContextProvider),
                 locations,
                 directory,
-                PROBE_DEADLINE,
+                ROUTING_REFRESH_WAIT,
             ),
             routing,
             routing,
@@ -1106,6 +1106,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
         /** How long a member that is asked what it reports may take to answer. */
         val PROBE_DEADLINE: Duration = Duration.ofSeconds(2)
+
+        /**
+         * How long routing waits for the members' answers when what they reported last cannot
+         * answer it: for a probe on demand under way, then for its own, each waiting for each
+         * member for at most a second.
+         */
+        val ROUTING_REFRESH_WAIT: Duration = Duration.ofSeconds(3)
 
         fun SocketAddress.toHostPort(): HostPort = HostPort(hostname, port)
 
