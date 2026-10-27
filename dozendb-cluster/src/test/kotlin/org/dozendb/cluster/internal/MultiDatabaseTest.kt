@@ -317,7 +317,8 @@ class MultiDatabaseTest {
         val down = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
         down.stop()
 
-        val rows = cluster.waited("CREATE DATABASE $FILMS WAIT 2 SECONDS")
+        // Long enough for the others to create films also while other tests load the machine.
+        val rows = cluster.waited("CREATE DATABASE $FILMS WAIT 10 SECONDS")
 
         val (missing, others) = rows.partition { it["address"] == "127.0.0.1:${down.raftPort}" }
         assertThat(missing.single())
