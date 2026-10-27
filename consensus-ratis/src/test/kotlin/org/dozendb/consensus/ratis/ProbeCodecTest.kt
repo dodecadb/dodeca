@@ -26,6 +26,29 @@ class ProbeCodecTest {
     }
 
     @Test
+    fun `round-trips values longer than 64 KB, in any script`() {
+        val info =
+            PeerInfo(
+                member("core1"),
+                mapOf("dozendb.databases" to "films\tönline\n".repeat(10_000)),
+                emptyMap(),
+            )
+
+        assertThat(ProbeCodec.decodeResponse(ProbeCodec.encodeResponse(info))).isEqualTo(info)
+        assertThat(ProbeCodec.decodeAnnouncement(ProbeCodec.encodeAnnouncement(info)))
+            .isEqualTo(info)
+    }
+
+    @Test
+    fun `rejects a text longer than the message`() {
+        val response =
+            ProbeCodec.encodeResponse(PeerInfo(member("core1"), mapOf("k" to "v"), emptyMap()))
+
+        assertThatThrownBy { ProbeCodec.decodeResponse(response.copyOf(response.size - 5)) }
+            .isInstanceOf(java.io.IOException::class.java)
+    }
+
+    @Test
     fun `round-trips a request`() {
         val sender = member("core2")
 
@@ -36,7 +59,8 @@ class ProbeCodecTest {
     fun `rejects unknown format versions and trailing bytes`() {
         val request = ProbeCodec.encodeRequest(member("core1"))
 
-        assertThatThrownBy { ProbeCodec.decodeRequest(request.copyOf().also { it[0] = 2 }) }
+        val unknown = (ProbeCodec.FORMAT_VERSION + 1).toByte()
+        assertThatThrownBy { ProbeCodec.decodeRequest(request.copyOf().also { it[0] = unknown }) }
             .isInstanceOf(ProbeCodec.UnsupportedFormatException::class.java)
         assertThatThrownBy { ProbeCodec.decodeRequest(request + byteArrayOf(0)) }
             .hasMessageContaining("trailing bytes")

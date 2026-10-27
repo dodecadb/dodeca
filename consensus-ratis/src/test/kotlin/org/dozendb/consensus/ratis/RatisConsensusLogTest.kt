@@ -293,6 +293,26 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a member answers probes when what it reports is longer than 64 KB`() =
+        runBlocking<Unit> {
+            // As the states of about a thousand databases.
+            val states = "films-${"x".repeat(60)}\tonline\ttrue\t\n".repeat(1_000)
+            val cluster =
+                RatisTestCluster(root, 2) { config ->
+                        config.copy(metadata = { mapOf("dozendb.databases" to states) })
+                    }
+                    .also {
+                        this@RatisConsensusLogTest.cluster = it
+                        it.form()
+                    }
+            val (a, b) = cluster.nodes
+
+            val info = b.consensus.probe(a.consensus.self.raftAddress)
+
+            assertThat(info.metadata).containsEntry("dozendb.databases", states)
+        }
+
+    @Test
     fun `an announcement tells a member what the announcer answers when probed`() =
         runBlocking<Unit> {
             val cluster = formCluster()

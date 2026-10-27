@@ -16,7 +16,8 @@ import org.dozendb.consensus.PeerInfo
  * members running different plugin versions can recognise formats they do not understand.
  */
 internal object ProbeCodec {
-    const val FORMAT_VERSION: Byte = 1
+    /** 2: texts as UTF-8 after their length in 4 bytes, no longer limited to 64 KB each. */
+    const val FORMAT_VERSION: Byte = 2
 
     class UnsupportedFormatException(version: Int) :
         IOException("unsupported probe format version $version, supported: $FORMAT_VERSION")
@@ -30,8 +31,8 @@ internal object ProbeCodec {
         writeMember(info.member)
         writeInt(info.metadata.size)
         info.metadata.toSortedMap().forEach { (key, value) ->
-            writeUTF(key)
-            writeUTF(value)
+            writeText(key)
+            writeText(value)
         }
         writeInt(info.groups.size)
         info.groups.toSortedMap().forEach { (groupId, members) ->
@@ -44,7 +45,7 @@ internal object ProbeCodec {
     fun decodeResponse(bytes: ByteArray): PeerInfo =
         read(bytes) {
             val member = readMember()
-            val metadata = buildMap { repeat(readCount()) { put(readUTF(), readUTF()) } }
+            val metadata = buildMap { repeat(readCount()) { put(readText(), readText()) } }
             val groups = buildMap {
                 repeat(readCount()) {
                     val groupId = readUuid()
@@ -86,11 +87,27 @@ internal object ProbeCodec {
 
     private fun DataOutputStream.writeMember(member: Member) {
         writeUuid(member.id.uuid)
-        writeUTF(member.raftAddress.toString())
+        writeText(member.raftAddress.toString())
     }
 
     private fun DataInputStream.readMember(): Member =
-        Member(MemberId(readUuid()), HostPort.parse(readUTF()))
+        Member(MemberId(readUuid()), HostPort.parse(readText()))
+
+    /**
+     * Writes [text] as its UTF-8 bytes after their count: what members report, such as the states
+     * of their databases, grows with the number of databases past the 64 KB of `writeUTF`.
+     */
+    private fun DataOutputStream.writeText(text: String) {
+        val bytes = text.encodeToByteArray()
+        writeInt(bytes.size)
+        write(bytes)
+    }
+
+    private fun DataInputStream.readText(): String {
+        val size = readInt()
+        if (size < 0 || size > available()) throw IOException("invalid text length $size")
+        return readNBytes(size).decodeToString(throwOnInvalidSequence = true)
+    }
 
     private fun DataInputStream.readCount(): Int {
         val count = readInt()
