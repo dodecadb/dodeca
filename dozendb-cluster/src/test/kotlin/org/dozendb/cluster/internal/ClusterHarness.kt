@@ -40,6 +40,7 @@ import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.api.DatabaseNotFoundException
+import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
@@ -149,11 +150,18 @@ internal class ClusterHarness(
 
         /**
          * Whether this member runs the default database, its Raft group too: Neo4j counts a
-         * database available before the group starts, at the end of its start.
+         * database available before its start ends, while it joins a group that Ratis already runs
+         * from its state here, and a new database's group starts after that.
          */
         private fun runsDefault(): Boolean =
             try {
-                database(DEFAULT_DATABASE).isAvailable(0) &&
+                database("system")
+                    .dependencyResolver
+                    .resolveDependency(DatabaseContextProvider::class.java)
+                    .getDatabaseContext(DEFAULT_DATABASE)
+                    .orElse(null)
+                    ?.database()
+                    ?.isStarted == true &&
                     status(DEFAULT_DATABASE).let { it != null && it.role != Role.Inactive }
             } catch (_: DatabaseNotFoundException) {
                 false
