@@ -54,6 +54,11 @@ internal object ProbeCodec {
             PeerInfo(member, metadata, groups)
         }
 
+    /** An announcement carries what the sender answers when probed. */
+    fun encodeAnnouncement(info: PeerInfo): ByteArray = encodeResponse(info)
+
+    fun decodeAnnouncement(bytes: ByteArray): PeerInfo = decodeResponse(bytes)
+
     private fun write(body: DataOutputStream.() -> Unit): ByteArray {
         val buffer = ByteArrayOutputStream()
         DataOutputStream(buffer).use {

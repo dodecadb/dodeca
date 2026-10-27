@@ -17,6 +17,7 @@ import org.awaitility.kotlin.untilAsserted
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.PeerInfo
 import org.dozendb.consensus.fake.InMemoryConsensus
 import org.dozendb.consensus.fake.RecordingStateMachine
 import org.dozendb.core.edition.DatabaseState
@@ -233,6 +234,42 @@ class MemberDirectoryTest {
         earlier.join()
 
         assertThat(directory.answering(logs[2].self.id)).isTrue()
+    }
+
+    @Test
+    fun `records what a member announces, unless it reported later already`() {
+        val run = UUID.randomUUID()
+        logs[1].metadata = report(run, 2, "probed:7687")
+        directory.refresh()
+
+        directory.announced(PeerInfo(logs[1].self, report(run, 1, "earlier:7687"), emptyMap()))
+
+        assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("probed", 7687))
+
+        directory.announced(PeerInfo(logs[1].self, report(run, 3, "announced:7687"), emptyMap()))
+
+        assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("announced", 7687))
+    }
+
+    @Test
+    fun `ignores what a member of no cluster it knows announces`() {
+        val stranger =
+            consensus.newMember(metadata = mapOf(MemberMetadata.BOLT_ADDRESS to "stranger:7687"))
+
+        directory.announced(PeerInfo(stranger.self, stranger.metadata, emptyMap()))
+
+        assertThat(directory.reported(stranger.self.id)).isNull()
+    }
+
+    @Test
+    fun `hears what members announce once started`() {
+        directory.start()
+        await atMost Duration.ofSeconds(30) until { directory.refreshed }
+        logs[1].metadata = report(UUID.randomUUID(), 1, "announced:7687")
+
+        runBlocking { logs[1].announce(logs[0].self.raftAddress) }
+
+        assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("announced", 7687))
     }
 
     @Test

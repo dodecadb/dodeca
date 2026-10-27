@@ -56,6 +56,10 @@ class TlsTest {
         consensus.probe(other.consensus.self.raftAddress).member.id
     }
 
+    private fun RatisTestCluster.Node.announce(other: RatisTestCluster.Node) = runBlocking {
+        consensus.announce(other.consensus.self.raftAddress)
+    }
+
     private fun RatisTestCluster.Node.fetch(other: RatisTestCluster.Node): String =
         consensus.fetchBulk(other.consensus.self.raftAddress, GREETING, ByteArray(0)) {
             it.readAllBytes().decodeToString()
@@ -119,6 +123,7 @@ class TlsTest {
         assertUnreachable { member.probe(stranger) }
         assertUnreachable { member.fetch(stranger) }
         assertUnreachable { stranger.probe(member) }
+        assertUnreachable { stranger.announce(member) }
         assertUnreachable { stranger.fetch(member) }
     }
 

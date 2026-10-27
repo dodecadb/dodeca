@@ -24,6 +24,7 @@ import org.dozendb.cluster.internal.forwarding.ForwardingWatch
 import org.dozendb.cluster.internal.forwarding.MemberSsl
 import org.dozendb.cluster.internal.forwarding.RemoteTransactions
 import org.dozendb.cluster.internal.forwarding.RoutingBoltDatabases
+import org.dozendb.cluster.internal.leadership.LeaderAnnouncer
 import org.dozendb.cluster.internal.leadership.LeaderBalancer
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.replication.CatchUp
@@ -117,6 +118,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val consensus: ConsensusLog
     private val membership: MembershipReconciler
     private val balancer: LeaderBalancer
+    private val announcer: LeaderAnnouncer
     private val memberId = MemberId(identityModule.serverId().uuid())
     private val systemDatabase =
         DatabaseRef(
@@ -308,6 +310,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ::routingHostPort,
                 ::reportedStates,
                 logService.getInternalLog(MemberDirectory::class.java),
+                refreshInterval = config.get(ClusterSettings.memberRefreshInterval),
                 selfReadOnly = ::readOnlyHere,
                 selfLastCommitted = ::lastCommittedHere,
                 selfReport = metadata,
@@ -343,6 +346,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 log = logService.getInternalLog(LeaderBalancer::class.java),
             )
         consensus.leaderPlacement = balancer
+        announcer =
+            LeaderAnnouncer(
+                consensus,
+                systemDatabase,
+                ::leadingHere,
+                ANNOUNCEMENT_DEADLINE,
+                logService.getInternalLog(LeaderAnnouncer::class.java),
+            )
         cluster =
             ClusterService(
                 consensus,
@@ -395,10 +406,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     cluster.start()
                     membership.start()
                     balancer.start()
+                    announcer.start()
                 }
 
                 override fun stop() {
                     try {
+                        announcer.stop()
                         balancer.stop()
                         roles?.close()
                         membership.close()
@@ -602,7 +615,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             )
         cluster.onRemoved = reconciler::request
         // A copy no longer placed here is deleted once this member leaves the database's group.
-        replication.afterGroupChange = reconciler::request
+        replication.afterGroupChange = {
+            reconciler.request()
+            // Also when this member starts or stops leading a group.
+            announcer.request()
+        }
         // Transactions applied from Raft fire no transaction event listeners: refresh what the
         // listeners refresh after local commits.
         replication.afterSystemApply = {
@@ -1113,6 +1130,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
          * member for at most a second.
          */
         val ROUTING_REFRESH_WAIT: Duration = Duration.ofSeconds(3)
+
+        /** How long a member waits for each other to take an announcement of what it leads. */
+        val ANNOUNCEMENT_DEADLINE: Duration = Duration.ofSeconds(1)
 
         fun SocketAddress.toHostPort(): HostPort = HostPort(hostname, port)
 

@@ -108,6 +108,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
      */
     private val startingGroups: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val listeners = ConcurrentHashMap<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
+    private val announcementListeners = CopyOnWriteArrayList<(PeerInfo) -> Unit>()
     private val events: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "dozendb-consensus-events").apply { isDaemon = true }
     }
@@ -169,7 +170,9 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                         builder
                             .intercept(RefuseWhileStopping { stopping })
                             .intercept(RefuseClosedGroups { stateMachines[it]?.closed == true })
-                            .addService(ProbeService.definition(::describeSelf))
+                            .addService(
+                                ProbeService.definition(::describeSelf, ::publishAnnouncement)
+                            )
                             .addService(BulkService.definition(bulkSources::get, bulkExecutor))
                             // Bulk clients send keep-alive pings to detect dead peers.
                             .permitKeepAliveTime(BulkService.KEEP_ALIVE_SECONDS, TimeUnit.SECONDS)
@@ -209,6 +212,14 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     override suspend fun probe(address: HostPort): PeerInfo =
         ProbeService.probe(address, self, config.requestTimeout, tls?.client)
+
+    override suspend fun announce(address: HostPort) =
+        ProbeService.announce(address, describeSelf(), config.requestTimeout, tls?.client)
+
+    override fun addAnnouncementListener(listener: (PeerInfo) -> Unit): AutoCloseable {
+        announcementListeners += listener
+        return AutoCloseable { announcementListeners -= listener }
+    }
 
     override fun localGroups(): Set<UUID> {
         val running = server?.groupIds?.map { it.uuid }.orEmpty()
@@ -935,6 +946,22 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 .filter { it.info.isAlive }
                 .associate { it.memberId.groupId.uuid to it.raftConf.currentPeers.map(::toMember) }
         return PeerInfo(self, config.metadata(), groups)
+    }
+
+    private fun publishAnnouncement(info: PeerInfo) {
+        try {
+            events.execute {
+                announcementListeners.forEach { listener ->
+                    try {
+                        listener(info)
+                    } catch (e: Exception) {
+                        log.warn("Announcement listener failed for {}", info.member, e)
+                    }
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Closing: no one is listening any more.
+        }
     }
 
     private fun publishStatus(groupId: UUID) {

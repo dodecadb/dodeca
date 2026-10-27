@@ -57,6 +57,21 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
      */
     public suspend fun probe(address: HostPort): PeerInfo
 
+    /**
+     * Tells the member at [address], unasked, what this member answers when probed ([probe]): for a
+     * change the others should learn before they next probe it.
+     *
+     * @throws ConsensusUnavailableException if the member cannot be reached or takes no
+     *   announcements, as a version without them.
+     */
+    public suspend fun announce(address: HostPort)
+
+    /**
+     * Registers [listener] for what other members announce about themselves ([announce]). It is
+     * called on an internal thread and must not block. Closing the returned handle unregisters it.
+     */
+    public fun addAnnouncementListener(listener: (PeerInfo) -> Unit): AutoCloseable
+
     /** Ids of the groups that have local consensus state. */
     public fun localGroups(): Set<UUID>
 

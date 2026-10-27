@@ -19,6 +19,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.consensus.ConsensusLog
+import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
@@ -82,6 +83,8 @@ class MemberDirectory(
 
     /** Runs the probes on demand. */
     @Volatile private var demand: ExecutorService? = null
+
+    private var announcements: AutoCloseable? = null
 
     /** The advertised Bolt address of [member], or null while it is not known. */
     fun boltAddress(member: MemberId): HostPort? {
@@ -204,6 +207,27 @@ class MemberDirectory(
         }
     }
 
+    /**
+     * Records what a member announces about itself, as one that starts or stops leading a group
+     * does, as if it had answered a probe: unless it is not a member of the `system` group, or a
+     * later report of it is recorded already. Whether it answers probes stays as it was.
+     */
+    fun announced(peer: PeerInfo) {
+        val member = peer.member.id
+        if (member == consensus.self.id) return
+        val known =
+            try {
+                consensus.members(systemDatabase).any { it.id == member }
+            } catch (_: ConsensusUnavailableException) {
+                false
+            }
+        if (!known) {
+            log.debug("Ignored what %s, not a member, announced", peer.member)
+            return
+        }
+        synchronized(recording) { record(peer) }
+    }
+
     /** Whether [member] answered the latest probe. This member always does. */
     fun answering(member: MemberId): Boolean = member == consensus.self.id || member in answered
 
@@ -286,6 +310,7 @@ class MemberDirectory(
     }
 
     fun start() {
+        announcements = consensus.addAnnouncementListener(::announced)
         demand = Executors.newSingleThreadExecutor { runnable ->
             Thread(runnable, "dozendb-member-directory-demand").apply { isDaemon = true }
         }
@@ -302,6 +327,8 @@ class MemberDirectory(
     }
 
     fun stop() {
+        announcements?.close()
+        announcements = null
         scheduler?.shutdownNow()
         scheduler = null
         val executor = demand

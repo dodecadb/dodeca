@@ -269,21 +269,31 @@ class InMemoryConsensus {
             probed?.onProbe?.invoke()
             val delay = probed?.probeDelay
             if (delay != null && !delay.isZero) delay(delay.toMillis())
-            val answer =
-                synchronized(lock) {
-                    val target =
-                        members.values.firstOrNull {
-                            it.self.raftAddress == address && it.transportUp
-                        } ?: throw ConsensusUnavailableException("no member reachable at $address")
-                    PeerInfo(
-                        target.self,
-                        target.metadata,
-                        target.localState.associateWith { groups.getValue(it).members },
-                    )
-                }
+            val answer = synchronized(lock) { reachable(address).described() }
             probed?.onAnswered?.invoke()
             return answer
         }
+
+        override suspend fun announce(address: HostPort) {
+            val (target, info) = synchronized(lock) { reachable(address) to described() }
+            target.announcementListeners.forEach { it(info) }
+        }
+
+        override fun addAnnouncementListener(listener: (PeerInfo) -> Unit): AutoCloseable {
+            announcementListeners += listener
+            return AutoCloseable { announcementListeners -= listener }
+        }
+
+        private val announcementListeners = CopyOnWriteArrayList<(PeerInfo) -> Unit>()
+
+        /** The member at [address], unless it cannot be reached. Called holding the lock. */
+        private fun reachable(address: HostPort): InMemoryConsensusLog =
+            members.values.firstOrNull { it.self.raftAddress == address && it.transportUp }
+                ?: throw ConsensusUnavailableException("no member reachable at $address")
+
+        /** What this member answers when probed. Called holding the lock. */
+        private fun described(): PeerInfo =
+            PeerInfo(self, metadata, localState.associateWith { groups.getValue(it).members })
 
         override fun localGroups(): Set<UUID> = synchronized(lock) { localState.toSet() }
 

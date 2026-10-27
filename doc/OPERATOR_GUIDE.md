@@ -323,8 +323,10 @@ As enabling a server places nothing on it, reallocate to give it copies.
 
 Routing tables, from any server, list the servers a database is placed on, so
 `neo4j://` drivers reach them wherever they connect. A server that does not
-host the database answers from what the others last told it; when that names
-no leader, or no server that runs the database, it asks them again first. It
+host the database answers from what the others last told it, and a server
+that starts or stops leading a database tells the others at once, so that
+their routing tables follow a new leader within moments. When what they told
+it names no leader, or no server that runs the database, it asks them first. It
 waits up to 1 second for each server's answer, and up to 3 seconds in all, so
 a server that does not answer at all delays it by no more than that. A
 transaction that reaches a server that does not host its database runs on one

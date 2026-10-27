@@ -278,6 +278,21 @@ class ClusterSettings : SettingsDeclaration {
         @JvmField
         @field:Internal
         @field:Description(
+            "For tests: how often a member probes the others for what they report, such as the " +
+                "databases they lead, besides probing them on demand."
+        )
+        val memberRefreshInterval: Setting<Duration> =
+            newBuilder(
+                    "internal.dbms.dozendb.cluster.member_refresh_interval",
+                    DURATION,
+                    Duration.ofSeconds(10),
+                )
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Internal
+        @field:Description(
             "For tests: the largest Raft entry, and so the largest transaction, a database " +
                 "accepts. Every member must use the same value."
         )

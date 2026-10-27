@@ -479,7 +479,9 @@ What clustering does not do yet.
   `STOP DATABASE` and `START DATABASE` apply to it.
 - **Writes go to the leader.** Drivers that route (`neo4j://`) get routing
   tables with the leader as writer and retry managed transactions on the new
-  leader after a failover. A write transaction that reaches a follower runs on
+  leader after a failover. A new leader tells every server at once, so that
+  routing tables from servers that do not host the database name it within
+  moments too. A write transaction that reaches a follower runs on
   the leader when its client allows server-side routing, as in Neo4j
   Enterprise: `neo4j://` drivers with `dbms.routing.default_router=SERVER`,
   and HTTP clients. This needs mutual TLS between members and their routing

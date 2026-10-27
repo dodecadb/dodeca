@@ -6,7 +6,9 @@ import java.net.ServerSocket
 import java.nio.file.Path
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 import kotlinx.coroutines.Dispatchers
@@ -31,6 +33,7 @@ import org.dozendb.consensus.LeaderPlacement
 import org.dozendb.consensus.LogEntry
 import org.dozendb.consensus.LogPosition
 import org.dozendb.consensus.MemberId
+import org.dozendb.consensus.PeerInfo
 import org.dozendb.consensus.ReplicatedStateMachine
 import org.dozendb.consensus.Role
 import org.dozendb.consensus.Snapshot
@@ -288,6 +291,33 @@ class RatisConsensusLogTest {
             assertThat(info.groups.getValue(cluster.database.id))
                 .containsExactlyInAnyOrderElementsOf(cluster.nodes.map { it.consensus.self })
         }
+
+    @Test
+    fun `an announcement tells a member what the announcer answers when probed`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val (a, b) = cluster.nodes
+            val heard = CompletableFuture<PeerInfo>()
+            a.consensus.addAnnouncementListener { heard.complete(it) }
+
+            b.consensus.announce(a.consensus.self.raftAddress)
+
+            val info = heard.get(RatisTestCluster.AWAIT.toSeconds(), TimeUnit.SECONDS)
+            assertThat(info.member).isEqualTo(b.consensus.self)
+            assertThat(info.metadata).containsEntry("neo4j.version", "5.26.27")
+            assertThat(info.groups.keys).containsExactly(cluster.database.id)
+        }
+
+    @Test
+    fun `announcing to an unreachable address fails cleanly`() {
+        val cluster = formCluster(size = 1)
+        val unused = HostPort("127.0.0.1", 1)
+
+        assertThatThrownBy { runBlocking { cluster.nodes[0].consensus.announce(unused) } }
+            .isInstanceOf(ConsensusUnavailableException::class.java)
+            .hasMessageNotContaining("\n")
+            .hasMessageContaining("Connection refused")
+    }
 
     @Test
     fun `probing an unreachable address fails cleanly`() {
