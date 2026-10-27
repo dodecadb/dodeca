@@ -10,6 +10,7 @@ import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.cluster.MemberState
+import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
@@ -86,6 +87,24 @@ class ServerLifecycleTest {
                     runCatching { member.database(database).isAvailable(0) }.getOrDefault(false)
             }
             .toSet()
+
+    /** Makes [member] the leader of [database]. */
+    private fun ClusterHarness.lead(database: String, member: ClusterHarness.Member) {
+        eventually {
+            val leader = awaitLeader(database) { hosts(database).toList() }
+            if (leader != member) {
+                val replica =
+                    leader
+                        .database(database)
+                        .dependencyResolver
+                        .resolveDependency(ReplicationService::class.java)
+                        .replica(leader.database(database).databaseId())
+                checkNotNull(replica)
+                    .transferLeadership(member.cluster.self.id, "a test", Duration.ofSeconds(5))
+            }
+            assertThat(awaitLeader(database) { hosts(database).toList() }).isEqualTo(member)
+        }
+    }
 
     private fun ClusterHarness.Member.films(): Long =
         database("films").executeTransactionally(
@@ -466,6 +485,41 @@ class ServerLifecycleTest {
                 .extracting<Any?> { it["serverId"] }
                 .containsExactlyInAnyOrderElementsOf(remaining().map { it.serverId })
         }
+    }
+
+    @Test
+    fun `DROP SERVER removes a server as soon as another member shows it Deallocated`() {
+        val cluster = cluster { harness ->
+            // Members report only when asked: the system leader keeps what it last heard.
+            for (member in harness.members) {
+                member.settings =
+                    mapOf(ClusterSettings.memberRefreshInterval to Duration.ofHours(1))
+            }
+        }
+        val leaving = cluster.awaitLeader(SYSTEM)
+        val (staying, joining) = cluster.members - leaving
+        cluster.administer("CALL dbms.cluster.cordonServer('${joining.serverId}')")
+        cluster.administer("CREATE DATABASE films TOPOLOGY 2 PRIMARIES WAIT")
+        cluster.administer("ENABLE SERVER '${joining.serverId}'")
+        // No leader moves with the copy, which would tell the others.
+        cluster.lead("films", staying)
+
+        cluster.administer("DEALLOCATE DATABASES FROM SERVER '${leaving.serverId}'")
+        eventually {
+            val state =
+                staying.database(SYSTEM).executeTransactionally(
+                    "SHOW SERVERS YIELD serverId, state WHERE serverId = \$id RETURN state",
+                    mapOf("id" to leaving.serverId),
+                ) {
+                    it.next()["state"]
+                }
+            assertThat(state).isEqualTo("Deallocated")
+        }
+
+        // On the system leader, which no longer hosts films.
+        cluster.administer("DROP SERVER '${leaving.serverId}'")
+
+        eventually { assertThat(leaving.cluster.state).isEqualTo(MemberState.REMOVED) }
     }
 
     @Test

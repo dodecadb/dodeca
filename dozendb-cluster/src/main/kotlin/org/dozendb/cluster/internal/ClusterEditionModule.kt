@@ -932,8 +932,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     ?.raftAddress
                     ?.toString()
 
-            override fun holding(tx: Transaction, id: UUID): Set<String> =
-                locations.votedIn(tx, MemberId(id))
+            override fun holding(tx: Transaction, id: UUID): Set<String> {
+                // As members report it now, as SHOW SERVERS judges Deallocated: a member that
+                // left a group another member led may not have said so since.
+                try {
+                    directory.refresh(PROBE_DEADLINE)
+                } catch (_: ConsensusUnavailableException) {
+                    // What the members reported last.
+                }
+                return locations.votedIn(tx, MemberId(id))
+            }
         }
 
     /**

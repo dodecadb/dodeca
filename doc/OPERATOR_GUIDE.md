@@ -89,9 +89,10 @@ member.
 
 `DROP SERVER` refuses an Enabled or Cordoned server, a deallocating one that
 still holds a copy, and the last server. A copy counts as held as long as the
-server votes in the database's group, as far as the leader of `system` knows:
-a server that is down counts with what it last reported, so that a database
-whose only copy is on it is not lost.
+server votes in the database's group, as the members report it when the leader
+of `system` asks them, as `SHOW SERVERS` does: a server that is down counts
+with what it last reported, so that a database whose only copy is on it is not
+lost.
 
 ### Replacing a failed member
 
