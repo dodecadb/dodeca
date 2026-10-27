@@ -105,9 +105,9 @@ DozenDB took over the code.
   asked, or failed to, or once the time limit passed: 300 seconds for `WAIT`,
   n for `WAIT n SECONDS`. With clustering, a running copy has also joined the
   database's Raft group, and the member knows its leader, which then takes
-  writes at once. It returns a row per server with `address` (its Bolt
-  address), `state` (`CaughtUp`, `Failed` or `TimedOut`), `message`, and
-  `success`, true only if every server caught up.
+  writes at once, through any server. It returns a row per server with
+  `address` (its Bolt address), `state` (`CaughtUp`, `Failed` or
+  `TimedOut`), `message`, and `success`, true only if every server caught up.
   Without `WAIT` a command returns once committed: without clustering the
   database has then started or failed to, and `SHOW DATABASES` shows why in
   `statusMessage`; with clustering the members follow in the background.

@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal.routing
 
+import java.time.Duration
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.DatabaseRef
@@ -12,13 +13,15 @@ import org.neo4j.kernel.database.DatabaseReferenceImpl
 
 /**
  * Whether a database can be routed: as Community checks it where it is hosted here, else whether a
- * member that votes in its group runs it ([DatabaseLocations]). Community's check alone refuses
- * every database this member does not host.
+ * member that votes in its group runs it ([DatabaseLocations]), asking the members again, for at
+ * most [refreshWait], before refusing it. Community's check alone refuses every database this
+ * member does not host.
  */
 internal class ClusterRoutingValidator(
     private val local: DatabaseAvailabilityChecker,
     private val locations: DatabaseLocations,
     private val directory: MemberDirectory,
+    private val refreshWait: Duration,
 ) : RoutingTableServiceValidator {
     private val community = LocalRoutingTableServiceValidator(local)
 
@@ -34,15 +37,21 @@ internal class ClusterRoutingValidator(
     ) {
         if (local.isPresent(reference)) return here(reference)
         val id = reference.databaseId()
-        val location = locations.of(DatabaseRef(id.name(), id.databaseId().uuid()))
-        val running =
-            location?.voters.orEmpty().any { member ->
-                directory.databaseStates(member.id).orEmpty().any {
-                    it.id == id.databaseId().uuid() && it.status == DatabaseState.Status.ONLINE
-                }
-            }
-        if (!running) {
+        val database = DatabaseRef(id.name(), id.databaseId().uuid())
+        if (running(database)) return
+        // What the members reported last may be from before it started, as right after CREATE
+        // DATABASE ... WAIT returned.
+        directory.awaitRefresh(refreshWait)
+        if (!running(database)) {
             throw RoutingTableServiceHelpers.databaseNotAvailableException(reference.alias().name())
         }
     }
+
+    /** Whether a member that votes in the group of [database] reports running it. */
+    private fun running(database: DatabaseRef): Boolean =
+        locations.of(database)?.voters.orEmpty().any { member ->
+            directory.databaseStates(member.id).orEmpty().any {
+                it.id == database.id && it.status == DatabaseState.Status.ONLINE
+            }
+        }
 }

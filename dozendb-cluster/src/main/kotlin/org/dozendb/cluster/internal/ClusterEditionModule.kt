@@ -969,6 +969,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ClusterRoutingTableProvider(
                 locations,
                 directory,
+                PROBE_DEADLINE,
                 config.get(ClusterSettings.readsOnLeader),
                 ttl,
                 singleAddress,
@@ -980,6 +981,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 DefaultDatabaseAvailabilityChecker(databaseContextProvider),
                 locations,
                 directory,
+                PROBE_DEADLINE,
             ),
             routing,
             routing,

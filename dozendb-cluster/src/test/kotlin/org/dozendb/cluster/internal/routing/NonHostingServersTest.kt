@@ -18,6 +18,7 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.driver.AccessMode
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
@@ -101,6 +102,39 @@ class NonHostingServersTest {
         assertThat(addresses("READ")).isEqualTo(hosts.map { it.boltAddress() }.toSet())
 
         assertThat(writeAndRead("neo4j", router, "routed")).isEqualTo(1)
+    }
+
+    @Test
+    fun `a database created with WAIT is served through it at once`() {
+        val failures = mutableListOf<String>()
+        var created = 0
+        val routes =
+            listOf(router, serverRouter).flatMap { member ->
+                listOf(AccessMode.WRITE, AccessMode.READ).map { member to it }
+            }
+        // Each without retrying, as Cypher Shell runs a script, on a new database whose leader was
+        // just elected.
+        repeat(3) {
+            for ((member, mode) in routes) {
+                val name = "waited${++created}"
+                administer("CREATE DATABASE $name TOPOLOGY 1 PRIMARY WAIT")
+                val driver =
+                    drivers.getOrPut("neo4j $member") {
+                        GraphDatabase.driver("neo4j://${member.boltAddress()}", AuthTokens.none())
+                    }
+                val config =
+                    SessionConfig.builder().withDatabase(name).withDefaultAccessMode(mode).build()
+                try {
+                    driver.session(config).use {
+                        it.run(if (mode == AccessMode.WRITE) "CREATE ()" else "MATCH (n) RETURN n")
+                            .consume()
+                    }
+                } catch (e: Exception) {
+                    failures += "$mode of $name through $member: $e"
+                }
+            }
+        }
+        assertThat(failures).isEmpty()
     }
 
     @Test

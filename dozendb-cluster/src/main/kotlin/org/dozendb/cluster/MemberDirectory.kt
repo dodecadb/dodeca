@@ -2,11 +2,16 @@ package org.dozendb.cluster
 
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
@@ -22,10 +27,11 @@ import org.neo4j.logging.Log
 /**
  * The Bolt and routing addresses of the cluster's members, and what else they report about
  * themselves. Every member reports its advertised addresses and its databases when probed; the
- * directory probes the members of the `system` group periodically, and soon after someone asks for
- * a member it does not know yet. A member that does not answer keeps its last known address and
- * report. This member's own come from [selfBoltAddress], [selfRoutingAddress], [selfDatabases],
- * [selfReadOnly], [selfLastCommitted] and [selfReport].
+ * directory probes the members of the `system` group periodically, soon after someone asks for a
+ * member it does not know yet, and when someone waits for it ([awaitRefresh]). A member that does
+ * not answer keeps its last known address and report. This member's own come from
+ * [selfBoltAddress], [selfRoutingAddress], [selfDatabases], [selfReadOnly], [selfLastCommitted] and
+ * [selfReport].
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
@@ -50,7 +56,11 @@ class MemberDirectory(
         private set
 
     private val refreshPending = AtomicBoolean()
-    private var scheduler: ScheduledExecutorService? = null
+
+    /** Completed when the probe that starts next ends, for [awaitRefresh]. */
+    private val nextRefresh = AtomicReference(CompletableFuture<Unit>())
+
+    @Volatile private var scheduler: ScheduledExecutorService? = null
 
     /** The advertised Bolt address of [member], or null while it is not known. */
     fun boltAddress(member: MemberId): HostPort? {
@@ -147,6 +157,29 @@ class MemberDirectory(
     /** Probes the members soon, as when what they reported may be out of date. */
     fun refreshSoon() = requestRefresh()
 
+    /**
+     * Probes the members soon, as [refreshSoon], and waits for that probe to end, for at most
+     * [timeout]: for an answer that what they reported last cannot give, as which member leads a
+     * database just created. Those who wait at the same time share one probe, which starts after
+     * they asked. Returns whether it ended in time; while this directory is stopped, false at once.
+     */
+    fun awaitRefresh(timeout: Duration): Boolean {
+        if (scheduler == null) return false
+        val refreshed = nextRefresh.get()
+        requestRefresh()
+        return try {
+            refreshed.get(timeout.toMillis(), TimeUnit.MILLISECONDS)
+            true
+        } catch (_: TimeoutException) {
+            false
+        } catch (_: CancellationException) {
+            false
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
+    }
+
     /** Whether [member] answered the latest probe. This member always does. */
     fun answering(member: MemberId): Boolean = member == consensus.self.id || member in answered
 
@@ -236,6 +269,7 @@ class MemberDirectory(
     fun stop() {
         scheduler?.shutdownNow()
         scheduler = null
+        nextRefresh.get().cancel(false)
     }
 
     private fun parsed(address: String): HostPort? = runCatching {
@@ -246,18 +280,27 @@ class MemberDirectory(
     private fun requestRefresh() {
         val executor = scheduler ?: return
         if (refreshPending.compareAndSet(false, true)) {
-            executor.execute {
+            try {
+                executor.execute {
+                    refreshPending.set(false)
+                    refreshQuietly()
+                }
+            } catch (_: RejectedExecutionException) {
+                // Stopped.
                 refreshPending.set(false)
-                refreshQuietly()
             }
         }
     }
 
     private fun refreshQuietly() {
+        // Ends the wait of those who asked before this probe started.
+        val waiting = nextRefresh.getAndSet(CompletableFuture())
         try {
             refresh()
         } catch (e: Exception) {
             log.warn("Refreshing the Bolt addresses of members failed: %s", e.toString())
+        } finally {
+            waiting.complete(Unit)
         }
     }
 }

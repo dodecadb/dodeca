@@ -2,11 +2,17 @@ package org.dozendb.cluster
 
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.entry
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
+import org.awaitility.kotlin.until
 import org.awaitility.kotlin.untilAsserted
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
@@ -14,6 +20,7 @@ import org.dozendb.consensus.fake.InMemoryConsensus
 import org.dozendb.consensus.fake.RecordingStateMachine
 import org.dozendb.core.edition.DatabaseState
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertTimeoutPreemptively
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
 
@@ -167,6 +174,73 @@ class MemberDirectoryTest {
     }
 
     @Test
+    fun `awaiting a refresh sees what members report once asked`() {
+        val films = UUID(0, 7)
+        directory.start()
+        logs[1].metadata += MemberMetadata.LEADING to "$films=3"
+
+        assertThat(directory.awaitRefresh(Duration.ofSeconds(30))).isTrue()
+
+        assertThat(directory.leading(logs[1].self.id)).containsExactly(entry(films, 3L))
+    }
+
+    @Test
+    fun `those who await a refresh at the same time share one probe, started after they asked`() {
+        val probes = AtomicInteger()
+        val held = CompletableDeferred<Unit>()
+        logs[2].onProbe = {
+            probes.incrementAndGet()
+            held.await()
+        }
+        directory.start()
+        // The probe on start is under way.
+        await atMost Duration.ofSeconds(30) until { probes.get() == 1 }
+        val refreshed = ConcurrentHashMap.newKeySet<Boolean>()
+        val waiting =
+            List(3) { thread { refreshed += directory.awaitRefresh(Duration.ofMinutes(1)) } }
+        await atMost Duration.ofSeconds(30) until { waiting.all { it.waiting() } }
+
+        held.complete(Unit)
+        waiting.forEach { it.join() }
+
+        assertThat(refreshed).containsExactly(true)
+        assertThat(probes.get()).isEqualTo(2)
+    }
+
+    @Test
+    fun `awaiting a refresh gives up after its timeout, keeping what members reported`() {
+        directory.start()
+        assertThat(directory.awaitRefresh(Duration.ofSeconds(30))).isTrue()
+        logs[2].probeDelay = Duration.ofMinutes(1)
+
+        assertThat(directory.awaitRefresh(Duration.ofMillis(200))).isFalse()
+
+        assertThat(directory.boltAddress(logs[2].self.id)).isEqualTo(HostPort("core2", 7687))
+    }
+
+    @Test
+    fun `a stopped directory keeps no one waiting for a refresh`() {
+        val probed = CountDownLatch(1)
+        logs[2].onProbe = {
+            probed.countDown()
+            CompletableDeferred<Unit>().await()
+        }
+        directory.start()
+        probed.await()
+        assertTimeoutPreemptively(Duration.ofSeconds(30)) {
+            var refreshed: Boolean? = null
+            val waiting = thread { refreshed = directory.awaitRefresh(Duration.ofMinutes(1)) }
+            await atMost Duration.ofSeconds(30) until { waiting.waiting() }
+
+            directory.stop()
+            waiting.join()
+
+            assertThat(refreshed).isFalse()
+            assertThat(directory.awaitRefresh(Duration.ofMinutes(1))).isFalse()
+        }
+    }
+
+    @Test
     fun `asking for an unknown member triggers a refresh`() {
         directory.start()
         await atMost
@@ -192,4 +266,6 @@ class MemberDirectoryTest {
         // Refreshing on demand also picks up changes of known members.
         assertThat(directory.boltAddress(logs[2].self.id)).isEqualTo(HostPort("moved", 7688))
     }
+
+    private fun Thread.waiting() = state == Thread.State.TIMED_WAITING
 }

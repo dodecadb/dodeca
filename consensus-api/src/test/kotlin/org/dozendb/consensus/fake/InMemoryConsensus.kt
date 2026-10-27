@@ -171,6 +171,9 @@ class InMemoryConsensus {
         /** How long this member takes to answer a probe. */
         @Volatile var probeDelay: Duration = Duration.ZERO
 
+        /** What this member does when probed, before it answers. */
+        @Volatile var onProbe: suspend () -> Unit = {}
+
         private val bulkSources = ConcurrentHashMap<String, BulkSource>()
         private var transportUp = false
         private val localState = mutableSetOf<UUID>()
@@ -256,10 +259,12 @@ class InMemoryConsensus {
         }
 
         override suspend fun probe(address: HostPort): PeerInfo {
-            val delay =
+            val probed =
                 synchronized(lock) {
-                    members.values.firstOrNull { it.self.raftAddress == address }?.probeDelay
+                    members.values.firstOrNull { it.self.raftAddress == address }
                 }
+            probed?.onProbe?.invoke()
+            val delay = probed?.probeDelay
             if (delay != null && !delay.isZero) delay(delay.toMillis())
             return synchronized(lock) {
                 val target =

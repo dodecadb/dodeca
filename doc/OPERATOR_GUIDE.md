@@ -307,8 +307,8 @@ writes go on throughout. `SHOW DATABASES` lists each copy, with
 `WAIT` waits for the servers a database is placed on, and for a dropped
 database for every server that still holds it. A server has caught up with a
 database that is to be online once its copy runs and it knows the database's
-leader, so that the database takes writes through the servers that host it
-as soon as `WAIT` returns, and can be backed up from any of them.
+leader, so that the database takes writes through any server as soon as
+`WAIT` returns, and can be backed up from any server that hosts it.
 
 `REALLOCATE DATABASES` moves copies so that the servers host about as many
 each: first the copies their servers may no longer host, then one at a time
@@ -322,9 +322,12 @@ As enabling a server places nothing on it, reallocate to give it copies.
 ### Clients
 
 Routing tables, from any server, list the servers a database is placed on, so
-`neo4j://` drivers reach them wherever they connect. A transaction that reaches
-a server that does not host its database runs on one that does, when its
-client lets the server route it (see [Writes on any member](#writes-on-any-member)):
+`neo4j://` drivers reach them wherever they connect. A server that does not
+host the database answers from what the others last told it; when that names
+no leader, or no server that runs the database, it asks them again first,
+waiting up to 2 seconds. A transaction that reaches a server that does not
+host its database runs on one that does, when its client lets the server
+route it (see [Writes on any member](#writes-on-any-member)):
 a write on the leader, a read on any server that runs the database. Otherwise
 it fails, saying where to connect.
 
