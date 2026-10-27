@@ -171,6 +171,16 @@ class PartitionedCatchUpIT {
             ?.single()
             ?.get("c") as Long?
 
+    /** What [reads] returned, in ms since [since], where it changed or a read took long. */
+    private fun changes(reads: List<Read>, since: Long): List<String> =
+        reads
+            .filterIndexed { i, read ->
+                i == 0 ||
+                    read.count != reads[i - 1].count ||
+                    read.at - reads[i - 1].at > 1_000_000_000
+            }
+            .map { "${(it.at - since) / 1_000_000} ms: ${it.count ?: "failed"}" }
+
     /** The longest time from a failed read to the next successful one, in milliseconds. */
     private fun longestOutage(reads: List<Read>): Long {
         var longest = 0L
@@ -214,12 +224,16 @@ class PartitionedCatchUpIT {
         val servedStale = afterHealing.filter { it.count == 0L }.maxOfOrNull { it.at - healedAt }
         assertThat((servedStale ?: 0) / 1_000_000)
             .describedAs(
-                "served stale reads while copying, of %d ms until caught up",
+                "served stale reads while copying, of %d ms until caught up; read %s",
                 (caughtUpAt - healedAt) / 1_000_000,
+                changes(afterHealing, healedAt),
             )
             .isGreaterThan(5_000)
         assertThat(longestOutage(afterHealing))
-            .describedAs("unavailable only to move the copy into place")
+            .describedAs(
+                "unavailable only to move the copy into place; read %s",
+                changes(afterHealing, healedAt),
+            )
             .isLessThan(3_000)
         leader.rows("CREATE (:Marker {at: 'after'})")
         awaitSameData(behind, leader)
@@ -302,10 +316,16 @@ class PartitionedCatchUpIT {
             .describedAs("copy time, long enough to tell copying from being stopped")
             .isGreaterThan(3_000)
         assertThat(readsAfterHealing.count { it.count == usersBefore })
-            .describedAs("stale administration reads while copying")
+            .describedAs(
+                "stale administration reads while copying; read %s",
+                changes(readsAfterHealing, healedAt),
+            )
             .isGreaterThan(10)
         assertThat(longestOutage(loginsAfterHealing))
-            .describedAs("logins unavailable only to move the copy into place")
+            .describedAs(
+                "logins unavailable only to move the copy into place; logged in %s",
+                changes(loginsAfterHealing, healedAt),
+            )
             .isLessThan(3_000)
         assertThat(longestOutage(readsAfterHealing))
             .describedAs("administration reads unavailable only to move the copy into place")
