@@ -11,6 +11,7 @@ import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.consensus.testing.TestPorts
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -43,6 +44,7 @@ class MembershipIT {
             .boltOnHostPort(boltPorts.getValue(alias))
     }
     private val started = CopyOnWriteArrayList<DozenDbContainer>()
+    private val writers = CopyOnWriteArrayList<Writer>()
     private lateinit var driver: Driver
 
     @BeforeAll
@@ -60,6 +62,13 @@ class MembershipIT {
                     }
                     .build(),
             )
+    }
+
+    @AfterEach
+    fun stopWriters() {
+        // Also when a test fails: a writer left running fails whatever test this JVM runs next.
+        writers.forEach { it.stop() }
+        writers.clear()
     }
 
     @AfterAll
@@ -124,6 +133,10 @@ class MembershipIT {
                     }
                 }
             }
+
+        init {
+            writers += this
+        }
 
         fun stop() {
             running.set(false)

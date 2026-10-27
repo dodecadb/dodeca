@@ -46,11 +46,19 @@ class PartitionedCatchUpIT {
             .withEnv("NEO4J_internal_dbms_dozendb_cluster_raft__log__segment__size", "1")
     }
     private val faults = mutableListOf<NetworkFaults>()
+    private val probes = mutableListOf<() -> List<Read>>()
     private val blob = "x".repeat(200_000)
 
     @BeforeAll
     fun start() {
         Startables.deepStart(members).join()
+    }
+
+    @AfterEach
+    fun stopProbes() {
+        // Also when a test fails: a probe left running fails whatever test this JVM runs next.
+        probes.forEach { it() }
+        probes.clear()
     }
 
     @AfterEach
@@ -135,6 +143,7 @@ class PartitionedCatchUpIT {
             prober.join()
             reads.toList()
         }
+            .also { probes += it }
     }
 
     /** Reads [label]s on [member] every 100 ms until the returned stop function is called. */

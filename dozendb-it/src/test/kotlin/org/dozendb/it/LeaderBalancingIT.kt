@@ -96,37 +96,44 @@ class LeaderBalancingIT {
         val ids = AtomicLong()
         val done = AtomicBoolean()
         val writers = Executors.newFixedThreadPool(databases.size)
-        for (database in databases) {
-            writers.execute {
-                val written =
-                    acknowledged.computeIfAbsent(database) { ConcurrentHashMap.newKeySet() }
-                while (!done.get()) {
-                    val id = ids.incrementAndGet()
-                    try {
-                        driver.session(SessionConfig.forDatabase(database)).use { session ->
-                            session.executeWrite { tx ->
-                                tx.run("MERGE (:Written {id: \$id})", mapOf("id" to id)).consume()
+        try {
+            for (database in databases) {
+                writers.execute {
+                    val written =
+                        acknowledged.computeIfAbsent(database) { ConcurrentHashMap.newKeySet() }
+                    while (!done.get()) {
+                        val id = ids.incrementAndGet()
+                        try {
+                            driver.session(SessionConfig.forDatabase(database)).use { session ->
+                                session.executeWrite { tx ->
+                                    tx.run("MERGE (:Written {id: \$id})", mapOf("id" to id))
+                                        .consume()
+                                }
                             }
+                            written += id
+                        } catch (e: Neo4jException) {
+                            // Drivers retry what they can; this one gave up.
+                            if ("outcome is unknown" in e.message.orEmpty())
+                                unknown += "$database: ${e.message}"
                         }
-                        written += id
-                    } catch (e: Neo4jException) {
-                        // Drivers retry what they can; this one gave up.
-                        if ("outcome is unknown" in e.message.orEmpty())
-                            unknown += "$database: ${e.message}"
                     }
                 }
             }
-        }
 
-        for (member in members) {
-            member.shutDown()
-            awaitLed(4, 4)
-            member.restart()
-            awaitLed(3, 3, 2)
+            for (member in members) {
+                member.shutDown()
+                awaitLed(4, 4)
+                member.restart()
+                awaitLed(3, 3, 2)
+            }
+        } finally {
+            // Also when the test fails: a writer left running fails whatever test this JVM runs
+            // next, once the driver closes.
+            done.set(true)
+            writers.shutdown()
+            writers.awaitTermination(1, TimeUnit.MINUTES)
         }
-        done.set(true)
-        writers.shutdown()
-        assertThat(writers.awaitTermination(1, TimeUnit.MINUTES)).isTrue()
+        assertThat(writers.isTerminated).isTrue()
 
         assertThat(unknown).isEmpty()
         // Members that stop gracefully, and those still running, log no errors.
