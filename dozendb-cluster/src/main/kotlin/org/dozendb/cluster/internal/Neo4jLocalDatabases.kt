@@ -94,10 +94,13 @@ internal class Neo4jLocalDatabases(
 
     override fun unmark(id: UUID) = secondaries.unmark(id)
 
-    override fun copy(source: HostPort, id: NamedDatabaseId, mode: CopyMode) =
+    override fun copy(source: HostPort, id: NamedDatabaseId, mode: CopyMode) {
+        // Reported in its mode while copied.
+        hosting.host(id, mode)
         when (mode) {
             CopyMode.PRIMARY ->
                 stores.copyNew(source, DatabaseRef(id.name(), id.databaseId().uuid()))
             CopyMode.SECONDARY -> secondaries.copy(source, id)
         }
+    }
 }

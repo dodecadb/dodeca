@@ -2,6 +2,7 @@ package org.dozendb.core.edition
 
 import java.time.Duration
 import java.util.UUID
+import org.dozendb.core.servers.CopyMode
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 
@@ -14,7 +15,8 @@ data class WantedDatabase(val name: String, val id: UUID?, val online: Boolean)
 /**
  * A database on one server: running, stopped, being copied from another server, or failed with
  * [failure]. [leaderKnown] tells whether the server knows the leader of its copies, which takes its
- * writes: in a cluster, of its Raft group; a server without clustering leads its own.
+ * writes: in a cluster, of its Raft group; a server without clustering leads its own. The server
+ * hosts it in [mode]: a server without clustering hosts primaries.
  */
 data class DatabaseState(
     val name: String,
@@ -22,6 +24,7 @@ data class DatabaseState(
     val status: Status,
     val failure: String? = null,
     val leaderKnown: Boolean = true,
+    val mode: CopyMode = CopyMode.PRIMARY,
 ) {
     enum class Status {
         ONLINE,

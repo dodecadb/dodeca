@@ -33,11 +33,12 @@ import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
  * What SHOW DATABASES and SHOW SERVERS show of a cluster, as Neo4j Enterprise shows them: for each
- * database a row for each server it is placed on and each member of its Raft group, also where it
- * does not run here (see [DatabaseRows], [DatabaseLocations]), and a server for each member of the
- * cluster. Other members' rows are what they report when this member asks them, as it does for each
- * command, waiting at most [probeDeadline]: a member that has not answered by then shows as
- * unknown, or as an unavailable server.
+ * database a row for each server it is placed on, as a primary or a secondary, each member of its
+ * Raft group and each member that runs a secondary of it, also where it does not run here (see
+ * [DatabaseRows], [DatabaseLocations]), and a server for each member of the cluster. Other members'
+ * rows are what they report when this member asks them, as it does for each command, waiting at
+ * most [probeDeadline]: a member that has not answered by then shows as unknown, or as an
+ * unavailable server.
  *
  * @property report what a member reports about itself, this member included; null while unknown.
  */
@@ -221,36 +222,49 @@ internal class ClusterTopologyInfoService(
             val placed = placed(transaction, id.name())
             DatabaseRows.rows(
                 own,
-                members(location, placed, hosts).map { copy(it, it in answering, database) },
+                members(location, placed.keys, hosts, database, answering).map {
+                    copy(it, it in answering, database, placed[it])
+                },
                 location?.leader,
                 requestedExtras.txInfo(),
-                placed,
+                placed.keys,
             )
         }
     }
 
     /**
-     * The servers that host a primary of the database [name]; none for `system` or while unplaced.
+     * The servers that the database [name] is placed on, with the mode of each copy; none for
+     * `system` or while unplaced.
      */
-    private fun placed(transaction: Transaction, name: String): Set<MemberId> =
+    private fun placed(transaction: Transaction, name: String): Map<MemberId, CopyMode> =
         Placements.database(transaction, name)
-            ?.let { Placements.hosts(it, CopyMode.PRIMARY) }
-            ?.mapTo(LinkedHashSet(), ::MemberId)
+            ?.let(Placements::copies)
+            ?.mapKeys { MemberId(it.key) }
             .orEmpty()
 
     /**
-     * The voting members of a database's group at [location] and the servers it is [placed] on;
-     * while neither is known, the members of the cluster that [hosts]; this member alone while
-     * consensus does not run.
+     * The voting members of a database's group at [location], the servers it is [placed] on, and
+     * the [answering] members that report running a secondary of [database], as one it moves off
+     * does until it drops it; while none of them is known, the members of the cluster that [hosts];
+     * this member alone while consensus does not run.
      */
     private fun members(
         location: DatabaseLocations.Location?,
         placed: Set<MemberId>,
         hosts: (MemberId) -> Boolean,
+        database: DatabaseRef,
+        answering: Set<MemberId>,
     ): List<MemberId> {
         val voters = location?.voters?.map { it.id }
-        if (voters == null && placed.isEmpty()) return systemMembers().filter(hosts)
-        return (voters.orEmpty() + placed).distinct()
+        val secondaries = answering.filter { member ->
+            directory.databaseStates(member).orEmpty().any {
+                it.id == database.id && it.mode == CopyMode.SECONDARY
+            }
+        }
+        if (voters == null && placed.isEmpty() && secondaries.isEmpty()) {
+            return systemMembers().filter(hosts)
+        }
+        return (voters.orEmpty() + placed + secondaries.sortedBy { it.uuid }).distinct()
     }
 
     /** The members of the cluster; this member alone while consensus does not run. */
@@ -272,15 +286,24 @@ internal class ClusterTopologyInfoService(
         return { it.uuid in records }
     }
 
-    private fun copy(member: MemberId, answering: Boolean, database: DatabaseRef): Copy =
-        Copy(
+    /** What [member] has of [database], hosted in the mode it reports, else as [placed] there. */
+    private fun copy(
+        member: MemberId,
+        answering: Boolean,
+        database: DatabaseRef,
+        placed: CopyMode?,
+    ): Copy {
+        val state = directory.databaseStates(member)?.firstOrNull { it.id == database.id }
+        return Copy(
             member,
             answering,
             directory.boltAddress(member)?.let(::socketAddress),
-            directory.databaseStates(member)?.firstOrNull { it.id == database.id },
+            state,
             database.id in directory.readOnlyDatabases(member),
             directory.lastCommitted(member)[database.id],
+            state?.mode ?: placed ?: CopyMode.PRIMARY,
         )
+    }
 
     private companion object {
         const val SYSTEM = "system"

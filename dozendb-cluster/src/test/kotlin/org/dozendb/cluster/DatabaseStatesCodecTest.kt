@@ -5,6 +5,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DatabaseState.Status
+import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 
 class DatabaseStatesCodecTest {
@@ -17,6 +18,13 @@ class DatabaseStatesCodecTest {
                 DatabaseState("music", UUID.randomUUID(), Status.STARTING, leaderKnown = false),
                 DatabaseState("film.archive", UUID.randomUUID(), Status.OFFLINE),
                 DatabaseState("books", UUID.randomUUID(), Status.FAILED, "Unable to start books"),
+                DatabaseState(
+                    "poems",
+                    UUID.randomUUID(),
+                    Status.ONLINE,
+                    leaderKnown = false,
+                    mode = CopyMode.SECONDARY,
+                ),
             )
 
         assertThat(DatabaseStatesCodec.decode(DatabaseStatesCodec.encode(states))).isEqualTo(states)
@@ -51,6 +59,27 @@ class DatabaseStatesCodecTest {
 
         assertThat(
                 DatabaseStatesCodec.decode(DatabaseStatesCodec.encode(listOf(online)) + "\tlater")
+            )
+            .containsExactly(online)
+    }
+
+    @Test
+    fun `reads a database that an earlier version reported as a primary`() {
+        val id = UUID.randomUUID()
+
+        assertThat(DatabaseStatesCodec.decode("films\t$id\tONLINE\ttrue\t"))
+            .containsExactly(DatabaseState("films", id, Status.ONLINE, mode = CopyMode.PRIMARY))
+    }
+
+    @Test
+    fun `leaves out a database whose mode a later version added`() {
+        val online = DatabaseState("films", UUID.randomUUID(), Status.ONLINE)
+        val later = "books\t${UUID.randomUUID()}\tONLINE\ttrue\t\tarchive"
+
+        assertThat(
+                DatabaseStatesCodec.decode(
+                    later + "\n" + DatabaseStatesCodec.encode(listOf(online))
+                )
             )
             .containsExactly(online)
     }

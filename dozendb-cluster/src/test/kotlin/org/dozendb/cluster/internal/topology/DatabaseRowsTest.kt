@@ -5,6 +5,7 @@ import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
+import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseDetails
@@ -16,6 +17,7 @@ class DatabaseRowsTest {
     private val a = MemberId(UUID(0, 1))
     private val b = MemberId(UUID(0, 2))
     private val c = MemberId(UUID(0, 3))
+    private val d = MemberId(UUID(0, 4))
     private val id = DatabaseIdFactory.from("films", UUID.randomUUID())
 
     /** Neo4j Community's row for this member, [a]. */
@@ -46,6 +48,7 @@ class DatabaseRowsTest {
         readOnly: Boolean = false,
         lastCommitted: Long? = null,
         failure: String? = null,
+        mode: CopyMode = CopyMode.PRIMARY,
     ) =
         Copy(
             member,
@@ -54,6 +57,7 @@ class DatabaseRowsTest {
             status?.let { DatabaseState("films", id.databaseId().uuid(), it, failure) },
             readOnly,
             lastCommitted,
+            mode,
         )
 
     private fun rows(
@@ -125,8 +129,47 @@ class DatabaseRowsTest {
     }
 
     @Test
+    fun `a secondary has its role, is never the writer, and is counted apart from primaries`() {
+        val rows =
+            rows(
+                listOf(
+                    copy(a),
+                    copy(b),
+                    copy(c, mode = CopyMode.SECONDARY),
+                    copy(d, DatabaseState.Status.COPYING, mode = CopyMode.SECONDARY),
+                ),
+                leader = c,
+                placed = setOf(a, b, c, d),
+            )
+
+        assertThat(rows.mapValues { it.value.role().orElseThrow() })
+            .containsExactlyInAnyOrderEntriesOf(
+                mapOf(a to "primary", b to "primary", c to "secondary", d to "secondary")
+            )
+        assertThat(rows.values).noneMatch { it.writer() }
+        assertThat(rows.getValue(c).status()).isEqualTo("online")
+        assertThat(rows.getValue(d).status()).isEqualTo("store copying")
+        assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(2)
+        assertThat(rows.values.map { it.actualSecondariesCount() }).containsOnly(1)
+    }
+
+    @Test
+    fun `a secondary on a server the database no longer has one on is deallocating`() {
+        val rows =
+            rows(
+                listOf(copy(a), copy(b), copy(c, mode = CopyMode.SECONDARY)),
+                leader = a,
+                placed = setOf(a, b),
+            )
+
+        assertThat(rows.getValue(c).status()).isEqualTo("deallocating")
+        assertThat(rows.getValue(c).role()).contains("secondary")
+    }
+
+    @Test
     fun `a member that does not answer has the role and status unknown, and no address`() {
-        val rows = rows(listOf(copy(a), copy(b), copy(c, answering = false)))
+        val rows =
+            rows(listOf(copy(a), copy(b), copy(c, answering = false, mode = CopyMode.SECONDARY)))
 
         val c = rows.getValue(c)
         assertThat(c.boltAddress()).isEmpty()

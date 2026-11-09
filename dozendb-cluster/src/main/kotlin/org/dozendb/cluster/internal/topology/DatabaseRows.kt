@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal.topology
 import java.util.Optional
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
+import org.dozendb.core.servers.CopyMode
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseDetails
 import org.neo4j.dbms.identity.ServerId
@@ -15,6 +16,8 @@ import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseAccess
  *   does.
  * @property state the database's state on the member, as it reported it; null if it did not.
  * @property readOnly whether the database is read-only on the member by its configuration.
+ * @property mode the mode the member hosts the database in: as it reported it, else as the database
+ *   is placed on it.
  */
 internal data class Copy(
     val member: MemberId,
@@ -23,22 +26,24 @@ internal data class Copy(
     val state: DatabaseState?,
     val readOnly: Boolean,
     val lastCommittedTxId: Long?,
+    val mode: CopyMode = CopyMode.PRIMARY,
 )
 
 /** The rows of SHOW DATABASES for a database of a cluster, as Neo4j Enterprise shows them. */
 internal object DatabaseRows {
     /**
-     * A row for each of [copies]: the member's Bolt address, access and status, and `writer` true
-     * only for the [leader], if the database is online and writable there. A member that does not
-     * answer has the role and status `unknown`, and no address, as in Neo4j Enterprise, and one
-     * whose copy runs before its Raft group does, as a new database's, `starting`. Where the
-     * database is placed on servers, [placed], the status says how its copies move, with Neo4j
-     * Enterprise's names: `store copying` on a server that copies the database in, `initial` on one
-     * it is placed on that has not created it yet, and `deallocating` on one it moves off, which
-     * still runs it, and may still lead it until it hands the leadership over. With [txInfo], each
-     * row of a member that answers has the copy's last transaction id and how far it is behind the
-     * newest copy's. The values that belong to the database itself, such as its type and store, are
-     * those of [own], Neo4j Community's row for this member.
+     * A row for each of [copies]: the member's Bolt address, access, role, `primary` or
+     * `secondary`, and status, and `writer` true only for the [leader], if the database is online
+     * and writable there; the online primaries and secondaries are counted apart. A member that
+     * does not answer has the role and status `unknown`, and no address, as in Neo4j Enterprise,
+     * and one whose copy runs before its Raft group does, as a new database's, `starting`. Where
+     * the database is placed on servers, [placed], in either mode, the status says how its copies
+     * move, with Neo4j Enterprise's names: `store copying` on a server that copies the database in,
+     * `initial` on one it is placed on that has not created it yet, and `deallocating` on one it
+     * moves off, which still runs it, and may still lead it until it hands the leadership over.
+     * With [txInfo], each row of a member that answers has the copy's last transaction id and how
+     * far it is behind the newest copy's. The values that belong to the database itself, such as
+     * its type and store, are those of [own], Neo4j Community's row for this member.
      */
     fun rows(
         own: DatabaseDetails,
@@ -47,9 +52,11 @@ internal object DatabaseRows {
         txInfo: Boolean,
         placed: Set<MemberId> = emptySet(),
     ): List<DatabaseDetails> {
-        val online = copies.count {
-            it.answering && it.state?.status == DatabaseState.Status.ONLINE
-        }
+        val online =
+            copies
+                .filter { it.answering && it.state?.status == DatabaseState.Status.ONLINE }
+                .groupingBy { it.mode }
+                .eachCount()
         // What a member that does not answer reported last is not its copy now.
         val newest = copies.filter { it.answering }.mapNotNull { it.lastCommittedTxId }.maxOrNull()
         return copies.map { copy ->
@@ -76,8 +83,14 @@ internal object DatabaseRows {
                 Optional.of(ServerId(copy.member.uuid)),
                 if (copy.readOnly) DatabaseAccess.READ_ONLY else DatabaseAccess.READ_WRITE,
                 Optional.ofNullable(copy.boltAddress.takeIf { copy.answering }),
-                Optional.of(if (copy.answering) DatabaseDetails.ROLE_PRIMARY else UNKNOWN_ROLE),
-                copy.member == leader && running && !copy.readOnly,
+                Optional.of(
+                    when {
+                        !copy.answering -> UNKNOWN_ROLE
+                        copy.mode == CopyMode.SECONDARY -> DatabaseDetails.ROLE_SECONDARY
+                        else -> DatabaseDetails.ROLE_PRIMARY
+                    }
+                ),
+                copy.mode == CopyMode.PRIMARY && copy.member == leader && running && !copy.readOnly,
                 status,
                 message,
                 Optional.ofNullable(lastCommitted),
@@ -88,8 +101,8 @@ internal object DatabaseRows {
                 own.options(),
                 own.storeId(),
                 own.externalStoreId(),
-                online,
-                0,
+                online[CopyMode.PRIMARY] ?: 0,
+                online[CopyMode.SECONDARY] ?: 0,
             )
         }
     }

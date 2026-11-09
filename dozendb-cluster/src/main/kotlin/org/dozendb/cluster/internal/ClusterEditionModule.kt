@@ -544,7 +544,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /**
      * This member's databases as it reports them to the others: those it copies from another
      * member, new ones or to catch up, as being copied; new ones that run before their group as
-     * starting, or as failed if their group could not start; and whether it knows their leaders.
+     * starting, or as failed if their group could not start; whether it knows their leaders; and
+     * the mode it hosts each in.
      */
     private fun reportedStates(): List<DatabaseState> {
         val catchingUp = replication.catchingUp() + secondaries.catchingUp()
@@ -566,11 +567,17 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                             )
                         it.name in starting -> it.copy(status = DatabaseState.Status.STARTING)
                         else -> it
-                    }.copy(leaderKnown = it.name in led)
+                    }.copy(leaderKnown = it.name in led, mode = clusterHosting.mode(it.name))
                 }
         return states +
             copying.map { (name, id) ->
-                DatabaseState(name, id, DatabaseState.Status.COPYING, leaderKnown = false)
+                DatabaseState(
+                    name,
+                    id,
+                    DatabaseState.Status.COPYING,
+                    leaderKnown = false,
+                    mode = clusterHosting.mode(name),
+                )
             }
     }
 

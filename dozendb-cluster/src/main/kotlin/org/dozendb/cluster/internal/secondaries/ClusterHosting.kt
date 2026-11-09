@@ -23,13 +23,16 @@ internal class ClusterHosting(
 
     override val reusesFreedIdsAtStart: Boolean = false
 
-    /** Hosts [id] in [mode] from when it is next created. */
+    /** Hosts [id] in [mode] from when it is next created, or copied in. */
     fun host(id: NamedDatabaseId, mode: CopyMode) {
         modes[id.name()] = mode
     }
 
-    /** The mode [id] is hosted in, or is next created in. */
-    fun mode(id: NamedDatabaseId): CopyMode = modes[id.name()] ?: CopyMode.PRIMARY
+    /** The mode [id] is hosted in, or is next created or copied in. */
+    fun mode(id: NamedDatabaseId): CopyMode = mode(id.name())
+
+    /** The mode the database [name] is hosted in, or is next created or copied in. */
+    fun mode(name: String): CopyMode = modes[name] ?: CopyMode.PRIMARY
 
     override fun prepare(
         namedDatabaseId: NamedDatabaseId,

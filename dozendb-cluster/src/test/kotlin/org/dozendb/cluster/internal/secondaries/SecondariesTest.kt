@@ -284,6 +284,48 @@ class SecondariesTest {
     }
 
     @Test
+    fun `every member shows a secondary in SHOW DATABASES and SHOW SERVERS`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+        cluster.awaitSecondary()
+        val secondary = cluster.secondary.serverId
+
+        for (member in cluster.members) {
+            eventually {
+                val rows =
+                    member.query(
+                        "SHOW DATABASE $FILMS YIELD serverID, role, writer, currentStatus, " +
+                            "currentPrimariesCount, currentSecondariesCount, " +
+                            "requestedPrimariesCount, requestedSecondariesCount"
+                    )
+                assertThat(rows.associate { it["serverID"] to it["role"] })
+                    .describedAs("on $member")
+                    .isEqualTo(
+                        cluster.primaries.associate { it.serverId to "primary" } +
+                            (secondary to "secondary")
+                    )
+                assertThat(rows.map { it["currentStatus"] }).containsOnly("online")
+                assertThat(rows.single { it["serverID"] == secondary }["writer"]).isEqualTo(false)
+                for ((column, count) in
+                    listOf(
+                        "currentPrimariesCount" to 2L,
+                        "currentSecondariesCount" to 1L,
+                        "requestedPrimariesCount" to 2L,
+                        "requestedSecondariesCount" to 1L,
+                    )) {
+                    assertThat(rows.map { it[column] }).describedAs(column).containsOnly(count)
+                }
+                val hosting =
+                    member.query("SHOW SERVERS YIELD serverId, hosting, requestedHosting").single {
+                        it["serverId"] == secondary
+                    }
+                assertThat(hosting["hosting"] as List<*>).contains(FILMS)
+                assertThat(hosting["requestedHosting"] as List<*>).contains(FILMS)
+            }
+        }
+    }
+
+    @Test
     fun `a secondary is deleted with its database`() {
         val cluster = cluster()
         cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
@@ -299,6 +341,11 @@ class SecondariesTest {
             assertThat(cluster.secondary.marked()).doesNotContain(id.toString())
         }
     }
+
+    private fun ClusterHarness.Member.query(statement: String): List<Map<String, Any?>> =
+        database(SYSTEM).executeTransactionally(statement, emptyMap()) { result ->
+            result.asSequence().map { it.toMap() }.toList()
+        }
 
     private fun ClusterHarness.Member.metrics(): ClusterMetrics.Counters =
         database(SYSTEM).dependencyResolver.resolveDependency(ClusterMetrics::class.java).of(FILMS)
