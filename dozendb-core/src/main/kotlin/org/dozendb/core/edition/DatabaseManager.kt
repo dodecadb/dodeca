@@ -9,6 +9,8 @@
  * 2026-10-19: ported to Kotlin from DozerDB's MultiDatabaseManager and
  * MultiDatabaseLifecycleService, which extend Neo4j's DatabaseLifecycles to many databases. Stops
  * the system database last and drops databases without a checkpoint.
+ * 2026-11-09: starts a database again when Neo4j's file watcher failed to start it because a
+ * directory entry went meanwhile.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -16,6 +18,7 @@
  */
 package org.dozendb.core.edition
 
+import java.nio.file.NoSuchFileException
 import java.util.Optional
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.dbms.api.DatabaseManagementException
@@ -25,6 +28,8 @@ import org.neo4j.dbms.database.DatabaseOperationCounts
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.UnableToStartDatabaseException
+import org.neo4j.io.fs.watcher.DatabaseLayoutWatcher
+import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
@@ -85,6 +90,37 @@ class DatabaseManager(
      * Starts the database of [context]; first, if it has no store and a [seed], puts the seed's
      * store in place. A seed that fails fails the database.
      */
+    /**
+     * Starts [database], again while it fails because an entry of a directory went while Neo4j's
+     * file watcher began to watch the directory: the JDK's polling watch service (macOS and AIX)
+     * reads each entry as it registers a directory, and fails if one goes meanwhile, as when
+     * another database's copy moves into place or a database is dropped.
+     */
+    private fun start(database: Database) {
+        var attempt = 1
+        while (true) {
+            try {
+                database.start()
+                return
+            } catch (e: Throwable) {
+                if (attempt == WATCH_ATTEMPTS || !goneWhileWatched(e)) throw e
+                log.warn(
+                    "Starting '%s' failed as a file went while Neo4j began to watch its " +
+                        "directory; starting it again",
+                    database.namedDatabaseId,
+                )
+                attempt++
+            }
+        }
+    }
+
+    private fun goneWhileWatched(failure: Throwable): Boolean =
+        generateSequence(failure) { it.cause }
+            .any { cause ->
+                cause is NoSuchFileException &&
+                    cause.stackTrace.any { it.className == DatabaseLayoutWatcher::class.java.name }
+            }
+
     fun startDatabase(context: StandaloneDatabaseContext, seed: Seed? = null) {
         val id = context.database().namedDatabaseId
         if (seed != null && !placement.holdsStore(id.name()) && !placement.incomplete(id.name())) {
@@ -129,7 +165,7 @@ class DatabaseManager(
         }
         try {
             log.info("Starting '%s'.", id)
-            context.database().start()
+            start(context.database())
             counts.increaseStartCount()
         } catch (e: Throwable) {
             log.error("Failed to start '$id'.", e)
@@ -253,4 +289,9 @@ class DatabaseManager(
         repository.getDatabaseContext(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID).orElseThrow {
             DatabaseNotFoundHelper.databaseNotFound(NamedDatabaseId.SYSTEM_DATABASE_NAME)
         }
+
+    private companion object {
+        /** How often a database is started while directory entries go as it begins to watch. */
+        const val WATCH_ATTEMPTS = 3
+    }
 }

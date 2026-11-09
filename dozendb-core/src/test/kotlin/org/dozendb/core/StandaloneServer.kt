@@ -3,6 +3,7 @@ package org.dozendb.core
 import java.nio.file.Files
 import java.nio.file.Path
 import org.dozendb.core.edition.DozenDbEditionModule
+import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -18,6 +19,7 @@ import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies
 import org.neo4j.io.ByteUnit
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 
@@ -27,6 +29,8 @@ class StandaloneServer(
     private val settings: Map<Setting<*>, Any> = emptyMap(),
     /** Listeners the DBMS calls before DozenDB's own. */
     private val databaseEventListeners: List<DatabaseEventListener> = emptyList(),
+    /** The file system the DBMS runs on, if not Neo4j's default one. */
+    private val fileSystem: FileSystemAbstraction? = null,
 ) : AutoCloseable {
     val home: Path = Files.createDirectories(root.resolve("server"))
 
@@ -42,7 +46,12 @@ class StandaloneServer(
                     config(),
                     false,
                     GraphDatabaseDependencies.newDependencies()
-                        .databaseEventListeners(databaseEventListeners),
+                        .databaseEventListeners(databaseEventListeners)
+                        .apply {
+                            fileSystem?.let {
+                                dependencies(Dependencies().apply { satisfyDependency(it) })
+                            }
+                        },
                 )
     }
 

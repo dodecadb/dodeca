@@ -2,7 +2,9 @@ package org.dozendb.core.edition
 
 import java.io.IOException
 import java.nio.file.Files
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicBoolean
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.core.StandaloneServer
 import org.junit.jupiter.api.AfterEach
@@ -10,6 +12,10 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.io.fs.DefaultFileSystemAbstraction
+import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.io.fs.watcher.FileWatcher
+import org.neo4j.io.fs.watcher.resource.WatchedResource
 import org.neo4j.monitoring.DatabaseHealth
 
 /** With clustering disabled, databases follow the system graph as soon as a command commits. */
@@ -53,6 +59,52 @@ class StandaloneDatabasesTest {
         server.administer("DROP DATABASE films")
         assertThat(statuses()).doesNotContainKey("films")
         assertThat(storeOf("films")).doesNotExist()
+    }
+
+    @Test
+    fun `a database starts although an entry of a directory went while Neo4j began to watch it`() {
+        server.close()
+        val fileSystem = VanishingEntries()
+        server = StandaloneServer(root.resolve("watched"), fileSystem = fileSystem)
+        server.start()
+        server.administer("CREATE DATABASE films")
+        server.administer("STOP DATABASE films")
+
+        fileSystem.vanishOnNextWatch()
+        server.administer("START DATABASE films")
+
+        assertThat(fileSystem.vanished).isTrue()
+        assertThat(statuses()).containsEntry("films", "online")
+    }
+
+    /**
+     * Neo4j's file system, whose file watcher fails to watch a directory once after
+     * [vanishOnNextWatch], as the JDK's polling watch service (macOS) does when an entry of the
+     * directory goes while it reads them, as another database's copy moves into place.
+     */
+    private class VanishingEntries(
+        private val delegate: FileSystemAbstraction = DefaultFileSystemAbstraction()
+    ) : FileSystemAbstraction by delegate {
+        private val vanish = AtomicBoolean()
+
+        @Volatile
+        var vanished = false
+            private set
+
+        fun vanishOnNextWatch() = vanish.set(true)
+
+        override fun fileWatcher(): FileWatcher {
+            val watcher = delegate.fileWatcher()
+            return object : FileWatcher by watcher {
+                override fun watch(path: Path): WatchedResource {
+                    if (vanish.getAndSet(false)) {
+                        vanished = true
+                        throw NoSuchFileException(path.resolve(".dozendb-copy-gone").toString())
+                    }
+                    return watcher.watch(path)
+                }
+            }
+        }
     }
 
     @Test
