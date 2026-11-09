@@ -8,6 +8,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.backup.CommunityServer
 import org.dozendb.core.store.CommittedTransaction
 import org.dozendb.core.store.CommittedTransactions
+import org.dozendb.core.store.CommittedTransactions.Behind
 import org.dozendb.core.store.CommittedTransactions.Continued
 import org.dozendb.core.store.CommittedTransactions.Diverged
 import org.dozendb.core.store.CommittedTransactions.Pruned
@@ -133,12 +134,22 @@ class CommittedTransactionsTest {
                     "the database's transaction at append index ${last.appendIndex()} has " +
                         "checksum ${last.checksum()}, not the copy's ${last.checksum() + 1}"
                 )
-            assertThat(reason(last.appendIndex() + 1, 0))
-                .isEqualTo(
-                    "the database's last transaction has append index ${last.appendIndex()}, " +
-                        "before the copy's last"
-                )
             assertThat(server.checksumAt(middle.appendIndex())).isEqualTo(middle.checksum())
+        }
+    }
+
+    @Test
+    fun `tells when the database is behind the copy, which it cannot judge then`() {
+        CommunityServer(root).start().use { server ->
+            server.database().executeTransactionally("CREATE (:One)")
+            val last = server.lastCommitted()
+
+            val behind =
+                CommittedTransactions.read(server.databaseInternal(), last.appendIndex() + 1, 0) {
+                    it as Behind
+                }
+
+            assertThat(behind.last.appendIndex()).isEqualTo(last.appendIndex())
         }
     }
 

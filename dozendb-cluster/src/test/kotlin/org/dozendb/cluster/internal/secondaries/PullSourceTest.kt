@@ -132,6 +132,21 @@ class PullSourceTest {
     }
 
     @Test
+    fun `a secondary further ahead than the upstream gets nothing, and no refusal`() {
+        val database = start()
+        database.write(2)
+        val last = database.last()
+
+        database.pull(
+            PullProtocol.Request(database.ref(), last.appendIndex() + 5, last.checksum() + 1, 1)
+        ) {
+            it as Answer.Pulled
+            assertThat(it.last).isEqualTo(last.appendIndex())
+            assertThat(it.transactions.toList()).isEmpty()
+        }
+    }
+
+    @Test
     fun `a pull stops at its byte limit, and the next one takes the rest`() {
         val database = start()
         database.write(1)
@@ -173,13 +188,6 @@ class PullSourceTest {
         assertThat(
                 refusal(
                     PullProtocol.Request(database.ref(), last.appendIndex(), last.checksum() + 1, 1)
-                )
-            )
-            .extracting { it.status }
-            .isEqualTo(Status.DIVERGED)
-        assertThat(
-                refusal(
-                    PullProtocol.Request(database.ref(), last.appendIndex() + 1, last.checksum(), 1)
                 )
             )
             .extracting { it.status }

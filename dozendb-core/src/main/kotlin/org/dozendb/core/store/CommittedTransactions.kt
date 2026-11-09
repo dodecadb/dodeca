@@ -26,6 +26,12 @@ object CommittedTransactions {
     /** The database's logs no longer hold the transaction after the copy's last. */
     data object Pruned : Range
 
+    /**
+     * The database's last closed transaction, [last], comes before the copy's last: it holds
+     * nothing after it, and cannot tell whether it continues the copy's history.
+     */
+    class Behind(val last: TransactionId) : Range
+
     /** The database does not continue the copy's history, for [reason]. */
     class Diverged(val reason: String) : Range
 
@@ -46,14 +52,7 @@ object CommittedTransactions {
                         .resolveDependency(TransactionIdStore::class.java)
                         .lastClosedTransaction
                         .transactionId()
-                if (after > last.appendIndex()) {
-                    return block(
-                        Diverged(
-                            "the database's last transaction has append index ${last.appendIndex()}, " +
-                                "before the copy's last"
-                        )
-                    )
-                }
+                if (after > last.appendIndex()) return block(Behind(last))
                 if (after == last.appendIndex()) {
                     return block(
                         if (last.checksum() == checksum) Continued(last, emptySequence())

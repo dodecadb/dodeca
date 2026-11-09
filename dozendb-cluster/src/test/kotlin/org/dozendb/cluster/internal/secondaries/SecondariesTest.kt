@@ -302,6 +302,65 @@ class SecondariesTest {
     }
 
     @Test
+    fun `a secondary ahead of the secondary it pulls from keeps running`() {
+        val cluster =
+            cluster(
+                mapOf(BoltConnector.enabled to true),
+                size = 4,
+                own =
+                    mapOf(
+                        2 to
+                            mapOf(
+                                DozenDbSettings.initialServerTags to listOf("feeder"),
+                                ClusterSettings.pullInterval to Duration.ofHours(1),
+                            ),
+                        3 to
+                            mapOf(
+                                ClusterSettings.upstreamStrategy to listOf("user-defined"),
+                                ClusterSettings.userDefinedUpstreamStrategy to
+                                    "tags(feeder); halt()",
+                            ),
+                    ),
+            )
+        val (feeder, fed) = cluster.members.drop(2)
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 2 SECONDARIES")
+        eventually {
+            for (member in listOf(feeder, fed)) {
+                assertThat(member.registered(FILMS)?.database()?.isStarted).isTrue()
+            }
+            // Its first pull, after which it pulls again in an hour.
+            assertThat(feeder.metrics().pullsMade.sum()).isPositive()
+        }
+        cluster.write("UNWIND range(1, 10) AS i CREATE (:Film {id: i})")
+
+        // A linearizable read pulls from a primary.
+        GraphDatabase.driver("bolt://${fed.boltAddress()}", AuthTokens.none()).use { driver ->
+            driver.session(SessionConfig.forDatabase(FILMS)).use {
+                val linearizable =
+                    TransactionConfig.builder()
+                        .withMetadata(mapOf("dozendb.consistency" to "linearizable"))
+                        .build()
+                assertThat(
+                        it.run("MATCH (f:Film) RETURN count(f) AS c", linearizable)
+                            .single()["c"]
+                            .asLong()
+                    )
+                    .isEqualTo(10)
+            }
+        }
+        assertThat(feeder.films()).describedAs("the feeder lags").isZero()
+
+        val pulls = fed.metrics().pullsMade.sum()
+        eventually {
+            assertThat(fed.registered(FILMS)?.database()?.databaseHealth?.hasNoPanic())
+                .describedAs("it did not panic")
+                .isTrue()
+            assertThat(fed.metrics().pullsMade.sum()).isGreaterThan(pulls + 1)
+        }
+        assertThat(fed.films()).isEqualTo(10)
+    }
+
+    @Test
     fun `every member shows a secondary in SHOW DATABASES and SHOW SERVERS`() {
         val cluster = cluster()
         cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")

@@ -15,6 +15,7 @@ import org.dozendb.consensus.BulkSource
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.security.MetadataScript
 import org.dozendb.core.store.CommittedTransactions
+import org.dozendb.core.store.CommittedTransactions.Behind
 import org.dozendb.core.store.CommittedTransactions.Continued
 import org.dozendb.core.store.CommittedTransactions.Diverged
 import org.dozendb.core.store.CommittedTransactions.Pruned
@@ -189,6 +190,13 @@ internal class BackupSource(
                         out,
                         Status.DIVERGED,
                         "database '$name' does not continue the backup: ${range.reason}",
+                    )
+                is Behind ->
+                    BackupProtocol.writeStatus(
+                        out,
+                        Status.DIVERGED,
+                        "database '$name' does not continue the backup: its last transaction " +
+                            "has append index ${range.last.appendIndex()}, before the backup's last",
                     )
                 is Continued -> {
                     val last = range.last
