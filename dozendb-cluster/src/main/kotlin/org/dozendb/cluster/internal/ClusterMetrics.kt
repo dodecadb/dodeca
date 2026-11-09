@@ -33,6 +33,7 @@ internal class ClusterMetrics(
         val copiesRepeated = LongAdder()
         val copyMillis = SummaryHistogram()
         val copiesServed = LongAdder()
+        val pullsServed = LongAdder()
     }
 
     private val counters = ConcurrentHashMap<String, Counters>()
@@ -154,6 +155,12 @@ internal class ClusterMetrics(
             "Copies of the database sent to other members.",
         ) {
             counts.copiesServed.sum()
+        }
+        counter(
+            "cluster.catchup.tx_pull_requests_received",
+            "Pulls of transactions that secondaries sent this member.",
+        ) {
+            counts.pullsServed.sum()
         }
     }
 

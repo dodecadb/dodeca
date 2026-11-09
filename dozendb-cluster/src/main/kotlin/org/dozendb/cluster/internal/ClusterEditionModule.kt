@@ -36,6 +36,8 @@ import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.internal.routing.ClusterRoutingValidator
 import org.dozendb.cluster.internal.routing.ConfirmedReferences
+import org.dozendb.cluster.internal.secondaries.PullProtocol
+import org.dozendb.cluster.internal.secondaries.PullSource
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.internal.topology.ClusterTopologyInfoService
@@ -298,6 +300,18 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 log = logService.getInternalLog(StoreCopySource::class.java),
                 served = { name -> metrics.of(name).copiesServed.increment() },
+            ),
+        )
+        consensus.registerBulkSource(
+            PullProtocol.NAME,
+            PullSource(
+                {
+                    globalModule.globalDependencies.resolveDependency(
+                        DatabaseContextProvider::class.java
+                    )
+                },
+                logService.getInternalLog(PullSource::class.java),
+                served = { name -> metrics.of(name).pullsServed.increment() },
             ),
         )
         globalModule.databaseEventListeners.registerDatabaseEventListener(replication)
