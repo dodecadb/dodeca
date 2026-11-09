@@ -67,10 +67,12 @@ started again.
 version, still starts, belongs to another cluster (its databases came from
 elsewhere) or was dropped from this one. A server whose certificate the
 members do not trust is not reachable: the error says why, for example
-`unable to find valid certification path`. So is a server whose host name
-was missing from DNS until moments ago, as while its container was replaced:
-Java caches failed lookups for 10 seconds (`networkaddress.cache.negative.ttl`),
-and the error says `Unable to resolve host`. Try again then.
+`unable to find valid certification path`. A server whose host name does not
+resolve is probed again for up to 15 seconds before `addMember` fails with
+`Unable to resolve host`: Java caches failed lookups for 10 seconds
+(`networkaddress.cache.negative.ttl`), so the name of a server that was missing
+from DNS until moments ago, as while its container was replaced, does not
+resolve at once.
 
 ### Dropping a member
 

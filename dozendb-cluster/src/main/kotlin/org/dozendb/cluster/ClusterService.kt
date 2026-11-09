@@ -1,5 +1,6 @@
 package org.dozendb.cluster
 
+import java.net.UnknownHostException
 import java.time.Duration
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -78,6 +79,8 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
  * @property systemMode the mode this member is configured to host `system` in,
  *   `server.cluster.system_database_mode`.
  * @property systemHosting how this member hosts `system` as a secondary, if it can.
+ * @property unresolvedRetry how long [addMember] probes a server again while its host name does not
+ *   resolve.
  */
 class ClusterService(
     private val consensus: ConsensusLog,
@@ -95,6 +98,7 @@ class ClusterService(
     private val servers: ClusterServers = ClusterServers(consensus, systemDatabase),
     private val systemMode: CopyMode = CopyMode.PRIMARY,
     private val systemHosting: SystemHosting? = null,
+    private val unresolvedRetry: Duration = Duration.ofSeconds(15),
 ) {
     private var statusListener: AutoCloseable? = null
     private val levelRefresh: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -736,19 +740,14 @@ class ClusterService(
      * primary, which it does from its own store once it pulled that, and is added to the group, and
      * its record goes; this returns once that is done. Otherwise this returns at once.
      *
+     * A server whose host name does not resolve is probed again for a while, as one whose container
+     * was just replaced.
+     *
      * @throws MembershipChangeException if the member cannot be added.
      */
     fun addMember(address: HostPort): Member {
         requireMember()
-        val peer =
-            try {
-                runBlocking { consensus.probe(address) }
-            } catch (e: ConsensusUnavailableException) {
-                throw MembershipChangeException(
-                    "No DozenDB member answers at $address: ${e.message}",
-                    e,
-                )
-            }
+        val peer = probeCandidate(address)
         val candidate = peer.member
         val voter = servers.voters().members.any { it.id == candidate.id }
         val recorded = servers.secondaries().any { it.id == candidate.id }
@@ -784,6 +783,52 @@ class ClusterService(
         }
         userLog.info("Added member %s to the cluster", candidate)
         return candidate
+    }
+
+    /**
+     * Probes the server at [address] for [addMember]. While its host name does not resolve, it
+     * probes again for up to [unresolvedRetry]: Java caches failed lookups for 10 s
+     * (`networkaddress.cache.negative.ttl`), so a server whose name was missing from DNS until
+     * moments ago, as while its container was replaced, does not resolve at once. Other failures
+     * refuse it at once.
+     */
+    private fun probeCandidate(address: HostPort): PeerInfo {
+        val deadline = System.nanoTime() + unresolvedRetry.toNanos()
+        var logged = false
+        while (true) {
+            try {
+                return runBlocking { consensus.probe(address) }
+            } catch (e: ConsensusUnavailableException) {
+                val unresolved =
+                    generateSequence<Throwable>(e) { it.cause }
+                        .any {
+                            it is UnknownHostException
+                        }
+                if (!unresolved || System.nanoTime() - deadline >= 0) {
+                    val retried =
+                        if (unresolved) {
+                            " (its host name did not resolve for " +
+                                "${unresolvedRetry.toSeconds()} seconds)"
+                        } else {
+                            ""
+                        }
+                    throw MembershipChangeException(
+                        "No DozenDB member answers at $address: ${e.message}$retried",
+                        e,
+                    )
+                }
+                if (!logged) {
+                    userLog.info(
+                        "The host name of %s does not resolve yet; trying again for up to %s " +
+                            "seconds",
+                        address,
+                        unresolvedRetry.toSeconds(),
+                    )
+                    logged = true
+                }
+            }
+            Thread.sleep(UNRESOLVED_POLL_MILLIS)
+        }
     }
 
     /**
@@ -961,6 +1006,8 @@ class ClusterService(
         const val CONFIRMATION_POLL_MILLIS = 200L
 
         const val MODE_CHANGE_RETRY_MILLIS = 2_000L
+
+        const val UNRESOLVED_POLL_MILLIS = 500L
 
         /** How long a system secondary may take to turn primary once asked. */
         val PROMOTION_TIMEOUT: Duration = Duration.ofMinutes(2)

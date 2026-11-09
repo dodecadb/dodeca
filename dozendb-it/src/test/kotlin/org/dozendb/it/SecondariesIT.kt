@@ -481,19 +481,8 @@ class SecondariesIT {
         assertThat(servers("core1").getValue(ids.getValue("read2"))).isEqualTo("SECONDARY")
 
         // The leader may hold failed lookups of read2's name from while its container was
-        // replaced: Java caches them for 10 s (networkaddress.cache.negative.ttl), and the operator
-        // guide says to try again.
-        await withPollInterval
-            Duration.ofSeconds(1) atMost
-            AWAIT untilAsserted
-            {
-                val failure = runCatching {
-                    administer("CALL dozendb.cluster.addMember('read2:7700')")
-                }
-                    .exceptionOrNull()
-                if (failure != null && UNRESOLVED !in failure.message.orEmpty()) throw failure
-                assertThat(failure).describedAs("the leader resolves read2").isNull()
-            }
+        // replaced, which it tries again.
+        administer("CALL dozendb.cluster.addMember('read2:7700')")
 
         eventually {
             assertThat(copies("system")).isEqualTo(aliases.associateWith { "primary online" })
@@ -553,6 +542,5 @@ class SecondariesIT {
         const val MODE_CONSTRAINT = "NEO4J_initial_server_mode__constraint"
         val TRANSACTION_LOG = Regex("""neostore\.transaction\.db\.(\d+)""")
         const val CAUGHT_UP_BY_COPY = "Secondary films runs again, from a copy"
-        const val UNRESOLVED = "Unable to resolve host read2"
     }
 }

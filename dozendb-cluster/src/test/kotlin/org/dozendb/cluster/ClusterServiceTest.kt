@@ -1,11 +1,13 @@
 package org.dozendb.cluster
 
 import java.io.IOException
+import java.net.UnknownHostException
 import java.time.Duration
 import java.util.UUID
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
@@ -88,6 +90,7 @@ class ClusterServiceTest {
         index: Int,
         localStores: LocalStores = stores[index],
         formatLevels: FormatLevels = FormatLevels.SUPPORTED,
+        unresolvedRetry: Duration = Duration.ofSeconds(15),
     ) =
         ClusterService(
             logs[index],
@@ -100,6 +103,7 @@ class ClusterServiceTest {
             formatLevels = formatLevels,
             formatLevelStore = clusterLevel,
             upgradeConfirmation = Duration.ofMillis(500),
+            unresolvedRetry = unresolvedRetry,
         )
 
     @Test
@@ -258,13 +262,38 @@ class ClusterServiceTest {
     }
 
     /** Forms the cluster of the three initial members, with the first one leading. */
-    private fun formCluster(): List<ClusterService> {
-        val services = logs.indices.map(::service)
+    private fun formCluster(
+        unresolvedRetry: Duration = Duration.ofSeconds(15)
+    ): List<ClusterService> {
+        val services = logs.indices.map { service(it, unresolvedRetry = unresolvedRetry) }
         logs.forEach { it.start() }
         services.forEach { it.start() }
         consensus.electLeader(system, logs[0].self.id)
         return services
     }
+
+    /** A member started after the cluster formed, which waits to be added. */
+    private fun joiningMember(): InMemoryConsensus.InMemoryConsensusLog {
+        val joiningLog = consensus.newMember(metadata = joiningMetadata)
+        ClusterService(
+                joiningLog,
+                system,
+                ClusterFormation(joiningLog, addresses, "5.26.27", log, sleep = {}),
+                FakeStores(),
+                InMemoryMembershipStore(),
+                log,
+                metadata = { ownMetadata },
+            )
+            .start()
+        return joiningLog
+    }
+
+    /** How a probe fails while [address]'s host name does not resolve. */
+    private fun unresolvable(address: HostPort) =
+        ConsensusUnavailableException(
+            "probe of $address failed: UNAVAILABLE: Unable to resolve host ${address.host}",
+            UnknownHostException(address.host),
+        )
 
     @Test
     fun `a member started after the cluster formed joins it once it is added`() {
@@ -301,6 +330,33 @@ class ClusterServiceTest {
             .containsExactlyInAnyOrderElementsOf(logs.map { it.self } + joiningLog.self)
         // Adding it again changes nothing.
         assertThat(services[2].addMember(joiningLog.self.raftAddress)).isEqualTo(joiningLog.self)
+    }
+
+    @Test
+    fun `a member whose name resolves only moments after it started is added`() {
+        val services = formCluster()
+        val joining = joiningMember()
+        // As the JVM caches the failed lookups of a name that was missing from DNS for 10 s.
+        var unresolved = 3
+        joining.onProbe = { if (unresolved-- > 0) throw unresolvable(joining.self.raftAddress) }
+
+        assertThat(services[1].addMember(joining.self.raftAddress)).isEqualTo(joining.self)
+
+        assertThat(unresolved).isNegative()
+        assertThat(services[0].members().map { it.member }).contains(joining.self)
+    }
+
+    @Test
+    fun `a member whose name does not resolve is refused once it stayed so`() {
+        val services = formCluster(unresolvedRetry = Duration.ofMillis(300))
+        val joining = joiningMember()
+        joining.onProbe = { throw unresolvable(joining.self.raftAddress) }
+
+        assertThatThrownBy { services[1].addMember(joining.self.raftAddress) }
+            .isInstanceOf(MembershipChangeException::class.java)
+            .hasMessageContaining("No DozenDB member answers")
+            .hasMessageContaining("Unable to resolve host")
+        assertThat(services[0].members()).hasSize(3)
     }
 
     @Test
