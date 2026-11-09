@@ -11,12 +11,13 @@ import org.dozendb.backup.Artifacts
 import org.dozendb.backup.BackupProtocol
 import org.dozendb.backup.BackupProtocol.Request
 import org.dozendb.backup.BackupProtocol.Status
-import org.dozendb.backup.source.CommittedTransactions.Continued
-import org.dozendb.backup.source.CommittedTransactions.Diverged
-import org.dozendb.backup.source.CommittedTransactions.Pruned
 import org.dozendb.consensus.BulkSource
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.security.MetadataScript
+import org.dozendb.core.store.CommittedTransactions
+import org.dozendb.core.store.CommittedTransactions.Continued
+import org.dozendb.core.store.CommittedTransactions.Diverged
+import org.dozendb.core.store.CommittedTransactions.Pruned
 import org.dozendb.core.store.StoreArchive
 import org.dozendb.core.store.StoreSnapshots
 import org.neo4j.configuration.GraphDatabaseSettings

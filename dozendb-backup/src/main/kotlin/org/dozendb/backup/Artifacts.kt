@@ -9,6 +9,7 @@ import java.time.Instant
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import org.dozendb.core.store.CommittedTransaction
 import org.neo4j.dbms.archive.Dumper
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -93,7 +94,7 @@ object Artifacts {
     fun writeDifferential(
         out: OutputStream,
         header: ArtifactHeader,
-        transactions: Sequence<ArtifactTransaction>,
+        transactions: Sequence<CommittedTransaction>,
         staging: Path,
         fs: FileSystemAbstraction,
     ) {
@@ -123,7 +124,7 @@ object Artifacts {
     fun writeUncompressedDifferential(
         out: OutputStream,
         header: ArtifactHeader,
-        transactions: Sequence<ArtifactTransaction>,
+        transactions: Sequence<CommittedTransaction>,
     ) {
         require(!header.full && !header.compressed) {
             "the header is not an uncompressed differential backup's"
@@ -146,7 +147,7 @@ object Artifacts {
     fun <T> readDifferential(
         input: InputStream,
         readers: CommandReaderFactory,
-        block: (ArtifactHeader, Sequence<ArtifactTransaction>) -> T,
+        block: (ArtifactHeader, Sequence<CommittedTransaction>) -> T,
     ): T {
         input.use {
             val opened = ArtifactContainer.read(input)

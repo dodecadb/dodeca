@@ -5,11 +5,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
-import org.dozendb.backup.ArtifactTransaction
 import org.dozendb.backup.CommunityServer
-import org.dozendb.backup.source.CommittedTransactions.Continued
-import org.dozendb.backup.source.CommittedTransactions.Diverged
-import org.dozendb.backup.source.CommittedTransactions.Pruned
+import org.dozendb.core.store.CommittedTransaction
+import org.dozendb.core.store.CommittedTransactions
+import org.dozendb.core.store.CommittedTransactions.Continued
+import org.dozendb.core.store.CommittedTransactions.Diverged
+import org.dozendb.core.store.CommittedTransactions.Pruned
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
@@ -33,7 +34,7 @@ class CommittedTransactionsTest {
     private fun CommunityServer.checksumAt(appendIndex: Long): Int =
         transactionsAfter(appendIndex - 1).first().checksum
 
-    private fun fields(transactions: List<ArtifactTransaction>) = transactions.map {
+    private fun fields(transactions: List<CommittedTransaction>) = transactions.map {
         listOf(it.transactionId, it.appendIndex, it.previousChecksum, it.checksum)
     }
 
@@ -125,17 +126,17 @@ class CommittedTransactionsTest {
             assertThat(reason(middle.appendIndex(), middle.checksum() + 1))
                 .isEqualTo(
                     "the database's transaction at append index ${middle.appendIndex()} has " +
-                        "checksum ${middle.checksum()}, not the backup's ${middle.checksum() + 1}"
+                        "checksum ${middle.checksum()}, not the copy's ${middle.checksum() + 1}"
                 )
             assertThat(reason(last.appendIndex(), last.checksum() + 1))
                 .isEqualTo(
                     "the database's transaction at append index ${last.appendIndex()} has " +
-                        "checksum ${last.checksum()}, not the backup's ${last.checksum() + 1}"
+                        "checksum ${last.checksum()}, not the copy's ${last.checksum() + 1}"
                 )
             assertThat(reason(last.appendIndex() + 1, 0))
                 .isEqualTo(
                     "the database's last transaction has append index ${last.appendIndex()}, " +
-                        "before the backup's last"
+                        "before the copy's last"
                 )
             assertThat(server.checksumAt(middle.appendIndex())).isEqualTo(middle.checksum())
         }

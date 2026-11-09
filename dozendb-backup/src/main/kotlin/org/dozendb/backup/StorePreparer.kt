@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.time.Clock
 import java.util.Optional
 import java.util.concurrent.TimeUnit
+import org.dozendb.core.store.CommittedTransaction
 import org.neo4j.commandline.dbms.StoreVersionLoader
 import org.neo4j.common.Subject
 import org.neo4j.configuration.Config
@@ -125,7 +126,7 @@ class StorePreparer(
                 val writer = logFile.transactionLogWriter
                 /** Appends [transaction], whose checksum must be [expected] if given. */
                 fun append(
-                    transaction: ArtifactTransaction,
+                    transaction: CommittedTransaction,
                     source: Any,
                     expected: Int?,
                 ): TransactionId {
@@ -245,7 +246,7 @@ class StorePreparer(
         }
 
     /** The empty transaction, without a Raft index, that ends the history in a Raft group. */
-    private fun detachment(last: TransactionId): ArtifactTransaction {
+    private fun detachment(last: TransactionId): CommittedTransaction {
         val now = clock.millis()
         val batch =
             CompleteCommandBatch(
@@ -259,7 +260,13 @@ class StorePreparer(
                 Subject.ANONYMOUS,
             )
         // Its checksum is whatever appending it gives.
-        return ArtifactTransaction(last.id() + 1, last.appendIndex() + 1, last.checksum(), 0, batch)
+        return CommittedTransaction(
+            last.id() + 1,
+            last.appendIndex() + 1,
+            last.checksum(),
+            0,
+            batch,
+        )
     }
 
     private fun unpack(archive: Path, target: DatabaseLayout) {

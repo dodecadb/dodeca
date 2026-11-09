@@ -5,15 +5,16 @@ import java.time.LocalDateTime
 import java.time.ZoneOffset.UTC
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
+import org.dozendb.core.store.CommittedTransaction
 
 /** Where a restore to a point in time stops, as `neo4j-admin database restore --restore-until`. */
 sealed interface RestorePoint {
     /** Whether [transaction] is restored. Transactions are restored in order until one is not. */
-    fun includes(transaction: ArtifactTransaction): Boolean
+    fun includes(transaction: CommittedTransaction): Boolean
 
     /** Before transaction [transactionId], which is not restored. */
     data class BeforeTransaction(val transactionId: Long) : RestorePoint {
-        override fun includes(transaction: ArtifactTransaction) =
+        override fun includes(transaction: CommittedTransaction) =
             transaction.transactionId < transactionId
 
         override fun toString() = "before transaction $transactionId"
@@ -21,7 +22,7 @@ sealed interface RestorePoint {
 
     /** Before [time]: the transactions that committed before it. */
     data class BeforeTime(val time: Instant) : RestorePoint {
-        override fun includes(transaction: ArtifactTransaction) =
+        override fun includes(transaction: CommittedTransaction) =
             transaction.batch.timeCommitted < time.toEpochMilli()
 
         override fun toString() = "before ${FORMAT.format(time.atOffset(UTC))} UTC"

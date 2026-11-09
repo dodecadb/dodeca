@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.temporal.ChronoUnit
+import org.dozendb.core.store.CommittedTransaction
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
@@ -72,10 +73,10 @@ internal class CommunityServer(
     fun lastCommitted(): TransactionId = dependency<TransactionIdStore>().lastCommittedTransaction
 
     /** The transactions after append index [after], as Neo4j reads them from its log. */
-    fun transactionsAfter(after: Long): List<ArtifactTransaction> {
+    fun transactionsAfter(after: Long): List<CommittedTransaction> {
         if (after == lastCommitted().appendIndex()) return emptyList()
         return dependency<LogicalTransactionStore>().getCommandBatches(after + 1).use { cursor ->
-            buildList { while (cursor.next()) add(ArtifactTransaction.of(cursor.get())) }
+            buildList { while (cursor.next()) add(CommittedTransaction.of(cursor.get())) }
         }
     }
 
@@ -98,7 +99,7 @@ internal class CommunityServer(
 
     /** The header of a differential backup of [transactions]. */
     fun differentialHeader(
-        transactions: List<ArtifactTransaction>,
+        transactions: List<CommittedTransaction>,
         compressed: Boolean,
     ): ArtifactHeader =
         header(

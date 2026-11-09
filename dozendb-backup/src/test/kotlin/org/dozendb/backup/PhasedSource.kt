@@ -2,6 +2,7 @@ package org.dozendb.backup
 
 import java.nio.file.Files
 import java.nio.file.Path
+import org.dozendb.core.store.CommittedTransaction
 import org.neo4j.dbms.archive.DumpFormatSelector
 import org.neo4j.dbms.archive.Dumper
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
@@ -22,7 +23,7 @@ internal class PhasedSource private constructor(val backups: Path) {
         private set
 
     /** The first transaction of the second and of the third phase. */
-    lateinit var phaseStarts: List<ArtifactTransaction>
+    lateinit var phaseStarts: List<CommittedTransaction>
         private set
 
     var lastTransactionId = 0L
@@ -48,7 +49,7 @@ internal class PhasedSource private constructor(val backups: Path) {
                     }
                 }
                 server.start()
-                val starts = mutableListOf<ArtifactTransaction>()
+                val starts = mutableListOf<CommittedTransaction>()
                 var after = fullHeader.highestAppendIndex
                 for ((phase, file) in listOf("B" to source.first, "C" to source.second)) {
                     // Every transaction of a phase commits after every one of the phase before.

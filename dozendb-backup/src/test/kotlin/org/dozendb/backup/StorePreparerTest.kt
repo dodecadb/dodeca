@@ -6,6 +6,7 @@ import java.nio.file.Path
 import java.time.Instant
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.dozendb.core.store.CommittedTransaction
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -200,9 +201,9 @@ class StorePreparerTest {
 
     /** [transactions] with Raft indexes from [firstIndex] on, and the checksums those give. */
     private fun withRaftIndexes(
-        transactions: List<ArtifactTransaction>,
+        transactions: List<CommittedTransaction>,
         firstIndex: Long,
-    ): List<ArtifactTransaction> =
+    ): List<CommittedTransaction> =
         PhysicalFlushableChannel(fs.write(root.resolve("checksums")), EmptyMemoryTracker.INSTANCE)
             .use { channel ->
                 val writer =
@@ -227,7 +228,7 @@ class StorePreparerTest {
                             transaction.transactionId,
                             batch.timeCommitted,
                         )
-                    ArtifactTransaction(
+                    CommittedTransaction(
                             transaction.transactionId,
                             transaction.appendIndex,
                             previous,

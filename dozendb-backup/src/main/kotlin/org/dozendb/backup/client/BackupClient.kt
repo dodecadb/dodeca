@@ -4,7 +4,6 @@ import java.io.InputStream
 import java.util.logging.Level
 import java.util.logging.Logger
 import org.dozendb.backup.ArtifactHeader
-import org.dozendb.backup.ArtifactTransaction
 import org.dozendb.backup.Artifacts
 import org.dozendb.backup.BackupProtocol
 import org.dozendb.backup.BackupProtocol.Request
@@ -12,6 +11,7 @@ import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.ratis.BulkServer
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.security.MetadataScript
+import org.dozendb.core.store.CommittedTransaction
 import org.dozendb.core.store.StoreArchive
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -74,7 +74,7 @@ internal class BackupClient(private val fs: FileSystemAbstraction, private val t
         after: Long,
         checksum: Int,
         readers: CommandReaderFactory,
-        block: (ArtifactHeader, Sequence<ArtifactTransaction>) -> T,
+        block: (ArtifactHeader, Sequence<CommittedTransaction>) -> T,
     ): T =
         fetch(server, Request.Differential(database, after, checksum)) { input ->
             Artifacts.readDifferential(input, readers, block)

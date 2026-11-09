@@ -7,6 +7,7 @@ import java.io.IOException
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.dozendb.core.store.CommittedTransaction
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -42,7 +43,7 @@ class DifferentialBackupTest {
         server.close()
     }
 
-    private fun write(header: ArtifactHeader, transactions: List<ArtifactTransaction>): ByteArray {
+    private fun write(header: ArtifactHeader, transactions: List<CommittedTransaction>): ByteArray {
         val out = ByteArrayOutputStream()
         val staging = root.resolve("staging")
         Artifacts.writeDifferential(out, header, transactions.asSequence(), staging, fs)
@@ -50,17 +51,17 @@ class DifferentialBackupTest {
         return out.toByteArray()
     }
 
-    private fun header(transactions: List<ArtifactTransaction>, compressed: Boolean = true) =
+    private fun header(transactions: List<CommittedTransaction>, compressed: Boolean = true) =
         server.differentialHeader(transactions, compressed)
 
-    private fun read(artifact: ByteArray): Pair<ArtifactHeader, List<ArtifactTransaction>> =
+    private fun read(artifact: ByteArray): Pair<ArtifactHeader, List<CommittedTransaction>> =
         Artifacts.readDifferential(ByteArrayInputStream(artifact), readers) { header, transactions
             ->
             header to transactions.toList()
         }
 
     /** Everything Neo4j writes of [transaction] to its log, comparable. */
-    private fun contents(transaction: ArtifactTransaction): List<Any> {
+    private fun contents(transaction: CommittedTransaction): List<Any> {
         val batch = transaction.batch
         val commands = ByteArrayOutputStream()
         val channel = OutputStreamWritableChannel(commands)
