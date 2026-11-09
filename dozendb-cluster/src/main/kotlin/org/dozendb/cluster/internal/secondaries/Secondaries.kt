@@ -9,6 +9,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.ForeignStoreException
 import org.dozendb.cluster.internal.secondaries.PullProtocol.Status
@@ -58,6 +59,7 @@ internal class Secondaries(
     private val control: () -> DatabaseControl,
     private val pullInterval: Duration,
     private val refusal: (DatabaseRef) -> String,
+    private val metrics: ClusterMetrics,
     private val logProvider: InternalLogProvider,
     private val retryDelay: Duration = Duration.ofSeconds(2),
 ) : DatabaseEventListenerAdapter() {
@@ -85,6 +87,7 @@ internal class Secondaries(
                 id,
                 transfer,
                 { refusal(ref(id)) },
+                metrics.of(id.name()),
                 logProvider.getLog(SecondaryDatabase::class.java),
             )
         databases[id.name()] = Puller(secondary)

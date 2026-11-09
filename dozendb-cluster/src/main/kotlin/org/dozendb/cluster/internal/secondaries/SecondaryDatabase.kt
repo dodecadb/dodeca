@@ -2,6 +2,8 @@ package org.dozendb.cluster.internal.secondaries
 
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlin.math.max
+import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.cluster.internal.replication.ClusterLeaseService
 import org.dozendb.cluster.internal.replication.CommitFailure
 import org.dozendb.cluster.internal.replication.ForeignStoreException
@@ -46,11 +48,14 @@ import org.neo4j.storageengine.api.cursor.StoreCursors
  * Each transaction must follow the last one here, by append index and checksum, and its checksum
  * here must be the upstream's once applied: every copy's transaction log holds the same
  * transactions. Otherwise the store holds another history, and the database panics.
+ *
+ * @property counts the database's metrics, of the pulls among them.
  */
 internal class SecondaryDatabase(
     val namedDatabaseId: NamedDatabaseId,
     private val transfer: BulkTransfer,
     private val refusal: () -> String,
+    private val counts: ClusterMetrics.Counters,
     private val log: InternalLog,
 ) : HostedDatabase {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
@@ -132,6 +137,8 @@ internal class SecondaryDatabase(
         if (!pulling) return PullOutcome.Stopped
         val last = last()
         val request = PullProtocol.Request(ref, last.appendIndex(), last.checksum(), maximumBytes)
+        counts.pullsMade.increment()
+        counts.highestRequested.accumulateAndGet(last.id()) { a, b -> max(a, b) }
         val readers = database.storageEngineFactory.commandReaderFactory()
         return transfer.fetchBulk(upstream, PullProtocol.NAME, PullProtocol.encode(request)) { input
             ->
@@ -208,6 +215,7 @@ internal class SecondaryDatabase(
                     "${applied.checksum()}, not ${expected.checksum}"
             )
         }
+        counts.highestReceived.accumulateAndGet(applied.id()) { a, b -> max(a, b) }
         true
     }
 

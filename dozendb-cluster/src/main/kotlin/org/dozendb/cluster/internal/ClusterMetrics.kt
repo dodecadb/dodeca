@@ -2,6 +2,7 @@ package org.dozendb.cluster.internal
 
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.LongAdder
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
@@ -34,6 +35,13 @@ internal class ClusterMetrics(
         val copyMillis = SummaryHistogram()
         val copiesServed = LongAdder()
         val pullsServed = LongAdder()
+        val pullsMade = LongAdder()
+
+        /** The highest id of a transaction a secondary had when it pulled those after it. */
+        val highestRequested = AtomicLong()
+
+        /** The highest id of a transaction a secondary pulled. */
+        val highestReceived = AtomicLong()
     }
 
     private val counters = ConcurrentHashMap<String, Counters>()
@@ -161,6 +169,25 @@ internal class ClusterMetrics(
             "Pulls of transactions that secondaries sent this member.",
         ) {
             counts.pullsServed.sum()
+        }
+        counter(
+            "cluster.store_copy.pull_updates",
+            "Pulls of transactions this member sent as a secondary.",
+        ) {
+            counts.pullsMade.sum()
+        }
+        counter(
+            "cluster.store_copy.pull_update_highest_tx_id_requested",
+            "The highest id of a transaction this member had when it pulled those after it, as " +
+                "a secondary.",
+        ) {
+            counts.highestRequested.get()
+        }
+        counter(
+            "cluster.store_copy.pull_update_highest_tx_id_received",
+            "The highest id of a transaction this member pulled as a secondary.",
+        ) {
+            counts.highestReceived.get()
         }
     }
 

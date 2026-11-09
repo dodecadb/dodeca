@@ -135,6 +135,13 @@ class SecondariesTest {
         eventually { assertThat(cluster.secondary.films()).isEqualTo(100) }
         val leader = cluster.awaitLeader(FILMS) { cluster.primaries }
         assertThat(cluster.secondary.lastTransaction()).isEqualTo(leader.lastTransaction())
+        val last = leader.lastTransaction().id()
+        eventually {
+            val pulls = cluster.secondary.metrics()
+            assertThat(pulls.pullsMade.sum()).isPositive()
+            assertThat(pulls.highestRequested.get()).describedAs("requested").isEqualTo(last)
+            assertThat(pulls.highestReceived.get()).describedAs("received").isEqualTo(last)
+        }
         assertThat(cluster.secondary.status(FILMS)).describedAs("it runs no Raft group").isNull()
         assertThat(leader.cluster.groupMembers(leader.status(FILMS)!!.database).map { it.id })
             .containsExactlyInAnyOrderElementsOf(cluster.primaries.map { it.cluster.self.id })

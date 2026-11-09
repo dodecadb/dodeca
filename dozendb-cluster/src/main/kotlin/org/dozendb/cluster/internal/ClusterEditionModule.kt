@@ -345,6 +345,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 refusal = { database ->
                     notLeaderMessage(database.name, locations.of(database)?.leader)
                 },
+                metrics = metrics,
                 logProvider = logService.internalLogProvider,
             )
         clusterHosting = ClusterHosting(replicationService, secondaries)
