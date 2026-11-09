@@ -130,4 +130,28 @@ class ClusterSettingsTest {
         assertThatThrownBy { config("dbms.dozendb.cluster.election_timeout_min" to "10ms") }
             .isInstanceOf(IllegalArgumentException::class.java)
     }
+
+    @Test
+    fun `takes Enterprise's upstream strategies and rules, and refuses others at start`() {
+        val config =
+            config(
+                "server.cluster.catchup.upstream_strategy" to
+                    "connect-randomly-to-server-tags,user-defined",
+                "server.cluster.catchup.user_defined_upstream_strategy" to "tags(east); halt()",
+                "server.cluster.catchup.connect_randomly_to_server_tags" to "east,west",
+            )
+
+        assertThat(config.get(ClusterSettings.upstreamStrategy))
+            .containsExactly("connect-randomly-to-server-tags", "user-defined")
+        assertThat(config.get(ClusterSettings.connectRandomlyToServerTags))
+            .containsExactly("east", "west")
+        assertThat(config().get(ClusterSettings.upstreamStrategy)).isEmpty()
+        assertThat(config().get(ClusterSettings.pullInterval)).isEqualTo(Duration.ofSeconds(1))
+        assertThatThrownBy { config("server.cluster.catchup.upstream_strategy" to "closest") }
+            .hasMessageContaining("unknown upstream strategies [closest]")
+        assertThatThrownBy {
+                config("server.cluster.catchup.user_defined_upstream_strategy" to "tags(a), all()")
+            }
+            .hasMessageContaining("a comma separates rules")
+    }
 }

@@ -42,6 +42,7 @@ import org.dozendb.cluster.internal.secondaries.PullSource
 import org.dozendb.cluster.internal.secondaries.Secondaries
 import org.dozendb.cluster.internal.secondaries.SecondaryCopies
 import org.dozendb.cluster.internal.secondaries.SecondaryMarks
+import org.dozendb.cluster.internal.secondaries.Upstreams
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.internal.topology.ClusterTopologyInfoService
@@ -70,6 +71,8 @@ import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.Servers
+import org.dozendb.core.servers.UpstreamRules
+import org.dozendb.core.servers.UpstreamSelection
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.connectors.ConnectorType
@@ -279,19 +282,52 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             )
         replication = replicationService
         globalModule.globalDependencies.satisfyDependency(replicationService)
+        val strategies = config.get(ClusterSettings.upstreamStrategy)
+        strategies
+            .filter { it in UpstreamSelection.DEPRECATED }
+            .forEach {
+                userLog.warn(
+                    "The upstream strategy %s is deprecated; server groups are server tags now",
+                    it,
+                )
+            }
+        val upstreams =
+            Upstreams(
+                memberId,
+                UpstreamSelection(
+                    strategies,
+                    toTags = { config.get(ClusterSettings.connectRandomlyToServerTags) },
+                    toGroups = { config.get(ClusterSettings.connectRandomlyToServerGroup) },
+                    rules =
+                        UpstreamRules.parse(
+                            config.get(ClusterSettings.userDefinedUpstreamStrategy).orEmpty()
+                        ),
+                ),
+                group = { database ->
+                    locations.of(database)?.let { location ->
+                        location.voters.mapTo(HashSet()) { it.id } to location.leader
+                    } ?: (emptySet<MemberId>() to null)
+                },
+                secondaries = { database -> systemGraph.secondaries(database.name) },
+                online = { member, database ->
+                    directory.databaseStates(member).orEmpty().any {
+                        it.id == database.id && it.status == DatabaseState.Status.ONLINE
+                    }
+                },
+                answering = { directory.answering(it) },
+                addresses = {
+                    try {
+                        consensus.members(systemDatabase).associate { it.id to it.raftAddress }
+                    } catch (_: ConsensusUnavailableException) {
+                        emptyMap()
+                    }
+                },
+                tags = { systemGraph.serverTags() },
+            )
         secondaries =
             Secondaries(
                 consensus,
-                upstreams = { database ->
-                    // A random primary that runs it, until upstream strategies choose.
-                    locations
-                        .of(database)
-                        ?.voters
-                        .orEmpty()
-                        .filter { it.id != consensus.self.id }
-                        .map { it.raftAddress }
-                        .shuffled()
-                },
+                upstreams = upstreams::of,
                 copies =
                     object : SecondaryCopies {
                         override fun copy(source: HostPort, database: DatabaseRef) =

@@ -11,6 +11,7 @@ import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.cluster.internal.ClusterHarness
 import org.dozendb.cluster.internal.ClusterMetrics
+import org.dozendb.cluster.internal.ClusterSettings
 import org.dozendb.core.DozenDbSettings
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -41,13 +42,24 @@ class SecondariesTest {
         harness?.close()
     }
 
-    private fun cluster(settings: Map<Setting<*>, Any> = emptyMap()): ClusterHarness =
-        ClusterHarness(root, 3, settings = settings).also {
+    /**
+     * [size] members, the first two of which may host primaries, the others only secondaries, with
+     * [own] settings each.
+     */
+    private fun cluster(
+        settings: Map<Setting<*>, Any> = emptyMap(),
+        size: Int = 3,
+        own: Map<Int, Map<Setting<*>, Any>> = emptyMap(),
+    ): ClusterHarness =
+        ClusterHarness(root, size, settings = settings).also {
             harness = it
-            it.members[2].settings =
-                mapOf(
-                    DozenDbSettings.initialServerModeConstraint to InstanceModeConstraint.SECONDARY
-                )
+            for (member in it.members.drop(2)) {
+                member.settings =
+                    mapOf<Setting<*>, Any>(
+                        DozenDbSettings.initialServerModeConstraint to
+                            InstanceModeConstraint.SECONDARY
+                    ) + own[member.index].orEmpty()
+            }
             it.start()
         }
 
@@ -233,6 +245,42 @@ class SecondariesTest {
             assertThat(health!!.causeOfPanic())
                 .hasMessageContaining("holds transactions that its upstream does not have")
         }
+    }
+
+    @Test
+    fun `a secondary pulls from the upstream its strategy chooses, another secondary too`() {
+        val cluster =
+            cluster(
+                size = 4,
+                own =
+                    mapOf(
+                        2 to
+                            mapOf(
+                                DozenDbSettings.initialServerTags to listOf("feeder"),
+                                ClusterSettings.upstreamStrategy to
+                                    listOf("connect-to-random-primary-server"),
+                            ),
+                        3 to
+                            mapOf(
+                                ClusterSettings.upstreamStrategy to listOf("user-defined"),
+                                ClusterSettings.userDefinedUpstreamStrategy to
+                                    "tags(feeder); halt()",
+                            ),
+                    ),
+            )
+        val (feeder, fed) = cluster.members.drop(2)
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 2 SECONDARIES")
+        eventually {
+            for (member in listOf(feeder, fed)) {
+                assertThat(member.registered(FILMS)?.database()?.isStarted).isTrue()
+            }
+        }
+
+        cluster.write("UNWIND range(1, 10) AS i CREATE (:Film {id: i})")
+
+        eventually { assertThat(fed.films()).isEqualTo(10) }
+        assertThat(feeder.metrics().pullsServed.sum()).isPositive()
+        assertThat(fed.metrics().pullsServed.sum()).isZero()
     }
 
     @Test

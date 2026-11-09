@@ -5,9 +5,12 @@ import java.time.Duration
 import org.dozendb.cluster.FormatLevels
 import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.consensus.ratis.RatisConsensusConfig
+import org.dozendb.core.servers.UpstreamRules
+import org.dozendb.core.servers.UpstreamSelection
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.Internal
+import org.neo4j.configuration.SettingConstraint
 import org.neo4j.configuration.SettingConstraints.NO_ALL_INTERFACES_ADDRESS
 import org.neo4j.configuration.SettingConstraints.min
 import org.neo4j.configuration.SettingConstraints.range
@@ -23,6 +26,7 @@ import org.neo4j.configuration.SettingValueParsers.listOf
 import org.neo4j.configuration.SettingValueParsers.ofEnum
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.configuration.helpers.SocketAddress
+import org.neo4j.graphdb.config.Configuration
 import org.neo4j.graphdb.config.Setting
 
 /**
@@ -248,6 +252,88 @@ class ClusterSettings : SettingsDeclaration {
         val pullInterval: Setting<Duration> =
             newBuilder("db.cluster.catchup.pull_interval", DURATION, Duration.ofSeconds(1))
                 .addConstraint(min(Duration.ofMillis(1)))
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The strategies a secondary uses to choose the server it pulls from, asked in order: " +
+                "the first that finds one wins, chosen again for every pull. Empty means " +
+                "typically-connect-to-random-secondary; a random primary is the last resort. " +
+                "connect-to-random-primary-server, typically-connect-to-random-secondary (a " +
+                "secondary, one pull in ten a primary), connect-randomly-to-server-tags (a " +
+                "secondary with a tag of server.cluster.catchup.connect_randomly_to_server_tags), " +
+                "connect-randomly-within-server-tags (a secondary with a tag of this server's), " +
+                "leader-only, user-defined (server.cluster.catchup.user_defined_upstream_strategy), " +
+                "and the deprecated connect-randomly-to-server-group and " +
+                "connect-randomly-within-server-group. Named like Neo4j Enterprise's setting."
+        )
+        val upstreamStrategy: Setting<List<String>> =
+            newBuilder("server.cluster.catchup.upstream_strategy", listOf(STRING), emptyList())
+                .addConstraint(
+                    object : SettingConstraint<List<String>>() {
+                        override fun validate(value: List<String>, config: Configuration) {
+                            val unknown = UpstreamSelection.unknown(value)
+                            require(unknown.isEmpty()) {
+                                "unknown upstream strategies $unknown; the strategies are " +
+                                    UpstreamSelection.NAMES.joinToString()
+                            }
+                        }
+
+                        override fun getDescription() =
+                            "Each one of ${UpstreamSelection.NAMES.joinToString()}."
+                    }
+                )
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The rules of the user-defined upstream strategy: rules separated by ';', asked in " +
+                "order, the first that passes a server wins. A rule chains filters with '->', " +
+                "from every server that runs the database: tags(a, b) passes those with any of " +
+                "the tags, min(n) passes the servers if there are at least n, all() every " +
+                "server, and halt(), which only ends the last rule, none, and no all() follows " +
+                "the rules. Named like Neo4j Enterprise's setting."
+        )
+        val userDefinedUpstreamStrategy: Setting<String> =
+            newBuilder("server.cluster.catchup.user_defined_upstream_strategy", STRING, null)
+                .addConstraint(
+                    object : SettingConstraint<String>() {
+                        override fun validate(value: String?, config: Configuration) {
+                            if (value != null) UpstreamRules.parse(value)
+                        }
+
+                        override fun getDescription() = "Rules that parse."
+                    }
+                )
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The server tags of the secondaries that the connect-randomly-to-server-tags upstream " +
+                "strategy connects to. Named like Neo4j Enterprise's setting."
+        )
+        val connectRandomlyToServerTags: Setting<List<String>> =
+            newBuilder(
+                    "server.cluster.catchup.connect_randomly_to_server_tags",
+                    listOf(STRING),
+                    emptyList(),
+                )
+                .dynamic()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "Deprecated, as server groups became server tags: the server tags of the " +
+                "secondaries that the connect-randomly-to-server-group upstream strategy " +
+                "connects to. Named like Neo4j Enterprise's setting."
+        )
+        val connectRandomlyToServerGroup: Setting<List<String>> =
+            newBuilder(
+                    "server.cluster.catchup.connect_randomly_to_server_group",
+                    listOf(STRING),
+                    emptyList(),
+                )
+                .dynamic()
                 .build()
 
         @JvmField

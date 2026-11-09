@@ -177,6 +177,15 @@ internal class Neo4jSystemGraph(
         }
     }
 
+    /** The servers that host a secondary of the database [name]; none if it does not exist. */
+    fun secondaries(name: String): Set<MemberId> = replication.readingSystem {
+        system().beginTx().use { tx ->
+            Placements.database(tx, name)
+                ?.let { Placements.hosts(it, CopyMode.SECONDARY) }
+                ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
+        }
+    }
+
     /** The server tags of each enabled server, from its server record. */
     fun serverTags(): Map<MemberId, Set<String>> = replication.readingSystem {
         system().beginTx().use { tx ->
