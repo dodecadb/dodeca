@@ -295,9 +295,14 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
                 }
             }
 
-    /** The id of this member, which SHOW DATABASES shows as its `serverID`. */
+    /**
+     * The id of this member, which SHOW DATABASES shows as its `serverID`, once it is one of the
+     * cluster's servers.
+     */
     fun memberId(): String =
-        rows("CALL dozendb.cluster.status() YIELD memberId", "system").first()["memberId"] as String
+        rows("CALL dozendb.cluster.members() YIELD memberId, self", "system")
+            .single { it["self"] == true }["memberId"]
+            as String
 
     /** Like [run] but fails the test on an error. */
     fun rows(
