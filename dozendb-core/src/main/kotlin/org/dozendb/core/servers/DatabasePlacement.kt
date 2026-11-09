@@ -3,8 +3,11 @@ package org.dozendb.core.servers
 import java.util.UUID
 import org.neo4j.graphdb.Transaction
 
-/** The servers a database is placed on, and the number of primaries it requests. */
-data class Placement(val hosts: Set<UUID>, val primaries: Int)
+/**
+ * The copies of a database, on the servers it is placed on with the mode of each, and the numbers
+ * of primaries and secondaries it requests.
+ */
+data class Placement(val copies: Map<UUID, CopyMode>, val primaries: Int, val secondaries: Int)
 
 /**
  * Where the copies of databases go, as CREATE DATABASE and ALTER DATABASE ask, in their system
@@ -12,19 +15,26 @@ data class Placement(val hosts: Set<UUID>, val primaries: Int)
  */
 interface DatabasePlacement {
     /**
-     * Places the new database [name] on [primaries] servers, or the default number of them,
-     * [seedServer] among them if given.
+     * Places the new database [name] on [primaries] and [secondaries] servers, or the default
+     * numbers of them, [seedServer] among the primaries if given.
      *
      * @throws AllocationException if the servers cannot host them.
      */
-    fun place(tx: Transaction, name: String, primaries: Int?, seedServer: UUID?): Placement
+    fun place(
+        tx: Transaction,
+        name: String,
+        primaries: Int?,
+        secondaries: Int?,
+        seedServer: UUID?,
+    ): Placement
 
     /**
-     * Changes the number of primaries of the database [name] to [primaries].
+     * Changes the numbers of primaries and secondaries of the database [name] to [primaries] and
+     * [secondaries].
      *
      * @throws AllocationException if the servers cannot host them.
      */
-    fun resize(tx: Transaction, name: String, primaries: Int): Placement
+    fun resize(tx: Transaction, name: String, primaries: Int, secondaries: Int): Placement
 
     /**
      * Moves the copies that their servers may no longer host, as after ALTER SERVER changed their
@@ -64,19 +74,38 @@ interface DatabasePlacement {
     ): List<Move>
 }
 
-/** A server without clustering hosts every database alone: one primary each, on no record. */
+/**
+ * A server without clustering hosts every database alone: one primary each and no secondary, on no
+ * record.
+ */
 object SingleServerPlacement : DatabasePlacement {
-    override fun place(tx: Transaction, name: String, primaries: Int?, seedServer: UUID?) =
-        resize(tx, name, primaries ?: 1)
+    override fun place(
+        tx: Transaction,
+        name: String,
+        primaries: Int?,
+        secondaries: Int?,
+        seedServer: UUID?,
+    ) = resize(tx, name, primaries ?: 1, secondaries ?: 0)
 
-    override fun resize(tx: Transaction, name: String, primaries: Int): Placement {
+    override fun resize(
+        tx: Transaction,
+        name: String,
+        primaries: Int,
+        secondaries: Int,
+    ): Placement {
         if (primaries != 1) {
             throw AllocationException(
                 "'$name' needs $primaries servers that can host it as a primary, and this server " +
                     "runs without clustering"
             )
         }
-        return Placement(emptySet(), 1)
+        if (secondaries != 0) {
+            throw AllocationException(
+                "'$name' needs $secondaries ${if (secondaries == 1) "server" else "servers"} " +
+                    "that can host it as a secondary, and this server runs without clustering"
+            )
+        }
+        return Placement(emptyMap(), 1, 0)
     }
 
     /** Moves nothing: refuses options that would leave a database without this server. */
@@ -106,7 +135,8 @@ object SingleServerPlacement : DatabasePlacement {
 
     /** An allocator with the server of [record] alone, which hosts every database. */
     private fun alone(tx: Transaction, record: ServerRecord): Allocator {
-        val databases = Placements.placed(tx).map { it.copy(hosts = setOf(record.id)) }
+        val databases =
+            Placements.placed(tx).map { it.copy(copies = mapOf(record.id to CopyMode.PRIMARY)) }
         return Allocator(listOf(Host(record)), databases)
     }
 }

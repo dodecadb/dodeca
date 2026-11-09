@@ -312,8 +312,8 @@ class ServerReconciler(
     private fun placeUnplaced(tx: Transaction): Pair<Boolean, Boolean> {
         var placed = false
         var waiting = false
-        val defaultPrimaries = Placements.defaults(tx, defaults).primaries
-        for (database in Placements.placed(tx).filter { it.hosts.isEmpty() }) {
+        val defaultCounts = Placements.defaults(tx, defaults)
+        for (database in Placements.placed(tx).filter { it.copies.isEmpty() }) {
             val node = Placements.database(tx, database.name) ?: continue
             val ref =
                 DatabaseRef(
@@ -330,12 +330,13 @@ class ServerReconciler(
                 continue
             }
             val prefer = (listOfNotNull(creator) + holding).distinct().map { it.uuid }
-            val hosts =
+            val copies =
                 try {
                     Placements.allocator(tx) { available(MemberId(it)) }
                         .place(
                             database.name,
-                            maxOf(database.primaries, defaultPrimaries),
+                            maxOf(database.primaries, defaultCounts.primaries),
+                            maxOf(database.secondaries, defaultCounts.secondaries),
                             prefer = prefer,
                             bestEffort = true,
                         )
@@ -351,8 +352,8 @@ class ServerReconciler(
                     continue
                 }
             unplaceable -= database.name
-            log.info("Placing database %s on servers %s", database.name, hosts)
-            Placements.place(tx, node, hosts)
+            log.info("Placing database %s on servers %s", database.name, copies)
+            Placements.place(tx, node, copies)
             placed = true
         }
         return placed to waiting

@@ -38,6 +38,7 @@ import org.dozendb.core.edition.SeedServers
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.security.PrivilegeRecords
 import org.dozendb.core.servers.AllocationException
+import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placement
 import org.dozendb.core.servers.Placements
@@ -373,12 +374,15 @@ private class DatabaseCommands(
                 val seed = seedOptions(plan, database, params, version)
                 val placed =
                     placed(database, "create") {
+                        val requested =
+                            plan.topology().valueOrNull()?.let {
+                                topology(it, database, params, "create")
+                            }
                         placement.place(
                             tx,
                             NormalizedDatabaseName(database).name(),
-                            plan.topology().valueOrNull()?.let {
-                                primaries(it, database, params, "create")
-                            },
+                            requested?.primaries,
+                            requested?.secondaries,
                             seed.server?.let(UUID::fromString),
                         )
                     }
@@ -390,9 +394,22 @@ private class DatabaseCommands(
                     )
                     .updatedWith(
                         HOSTS,
-                        Values.stringArray(*placed.hosts.map { it.toString() }.toTypedArray()),
+                        VirtualValues.list(
+                            *placed.copies
+                                .map { (server, mode) ->
+                                    VirtualValues.map(
+                                        arrayOf("server", "mode"),
+                                        arrayOf(
+                                            Values.utf8Value(server.toString()),
+                                            Values.utf8Value(mode.hostedOn.modeName()),
+                                        ),
+                                    )
+                                }
+                                .toTypedArray()
+                        ),
                     )
                     .updatedWith(PRIMARIES, Values.longValue(placed.primaries.toLong()))
+                    .updatedWith(SECONDARIES, Values.longValue(placed.secondaries.toLong()))
             }
         return updating(
             "CreateDatabase",
@@ -409,15 +426,15 @@ private class DatabaseCommands(
                 database.${TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY} =
                     ${parameter(SEEDING_SERVERS)},
                 database.${TopologyGraphDbmsModel.DATABASE_PRIMARIES_PROPERTY} = ${parameter(PRIMARIES)},
-                database.${TopologyGraphDbmsModel.DATABASE_SECONDARIES_PROPERTY} = 0
+                database.${TopologyGraphDbmsModel.DATABASE_SECONDARIES_PROPERTY} = ${parameter(SECONDARIES)}
             WITH database
             CALL {
                 WITH database
                 UNWIND ${parameter(HOSTS)} AS host
                 MATCH (server:${TopologyGraphDbmsModel.INSTANCE_LABEL.name()} {
-                    ${TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY}: host})
+                    ${TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY}: host.server})
                 CREATE (database)-[:${TopologyGraphDbmsModel.HOSTED_ON_RELATIONSHIP.name()} {
-                    ${TopologyGraphDbmsModel.HOSTED_ON_MODE_PROPERTY}: 'raft',
+                    ${TopologyGraphDbmsModel.HOSTED_ON_MODE_PROPERTY}: host.mode,
                     ${TopologyGraphDbmsModel.HOSTED_ON_INSTALLED_AT_PROPERTY}: datetime()}]->(server)
             }
             RETURN database.name AS name
@@ -477,15 +494,31 @@ private class DatabaseCommands(
             Function2<Transaction, MapValue, MapValue> { tx, params ->
                 if (topology != null) {
                     val database = show(databaseName, params)
-                    val primaries = primaries(topology, database, params, "alter")
+                    val requested = topology(topology, database, params, "alter")
                     val node = resolve(tx, database)
-                    // Without a node the query finds none and reports it.
-                    if (primaries != null && node != null) {
+                    // Without a node the query finds none and reports it. A number not given
+                    // stays as it is.
+                    if (node != null) {
                         val placed =
                             placed(database, "alter") {
-                                placement.resize(tx, Placements.name(node), primaries)
+                                placement.resize(
+                                    tx,
+                                    Placements.name(node),
+                                    requested.primaries
+                                        ?: Placements.primaries(node)
+                                        ?: Placements.hosts(node, CopyMode.PRIMARY).size,
+                                    requested.secondaries
+                                        ?: Placements.secondaries(node)
+                                        ?: Placements.hosts(node, CopyMode.SECONDARY).size,
+                                )
                             }
-                        Placements.place(tx, node, placed.hosts, placed.primaries)
+                        Placements.place(
+                            tx,
+                            node,
+                            placed.copies,
+                            placed.primaries,
+                            placed.secondaries,
+                        )
                     }
                 }
                 params
@@ -545,18 +578,20 @@ private class DatabaseCommands(
             }
     }
 
+    /** The numbers of copies a TOPOLOGY asks for; null for a number it does not give. */
+    private data class Requested(val primaries: Int?, val secondaries: Int?)
+
     /**
-     * The number of primaries [topology] asks for, null if it names none, checked for the database
-     * [name]: 1 to 11 primaries, as Neo4j Enterprise takes them. Secondaries are refused until
-     * DozenDB has them.
+     * The numbers of copies [topology] asks for, checked for the database [name]: 1 to 11
+     * primaries, as Neo4j Enterprise takes them. Secondaries are refused until DozenDB has them.
      */
     @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for a number out of range.
-    private fun primaries(
+    private fun topology(
         topology: Topology,
         name: String,
         params: MapValue,
         operation: String,
-    ): Int? {
+    ): Requested {
         val failed = "Failed to $operation the specified database '$name'"
         val primaries = topology.primaries().valueOrNull()?.let { number(it, params, failed) }
         val secondaries = topology.secondaries().valueOrNull()?.let { number(it, params, failed) }
@@ -575,7 +610,7 @@ private class DatabaseCommands(
                     "primary.",
             )
         }
-        return primaries?.toInt()
+        return Requested(primaries?.toInt(), secondaries?.toInt())
     }
 
     /** A number of a topology, given or as a parameter. */
@@ -1197,6 +1232,7 @@ private class DatabaseCommands(
 
         /** The parameter of the number of primaries a new database requests. */
         const val PRIMARIES = "__dozendb_primaries"
+        const val SECONDARIES = "__dozendb_secondaries"
 
         /** The most primaries a topology may ask for, as in Neo4j Enterprise. */
         const val MAX_PRIMARIES = 11

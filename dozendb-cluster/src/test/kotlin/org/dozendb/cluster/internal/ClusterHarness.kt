@@ -171,7 +171,7 @@ internal class ClusterHarness(
         private fun placedHere(): Boolean =
             database("system").beginTx().use { tx ->
                 Placements.database(tx, DEFAULT_DATABASE)
-                    ?.let(Placements::hosts)
+                    ?.let(Placements::copies)
                     ?.contains(cluster.self.id.uuid) == true
             }
 

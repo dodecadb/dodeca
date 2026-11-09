@@ -15,6 +15,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
+import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DroppedServer
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
@@ -228,10 +229,12 @@ internal class ClusterTopologyInfoService(
         }
     }
 
-    /** The servers that the database [name] is placed on; none for `system` or while unplaced. */
+    /**
+     * The servers that host a primary of the database [name]; none for `system` or while unplaced.
+     */
     private fun placed(transaction: Transaction, name: String): Set<MemberId> =
         Placements.database(transaction, name)
-            ?.let(Placements::hosts)
+            ?.let { Placements.hosts(it, CopyMode.PRIMARY) }
             ?.mapTo(LinkedHashSet(), ::MemberId)
             .orEmpty()
 

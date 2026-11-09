@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.util.UUID
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.Allocator
+import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Move
 import org.dozendb.core.servers.Placement
@@ -40,27 +41,37 @@ internal class ClusterPlacement(
         tx: Transaction,
         name: String,
         primaries: Int?,
+        secondaries: Int?,
         seedServer: UUID?,
     ): Placement {
         prepare(tx)
-        val count = primaries ?: Placements.defaults(tx, defaults).primaries
+        val defaults = Placements.defaults(tx, defaults)
+        val primaryCount = primaries ?: defaults.primaries
+        val secondaryCount = secondaries ?: defaults.secondaries
         return Placement(
-            Placements.allocator(tx, available).place(name, count, first = seedServer),
-            count,
+            Placements.allocator(tx, available)
+                .place(name, primaryCount, secondaryCount, first = seedServer),
+            primaryCount,
+            secondaryCount,
         )
     }
 
-    override fun resize(tx: Transaction, name: String, primaries: Int): Placement {
+    override fun resize(
+        tx: Transaction,
+        name: String,
+        primaries: Int,
+        secondaries: Int,
+    ): Placement {
         prepare(tx)
         val allocator = Placements.allocator(tx, available)
-        val hosts =
-            if (allocator.hosts(name).isEmpty()) {
-                allocator.place(name, primaries, prefer = holders(name))
+        val copies =
+            if (allocator.copies(name).isEmpty()) {
+                allocator.place(name, primaries, secondaries, prefer = holders(name))
             } else {
-                allocator.resize(name, primaries)
+                allocator.resize(name, primaries, secondaries)
             }
-        leaving(tx, name, hosts)
-        return Placement(hosts, primaries)
+        leaving(tx, name, copies)
+        return Placement(copies, primaries, secondaries)
     }
 
     override fun conform(tx: Transaction): List<Move> = moving(tx, dryRun = false) { it.conform() }
@@ -94,22 +105,27 @@ internal class ClusterPlacement(
         val allocator = Placements.allocator(tx, available)
         val made = moves(allocator)
         for (name in made.map { it.database }.distinct()) {
-            leaving(tx, name, allocator.hosts(name), record = !dryRun)
+            leaving(tx, name, allocator.copies(name), record = !dryRun)
         }
         if (!dryRun) Placements.move(tx, allocator, made)
         return made
     }
 
     /**
-     * Lets the database [name] be placed on [hosts]: if they leave out its creator, only once a
-     * server runs its group, which records its store created if [record].
+     * Lets the database [name] have [copies]: if they leave out a primary on its creator, only once
+     * a server runs its group, which records its store created if [record].
      *
      * @throws AllocationException if its store may not be created yet.
      */
-    private fun leaving(tx: Transaction, name: String, hosts: Set<UUID>, record: Boolean = true) {
+    private fun leaving(
+        tx: Transaction,
+        name: String,
+        copies: Map<UUID, CopyMode>,
+        record: Boolean = true,
+    ) {
         val node = Placements.database(tx, name) ?: return
         val creator = Neo4jSystemGraph.creator(node) ?: return
-        if (creator.uuid in hosts || Neo4jSystemGraph.created(node)) return
+        if (copies[creator.uuid] == CopyMode.PRIMARY || Neo4jSystemGraph.created(node)) return
         if (holders(name).isEmpty()) {
             throw AllocationException(
                 "'$name' cannot move off server $creator yet, which creates its store: try again " +

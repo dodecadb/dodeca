@@ -360,7 +360,7 @@ class ClusterProcedures {
             named.move.from.toString(),
             named.toName,
             named.move.to.toString(),
-            "primary",
+            named.move.mode.label,
         )
     }
 

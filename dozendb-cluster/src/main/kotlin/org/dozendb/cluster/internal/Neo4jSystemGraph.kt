@@ -8,6 +8,7 @@ import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.replication.SystemGraph
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -59,7 +60,7 @@ internal class Neo4jSystemGraph(
                         as? Array<*>)
                     ?.firstOrNull()
                     ?.let { MemberId.parse(it as String) },
-            hosts = Placements.hosts(node).mapTo(HashSet(), ::MemberId),
+            hosts = Placements.hosts(node, CopyMode.PRIMARY).mapTo(HashSet(), ::MemberId),
             created = created(node),
         )
     }
@@ -163,11 +164,15 @@ internal class Neo4jSystemGraph(
         }
     }
 
-    /** The servers the database [name] is placed on; none if it is not, or does not exist. */
+    /**
+     * The servers that host a primary of the database [name]; none if it is not placed, or does not
+     * exist.
+     */
     fun hosts(name: String): Set<MemberId> = replication.readingSystem {
         system().beginTx().use { tx ->
-            Placements.database(tx, name)?.let(Placements::hosts)?.mapTo(HashSet(), ::MemberId)
-                ?: emptySet()
+            Placements.database(tx, name)
+                ?.let { Placements.hosts(it, CopyMode.PRIMARY) }
+                ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
         }
     }
 

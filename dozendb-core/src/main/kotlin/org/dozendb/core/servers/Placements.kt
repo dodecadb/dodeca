@@ -5,14 +5,16 @@ import java.util.UUID
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Node
+import org.neo4j.graphdb.Relationship
 import org.neo4j.graphdb.Transaction
 
 /**
  * Where the system graph places databases, with Neo4j's names for it (`TopologyGraphDbmsModel`), as
- * Neo4j Enterprise keeps it: a `HOSTED_ON` relationship, with `mode` `raft`, from a `Database` node
- * to the `Instance` node of each server that hosts a primary copy, and the requested numbers of
- * copies in the database's `primaries` and `secondaries`. `system` has none: every server hosts it.
- * The default numbers for new databases are on the `TopologyGraphSettings` node.
+ * Neo4j Enterprise keeps it: a `HOSTED_ON` relationship from a `Database` node to the `Instance`
+ * node of each server that hosts a copy, with `mode` `raft` for a primary and `replica` for a
+ * secondary, and the requested numbers of copies in the database's `primaries` and `secondaries`.
+ * `system` has none: every server hosts it. The default numbers for new databases are on the
+ * `TopologyGraphSettings` node.
  *
  * A database without any `HOSTED_ON` is not placed yet: the default database of a new cluster, or a
  * database of a server that formed a cluster with databases of its own.
@@ -29,14 +31,13 @@ object Placements {
     private const val DEFAULT_SECONDARIES =
         TopologyGraphDbmsModel.TOPOLOGY_GRAPH_CONFIG_DEFAULT_NUMBER_OF_SECONDARIES_PROPERTY
     private const val SYSTEM = "system"
-    private const val RAFT = "raft"
 
     /**
      * The default numbers of copies, as `initial.dbms.default_*_count` or the procedure set them.
      */
     data class Defaults(val primaries: Int, val secondaries: Int)
 
-    /** Every database but `system`, with the servers it is placed on, as [Allocator] takes them. */
+    /** Every database but `system`, with its copies, as [Allocator] takes them. */
     fun placed(tx: Transaction): List<Placed> =
         tx.findNodes(DATABASE).use { nodes ->
             nodes
@@ -44,65 +45,114 @@ object Placements {
                 .mapNotNull { node ->
                     val name = nameOrNull(node) ?: return@mapNotNull null
                     if (name == SYSTEM) return@mapNotNull null
-                    val hosts = hosts(node)
+                    val copies = copies(node)
                     Placed(
                         name,
-                        primaries(node) ?: hosts.size,
+                        primaries(node) ?: copies.values.count { it == CopyMode.PRIMARY },
+                        secondaries(node) ?: copies.values.count { it == CopyMode.SECONDARY },
                         online =
                             node.getProperty(
                                 TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY,
                                 null,
                             ) == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
-                        hosts = hosts,
+                        copies = copies,
                     )
                 }
                 .toList()
         }
 
-    /** The servers that the database [node] is placed on. */
-    fun hosts(node: Node): Set<UUID> =
+    /** The servers that the database [node] is placed on, with the mode of each copy. */
+    fun copies(node: Node): Map<UUID, CopyMode> =
         node.getRelationships(Direction.OUTGOING, HOSTED_ON).use { relationships ->
-            relationships.asSequence().mapNotNull { uuid(it.endNode) }.toSet()
+            relationships
+                .asSequence()
+                .mapNotNull { relationship ->
+                    uuid(relationship.endNode)?.let { it to mode(relationship) }
+                }
+                .toMap()
         }
+
+    /** The servers that host a copy of the database [node] in [mode]. */
+    fun hosts(node: Node, mode: CopyMode): Set<UUID> = copies(node).filterValues { it == mode }.keys
 
     /** The requested number of primaries of the database [node], if recorded. */
     fun primaries(node: Node): Int? = (node.getProperty(PRIMARIES, null) as? Number)?.toInt()
 
+    /** The requested number of secondaries of the database [node], if recorded. */
+    fun secondaries(node: Node): Int? = (node.getProperty(SECONDARIES, null) as? Number)?.toInt()
+
     /**
-     * Places the database [node] on [hosts], with [primaries] requested: its `HOSTED_ON` follow,
-     * and those to other servers go. A server without a record, a Free one, cannot host it.
+     * Places the database [node] on the servers of [copies], with [primaries] and [secondaries]
+     * requested: its `HOSTED_ON` follow, one that changes mode takes the new one, and those to
+     * other servers go. A server without a record, a Free one, cannot host it.
      */
-    fun place(tx: Transaction, node: Node, hosts: Set<UUID>, primaries: Int = hosts.size) {
+    fun place(
+        tx: Transaction,
+        node: Node,
+        copies: Map<UUID, CopyMode>,
+        primaries: Int = copies.values.count { it == CopyMode.PRIMARY },
+        secondaries: Int = copies.values.count { it == CopyMode.SECONDARY },
+    ) {
         node.setProperty(PRIMARIES, primaries.toLong())
-        node.setProperty(SECONDARIES, 0L)
+        node.setProperty(SECONDARIES, secondaries.toLong())
         val kept = HashSet<UUID>()
         node.getRelationships(Direction.OUTGOING, HOSTED_ON).use { relationships ->
             for (relationship in relationships) {
                 val id = uuid(relationship.endNode)
-                if (id in hosts && kept.add(id!!)) continue
-                relationship.delete()
+                val mode = copies[id]
+                if (mode == null || !kept.add(id!!)) {
+                    relationship.delete()
+                } else if (mode != mode(relationship)) {
+                    installed(relationship, mode)
+                }
             }
         }
-        for (id in hosts - kept) {
+        for ((id, mode) in copies - kept) {
             val server =
                 tx.findNode(INSTANCE, TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id")
                     ?: throw IllegalArgumentException("server $id has no record")
-            node.createRelationshipTo(server, HOSTED_ON).apply {
-                setProperty(TopologyGraphDbmsModel.HOSTED_ON_MODE_PROPERTY, RAFT)
-                setProperty(
-                    TopologyGraphDbmsModel.HOSTED_ON_INSTALLED_AT_PROPERTY,
-                    ZonedDateTime.now(),
-                )
-            }
+            installed(node.createRelationshipTo(server, HOSTED_ON), mode)
         }
     }
 
-    /** Records the hosts that [allocator] gives the databases that [moves] move. */
+    /** Records the copies that [allocator] gives the databases that [moves] move. */
     fun move(tx: Transaction, allocator: Allocator, moves: List<Move>) {
         for (name in moves.map { it.database }.distinct()) {
             val node = database(tx, name) ?: continue
-            place(tx, node, allocator.hosts(name), primaries(node) ?: allocator.hosts(name).size)
+            val copies = allocator.copies(name)
+            place(
+                tx,
+                node,
+                copies,
+                primaries(node) ?: copies.values.count { it == CopyMode.PRIMARY },
+                secondaries(node) ?: copies.values.count { it == CopyMode.SECONDARY },
+            )
         }
+    }
+
+    /**
+     * The mode of the copy that [relationship], a `HOSTED_ON`, records; `raft` unless `replica`.
+     */
+    private fun mode(relationship: Relationship): CopyMode =
+        if (
+            relationship.getProperty(TopologyGraphDbmsModel.HOSTED_ON_MODE_PROPERTY, null) ==
+                CopyMode.SECONDARY.hostedOn.modeName()
+        ) {
+            CopyMode.SECONDARY
+        } else {
+            CopyMode.PRIMARY
+        }
+
+    /** Records that the copy of [relationship], a `HOSTED_ON`, is installed now in [mode]. */
+    private fun installed(relationship: Relationship, mode: CopyMode) {
+        relationship.setProperty(
+            TopologyGraphDbmsModel.HOSTED_ON_MODE_PROPERTY,
+            mode.hostedOn.modeName(),
+        )
+        relationship.setProperty(
+            TopologyGraphDbmsModel.HOSTED_ON_INSTALLED_AT_PROPERTY,
+            ZonedDateTime.now(),
+        )
     }
 
     /** The database node named [name], `system` aside. */
