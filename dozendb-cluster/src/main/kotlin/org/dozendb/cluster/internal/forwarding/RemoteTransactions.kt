@@ -86,7 +86,7 @@ internal class RemoteTransactions(
         // Null when Neo4j's query router begins the transaction with BEGIN, before any query.
         constituentTransactionFactory: ConstituentTransactionFactory?,
     ): DatabaseTransaction {
-        check(!closed) { "this member is shutting down" }
+        if (closed) throw shuttingDown(location.databaseName)
         val member =
             location as? Location.Remote.Internal.Direct
                 ?: throw IllegalArgumentException(
@@ -99,7 +99,7 @@ internal class RemoteTransactions(
                 member,
                 transactionInfo,
                 {
-                    pool(address)
+                    pool(address, member.databaseName)
                         .getConnection(
                             BoltConnectionParameters.builder()
                                 .withAuthToken(token(subject))
@@ -138,9 +138,9 @@ internal class RemoteTransactions(
             )
         )
 
-    private fun pool(address: SocketAddress): PooledBoltConnectionSource =
+    private fun pool(address: SocketAddress, database: String): PooledBoltConnectionSource =
         pools.computeIfAbsent(address) {
-            check(!closed) { "this member is shutting down" }
+            if (closed) throw shuttingDown(database)
             PooledBoltConnectionSource(
                 logging,
                 Clock.systemUTC(),
@@ -167,6 +167,21 @@ internal class RemoteTransactions(
                 PooledBoltConnectionSource.TimeoutPolicy.LEGACY,
             )
         }
+
+    /**
+     * Why a transaction of [database] cannot run on another member: this member is shutting down,
+     * while it still serves connections that were busy when it began. Clients retry, as on another
+     * member that is unavailable.
+     */
+    private fun shuttingDown(database: String) =
+        RemoteFailure(
+            Status.General.DatabaseUnavailable,
+            "This member is shutting down and no longer runs transactions of database " +
+                "'$database' on other members. Retry through another member.",
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N09)
+                .withParam(GqlParams.StringParam.db, database)
+                .build(),
+        )
 
     /** Closes the pools of members that are not at [addresses], such as removed members. */
     fun retain(addresses: Set<SocketAddress>) {
