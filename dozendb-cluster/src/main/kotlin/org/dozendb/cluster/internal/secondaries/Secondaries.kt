@@ -61,6 +61,10 @@ internal fun interface StagedStore {
  * [marks] records which stores are secondaries': one counts only once it is marked.
  *
  * @property primaries the consensus addresses of the primaries of a database, its leader first.
+ * @property afterApply runs after a secondary applied pulled transactions, or was replaced by a
+ *   copy, on the thread that did.
+ * @property replacing runs the stop, move and start that replace a secondary with a copy, as
+ *   `system`'s must run while no reader of it does.
  */
 internal class Secondaries(
     private val transfer: BulkTransfer,
@@ -74,6 +78,8 @@ internal class Secondaries(
     private val metrics: ClusterMetrics,
     private val logProvider: InternalLogProvider,
     private val retryDelay: Duration = Duration.ofSeconds(2),
+    private val afterApply: (NamedDatabaseId) -> Unit = {},
+    private val replacing: (NamedDatabaseId, () -> Unit) -> Unit = { _, replace -> replace() },
 ) : DatabaseEventListenerAdapter() {
     private val log = logProvider.getLog(Secondaries::class.java)
     private val databases = ConcurrentHashMap<String, Puller>()
@@ -101,6 +107,7 @@ internal class Secondaries(
                 { refusal(ref(id)) },
                 metrics.of(id.name()),
                 logProvider.getLog(SecondaryDatabase::class.java),
+                afterApply = { afterApply(id) },
             )
         databases[id.name()] = Puller(secondary)
         return secondary
@@ -547,13 +554,19 @@ internal class Secondaries(
             }
             if (staged == null) Thread.sleep(retryDelay.toMillis())
         }
-        control().stop(secondary.namedDatabaseId)
-        staged.moveIntoPlace()
-        if (control().start(secondary.namedDatabaseId)) {
+        var started = false
+        replacing(secondary.namedDatabaseId) {
+            control().stop(secondary.namedDatabaseId)
+            staged.moveIntoPlace()
+            started = control().start(secondary.namedDatabaseId)
+        }
+        if (started) {
             log.info("Secondary %s runs again, from a copy", ref.name)
         } else {
             log.error("Secondary %s did not start after it was replaced with a copy", ref.name)
         }
+        // The copy brings changes that no applied transaction announced.
+        afterApply(secondary.namedDatabaseId)
     }
 
     private fun inBackground(description: String, task: () -> Unit) {

@@ -90,6 +90,12 @@ internal class ReplicationService(
     }
 
     /**
+     * Runs [replace], which stops `system` and replaces it with a copy, while no reader of the
+     * system database in the background runs (see [readingSystem]).
+     */
+    fun replacingSystem(replace: () -> Unit) = systemLock.write(replace)
+
+    /**
      * Runs [block], which reads the system database, unless `system` is being replaced by a copy
      * now: then returns null at once, instead of waiting as [readingSystem] does.
      */

@@ -51,6 +51,7 @@ import org.neo4j.storageengine.api.cursor.StoreCursors
  * transactions. Otherwise the store holds another history, and the database panics.
  *
  * @property counts the database's metrics, of the pulls among them.
+ * @property afterApply runs after each chain of pulled transactions is applied.
  */
 internal class SecondaryDatabase(
     val namedDatabaseId: NamedDatabaseId,
@@ -58,6 +59,7 @@ internal class SecondaryDatabase(
     private val refusal: () -> String,
     private val counts: ClusterMetrics.Counters,
     private val log: InternalLog,
+    private val afterApply: () -> Unit = {},
 ) : HostedDatabase {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
 
@@ -180,7 +182,13 @@ internal class SecondaryDatabase(
         }
 
     /** Applies [chain] unless pulling stopped; returns whether it did. */
-    private fun apply(chain: List<CommittedTransaction>): Boolean = applying.withLock {
+    private fun apply(chain: List<CommittedTransaction>): Boolean {
+        if (!applyChain(chain)) return false
+        afterApply()
+        return true
+    }
+
+    private fun applyChain(chain: List<CommittedTransaction>): Boolean = applying.withLock {
         if (!pulling) return false
         val resolver = database.dependencyResolver
         val idStore = resolver.resolveDependency(TransactionIdStore::class.java)

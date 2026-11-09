@@ -11,6 +11,7 @@ import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.Role
 import org.dozendb.consensus.fake.InMemoryConsensus
+import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
 
@@ -99,6 +100,26 @@ class ClusterServiceTest {
             formatLevelStore = clusterLevel,
             upgradeConfirmation = Duration.ofMillis(500),
         )
+
+    @Test
+    fun `a system secondary that the initial members list refuses to start`() {
+        val secondary =
+            ClusterService(
+                logs[0],
+                system,
+                ClusterFormation(logs[0], addresses, "5.26.27", log, sleep = {}),
+                stores[0],
+                memberships[0],
+                log,
+                metadata = { ownMetadata },
+                systemMode = CopyMode.SECONDARY,
+            )
+
+        assertThatThrownBy { secondary.start() }
+            .isInstanceOf(ClusterFormationException::class.java)
+            .hasMessageContaining("server.cluster.system_database_mode=SECONDARY")
+            .hasMessageContaining("secondaries never form a cluster")
+    }
 
     @Test
     fun `members form the system group and report the elected leader`() {

@@ -5,6 +5,7 @@ import java.time.Duration
 import org.dozendb.cluster.FormatLevels
 import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.consensus.ratis.RatisConsensusConfig
+import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.UpstreamRules
 import org.dozendb.core.servers.UpstreamSelection
 import org.neo4j.configuration.Description
@@ -81,6 +82,25 @@ class ClusterSettings : SettingsDeclaration {
         )
         val initialMembers: Setting<List<SocketAddress>> =
             newBuilder("dbms.dozendb.cluster.initial_members", listOf(SOCKET_ADDRESS), emptyList())
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "Whether this server hosts the system database as a primary, which votes in its Raft " +
+                "group, or as a secondary, which pulls it from the servers that host it: PRIMARY " +
+                "or SECONDARY. A cluster needs few primaries of system; the others can be " +
+                "secondaries. Secondaries never form a cluster: the address of a SECONDARY server " +
+                "must not be in dbms.dozendb.cluster.initial_members. dozendb.cluster.addMember " +
+                "admits a server in this mode; a server that hosts system in the other mode keeps " +
+                "doing so until it is admitted again. Named like Neo4j Enterprise's setting."
+        )
+        val systemDatabaseMode: Setting<CopyMode> =
+            newBuilder(
+                    "server.cluster.system_database_mode",
+                    ofEnum(CopyMode::class.java),
+                    CopyMode.PRIMARY,
+                )
                 .immutable()
                 .build()
 

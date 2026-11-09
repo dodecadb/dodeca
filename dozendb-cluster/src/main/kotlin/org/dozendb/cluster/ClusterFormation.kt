@@ -55,8 +55,27 @@ class ClusterFormation(
         }
     }
 
-    /** Blocks until the initial members of [group] are known. */
-    fun awaitFormation(group: UUID): Formation {
+    /**
+     * Refuses this member, which hosts `system` as a secondary, if the initial members list it:
+     * secondaries never form a cluster.
+     */
+    fun refuseInitialSecondary(setting: String) {
+        val self = consensus.self.raftAddress
+        if (self in initialMembers) {
+            throw ClusterFormationException(
+                "This server hosts the system database as a secondary ($setting=SECONDARY), but " +
+                    "its address $self is one of ${MemberMetadata.INITIAL_MEMBERS_SETTING} " +
+                    "$initialMembers: secondaries never form a cluster. Remove it from the list, " +
+                    "or make the server a primary."
+            )
+        }
+    }
+
+    /**
+     * Blocks until the initial members of [group] are known. Unless [form], this member forms no
+     * group, as a system secondary does not: it waits until a member it reaches runs the group.
+     */
+    fun awaitFormation(group: UUID, form: Boolean = true): Formation {
         val self = consensus.self
         var waited = Duration.ZERO
         var nextProgress = progressInterval
@@ -81,16 +100,21 @@ class ClusterFormation(
 
             reached.forEach(::checkCompatible)
 
-            if (reached.size == initialMembers.size) {
+            if (form && reached.size == initialMembers.size) {
                 return decide(self, reached)
             }
 
             if (waited >= nextProgress) {
                 userLog.info(
-                    "Waiting for initial cluster members, %d of %d reachable. Unreachable: %s",
+                    if (form)
+                        "Waiting for initial cluster members, %d of %d reachable. " +
+                            "Unreachable: %s"
+                    else
+                        "Waiting for the initial cluster members to form the cluster, %d of %d " +
+                            "reachable. Unreachable: %s",
                     reached.size,
                     initialMembers.size,
-                    describeFailures(outcomes),
+                    describeFailures(outcomes).ifEmpty { "none" },
                 )
                 nextProgress = waited + progressInterval
             }

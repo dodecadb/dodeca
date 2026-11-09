@@ -64,6 +64,7 @@ class DozenDbSecurityModule(
     private val security: SystemGraphSecurity,
     private val memberLogins: MemberLogins,
     private val defaultDatabase: (String) -> String,
+    private val awaitingSystem: (Long) -> Unit = {},
 ) : CommunitySecurityModule(logService, config, dependencies, securityLog) {
     private lateinit var realm: AuthManager
     private lateinit var members: AuthManager
@@ -85,6 +86,7 @@ class DozenDbSecurityModule(
                         UserLogins(
                             { user, connection -> loginAs(helper, user, connection) },
                             { transaction ->
+                                awaitingSystem(transaction)
                                 dependencies
                                     .resolveDependency(LocalGraphTransactionIdTracker::class.java)
                                     .awaitSystemGraphUpToDate(transaction)

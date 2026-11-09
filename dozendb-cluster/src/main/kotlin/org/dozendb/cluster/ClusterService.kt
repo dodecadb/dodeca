@@ -18,6 +18,7 @@ import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.PeerInfo
 import org.dozendb.consensus.Role
 import org.dozendb.consensus.Snapshot
+import org.dozendb.core.servers.CopyMode
 import org.neo4j.logging.Log
 
 /**
@@ -53,11 +54,12 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
  * cluster's members, and reports status. It knows nothing about Neo4j internals.
  *
  * The cluster's servers are the members of the `system` group and the system secondaries
- * ([servers]). A member that starts without Raft state and finds the cluster formed without it
- * joins it: it copies the databases it needs to start, runs the `system` group without voting in
- * it, and waits until a member of the cluster adds it with [addMember]. A member removed with
- * [removeMember] stops its databases and takes no part in the cluster any more; to be added again
- * it needs its data directory deleted, after which it joins as a new member.
+ * ([servers]), which pull `system` instead of voting in its group ([systemHosting]). A member that
+ * starts without Raft state and finds the cluster formed without it joins it: it copies the
+ * databases it needs to start, runs the `system` group without voting in it, and waits until a
+ * member of the cluster adds it with [addMember]. A member removed with [removeMember] stops its
+ * databases and takes no part in the cluster any more; to be added again it needs its data
+ * directory deleted, after which it joins as a new member.
  *
  * A member runs one DozenDB version, which supports [formatLevels]; the cluster's format level says
  * which formats members write. It rises when an administrator finishes an upgrade with
@@ -71,6 +73,9 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
  * @property upgradeConfirmation how long [finishUpgrade] waits for every member to record the
  *   cluster's format level.
  * @property servers the cluster's servers.
+ * @property systemMode the mode this member is configured to host `system` in,
+ *   `server.cluster.system_database_mode`.
+ * @property systemHosting how this member hosts `system` as a secondary, if it can.
  */
 class ClusterService(
     private val consensus: ConsensusLog,
@@ -86,12 +91,20 @@ class ClusterService(
     private val formatLevelStore: FormatLevelStore? = null,
     private val upgradeConfirmation: Duration = Duration.ofSeconds(30),
     private val servers: ClusterServers = ClusterServers(consensus, systemDatabase),
+    private val systemMode: CopyMode = CopyMode.PRIMARY,
+    private val systemHosting: SystemHosting? = null,
 ) {
     private var statusListener: AutoCloseable? = null
     private val levelRefresh: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "dozendb-format-level").apply { isDaemon = true }
     }
     private val levelRefreshRequested = AtomicBoolean(false)
+    private val followRequested = AtomicBoolean(false)
+
+    /** Whether this member hosts `system` as a secondary, which pulls it. */
+    @Volatile
+    var pullsSystem: Boolean = false
+        private set
 
     @Volatile private var record: MembershipRecord? = null
 
@@ -127,13 +140,22 @@ class ClusterService(
 
     /**
      * Starts consensus and blocks until this member takes part in the `system` group, with the
-     * databases it lacks copied from another member. Runs before any database starts.
+     * databases it lacks copied from another member; a system secondary, until it has a copy of
+     * `system` to pull (see [startPulling]). Runs before any database starts.
      */
     fun start() {
         record = membershipStore.read()
         val firstStart = record == null
         requireSupported(formatLevel, "as this member last saw it")
+        if (systemMode == CopyMode.SECONDARY) {
+            formation.refuseInitialSecondary(SYSTEM_DATABASE_MODE_SETTING)
+        }
         consensus.start()
+        val hosting = systemHosting
+        if (hosting != null && hosting.pulls) {
+            startPulling(hosting)
+            return
+        }
         val joined =
             if (systemDatabase.id in consensus.localGroups()) {
                 userLog.info("Rejoining the cluster from local Raft state")
@@ -167,7 +189,9 @@ class ClusterService(
             if (source != null && source.id == consensus.self.id) {
                 userLog.info("This member creates the databases of the new cluster")
             } else {
-                copyStores(source, missing)
+                copyStores(source, "databases ${missing.joinToString()}") {
+                    stores.copyFrom(it, missing)
+                }
             }
         }
         val roleLogger = RoleChangeLogger(userLog)
@@ -192,12 +216,81 @@ class ClusterService(
     }
 
     /**
+     * Starts this member as a system secondary, which pulls `system` instead of voting in its
+     * group. Without a secondary's store of `system`, it first waits until the initial members have
+     * formed the cluster, which a secondary never does, and copies `system` from a member that runs
+     * it. It is a member once the system graph it pulls records it (see [addMember]).
+     */
+    private fun startPulling(hosting: SystemHosting) {
+        if (!hosting.pulled()) {
+            formation.awaitFormation(systemDatabase.id, form = false)
+            if (record == null) remember { it }
+            copyStores(null, "the system database, to pull it as a secondary") {
+                hosting.copyPulled(it)
+            }
+        }
+        pullsSystem = true
+        if (state == MemberState.REMOVED) userLog.error(REMOVED_MESSAGE)
+        if (state == MemberState.JOINING) {
+            userLog.info(
+                "This server hosts the system database as a secondary and is not part of the " +
+                    "cluster yet. To add it, run CALL dozendb.cluster.addMember('%s') on the " +
+                    "leader of the system database.",
+                self.raftAddress,
+            )
+        }
+        directory?.start()
+    }
+
+    /**
+     * Looks again, in the background, whether this member was admitted or dropped, as `system`
+     * changed; only on a system secondary, which learns it from the system graph it pulls.
+     */
+    fun systemChanged() {
+        if (!pullsSystem || !followRequested.compareAndSet(false, true)) return
+        try {
+            levelRefresh.execute {
+                followRequested.set(false)
+                try {
+                    followMembership()
+                } catch (e: Exception) {
+                    userLog.debug("Reading this member's membership failed: %s", e.toString())
+                }
+            }
+        } catch (_: RejectedExecutionException) {
+            // Stopping.
+        }
+    }
+
+    /**
+     * A system secondary is a member once the system graph records it, and removed once it records
+     * it dropped.
+     */
+    @Synchronized
+    private fun followPulled(hosting: SystemHosting) {
+        if (state == MemberState.JOINING && servers.secondaries().any { it.id == self.id }) {
+            remember { it.copy(state = MemberState.MEMBER) }
+            userLog.info(
+                "This server is now one of the cluster's servers, a secondary of the system " +
+                    "database"
+            )
+        }
+        if (state == MemberState.MEMBER && hosting.dropped()) {
+            remember { it.copy(state = MemberState.REMOVED) }
+            userLog.error(REMOVED_MESSAGE)
+            onRemoved()
+        }
+    }
+
+    /**
      * Records that this member became a voting member, once the change of members settled, and that
      * it was removed, which only the group stopping tells: a follower that installs a snapshot
      * briefly shows an older configuration, which may leave it out.
      */
     @Synchronized
     private fun followMembership() {
+        val hosting = systemHosting
+        if (pullsSystem && hosting != null) return followPulled(hosting)
         val membership =
             try {
                 consensus.membership(systemDatabase)
@@ -427,25 +520,21 @@ class ClusterService(
         }
     }
 
-    private fun copyStores(source: Member?, databases: List<String>) {
+    /**
+     * Copies [what] from [source], or any initial member that serves its databases, with [copy],
+     * until a copy succeeds.
+     */
+    private fun copyStores(source: Member?, what: String, copy: (HostPort) -> Unit) {
         while (true) {
             val address = formation.awaitStoreSource(source)
-            userLog.info("Copying databases %s from %s", databases.joinToString(), address)
+            userLog.info("Copying %s from %s", what, address)
             try {
-                stores.copyFrom(address, databases)
+                copy(address)
                 return
             } catch (e: ConsensusUnavailableException) {
-                userLog.warn(
-                    "Copying the databases from %s failed, retrying: %s",
-                    address,
-                    e.message,
-                )
+                userLog.warn("Copying %s from %s failed, retrying: %s", what, address, e.message)
             } catch (e: java.io.IOException) {
-                userLog.warn(
-                    "Copying the databases from %s failed, retrying: %s",
-                    address,
-                    e.message,
-                )
+                userLog.warn("Copying %s from %s failed, retrying: %s", what, address, e.message)
             }
             formation.pause()
         }
@@ -474,7 +563,7 @@ class ClusterService(
 
     /** The servers of the cluster: the voting members of `system`, then its secondaries. */
     fun members(): List<MemberView> {
-        val leader = consensus.status(systemDatabase).leader
+        val leader = servers.leader()
         val groups =
             replicatedDatabases()
                 .filter { it.id != systemDatabase.id }
@@ -511,11 +600,14 @@ class ClusterService(
     }
 
     /**
-     * Adds the member at [address] to the cluster, which first brings it up to date with the
-     * `system` group, and returns it. It must wait to join this cluster: started with initial
-     * members of this cluster, without Raft state of its own, and on the same Neo4j version.
-     * Returns once it votes in the `system` group, at once if it is a member already. It joins the
-     * group of each database once it has copied it.
+     * Adds the member at [address] to the cluster, in the mode it reports
+     * (`server.cluster.system_database_mode`), and returns it. It must wait to join this cluster:
+     * started with initial members of this cluster, without Raft state of its own, and on the same
+     * Neo4j version. A primary is first brought up to date with the `system` group; this returns
+     * once it votes in it. A system secondary, which pulls `system`, is admitted by the leader of
+     * `system`, which records it ([SystemHosting.admit]); this returns once it is recorded. Returns
+     * at once if it is a server of the cluster already. It joins the group of each database once it
+     * has copied it.
      *
      * @throws MembershipChangeException if the member cannot be added.
      */
@@ -533,6 +625,21 @@ class ClusterService(
         val candidate = peer.member
         if (servers.all().any { it.id == candidate.id }) return candidate
         checkCanJoin(address, peer)
+        if (secondary(peer)) {
+            val hosting =
+                systemHosting
+                    ?: throw MembershipChangeException("This cluster takes no system secondaries.")
+            userLog.info("Admitting server %s as a secondary of the system database", candidate)
+            hosting.admit(candidate)
+            userLog.info("Admitted server %s as a secondary of the system database", candidate)
+            return candidate
+        }
+        if (pullsSystem) {
+            throw MembershipChangeException(
+                "This server hosts the system database as a secondary: add the member on a " +
+                    "primary of the system database."
+            )
+        }
         userLog.info("Adding member %s to the cluster", candidate)
         try {
             runBlocking { consensus.addMember(systemDatabase, candidate, CHANGE_TIMEOUT) }
@@ -545,14 +652,23 @@ class ClusterService(
 
     /**
      * Removes the member [id] from the cluster: from the `system` group, which it then stops
-     * running. Returns once the change is committed; the group of each database follows, and the
-     * removed member stops its databases.
+     * running, or, for a system secondary, its record ([SystemHosting.forget]), which it learns of
+     * from the system graph it pulls. Returns once the change is committed; the group of each
+     * database follows, and the removed member stops its databases.
      *
      * @throws MembershipChangeException if [id] is not a member, is the only one, or the change
      *   failed.
      */
     fun removeMember(id: MemberId) {
         requireMember()
+        val hosting = systemHosting
+        val secondary = servers.secondaries().firstOrNull { it.id == id }
+        if (hosting != null && secondary != null && servers.voters().members.none { it.id == id }) {
+            userLog.info("Removing system secondary %s from the cluster", secondary)
+            hosting.forget(id)
+            userLog.info("Removed system secondary %s from the cluster", secondary)
+            return
+        }
         val members = consensus.members(systemDatabase)
         val member =
             members.firstOrNull { it.id == id }
@@ -608,7 +724,10 @@ class ClusterService(
             else -> throw MembershipChangeException("$candidate is a member of another cluster.")
         }
         val clusterId = peer.metadata[MemberMetadata.CLUSTER_ID]
-        if (clusterId == null || systemDatabase.id !in peer.groups) {
+        val started =
+            if (secondary(peer)) peer.metadata[MemberMetadata.STORES_READY] == "true"
+            else systemDatabase.id in peer.groups
+        if (clusterId == null || !started) {
             throw MembershipChangeException(
                 "$candidate is still starting; add it once it has started."
             )
@@ -622,11 +741,17 @@ class ClusterService(
         }
     }
 
+    /** Whether [peer] asks to host `system` as a secondary. */
+    private fun secondary(peer: PeerInfo): Boolean =
+        peer.metadata[MemberMetadata.SYSTEM_DATABASE_MODE] == CopyMode.SECONDARY.name
+
     private companion object {
         /** How long a change of members may take: bringing a new member up to date included. */
         val CHANGE_TIMEOUT: Duration = Duration.ofMinutes(10)
 
         const val CONFIRMATION_POLL_MILLIS = 200L
+
+        const val SYSTEM_DATABASE_MODE_SETTING = "server.cluster.system_database_mode"
 
         const val REMOVED_MESSAGE =
             "This member was removed from the cluster: it takes no part in it any more and its " +

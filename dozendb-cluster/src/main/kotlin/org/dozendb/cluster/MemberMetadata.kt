@@ -90,6 +90,12 @@ object MemberMetadata {
      * latest one when an earlier one arrives late. Reports of different runs are not ordered.
      */
     const val REPORT_NUMBER = "dozendb.reportNumber"
+
+    /**
+     * The member's `server.cluster.system_database_mode`, PRIMARY or SECONDARY: the mode it is
+     * admitted in. Members of versions before system secondaries report none, and are primaries.
+     */
+    const val SYSTEM_DATABASE_MODE = "dozendb.systemDatabaseMode"
     const val INITIAL_MEMBERS_SETTING = "dbms.dozendb.cluster.initial_members"
 
     /**

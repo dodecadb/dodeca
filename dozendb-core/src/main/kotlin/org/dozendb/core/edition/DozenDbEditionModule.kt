@@ -405,12 +405,18 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 log,
                 security,
                 memberLogins(),
-            ) {
-                defaultDatabaseResolver.defaultDatabase(it)
-            }
+                { defaultDatabaseResolver.defaultDatabase(it) },
+                ::awaitingSystem,
+            )
         module.setup()
         setSecurityProvider(module)
     }
+
+    /**
+     * Runs before a member's login waits until `system` here has the transaction [transactionId],
+     * as a server whose `system` pulls it asks for it at once.
+     */
+    protected open fun awaitingSystem(transactionId: Long) {}
 
     /**
      * Whether other members of a cluster may log in on this server's routing connector as the users

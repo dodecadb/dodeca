@@ -32,6 +32,7 @@ import org.neo4j.kernel.database.NamedDatabaseId
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
     private val replication: ReplicationService,
+    private val current: () -> Boolean = replication::awaitSystemCurrent,
 ) : SystemGraph, FormatLevelStore {
     override fun databases(): List<DesiredDatabase> = replication.readingSystem {
         system().beginTx().use { tx ->
@@ -67,7 +68,7 @@ internal class Neo4jSystemGraph(
     }
 
     // Not while reading: a member behind the log confirms only once `system` was replaced.
-    override fun awaitCurrent(): Boolean = replication.awaitSystemCurrent()
+    override fun awaitCurrent(): Boolean = current()
 
     override fun leading(): Boolean = replication.systemWritable
 
@@ -197,6 +198,31 @@ internal class Neo4jSystemGraph(
     /** The system secondaries, servers that pull `system` instead of voting in its group. */
     fun systemSecondaries(): List<Member> = replication.readingSystem {
         system().beginTx().use { tx -> SystemSecondaryRecords.all(tx) }
+    }
+
+    /**
+     * Records [member] a system secondary, on the `system` leader, as admitting it does; a record
+     * of it there already takes its address.
+     */
+    fun admitSecondary(member: Member) = replication.readingSystem {
+        system().beginTx().use { tx ->
+            ServerRecords.lock(tx)
+            SystemSecondaryRecords.add(tx, member)
+            tx.commit()
+        }
+    }
+
+    /** Deletes the record of the system secondary [member], on the `system` leader. */
+    fun forgetSecondary(member: MemberId) = replication.readingSystem {
+        system().beginTx().use { tx ->
+            ServerRecords.lock(tx)
+            if (SystemSecondaryRecords.remove(tx, member)) tx.commit()
+        }
+    }
+
+    /** Whether DROP SERVER dropped [member]. */
+    fun dropped(member: MemberId): Boolean = replication.readingSystem {
+        system().beginTx().use { tx -> member.uuid in ServerRecords.dropped(tx) }
     }
 
     /** The server tags of each enabled server, from its server record. */

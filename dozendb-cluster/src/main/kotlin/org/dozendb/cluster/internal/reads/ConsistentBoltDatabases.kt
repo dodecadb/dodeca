@@ -25,11 +25,13 @@ import org.neo4j.memory.MemoryTracker
  *
  * A transaction first waits until `system` here holds what its bookmarks saw of it, as Neo4j's
  * query router waits ([transactionIds]), but before Neo4j resolves the name of its database, which
- * this member would not find yet if the leader created it, or an alias of it, moments ago.
+ * this member would not find yet if the leader created it, or an alias of it, moments ago. Where
+ * `system` is a secondary, it is told to pull that transaction at once first ([pullSystem]).
  */
 internal class ConsistentBoltDatabases(
     private val delegate: BoltGraphDatabaseManagementServiceSPI,
     private val defaultConsistency: ReadConsistency,
+    private val pullSystem: (Long) -> Unit,
     private val transactionIds: () -> LocalGraphTransactionIdTracker,
 ) : BoltGraphDatabaseManagementServiceSPI {
     override fun database(
@@ -55,7 +57,10 @@ internal class ConsistentBoltDatabases(
             if (bookmarks.isNotEmpty()) {
                 TransactionBookmarkManagerImpl(BookmarkFormat.parse(bookmarks))
                     .bookmarkForLocalSystemDatabase
-                    .ifPresent { transactionIds().awaitSystemGraphUpToDate(it.transactionId()) }
+                    .ifPresent {
+                        pullSystem(it.transactionId())
+                        transactionIds().awaitSystemGraphUpToDate(it.transactionId())
+                    }
             }
             return database.beginTransaction(
                 type,

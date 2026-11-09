@@ -15,8 +15,10 @@ import org.dozendb.cluster.FormatLevels
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.MemberState
+import org.dozendb.cluster.MembershipChangeException
 import org.dozendb.cluster.MembershipFile
 import org.dozendb.cluster.MembershipReconciler
+import org.dozendb.cluster.SystemHosting
 import org.dozendb.cluster.internal.durability.FsyncPolicy
 import org.dozendb.cluster.internal.durability.SingleFsyncFileSystem
 import org.dozendb.cluster.internal.forwarding.ForwardedWrites
@@ -28,6 +30,7 @@ import org.dozendb.cluster.internal.forwarding.RoutingBoltDatabases
 import org.dozendb.cluster.internal.leadership.LeaderAnnouncer
 import org.dozendb.cluster.internal.leadership.LeaderBalancer
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
+import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.DatabaseReconciler
@@ -133,6 +136,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val replication: ReplicationService
     private val secondaries: Secondaries
     private val clusterHosting: ClusterHosting
+
+    /** Whether this member hosts `system` as a secondary; see [SystemHosting.pulls]. */
+    private val pullsSystem: Boolean
     private val directory: MemberDirectory
     private val locations: DatabaseLocations
     private val consensus: ConsensusLog
@@ -191,8 +197,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.NEO4J_VERSION to neo4jVersion,
                 MemberMetadata.DOZENDB_VERSION to DozenDb.version,
                 MemberMetadata.HAS_STORES to stores.existed.toString(),
-                MemberMetadata.STORES_READY to
-                    (replicationService.replica(systemDatabase)?.isRunning() == true).toString(),
+                MemberMetadata.STORES_READY to systemRunsHere().toString(),
                 MemberMetadata.MEMBER_STATE to cluster.state.name,
                 MemberMetadata.DATABASES to DatabaseStatesCodec.encode(reportedStates()),
                 MemberMetadata.READ_ONLY_DATABASES to readOnlyHere().joinToString(","),
@@ -201,6 +206,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.LEADING to MemberMetadata.numbersText(leadingHere()),
                 MemberMetadata.FORMAT_LEVELS to formatLevels.toString(),
                 MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
+                MemberMetadata.SYSTEM_DATABASE_MODE to
+                    config.get(ClusterSettings.systemDatabaseMode).name,
             ) +
                 InitialServerOptions.report(ServerOptions.initial(config)) +
                 listOfNotNull(
@@ -263,7 +270,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 // servers are then as last read.
                 recorded = {
                     checkNotNull(
-                        if (replicationService.replica(systemDatabase)?.isRunning() == true) {
+                        if (systemRunsHere()) {
                             replicationService.tryReadingSystem(systemGraph::systemSecondaries)
                         } else {
                             null
@@ -278,6 +285,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         GroupMembership(it.voters, it.settled, removed = false)
                     }
                 },
+                reportedLeader = { locations.of(systemDatabase)?.leader },
             )
         val metrics = ClusterMetrics(consensus, clusterServers::all)
         globalModule.globalDependencies.satisfyDependency(metrics)
@@ -391,8 +399,21 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 metrics = metrics,
                 logProvider = logService.internalLogProvider,
+                afterApply = { id -> if (id.isSystemDatabase) systemApplied() },
+                replacing = { id, replace ->
+                    if (id.isSystemDatabase) replicationService.replacingSystem(replace)
+                    else replace()
+                },
             )
         clusterHosting = ClusterHosting(replicationService, secondaries)
+        // Before Neo4j creates `system`, which it does before the cluster service starts.
+        pullsSystem =
+            systemDatabase.id !in consensus.localGroups() &&
+                (config.get(ClusterSettings.systemDatabaseMode) == CopyMode.SECONDARY ||
+                    systemDatabase.id in secondaries.marked())
+        if (pullsSystem) {
+            clusterHosting.host(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID, CopyMode.SECONDARY)
+        }
         val fileSystem = globalModule.fileSystem
         if (fileSystem is SingleFsyncFileSystem) {
             fileSystem.policy = FsyncPolicy(replicationService::singleFsync)
@@ -480,7 +501,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 locations,
                 replicationService::created,
                 {
-                    if (replicationService.replica(systemDatabase)?.isRunning() == true) {
+                    if (systemRunsHere()) {
                         mapOf(systemDatabase to emptySet<MemberId>()) +
                             systemGraph.databases().associate {
                                 DatabaseRef(it.id.name(), it.id.databaseId().uuid()) to it.hosts
@@ -531,13 +552,21 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                             systemGraph.recordFormatLevel(level)
                     },
                 servers = clusterServers,
+                systemMode = config.get(ClusterSettings.systemDatabaseMode),
+                systemHosting = systemHosting(),
             )
         globalModule.globalDependencies.satisfyDependency(cluster)
         globalModule.databaseEventListeners.registerDatabaseEventListener(
             object : DatabaseEventListenerAdapter() {
                 override fun databaseStart(eventContext: DatabaseEventContext) {
                     if (eventContext.databaseName == systemDatabase.name) {
+                        // A removed system secondary pulls nothing, as a removed primary's group
+                        // does not run.
+                        if (cluster.state == MemberState.REMOVED) {
+                            secondaries.stopPulling(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
+                        }
                         clusterServers.systemChanged()
+                        cluster.systemChanged()
                         cluster.requestFormatLevelRefresh()
                         // A Free server reports it before it hosts the default database.
                         clusterId =
@@ -556,7 +585,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     }
                 },
                 logService.getInternalLog(MembershipReconciler::class.java),
-                systemRunning = { replicationService.replica(systemDatabase)?.isRunning() == true },
+                systemRunning = ::systemRunsHere,
                 systemSecondaries = clusterServers::secondaries,
             )
         globalModule.globalLife.add(
@@ -583,6 +612,70 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             }
         )
     }
+
+    /** Whether `system` runs here: its group, or its secondary, which pulls. */
+    private fun systemRunsHere(): Boolean =
+        replication.replica(systemDatabase)?.isRunning() == true ||
+            secondaries.running(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
+
+    /**
+     * How this member hosts `system` as a secondary: its store is marked a secondary's, as other
+     * secondaries' are, and the leader of `system` admits a server by recording it
+     * ([SystemSecondaryRecords]).
+     */
+    private fun systemHosting(): SystemHosting =
+        object : SystemHosting {
+            override val pulls: Boolean = pullsSystem
+
+            override fun pulled(): Boolean = systemDatabase.id in secondaries.marked()
+
+            override fun copyPulled(source: HostPort) =
+                secondaries.copy(source, NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
+
+            override fun dropped(): Boolean =
+                try {
+                    systemGraph.dropped(memberId)
+                } catch (e: Exception) {
+                    if (e is InterruptedException) Thread.currentThread().interrupt()
+                    false
+                }
+
+            override fun admit(member: Member) {
+                if (!replication.systemWritable) {
+                    val leader = clusterServers.leader()
+                    throw MembershipChangeException(
+                        "Server ${member.id} hosts the system database as a secondary, which the " +
+                            "leader of the system database admits: run dozendb.cluster.addMember " +
+                            "there${leader?.let { ", on member $it" }.orEmpty()}."
+                    )
+                }
+                try {
+                    systemGraph.admitSecondary(member)
+                } catch (e: Exception) {
+                    throw MembershipChangeException(
+                        "Admitting server ${member.id} failed: ${e.message}",
+                        e,
+                    )
+                }
+            }
+
+            override fun forget(member: MemberId) {
+                if (!replication.systemWritable) {
+                    throw MembershipChangeException(
+                        "This member does not lead the system database, which records system " +
+                            "secondaries."
+                    )
+                }
+                try {
+                    systemGraph.forgetSecondary(member)
+                } catch (e: Exception) {
+                    throw MembershipChangeException(
+                        "Removing system secondary $member failed: ${e.message}",
+                        e,
+                    )
+                }
+            }
+        }
 
     /**
      * Community's read-only checker, which also tells the balancer when the databases read-only
@@ -725,6 +818,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             Neo4jSystemGraph(
                 { repository.getSystemDatabaseContext().databaseFacade() },
                 replication,
+                ::awaitSystemCurrent,
             )
         reconciler =
             DatabaseReconciler(
@@ -760,7 +854,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 { repository.getSystemDatabaseContext().databaseFacade() },
                 { block -> replication.readingSystem(block) },
                 leading = { replication.systemWritable },
-                current = replication::awaitSystemCurrent,
+                current = ::awaitSystemCurrent,
                 // A member that joined may not have been probed yet.
                 report = { member ->
                     directory.reported(member)
@@ -794,28 +888,55 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     ),
                 autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
             )
-        cluster.onRemoved = reconciler::request
+        cluster.onRemoved = {
+            reconciler.request()
+            // As a removed member's system group stops: it learns of no change any more.
+            secondaries.stopPulling(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
+        }
         // A copy no longer placed here is deleted once this member leaves the database's group.
         replication.afterGroupChange = {
             reconciler.request()
             // Also when this member starts or stops leading a group.
             announcer.request()
         }
-        // Transactions applied from Raft fire no transaction event listeners: refresh what the
-        // listeners refresh after local commits.
-        replication.afterSystemApply = {
-            clusterServers.systemChanged()
-            databaseIdCache.invalidateAll()
-            referenceCache.invalidateAll()
-            (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
-            globalReadOnlyChecker?.refresh()
-            reconciler.request()
-            // A new database may need members added since its initial members were recorded.
-            membership.request()
-            servers.request()
-            cluster.requestFormatLevelRefresh()
-        }
+        replication.afterSystemApply = ::systemApplied
         return provider
+    }
+
+    /**
+     * After transactions of `system` were applied here from Raft, or pulled, or `system` was
+     * replaced by a copy: they fire no transaction event listeners, so this refreshes what the
+     * listeners refresh after local commits, and has what follows the system graph look again.
+     */
+    private fun systemApplied() {
+        clusterServers.systemChanged()
+        databaseIdCache.invalidateAll()
+        referenceCache.invalidateAll()
+        (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
+        globalReadOnlyChecker?.refresh()
+        reconciler.request()
+        // A new database may need members added since its initial members were recorded.
+        membership.request()
+        servers.request()
+        cluster.systemChanged()
+        cluster.requestFormatLevelRefresh()
+    }
+
+    /**
+     * Waits until `system` here holds every transaction the cluster had committed when this was
+     * called: a Raft ReadIndex where this member votes in its group, a read barrier at a primary
+     * where it pulls it. Returns false if that could not be confirmed in time.
+     */
+    private fun awaitSystemCurrent(): Boolean {
+        if (secondaries.secondary(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID) == null) {
+            return replication.awaitSystemCurrent()
+        }
+        return try {
+            secondaries.awaitLatest(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID, SYSTEM_READ_TIMEOUT)
+            true
+        } catch (_: ReadConsistencyException) {
+            false
+        }
     }
 
     /**
@@ -988,6 +1109,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         } catch (_: ConsensusUnavailableException) {
             false
         }
+
+    /**
+     * Where `system` is a secondary, it pulls the transaction a member's login waits for at once.
+     */
+    override fun awaitingSystem(transactionId: Long) =
+        secondaries.pullUpTo(
+            NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID,
+            transactionId,
+            bookmarkTimeout(),
+        )
 
     /** Members log in on the routing connector only if they can forward writes to this member. */
     override fun memberLogins(): MemberLogins =
@@ -1195,7 +1326,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ::alone,
             defaultDatabaseResolver,
             ConfirmedReferences(databaseReferenceRepo) {
-                replication.awaitLinearizable(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
+                awaitLinearizable(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
             },
             true,
             globalModule.globalClock,
@@ -1208,6 +1339,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ConsistentBoltDatabases(
                 super.createBoltDatabaseManagementServiceProvider(),
                 globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
+                { transactionId ->
+                    secondaries.pullUpTo(
+                        NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID,
+                        transactionId,
+                        bookmarkTimeout(),
+                    )
+                },
             ) {
                 // Neo4j's query router registers it, after the Bolt databases are made.
                 globalModule.globalDependencies.resolveDependency(
@@ -1380,6 +1518,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
          * member for at most a second.
          */
         val ROUTING_REFRESH_WAIT: Duration = Duration.ofSeconds(3)
+
+        /** How long a system secondary waits to confirm that its `system` is current. */
+        val SYSTEM_READ_TIMEOUT: Duration = Duration.ofSeconds(10)
 
         /** How long a member waits for each other to take an announcement of what it leads. */
         val ANNOUNCEMENT_DEADLINE: Duration = Duration.ofSeconds(1)

@@ -6,6 +6,7 @@ import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupMembership
 import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
 
 /**
  * The servers of the cluster: the voting members of the `system` group, and the system secondaries
@@ -19,6 +20,7 @@ import org.dozendb.consensus.Member
  *
  * @property pullsSystem whether this member hosts `system` as a secondary, or joins as one.
  * @property reportedVoters the voters of `system` as they report them, or null while none is known.
+ * @property reportedLeader the leader of `system` as the voters report it, or null while unknown.
  */
 class ClusterServers(
     private val consensus: ConsensusLog,
@@ -26,6 +28,7 @@ class ClusterServers(
     private val recorded: () -> List<Member> = { emptyList() },
     private val pullsSystem: () -> Boolean = { false },
     private val reportedVoters: () -> GroupMembership? = { null },
+    private val reportedLeader: () -> MemberId? = { null },
 ) {
     @Volatile private var secondaries: List<Member> = emptyList()
     private val stale = AtomicBoolean(true)
@@ -47,6 +50,18 @@ class ClusterServers(
                 ?: throw ConsensusUnavailableException("no voting member of system is known yet")
         } else {
             consensus.membership(systemDatabase)
+        }
+
+    /** The leader of `system`, as this member knows it; null while unknown. */
+    fun leader(): MemberId? =
+        if (pullsSystem()) {
+            reportedLeader()
+        } else {
+            try {
+                consensus.status(systemDatabase).leader
+            } catch (_: ConsensusUnavailableException) {
+                null
+            }
         }
 
     /** The system secondaries that the system graph records, as this member last read them. */
