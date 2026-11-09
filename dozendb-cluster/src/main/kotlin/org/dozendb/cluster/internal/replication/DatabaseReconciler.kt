@@ -283,10 +283,13 @@ internal class DatabaseReconciler(
         val dropped = registered.filter {
             !it.isSystemDatabase && it.name() != defaultDatabase && wanted[it.name()]?.id != it
         }
+        // The files of system and the default database are kept, to form a cluster from; see
+        // create for those of the default database that need replacing.
         val stores =
             databases.stored().filter { name ->
                 val database = wanted[name]
                 name != SYSTEM.name() &&
+                    name != defaultDatabase &&
                     registered.none { it.name() == name } &&
                     (database == null || (database.online && !trusted(database.id)))
             }
@@ -405,8 +408,10 @@ internal class DatabaseReconciler(
         if (!trusted(id)) {
             // Created or copied once it is started.
             if (!database.online) return true
-            // A leftover, deleted once the system graph is confirmed current.
-            if (id.name() in databases.stored()) return false
+            // A leftover, deleted once the system graph is confirmed current. The default
+            // database's files are kept instead, and replaced by a copy, as when this member
+            // stopped while it started a copy, before its group ran here.
+            if (id.name() in databases.stored() && id.name() != defaultDatabase) return false
             if (!provideStore(database)) return false
         }
         log.info("Creating database %s", id)

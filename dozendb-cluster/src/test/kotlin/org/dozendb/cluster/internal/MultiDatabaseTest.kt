@@ -7,10 +7,12 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.LockSupport
+import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
+import org.awaitility.kotlin.until
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.junit.jupiter.api.AfterEach
@@ -258,6 +260,68 @@ class MultiDatabaseTest {
 
         assertThat(Files.readAllLines(stopping.home.resolve("logs/debug.log"))).noneMatch {
             " ERROR " in it
+        }
+    }
+
+    @Test
+    fun `a member stopped while it starts its copy of the default database runs it once started`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        val entered = CountDownLatch(1)
+        val holding = AtomicReference<ClusterHarness.Member>()
+        // Holds the start of the default database on the member chosen below until stopping the
+        // member interrupts it.
+        for (member in cluster.members) {
+            member.databaseEventListeners =
+                listOf(
+                    object : DatabaseEventListenerAdapter() {
+                        override fun databaseStart(eventContext: DatabaseEventContext) {
+                            if (eventContext.databaseName != DEFAULT || holding.get() != member)
+                                return
+                            entered.countDown()
+                            val deadline = System.nanoTime() + Duration.ofMinutes(1).toNanos()
+                            while (!Thread.interrupted() && System.nanoTime() < deadline) {
+                                LockSupport.parkNanos(Duration.ofMillis(10).toNanos())
+                            }
+                            Thread.currentThread().interrupt()
+                        }
+                    }
+                )
+        }
+        cluster.start()
+        val id = cluster.awaitEverywhere(DEFAULT)
+        val member = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        member.stop()
+        // Without its files it copies the default database again as it starts, as when it first
+        // joined the cluster.
+        for (path in
+            listOf(
+                member.home.resolve("data/databases").resolve(DEFAULT),
+                member.home.resolve("data/transactions").resolve(DEFAULT),
+                member.home.resolve("data/raft").resolve(id.databaseId().uuid().toString()),
+            )) {
+            path.toFile().deleteRecursively()
+        }
+        holding.set(member)
+        val starting = thread { runCatching { member.start() } }
+        assertThat(entered.await(1, TimeUnit.MINUTES)).isTrue()
+        await atMost ClusterHarness.AWAIT until { member.running }
+        member.stop()
+        starting.join()
+
+        holding.set(null)
+        member.start()
+        cluster.awaitEverywhere(DEFAULT)
+        cluster.awaitLeader(DEFAULT).database(DEFAULT).executeTransactionally("CREATE (:Film)")
+        eventually {
+            assertThat(
+                    member.database(DEFAULT).executeTransactionally(
+                        "MATCH (f:Film) RETURN count(f) AS c",
+                        emptyMap(),
+                    ) {
+                        it.next()["c"] as Long
+                    }
+                )
+                .isEqualTo(1)
         }
     }
 
