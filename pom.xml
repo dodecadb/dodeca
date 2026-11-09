@@ -61,6 +61,8 @@
     <!-- Test classes run in this many JVMs at once, each with this much heap at most. -->
     <test.forks>4</test.forks>
     <test.heap>4g</test.heap>
+    <!-- Where tests keep their data: a RAM disk when there is one (profile test-ramdisk). -->
+    <test.tmpdir>${java.io.tmpdir}</test.tmpdir>
   </properties>
 
   <dependencyManagement>
@@ -326,7 +328,7 @@
                Community does the same. -->
           <!-- The fork number, so that JVMs of one build take ports from different parts of
                TestPorts' range; in systemPropertyVariables, Maven 3.9 leaves it empty. -->
-          <argLine>-Xmx${test.heap} -Ddozendb.test.fork=${surefire.forkNumber} -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker</argLine>
+          <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddozendb.test.fork=${surefire.forkNumber} -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker</argLine>
           <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
           <properties>
             <configurationParameters>
@@ -365,4 +367,21 @@
       </plugin>
     </plugins>
   </build>
+
+  <profiles>
+    <profile>
+      <!-- Test data on the RAM disk that scripts/test-ramdisk.sh creates, while it is mounted:
+           Neo4j and Raft force every commit to disk, which on an SSD takes most of a test's
+           time, and more so for tests that run at once. -->
+      <id>test-ramdisk</id>
+      <activation>
+        <file>
+          <exists>/Volumes/DozenDbTests</exists>
+        </file>
+      </activation>
+      <properties>
+        <test.tmpdir>/Volumes/DozenDbTests</test.tmpdir>
+      </properties>
+    </profile>
+  </profiles>
 </project>

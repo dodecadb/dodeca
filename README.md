@@ -49,6 +49,12 @@ suites in 3, each with a cluster of its own; `-Dtest.forks=1` and
 its own. The 3 clusters need up to 12 GB of Docker's memory: with less free,
 Docker's VM kills containers, so pass `-Dit.forks=1`.
 
+Most of a test's time goes to forcing commits to disk. On macOS,
+`scripts/test-ramdisk.sh` creates a RAM disk that the build keeps test data on
+while it is mounted, which makes the tests several times faster; on Linux,
+pass `-Dtest.tmpdir=/dev/shm`. The directories of failed tests are on it too,
+until it is ejected or the Mac restarts; run the script again after a restart.
+
 ## License
 
 GNU General Public License v3.0, the same license as Neo4j Community Edition and
