@@ -256,6 +256,8 @@ class SecondariesTest {
             )
         }
         cluster.secondary.start()
+        // Its upstreams are behind its foreign store: their last transaction is not its own.
+        cluster.write("CREATE (:Film {id: 1})")
 
         eventually {
             val health = cluster.secondary.registered(FILMS)?.database()?.databaseHealth

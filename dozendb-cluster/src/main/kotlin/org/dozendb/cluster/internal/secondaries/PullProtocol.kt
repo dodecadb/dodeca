@@ -21,12 +21,12 @@ import org.neo4j.storageengine.api.CommandReaderFactory
  *
  * A request is `byte version, UTF name, long, long` (the database's id), `long after, int checksum,
  * int maximumBytes`: the transactions of the database after the one at append index `after`, whose
- * checksum is `checksum`. A response is `byte version, byte status`, then a UTF message unless the
- * status is [Status.OK], else `long last`, the append index of the upstream's last transaction when
- * it began to read, and each transaction after `after` up to it as `byte 1, int length, record, int
- * crc32c(record)`, with the record as [TransactionRecords] writes it, then `byte 0`. The records
- * stop after the one that reaches `maximumBytes`, so that a secondary that is further behind asks
- * again.
+ * checksum is `checksum`. A response is `byte version, byte status`, then, for [Status.OK], `long
+ * last`, the append index of the upstream's last transaction when it began to read, and each
+ * transaction after `after` up to it as `byte 1, int length, record, int crc32c(record)`, with the
+ * record as [TransactionRecords] writes it, then `byte 0`; for [Status.BEHIND], `long last, int
+ * checksum` of the upstream's last transaction; else a UTF message. The records stop after the one
+ * that reaches `maximumBytes`, so that a secondary that is further behind asks again.
  */
 internal object PullProtocol {
     const val NAME = "dozendb.pull"
@@ -44,6 +44,11 @@ internal object PullProtocol {
         DIVERGED,
         /** The upstream does not run the database, or none with that id. */
         UNAVAILABLE,
+        /**
+         * The upstream's last transaction comes before the one given, as when the secondary pulled
+         * from another further ahead: it has nothing newer, and the secondary judges the history.
+         */
+        BEHIND,
     }
 
     /**
@@ -72,6 +77,12 @@ internal object PullProtocol {
 
         /** The upstream refused, with [status] and why. */
         data class Refused(val status: Status, val message: String) : Answer
+
+        /**
+         * The upstream's last transaction, at append index [last] with [checksum], comes before the
+         * secondary's last.
+         */
+        data class Behind(val last: Long, val checksum: Int) : Answer
     }
 
     fun encode(request: Request): ByteArray =
@@ -103,9 +114,24 @@ internal object PullProtocol {
             )
         }
 
+    /**
+     * Answers that the upstream's last transaction, at append index [last] with [checksum], comes
+     * before the one given.
+     */
+    fun writeBehind(out: OutputStream, last: Long, checksum: Int) {
+        val data = DataOutputStream(out)
+        data.writeByte(VERSION)
+        data.writeByte(Status.BEHIND.ordinal)
+        data.writeLong(last)
+        data.writeInt(checksum)
+        data.flush()
+    }
+
     /** Answers that the upstream refuses the pull, with [status] and [message]. */
     fun writeRefusal(out: OutputStream, status: Status, message: String) {
-        require(status != Status.OK) { "a refusal needs a status other than OK" }
+        require(status != Status.OK && status != Status.BEHIND) {
+            "a refusal needs a status other than OK and BEHIND"
+        }
         val data = DataOutputStream(out)
         data.writeByte(VERSION)
         data.writeByte(status.ordinal)
@@ -157,7 +183,11 @@ internal object PullProtocol {
         val status =
             Status.entries.getOrNull(data.readUnsignedByte())
                 ?: throw IOException("unknown pull status")
-        if (status != Status.OK) return block(Answer.Refused(status, data.readUTF()))
+        when (status) {
+            Status.OK -> {}
+            Status.BEHIND -> return block(Answer.Behind(data.readLong(), data.readInt()))
+            else -> return block(Answer.Refused(status, data.readUTF()))
+        }
         val last = data.readLong()
         val transactions = sequence {
             while (true) {

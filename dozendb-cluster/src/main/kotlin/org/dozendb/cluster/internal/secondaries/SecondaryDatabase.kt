@@ -15,6 +15,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.core.edition.HostedDatabase
 import org.dozendb.core.store.CommittedTransaction
+import org.dozendb.core.store.CommittedTransactions
 import org.neo4j.dbms.database.readonly.DatabaseReadOnlyChecker
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
 import org.neo4j.io.pagecache.context.CursorContext
@@ -147,6 +148,7 @@ internal class SecondaryDatabase(
                     is Answer.Refused ->
                         if (answer.status == Status.DIVERGED) fail(answer.message)
                         else PullOutcome.Refused(answer.status, answer.message)
+                    is Answer.Behind -> behind(answer)
                     is Answer.Pulled -> {
                         val chain = answer.transactions.toList()
                         when {
@@ -160,6 +162,22 @@ internal class SecondaryDatabase(
             }
         }
     }
+
+    /**
+     * The upstream is behind this secondary, as when it pulled from another further ahead: the
+     * upstream's last transaction must be one of this store's, else the store holds another
+     * history. Where this store's logs no longer hold it, it cannot tell.
+     */
+    private fun behind(answer: Answer.Behind): PullOutcome =
+        CommittedTransactions.read(database, answer.last, answer.checksum) { range ->
+            if (range is CommittedTransactions.Diverged) {
+                fail(
+                    "its upstream's last transaction, at append index ${answer.last} with " +
+                        "checksum ${answer.checksum}, is not this store's"
+                )
+            }
+            PullOutcome.CaughtUp
+        }
 
     /** Applies [chain] unless pulling stopped; returns whether it did. */
     private fun apply(chain: List<CommittedTransaction>): Boolean = applying.withLock {

@@ -132,18 +132,24 @@ class PullSourceTest {
     }
 
     @Test
-    fun `a secondary further ahead than the upstream gets nothing, and no refusal`() {
+    fun `a secondary further ahead than the upstream gets its last transaction, to judge`() {
         val database = start()
         database.write(2)
         val last = database.last()
 
-        database.pull(
-            PullProtocol.Request(database.ref(), last.appendIndex() + 5, last.checksum() + 1, 1)
-        ) {
-            it as Answer.Pulled
-            assertThat(it.last).isEqualTo(last.appendIndex())
-            assertThat(it.transactions.toList()).isEmpty()
-        }
+        assertThat(
+                database.pull(
+                    PullProtocol.Request(
+                        database.ref(),
+                        last.appendIndex() + 5,
+                        last.checksum() + 1,
+                        1,
+                    )
+                ) {
+                    it
+                }
+            )
+            .isEqualTo(Answer.Behind(last.appendIndex(), last.checksum()))
     }
 
     @Test

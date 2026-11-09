@@ -13,8 +13,9 @@ import org.neo4j.logging.InternalLog
  * them ([PullProtocol]), whether this member hosts a primary or a secondary: every copy's
  * transaction log holds the same transactions, with the same append indexes and checksums, and a
  * primary applies only what Raft committed. A secondary further ahead than this member, as one that
- * pulled from another, gets nothing. Checkpoints, and with them the pruning of logs, wait while a
- * pull reads them. [served] is called with a database's name for each pull.
+ * pulled from another, gets this member's last transaction, to check its own history against.
+ * Checkpoints, and with them the pruning of logs, wait while a pull reads them. [served] is called
+ * with a database's name for each pull.
  */
 internal class PullSource(
     private val databases: () -> DatabaseContextProvider<*>,
@@ -49,11 +50,10 @@ internal class PullSource(
                     )
                 // A secondary may have pulled from a server further ahead: nothing newer here.
                 is CommittedTransactions.Behind ->
-                    PullProtocol.writeTransactions(
+                    PullProtocol.writeBehind(
                         out,
                         range.last.appendIndex(),
-                        emptySequence(),
-                        pull.maximumBytes,
+                        range.last.checksum(),
                     )
                 is CommittedTransactions.Diverged ->
                     PullProtocol.writeRefusal(
