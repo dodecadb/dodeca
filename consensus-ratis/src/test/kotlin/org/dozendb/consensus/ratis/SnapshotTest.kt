@@ -216,6 +216,83 @@ class SnapshotTest {
         }
 
     @Test
+    fun `a member awaiting a copy asks for no snapshot of its own meanwhile`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val behind = cluster.nodes.first { it != leader }
+            val others = cluster.nodes - behind
+            // No snapshot of its own until it awaits a copy.
+            behind.machine.durable = -1
+            val before = (1..3).map { leader.write("before-$it") }.last()
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(behind.machine.lastAppliedIndex()).isEqualTo(before)
+                }
+            behind.stop()
+            cluster.discardLogBeyond(leader, before)
+            // Alone, it applies its own log again, so it awaits the copy with entries applied.
+            others.forEach { it.stop() }
+            behind.start()
+            behind.consensus.startGroup(cluster.database, behind.machine, emptyList())
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(behind.consensus.status(cluster.database).appliedIndex)
+                        .isEqualTo(before)
+                }
+            others.forEach {
+                it.start()
+                it.consensus.startGroup(cluster.database, it.machine, emptyList())
+            }
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(behind.consensus.awaitingCopy(cluster.database)).isTrue
+                }
+
+            LogCapture().use { log ->
+                // Its state becomes durable while it awaits the copy, as a database's does; a
+                // snapshot would follow the second durable index observed.
+                for (durable in listOf(before - 1, before)) {
+                    behind.machine.durable = durable
+                    await during
+                        Duration.ofSeconds(1) atMost
+                        Duration.ofSeconds(2) untilAsserted
+                        {
+                            assertThat(
+                                    log.lines().filter {
+                                        "Snapshot of" in it || "installation is in progress" in it
+                                    }
+                                )
+                                .isEmpty()
+                        }
+                }
+            }
+            assertThat(behind.consensus.latestSnapshot(cluster.database)).isNull()
+
+            behind.consensus.detachGroup(cluster.database)
+            val source = cluster.awaitLeader()
+            val snapshot = checkNotNull(source.consensus.currentSnapshot(cluster.database))
+            behind.machine.replaceWith(source.machine)
+            assertThat(behind.consensus.installSnapshot(cluster.database, snapshot)).isTrue()
+            behind.machine.durable = null
+            behind.consensus.startGroup(cluster.database, behind.machine, emptyList())
+            // Snapshots follow the second-to-last durable index observed, so it needs two.
+            var written = 0
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    runBlocking { source.write("after-${written++}") }
+                    assertThat(behind.consensus.latestSnapshot(cluster.database)?.position?.index)
+                        .describedAs("a snapshot of its own after the copy")
+                        .isGreaterThan(snapshot.position.index)
+                }
+            assertThat(behind.machine.payloads()).doesNotHaveDuplicates()
+        }
+
+    @Test
     fun `a member whose log ends just before the leader's installs a copy and catches up`() =
         runBlocking<Unit> {
             val cluster = formCluster()

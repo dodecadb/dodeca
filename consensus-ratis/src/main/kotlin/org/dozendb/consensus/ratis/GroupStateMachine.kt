@@ -674,10 +674,13 @@ internal class GroupStateMachine(
 
     /**
      * Observes the state machine's durable index. Returns true if a snapshot would move forward:
-     * the second-to-last durable index observed is beyond the latest snapshot.
+     * the second-to-last durable index observed is beyond the latest snapshot. Never while a copy
+     * is awaited, as Ratis then refuses snapshots; the copy's snapshot is beyond any state held
+     * before.
      */
     fun snapshotDue(): Boolean {
-        val attached = stateLock.withLock { target } ?: return false
+        val attached =
+            stateLock.withLock { target.takeIf { pendingInstall == null } } ?: return false
         val durable = minOf(attached.durableIndex(), lastAppliedTermIndex.index)
         synchronized(this) {
             if (durable > latestDurable) {
