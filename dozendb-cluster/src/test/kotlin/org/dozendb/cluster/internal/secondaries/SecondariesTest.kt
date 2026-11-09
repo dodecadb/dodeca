@@ -14,6 +14,7 @@ import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.cluster.internal.ClusterSettings
 import org.dozendb.cluster.internal.ConsensusTuning
 import org.dozendb.core.DozenDbSettings
+import org.dozendb.core.edition.DatabaseState
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -296,6 +297,16 @@ class SecondariesTest {
         eventually {
             for (member in listOf(feeder, fed)) {
                 assertThat(member.registered(FILMS)?.database()?.isStarted).isTrue()
+            }
+        }
+        // Until it has heard that the feeder runs the database, its rules find no upstream, and
+        // it pulls from a random primary, the last resort.
+        val directory = checkNotNull(fed.cluster.directory)
+        eventually {
+            directory.refreshSoon()
+            assertThat(directory.answering(feeder.cluster.self.id)).isTrue()
+            assertThat(directory.databaseStates(feeder.cluster.self.id).orEmpty()).anyMatch {
+                it.name == FILMS && it.status == DatabaseState.Status.ONLINE
             }
         }
 
