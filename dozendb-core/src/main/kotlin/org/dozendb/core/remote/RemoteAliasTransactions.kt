@@ -145,7 +145,7 @@ class RemoteAliasTransactions(
     private fun connections(reference: DatabaseReferenceImpl.External): Connections =
         connections[reference.id()]
             ?: synchronized(this) {
-                check(!closed) { "this server is shutting down" }
+                if (closed) throw shuttingDown(reference.alias().name())
                 system().beginTx().use { tx ->
                     val model = CommunityTopologyGraphDbmsModel(tx)
                     val current =
@@ -326,6 +326,21 @@ class RemoteAliasTransactions(
                     )
                 }
     }
+
+    /**
+     * Why a transaction in remote alias [alias] cannot run: this server is shutting down, while it
+     * still serves connections that were busy when it began. Clients retry, as on a server that is
+     * unavailable.
+     */
+    private fun shuttingDown(alias: String) =
+        RemoteFailure(
+            Status.General.DatabaseUnavailable,
+            "This server is shutting down and runs no more transactions in remote alias " +
+                "'$alias'. Retry once it runs again, or through another server.",
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N09)
+                .withParam(GqlParams.StringParam.db, alias)
+                .build(),
+        )
 
     override fun close() {
         val closing =

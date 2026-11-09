@@ -14,6 +14,7 @@ import org.neo4j.configuration.connectors.HttpsConnector
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.graphdb.config.Setting
+import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies
 import org.neo4j.io.ByteUnit
@@ -24,6 +25,8 @@ import org.neo4j.kernel.internal.GraphDatabaseAPI
 class StandaloneServer(
     root: Path,
     private val settings: Map<Setting<*>, Any> = emptyMap(),
+    /** Listeners the DBMS calls before DozenDB's own. */
+    private val databaseEventListeners: List<DatabaseEventListener> = emptyList(),
 ) : AutoCloseable {
     val home: Path = Files.createDirectories(root.resolve("server"))
 
@@ -35,7 +38,12 @@ class StandaloneServer(
         check(dbms == null) { "the server is running" }
         dbms =
             DatabaseManagementServiceFactory(DbmsInfo.ENTERPRISE, ::DozenDbEditionModule)
-                .build(config(), false, GraphDatabaseDependencies.newDependencies())
+                .build(
+                    config(),
+                    false,
+                    GraphDatabaseDependencies.newDependencies()
+                        .databaseEventListeners(databaseEventListeners),
+                )
     }
 
     fun stop() {

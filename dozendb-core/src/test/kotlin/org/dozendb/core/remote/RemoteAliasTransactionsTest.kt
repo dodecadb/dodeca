@@ -3,7 +3,10 @@ package org.dozendb.core.remote
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.KeyStore
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import javax.crypto.KeyGenerator
+import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowableOfType
 import org.dozendb.core.DozenDbSettings
@@ -22,6 +25,9 @@ import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.graphdb.config.Setting
+import org.neo4j.graphdb.event.DatabaseEventContext
+import org.neo4j.graphdb.event.DatabaseEventListener
+import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.string.SecureString
 
 /**
@@ -41,7 +47,11 @@ class RemoteAliasTransactionsTest {
     }
 
     /** A server called [name], with a keystore for the passwords of its remote aliases. */
-    private fun server(name: String, auth: Boolean = false): StandaloneServer {
+    private fun server(
+        name: String,
+        auth: Boolean = false,
+        listeners: List<DatabaseEventListener> = emptyList(),
+    ): StandaloneServer {
         val home = Files.createDirectories(root.resolve(name))
         val keystore = home.resolve("aliases.p12")
         val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
@@ -60,7 +70,7 @@ class RemoteAliasTransactionsTest {
                 DozenDbSettings.keystorePassword to SecureString(KEYSTORE_SECRET),
                 DozenDbSettings.keyName to "aliases",
             )
-        return StandaloneServer(home, settings).also {
+        return StandaloneServer(home, settings, listeners).also {
             servers += it
             it.start()
         }
@@ -286,6 +296,49 @@ class RemoteAliasTransactionsTest {
         assertThat(down.code())
             .isEqualTo("Neo.TransientError.Statement.RemoteExecutionTransientError")
         assertThat(down.gqlStatus()).isEqualTo("08N17")
+    }
+
+    @Test
+    fun `answers a transaction in a remote alias as unavailable while this server stops`() {
+        val there = there()
+        // Holds the server's stop once it stopped the default database: it no longer runs
+        // transactions in remote aliases, but still serves connections that were busy when it
+        // began.
+        val held = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val here =
+            server(
+                "here",
+                listeners =
+                    listOf(
+                        object : DatabaseEventListenerAdapter() {
+                            override fun databaseShutdown(eventContext: DatabaseEventContext) {
+                                if (eventContext.databaseName != "neo4j") return
+                                held.countDown()
+                                release.await(1, TimeUnit.MINUTES)
+                            }
+                        }
+                    ),
+            )
+        here.alias("routed", there)
+        val driver = here.driver()
+        val busy = driver.session(SessionConfig.forDatabase("neo4j"))
+        busy.beginTransaction().run("RETURN 1").consume()
+
+        val stopping = thread { here.stop() }
+        try {
+            assertThat(held.await(1, TimeUnit.MINUTES)).isTrue()
+            // The server ended the transaction as it stopped the database; the connection stays
+            // open for the next.
+            runCatching { busy.close() }
+            val failure = driver.failure("RETURN 1", "routed")
+            assertThat(failure.code())
+                .describedAs(failure.message)
+                .isEqualTo("Neo.TransientError.General.DatabaseUnavailable")
+        } finally {
+            release.countDown()
+            stopping.join()
+        }
     }
 
     @Test
