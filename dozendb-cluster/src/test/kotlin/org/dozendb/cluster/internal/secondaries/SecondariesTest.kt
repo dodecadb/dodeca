@@ -12,6 +12,7 @@ import org.awaitility.kotlin.withPollInterval
 import org.dozendb.cluster.internal.ClusterHarness
 import org.dozendb.cluster.internal.ClusterMetrics
 import org.dozendb.cluster.internal.ClusterSettings
+import org.dozendb.cluster.internal.ConsensusTuning
 import org.dozendb.core.DozenDbSettings
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -58,8 +59,9 @@ class SecondariesTest {
         settings: Map<Setting<*>, Any> = emptyMap(),
         size: Int = 3,
         own: Map<Int, Map<Setting<*>, Any>> = emptyMap(),
+        tuning: ConsensusTuning? = null,
     ): ClusterHarness =
-        ClusterHarness(root, size, settings = settings).also {
+        ClusterHarness(root, size, settings = settings, tuning = tuning).also {
             harness = it
             for (member in it.members) {
                 val constraint =
@@ -578,6 +580,96 @@ class SecondariesTest {
         eventually { assertThat(switched.films()).isEqualTo(102) }
         assertThat(cluster.members[0].roles(FILMS).filterKeys { it == switched.serverId }.values)
             .containsExactly("primary")
+        assertThat(served()).describedAs("nothing copied").isEqualTo(copies)
+    }
+
+    @Test
+    fun `a secondary turns primary from its own store after the leader discarded its log`() {
+        val cluster =
+            cluster(
+                tuning = {
+                    it.copy(
+                        maxEntrySize = 1 shl 20,
+                        logSegmentSize = 1,
+                        snapshotInterval = Duration.ofMillis(200),
+                    )
+                }
+            )
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 1 PRIMARY 2 SECONDARIES")
+        eventually {
+            assertThat(cluster.members[0].roles(FILMS).values)
+                .containsExactlyInAnyOrder("primary", "secondary", "secondary")
+        }
+        val roles = cluster.members[0].roles(FILMS)
+        val primary = cluster.primaries.single { roles[it.serverId] == "primary" }
+        val candidate = cluster.primaries.single { it != primary }
+        val id = primary.status(FILMS)!!.database.id
+        var written = 0
+        await withPollInterval
+            Duration.ofMillis(300) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                cluster.write("CREATE (:Film {id: ${written++}, data: '${"x".repeat(100_000)}'})")
+                primary
+                    .database(FILMS)
+                    .dependencyResolver
+                    .resolveDependency(CheckPointer::class.java)
+                    .forceCheckPoint(SimpleTriggerInfo("test"))
+                assertThat(primary.firstLogIndex(id)).isGreaterThan(2)
+            }
+        eventually {
+            assertThat(candidate.lastTransaction()).isEqualTo(primary.lastTransaction())
+        }
+        val served = { cluster.members.sumOf { it.metrics().copiesServed.sum() } }
+        val copies = served()
+
+        cluster.administer("ALTER DATABASE $FILMS SET TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+
+        eventually {
+            assertThat(primary.cluster.groupMembers(primary.status(FILMS)!!.database).map { it.id })
+                .containsExactlyInAnyOrder(primary.cluster.self.id, candidate.cluster.self.id)
+            assertThat(candidate.status(FILMS)?.leader).isNotNull()
+        }
+        cluster.write("CREATE (:Film {id: -1})")
+        eventually { assertThat(candidate.films()).isEqualTo(written + 1L) }
+        assertThat(served()).describedAs("nothing copied").isEqualTo(copies)
+    }
+
+    @Test
+    fun `a server's new mode constraint switches the modes of its copies in place`() {
+        val cluster = cluster()
+        // Else the default database's two primaries would need both servers that host primaries.
+        cluster.administer("ALTER DATABASE neo4j SET TOPOLOGY 1 PRIMARY")
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 1 PRIMARY 2 SECONDARIES")
+        eventually {
+            assertThat(cluster.members[0].roles(FILMS).values)
+                .containsExactlyInAnyOrder("primary", "secondary", "secondary")
+        }
+        cluster.write("UNWIND range(1, 10) AS i CREATE (:Film {id: i})")
+        val before = cluster.members[0].roles(FILMS)
+        val primary = cluster.primaries.single { before[it.serverId] == "primary" }
+        val secondary = cluster.primaries.single { it != primary }
+        val served = { cluster.members.sumOf { it.metrics().copiesServed.sum() } }
+        val copies = served()
+
+        cluster.administer(
+            "ALTER SERVER '${primary.serverId}' SET OPTIONS {modeConstraint: 'SECONDARY'}"
+        )
+
+        eventually {
+            assertThat(cluster.members[0].roles(FILMS))
+                .isEqualTo(
+                    mapOf(
+                        primary.serverId to "secondary",
+                        secondary.serverId to "primary",
+                        cluster.secondary.serverId to "secondary",
+                    )
+                )
+        }
+        cluster.write("CREATE (:Film {id: 11})")
+        eventually {
+            for (member in cluster.members) assertThat(member.films()).isEqualTo(11)
+        }
         assertThat(served()).describedAs("nothing copied").isEqualTo(copies)
     }
 

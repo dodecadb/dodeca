@@ -119,20 +119,22 @@ internal class Neo4jLocalDatabases(
 
     /**
      * Hosts the secondary [id] as a primary from its own store, which seeds the group it joins with
-     * the log entry of its last transaction, as far as the group's leader tells its term.
+     * the log entry of its last transaction, as far as the group's leader tells its term. A store
+     * without replicated transactions, only those that created it, needs no seed: the group starts
+     * from its first entry, or asks for a copy if its leader no longer holds that.
      */
     private fun toPrimary(id: NamedDatabaseId): ModeSwitch {
         val ref = DatabaseRef(id.name(), id.databaseId().uuid())
         // It pulls no more meanwhile, so that its last transaction stays its last.
         val last = secondaries.pause(id) ?: return ModeSwitch.NEEDS_COPY
         val index = last.consensusIndex()
-        val told = if (index < 0) EntryTerm.Pruned else entryTerm(ref, index)
-        if (told !is EntryTerm.Known) {
+        val told = if (index < 0) null else entryTerm(ref, index)
+        if (told != null && told !is EntryTerm.Known) {
             secondaries.resume(id)
             return if (told == EntryTerm.Unknown) ModeSwitch.LATER else ModeSwitch.NEEDS_COPY
         }
         manager.releaseDatabase(id)
-        seed(ref, Snapshot(LogPosition(index, told.term), index))
+        if (told is EntryTerm.Known) seed(ref, Snapshot(LogPosition(index, told.term), index))
         secondaries.remove(id)
         create(id, CopyMode.PRIMARY)
         return ModeSwitch.SWITCHED
