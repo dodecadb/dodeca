@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
@@ -117,6 +118,55 @@ class SnapshotTest {
                     assertThat(node.machine.payloads().last()).isEqualTo("after restart")
                 }
             assertThat(node.machine.payloads()).doesNotHaveDuplicates()
+        }
+
+    @Test
+    fun `a member that stops while taking a snapshot logs no warning`() =
+        runBlocking<Unit> {
+            val cluster = formCluster(size = 1)
+            val node = cluster.awaitLeader()
+            node.machine.durable = -1
+            val first = (1..3).map { node.write("first-$it") }.last()
+            val consensus = node.consensus
+            LogCapture().use { log ->
+                val closing =
+                    synchronized(node.machine) {
+                        // The next entry waits to be applied, and a snapshot waits for it.
+                        thread(isDaemon = true) {
+                            runCatching {
+                                runBlocking { consensus.submit(cluster.database, ByteArray(1)) }
+                            }
+                        }
+                        await atMost
+                            RatisTestCluster.AWAIT untilAsserted
+                            {
+                                assertThat(consensus.status(cluster.database).commitIndex)
+                                    .isGreaterThan(first)
+                            }
+                        node.machine.makeDurable(first - 1)
+                        // Not makeDurable: the snapshot request that follows holds up the next
+                        // read.
+                        node.machine.durable = first
+                        val maintenance =
+                            await atMost
+                                RatisTestCluster.AWAIT untilNotNull
+                                {
+                                    Thread.getAllStackTraces()
+                                        .filter { (thread, stack) ->
+                                            thread.name == "dozendb-consensus-maintenance" &&
+                                                stack.any { it.methodName == "snapshotManagement" }
+                                        }
+                                        .keys
+                                        .singleOrNull()
+                                }
+                        val closing = thread { node.stop() }
+                        maintenance.join(RatisTestCluster.AWAIT.toMillis())
+                        assertThat(maintenance.isAlive).isFalse
+                        closing
+                    }
+                closing.join()
+                assertThat(log.lines().filter { "Snapshot of" in it }).isEmpty()
+            }
         }
 
     @Test

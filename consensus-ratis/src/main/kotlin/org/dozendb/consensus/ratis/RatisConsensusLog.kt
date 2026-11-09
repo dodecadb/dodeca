@@ -554,10 +554,12 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                             1,
                         )
                     )
-                if (!reply.isSuccess) {
+                if (!reply.isSuccess && server != null) {
                     log.warn("Snapshot of {} failed", stateMachine.database, reply.exception)
                 }
             } catch (e: Exception) {
+                // Stopping interrupts a snapshot under way; the member takes it when it starts.
+                if (server == null) return
                 log.warn("Snapshot of {} failed", stateMachine.database, e)
             }
         }
