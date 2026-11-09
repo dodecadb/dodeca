@@ -39,6 +39,8 @@ import org.dozendb.cluster.internal.routing.ConfirmedReferences
 import org.dozendb.cluster.internal.secondaries.ClusterHosting
 import org.dozendb.cluster.internal.secondaries.PullProtocol
 import org.dozendb.cluster.internal.secondaries.PullSource
+import org.dozendb.cluster.internal.secondaries.ReadBarrierProtocol
+import org.dozendb.cluster.internal.secondaries.ReadBarrierSource
 import org.dozendb.cluster.internal.secondaries.Secondaries
 import org.dozendb.cluster.internal.secondaries.SecondaryCopies
 import org.dozendb.cluster.internal.secondaries.SecondaryMarks
@@ -75,6 +77,7 @@ import org.dozendb.core.servers.UpstreamRules
 import org.dozendb.core.servers.UpstreamSelection
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.database.DatabaseContextProvider
@@ -328,6 +331,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             Secondaries(
                 consensus,
                 upstreams = upstreams::of,
+                primaries = { database ->
+                    locations
+                        .of(database)
+                        ?.let { location ->
+                            location.voters
+                                .sortedBy { it.id != location.leader }
+                                .map { it.raftAddress }
+                        }
+                        .orEmpty()
+                },
                 copies =
                     object : SecondaryCopies {
                         override fun copy(source: HostPort, database: DatabaseRef) =
@@ -378,6 +391,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 log = logService.getInternalLog(StoreCopySource::class.java),
                 served = { name -> metrics.of(name).copiesServed.increment() },
+            ),
+        )
+        consensus.registerBulkSource(
+            ReadBarrierProtocol.NAME,
+            ReadBarrierSource(
+                ::readBarrier,
+                logService.getInternalLog(ReadBarrierSource::class.java),
             ),
         )
         consensus.registerBulkSource(
@@ -1052,9 +1072,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     /**
      * Waits until this member has applied what its database's Raft group had committed: a Raft
-     * ReadIndex, as for linearizable reads, on the leader or a follower.
+     * ReadIndex, as for linearizable reads, on the leader or a follower; a secondary pulls up to a
+     * read barrier.
      */
     override fun latestWrites(): LatestWrites = LatestWrites { database, timeout ->
+        if (secondaries.secondary(database) != null) {
+            secondaries.awaitLatest(database, timeout)
+            return@LatestWrites
+        }
         val replica =
             replication.replica(database)
                 ?: throw IllegalStateException(
@@ -1163,7 +1188,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             databaseReferenceRepo,
             securityLog,
             globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
-            replication::awaitLinearizable,
+            ::awaitLinearizable,
+            { id, transactionId ->
+                secondaries.pullUpTo(id, transactionId, bookmarkTimeout())
+            },
             forwarding(),
             remoteAliases,
             ::hostedHere,
@@ -1209,6 +1237,41 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /** Whether the database [id] is hosted here: its copy is registered on this member. */
     private fun hostedHere(id: NamedDatabaseId): Boolean =
         databaseRepository.getDatabaseContext(id).isPresent
+
+    /**
+     * Waits until [id] here holds everything the cluster had committed when this was called, for a
+     * linearizable read: a Raft ReadIndex on a primary, a read barrier on a secondary, which waits
+     * at most as long as for a bookmark.
+     */
+    private fun awaitLinearizable(id: NamedDatabaseId) {
+        if (secondaries.secondary(id) != null) {
+            secondaries.awaitLatest(id, bookmarkTimeout())
+        } else {
+            replication.awaitLinearizable(id)
+        }
+    }
+
+    private fun bookmarkTimeout(): Duration =
+        globalModule.globalConfig.get(GraphDatabaseSettings.bookmark_ready_timeout)
+
+    /**
+     * The id of the last transaction of [database] applied here once this member applied what its
+     * Raft group had committed: a read barrier for secondaries.
+     */
+    private fun readBarrier(database: DatabaseRef): Long {
+        val replica =
+            replication.replica(database)?.takeIf { it.isRunning() }
+                ?: throw IllegalStateException(
+                    "database ${database.name} does not run as a primary on this member"
+                )
+        replica.awaitLinearizable()
+        return databaseRepository
+            .getDatabaseContext(database.name)
+            .orElseThrow { IllegalStateException("there is no database ${database.name} here") }
+            .dependencies()
+            .resolveDependency(TransactionIdStore::class.java)
+            .lastClosedTransactionId
+    }
 
     /** The last transaction of `system` on this member, which its forwarded logins carry. */
     private fun lastSystemTransaction(): Long =

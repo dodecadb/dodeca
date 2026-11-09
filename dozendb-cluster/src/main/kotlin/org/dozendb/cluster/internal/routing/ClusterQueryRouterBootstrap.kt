@@ -21,10 +21,11 @@ import org.neo4j.router.transaction.RoutingInfo
 
 /**
  * Neo4j Community's query router on a member. Transactions that run here wait for linearizable
- * reads ([LinearizableLocalTransactions]); with [forwarding], write transactions run on the leader
- * of their database when this member does not lead it, and transactions of databases not [hosted]
- * here on the members that host them. Without it, a transaction of a database not hosted here
- * fails, saying how to reach it.
+ * reads ([LinearizableLocalTransactions]), and tell [bookmarked] which transaction of a database
+ * their bookmarks name before Neo4j waits for it; with [forwarding], write transactions run on the
+ * leader of their database when this member does not lead it, and transactions of databases not
+ * [hosted] here on the members that host them. Without it, a transaction of a database not hosted
+ * here fails, saying how to reach it.
  */
 internal class ClusterQueryRouterBootstrap(
     globalModule: GlobalModule,
@@ -33,6 +34,7 @@ internal class ClusterQueryRouterBootstrap(
     securityLog: AbstractSecurityLog,
     private val defaultConsistency: ReadConsistency,
     private val awaitLinearizable: (NamedDatabaseId) -> Unit,
+    private val bookmarked: (NamedDatabaseId, Long) -> Unit,
     private val forwarding: Forwarding?,
     remoteAliases: DatabaseTransactionFactory<Location.Remote>,
     private val hosted: (NamedDatabaseId) -> Boolean,
@@ -77,5 +79,6 @@ internal class ClusterQueryRouterBootstrap(
             databaseProvider,
             transactionIdTracker,
             LinearizableWaits(defaultConsistency, awaitLinearizable),
+            bookmarked,
         )
 }

@@ -25,6 +25,8 @@ import org.neo4j.driver.AccessMode
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
+import org.neo4j.driver.TransactionConfig
+import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.FileUtils
@@ -418,6 +420,65 @@ class SecondariesTest {
             }
         }
         assertThat(started()).describedAs("ran on the secondary").isGreaterThan(before)
+    }
+
+    @Test
+    fun `reads on a secondary that must see earlier writes pull them at once`() {
+        val cluster =
+            cluster(
+                mapOf(
+                    BoltConnector.enabled to true,
+                    // Only the reads make it pull what it lacks.
+                    ClusterSettings.pullInterval to Duration.ofHours(1),
+                )
+            )
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+        cluster.awaitSecondary()
+        val linearizable =
+            TransactionConfig.builder()
+                .withMetadata(mapOf("dozendb.consistency" to "linearizable"))
+                .build()
+        val count = "MATCH (f:Film) RETURN count(f) AS c"
+        val routing =
+            GraphDatabase.driver("neo4j://${cluster.primaries[0].boltAddress()}", AuthTokens.none())
+        val direct =
+            GraphDatabase.driver("bolt://${cluster.secondary.boltAddress()}", AuthTokens.none())
+        try {
+            cluster.write("UNWIND range(1, 10) AS i CREATE (:Film {id: i})")
+            direct.session(SessionConfig.forDatabase(FILMS)).use {
+                assertThat(it.run(count, linearizable).single()["c"].asLong())
+                    .describedAs("a linearizable read")
+                    .isEqualTo(10)
+            }
+
+            val bookmarks =
+                routing.session(SessionConfig.forDatabase(FILMS)).use { session ->
+                    session.executeWrite {
+                        it.run("UNWIND range(11, 20) AS i CREATE (:Film)").consume()
+                    }
+                    session.lastBookmarks()
+                }
+            val config = SessionConfig.builder().withDatabase(FILMS).withBookmarks(bookmarks)
+            direct.session(config.build()).use {
+                assertThat(it.run(count).single()["c"].asLong())
+                    .describedAs("a read after the write its bookmark names")
+                    .isEqualTo(20)
+            }
+
+            cluster.primaries.forEach { it.stop() }
+            val refused =
+                catchThrowable {
+                    direct.session(SessionConfig.forDatabase(FILMS)).use {
+                        it.run(count, linearizable).consume()
+                    }
+                }
+                    as Neo4jException
+            assertThat(refused.code()).isEqualTo("Neo.TransientError.Cluster.ReplicationFailure")
+            assertThat(refused).hasMessageContaining("could not be confirmed with a primary")
+        } finally {
+            routing.close()
+            direct.close()
+        }
     }
 
     @Test

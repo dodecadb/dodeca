@@ -17,6 +17,7 @@ import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.cli.BackupCommand
 import org.dozendb.backup.cli.RestoreCommand
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.edition.LatestWrites
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -28,6 +29,7 @@ import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder
+import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
@@ -236,6 +238,44 @@ class ClusterBackupTest {
             assertThat(max).describedAs("the last write in $backup").isGreaterThanOrEqualTo(before)
             assertThat(count).describedAs("the writes in $backup").isEqualTo(max + 1)
         }
+    }
+
+    @Test
+    fun `a backup from a secondary holds every write acknowledged before it`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings =
+                        mapOf(
+                            ClusterSettings.defaultSecondaries to 1,
+                            // Only the backup makes it pull what it lacks.
+                            ClusterSettings.pullInterval to Duration.ofHours(1),
+                        ),
+                )
+                .also { harness = it }
+        val secondary = cluster.members[2]
+        secondary.settings =
+            mapOf(DozenDbSettings.initialServerModeConstraint to InstanceModeConstraint.SECONDARY)
+        cluster.start()
+        await withPollInterval
+            Duration.ofMillis(100) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                assertThat(secondary.database().isAvailable).isTrue()
+            }
+        val primaries = cluster.members - secondary
+
+        repeat(100) {
+            cluster
+                .awaitLeader { primaries }
+                .database()
+                .executeTransactionally("CREATE (:Written {n: ${'$'}n})", mapOf("n" to it.toLong()))
+        }
+
+        val (max, count) = restored(backup(secondary, "--type=FULL"))
+        assertThat(count).isEqualTo(100)
+        assertThat(max).isEqualTo(99)
     }
 
     @Test

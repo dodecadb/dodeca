@@ -21,12 +21,15 @@ import org.neo4j.router.transaction.TransactionInfo
 /**
  * Neo4j's transactions on the databases of this member, which begin after their [waits]. The wait
  * happens where a transaction runs: one that Neo4j's query router runs on the leader of its
- * database waits there, not here too.
+ * database waits there, not here too. A transaction whose bookmarks name a transaction of its
+ * database tells [bookmarked] before Neo4j waits until this member holds it, so that a secondary
+ * pulls it at once.
  */
 internal class LinearizableLocalTransactions(
     databaseProvider: DatabaseContextProvider<out DatabaseContext>,
     transactionIdTracker: LocalGraphTransactionIdTracker,
     private val waits: LinearizableWaits,
+    private val bookmarked: (NamedDatabaseId, Long) -> Unit = { _, _ -> },
 ) : LocalDatabaseTransactionFactory(databaseProvider, transactionIdTracker) {
     override fun beginTransaction(
         location: Location.Local,
@@ -36,7 +39,11 @@ internal class LinearizableLocalTransactions(
         // Null when Neo4j's query router begins the transaction with BEGIN, before any query.
         constituentTransactionFactory: ConstituentTransactionFactory?,
     ): DatabaseTransaction {
-        waits.await(transactionInfo, location.databaseReference().databaseId())
+        val database = location.databaseReference().databaseId()
+        waits.await(transactionInfo, database)
+        bookmarkManager.getBookmarkForLocal(location).ifPresent {
+            bookmarked(database, it.transactionId())
+        }
         return super.beginTransaction(
             location,
             transactionInfo,

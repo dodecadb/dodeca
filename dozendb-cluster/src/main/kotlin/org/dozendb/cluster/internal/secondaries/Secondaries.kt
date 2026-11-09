@@ -9,7 +9,10 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import org.dozendb.cluster.internal.ClusterMetrics
+import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.ForeignStoreException
 import org.dozendb.cluster.internal.secondaries.PullProtocol.Status
@@ -19,6 +22,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
+import org.neo4j.kernel.api.exceptions.Status.Cluster
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLogProvider
 
@@ -49,11 +53,18 @@ internal fun interface StagedStore {
  * replaced with a copy, fetched next to it from its upstreams while it keeps serving reads, as
  * primaries catch up; meanwhile it pulls nothing.
  *
+ * Reads that must see earlier writes do not wait for the interval: a secondary pulls at once, and
+ * on until it has what they wait for, from one of its [primaries] that has it ([awaitLatest],
+ * [pullUpTo]).
+ *
  * [marks] records which stores are secondaries': one counts only once it is marked.
+ *
+ * @property primaries the consensus addresses of the primaries of a database, its leader first.
  */
 internal class Secondaries(
     private val transfer: BulkTransfer,
     private val upstreams: (DatabaseRef) -> List<HostPort>,
+    private val primaries: (DatabaseRef) -> List<HostPort>,
     private val copies: SecondaryCopies,
     private val marks: SecondaryMarks,
     private val control: () -> DatabaseControl,
@@ -102,6 +113,77 @@ internal class Secondaries(
     fun running(id: NamedDatabaseId): Boolean = secondary(id)?.pulling == true
 
     /**
+     * Waits up to [timeout] until the secondary [id] holds every write acknowledged before the
+     * call, for a linearizable read or a backup: a read barrier ([ReadBarrierProtocol]) on one of
+     * its primaries, its leader first, tells which transaction that takes, and the secondary pulls
+     * from that primary until it applied it.
+     *
+     * @throws ReadConsistencyException if no primary tells, or it did not pull that far in time.
+     */
+    fun awaitLatest(id: NamedDatabaseId, timeout: Duration) {
+        val until = System.nanoTime() + timeout.toNanos()
+        val puller =
+            pulling(id)
+                ?: throw ReadConsistencyException(
+                    Cluster.ReplicationFailure,
+                    "Database ${id.name()} is not running as a secondary on this member",
+                )
+        val ref = ref(id)
+        val refusals = mutableListOf<String>()
+        for (primary in primaries(ref)) {
+            val answer =
+                try {
+                    transfer.fetchBulk(
+                        primary,
+                        ReadBarrierProtocol.NAME,
+                        ReadBarrierProtocol.encode(ref),
+                        ReadBarrierProtocol::read,
+                    )
+                } catch (e: ConsensusUnavailableException) {
+                    refusals += "$primary cannot be reached: ${e.message}"
+                    continue
+                }
+            when (answer) {
+                is ReadBarrierProtocol.Answer.Refused -> refusals += "$primary: ${answer.message}"
+                is ReadBarrierProtocol.Answer.Reached -> {
+                    if (puller.await(answer.transactionId, primary, until)) return
+                    throw ReadConsistencyException(
+                        Cluster.ReplicationFailure,
+                        "Database ${id.name()} on this member did not pull transaction " +
+                            "${answer.transactionId} from $primary within $timeout; retry later.",
+                    )
+                }
+            }
+        }
+        throw ReadConsistencyException(
+            Cluster.ReplicationFailure,
+            "The latest writes to ${id.name()} could not be confirmed with a primary; retry " +
+                "later. " +
+                refusals.ifEmpty { listOf("No primary of it is known.") }.joinToString("; "),
+        )
+    }
+
+    /**
+     * Has the secondary [id], if it runs here and lacks the transaction [transactionId], pull at
+     * once and on from its leader until it has it, for up to [timeout]: for a read whose bookmark
+     * names that transaction, which Neo4j waits for.
+     */
+    fun pullUpTo(id: NamedDatabaseId, transactionId: Long, timeout: Duration) {
+        pulling(id)
+            ?.takeIf { it.secondary.last().id() < transactionId }
+            ?.want(
+                transactionId,
+                primaries(ref(id)).firstOrNull(),
+                System.nanoTime() + timeout.toNanos(),
+            )
+    }
+
+    private fun pulling(id: NamedDatabaseId): Puller? =
+        databases[id.name()]?.takeIf {
+            it.secondary.namedDatabaseId == id && it.secondary.pulling
+        }
+
+    /**
      * Whether [id] is being replaced by a copy because its upstreams no longer hold its history.
      */
     fun catchingUp(id: NamedDatabaseId): Boolean = id.name() in catchingUp
@@ -138,18 +220,27 @@ internal class Secondaries(
     }
 
     override fun databaseShutdown(eventContext: DatabaseEventContext) {
-        databases[eventContext.databaseName]?.secondary?.stop()
+        val puller = databases[eventContext.databaseName] ?: return
+        puller.secondary.stop()
+        puller.wake()
     }
 
     override fun databasePanic(eventContext: DatabaseEventContext) {
-        val secondary = databases[eventContext.databaseName]?.secondary ?: return
+        val puller = databases[eventContext.databaseName] ?: return
         // A panic can be raised while a chain is applied, which stopping waits for.
-        inBackground("Stopping secondary ${secondary.ref.name}") { secondary.stop() }
+        inBackground("Stopping secondary ${puller.secondary.ref.name}") {
+            puller.secondary.stop()
+            puller.wake()
+        }
     }
+
+    /** A transaction reads wait for, a server that has it, and the nano time they wait until. */
+    private data class Wanted(val transactionId: Long, val upstream: HostPort?, val until: Long)
 
     /**
      * Runs the pulls of [secondary] one at a time, on the scheduler: one asked for while a pull
-     * runs follows it, and one asked for sooner than the one scheduled replaces it.
+     * runs follows it, and one asked for sooner than the one scheduled replaces it. Reads that wait
+     * for a transaction are woken after each pull.
      */
     private inner class Puller(val secondary: SecondaryDatabase) {
         private var scheduled: ScheduledFuture<*>? = null
@@ -157,6 +248,65 @@ internal class Secondaries(
 
         /** The soonest delay asked for while a pull ran. */
         private var asked: Duration? = null
+
+        /** The transaction reads wait for, while the secondary lacks it. */
+        private var wanted: Wanted? = null
+
+        private val progress = ReentrantLock()
+        private val pulled = progress.newCondition()
+
+        /**
+         * Pulls at once, and on until the secondary applied [transactionId], from [upstream] if
+         * known, until the nano time [until].
+         */
+        @Synchronized
+        fun want(transactionId: Long, upstream: HostPort?, until: Long) {
+            val current = wanted?.takeIf { System.nanoTime() - it.until < 0 }
+            val latest = if (current == null || until - current.until > 0) until else current.until
+            wanted =
+                if (current == null || transactionId >= current.transactionId) {
+                    Wanted(transactionId, upstream ?: current?.upstream, latest)
+                } else {
+                    current.copy(until = latest)
+                }
+            schedule(Duration.ZERO)
+        }
+
+        /** The transaction reads wait for, if the secondary still lacks it and they still wait. */
+        @Synchronized
+        fun wanted(): Wanted? {
+            val current = wanted ?: return null
+            if (
+                System.nanoTime() - current.until >= 0 ||
+                    secondary.last().id() >= current.transactionId
+            ) {
+                wanted = null
+                return null
+            }
+            return current
+        }
+
+        /**
+         * Waits until the secondary applied [transactionId], pulling from [upstream], until the
+         * nano time [until]; returns whether it did.
+         */
+        fun await(transactionId: Long, upstream: HostPort, until: Long): Boolean {
+            want(transactionId, upstream, until)
+            progress.withLock {
+                while (true) {
+                    if (!secondary.pulling) return false
+                    if (secondary.last().id() >= transactionId) return true
+                    val left = until - System.nanoTime()
+                    if (left <= 0) return false
+                    pulled.awaitNanos(left)
+                }
+            }
+        }
+
+        /** Wakes the reads that wait, to look again. */
+        fun wake() {
+            progress.withLock { pulled.signalAll() }
+        }
 
         /** Pulls after [delay], unless a pull is due sooner. */
         @Synchronized
@@ -195,7 +345,7 @@ internal class Secondaries(
             }
             var next: Duration? = null
             try {
-                next = pull(secondary)
+                next = pull(this)
             } finally {
                 synchronized(this) {
                     running = false
@@ -203,37 +353,44 @@ internal class Secondaries(
                     asked = null
                     if (delay != null) schedule(delay)
                 }
+                wake()
             }
         }
     }
 
-    /** Pulls once for [secondary]; returns when to pull next, or null to stop. */
-    private fun pull(secondary: SecondaryDatabase): Duration? {
+    /**
+     * Pulls once for the secondary of [puller], from where reads that wait need it to, else from
+     * its first upstream; returns when to pull next, or null to stop.
+     */
+    private fun pull(puller: Puller): Duration? {
+        val secondary = puller.secondary
         val name = secondary.ref.name
-        if (!secondary.pulling || databases[name]?.secondary !== secondary) return null
-        val upstream = upstreams(secondary.ref).firstOrNull()
+        if (!secondary.pulling || databases[name] !== puller) return null
+        // While reads wait, it pulls again soon.
+        val idle = { if (puller.wanted() == null) pullInterval else WANTED_RETRY }
+        val upstream = puller.wanted()?.upstream ?: upstreams(secondary.ref).firstOrNull()
         if (upstream == null) {
             failed(name, null, "no other server is known to run it")
-            return pullInterval
+            return idle()
         }
         val outcome =
             try {
                 secondary.pull(upstream, PULL_BYTES)
             } catch (e: ConsensusUnavailableException) {
                 failed(name, upstream, "it cannot be reached: ${e.message}")
-                return pullInterval
+                return idle()
             } catch (_: ForeignStoreException) {
                 // The database panicked.
                 return null
             } catch (e: Exception) {
                 if (!secondary.pulling) return null
                 log.error("Pulling the transactions of secondary $name from $upstream failed", e)
-                return pullInterval
+                return idle()
             }
         return when (outcome) {
             PullOutcome.CaughtUp -> {
                 answered(name, upstream)
-                pullInterval
+                idle()
             }
             PullOutcome.Behind -> {
                 answered(name, upstream)
@@ -247,7 +404,7 @@ internal class Secondaries(
                     null
                 } else {
                     failed(name, upstream, outcome.message)
-                    pullInterval
+                    idle()
                 }
         }
     }
@@ -362,6 +519,9 @@ internal class Secondaries(
 
         /** Pulls are short: a few threads serve every secondary of a member. */
         const val PULL_THREADS = 4
+
+        /** How soon a secondary pulls again while reads wait for what it lacks. */
+        val WANTED_RETRY: Duration = Duration.ofMillis(50)
 
         fun ref(id: NamedDatabaseId) = DatabaseRef(id.name(), id.databaseId().uuid())
     }
