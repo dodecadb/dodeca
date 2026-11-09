@@ -29,9 +29,9 @@ import org.neo4j.kernel.impl.transaction.log.files.TransactionLogFilesHelper
  * or once a synced copy was moved into place, counts as forced; renames and deletions carry the
  * records along. [cut] is the power loss: from that instant writes, truncations, forces, deletions,
  * renames and new files are dropped, so the files stay as they were while the DBMS shuts down.
- * [loseUnforcedWrites] and [loseFirstUnforcedSector] then zero parts of what each log file wrote
- * after its last force: lost tails, holes, torn transactions. Store files keep what was written
- * before the cut, which a power loss may also leave; Neo4j's recovery covers that.
+ * [loseUnforcedWrites], [loseFirstUnforcedSector] and the like then zero parts of what each log
+ * file wrote after its last force: lost tails, holes, torn transactions. Store files keep what was
+ * written before the cut, which a power loss may also leave; Neo4j's recovery covers that.
  */
 internal class PowerLossFileSystem(
     private val delegate: FileSystemAbstraction = DefaultFileSystemAbstraction()
@@ -116,6 +116,25 @@ internal class PowerLossFileSystem(
     fun loseUnforcedBytes(database: String, count: Long): Long =
         damage({ isTransactionLog(it, database) }) { forced, written, zero ->
             zero(forced, minOf(forced + count, written))
+        }
+
+    /** The newest transaction log of [database] this file system wrote, if any. */
+    fun newestTransactionLog(database: String): Path? =
+        logs.keys
+            .filter { isTransactionLog(it, database) && delegate.fileExists(it) }
+            .maxByOrNull { it.fileName.toString().substringAfterLast('.').toLong() }
+
+    /**
+     * Loses the bytes of [log] from [from] up to [until], which must lie in what it wrote after its
+     * last force: a hole of a chosen place. Returns how many bytes it zeroed. Call after [cut],
+     * once the DBMS stopped.
+     */
+    fun loseUnforcedRange(log: Path, from: Long, until: Long): Long =
+        damage({ it == log }) { forced, written, zero ->
+            require(from in forced..until && until <= written) {
+                "$from..$until is not within what $log wrote unforced, $forced..$written"
+            }
+            zero(from, until)
         }
 
     private fun damage(

@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
@@ -18,10 +19,18 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.Config
+import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.tracing.DatabaseFlushEvent
+import org.neo4j.kernel.BinarySupportedKernelVersions
+import org.neo4j.kernel.impl.transaction.log.LogEntryCursor
+import org.neo4j.kernel.impl.transaction.log.LogVersionBridge.NO_MORE_CHANNELS
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
+import org.neo4j.kernel.impl.transaction.log.entry.VersionAwareLogEntryReader
+import org.neo4j.kernel.impl.transaction.log.files.LogFilesBuilder
+import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.TransactionIdStore
 
 /**
@@ -201,6 +210,86 @@ class PowerLossTest {
     }
 
     @Test
+    fun `a member whose log has a hole that Neo4j reads past into garbage replays the rest from Raft`() {
+        val systems = ConcurrentHashMap<Int, PowerLossFileSystem>()
+        val cluster = powerLossCluster(systems)
+        val leader = cluster.awaitLeader()
+        val victim = cluster.running().first { it != leader }
+        val fs = checkNotNull(systems[victim.index])
+        val acknowledged = mutableSetOf<Long>()
+        fun write(ids: LongRange, value: ByteArray = byteArrayOf()) {
+            for (id in ids) {
+                leader
+                    .database()
+                    .executeTransactionally(
+                        "CREATE (:Written {id: \$id, value: \$value})",
+                        mapOf("id" to id, "value" to value),
+                    )
+                acknowledged += id
+            }
+        }
+        write(1L..5L)
+        cluster.awaitSameData(acknowledged, "before the checkpoint")
+        victim.checkpoint()
+        write(6L..6L, TOKEN_LOOKALIKE)
+        write(7L..20L)
+        cluster.awaitSameData(acknowledged, "after the checkpoint")
+
+        // A hole from just after the header of the log entry that holds the lookalike up to it,
+        // with
+        // written transactions behind: Neo4j skips the zeros where the entry's command begins and
+        // reads the lookalike as one, as a power loss leaves it now and then (about one sector in a
+        // hundred of a log of small transactions). Neo4j asserts on what it reads there, which
+        // only tests enable; it stops at the entry as at any garbage.
+        fs.cut()
+        runCatching { victim.stop() }
+        val log = checkNotNull(fs.newestTransactionLog(ClusterHarness.DEFAULT_DATABASE))
+        val (from, until) = holeBefore(log, TOKEN_LOOKALIKE)
+        assertThat(fs.loseUnforcedRange(log, from, until)).isEqualTo(until - from)
+        victim.start()
+
+        cluster.awaitSameData(acknowledged, "after the hole")
+        cluster.assertConsistentStores()
+    }
+
+    /**
+     * The bytes of [log] from just after the header of the entry that holds [lookalike], verbatim,
+     * up to it: without them Neo4j skips zeros where the entry's command begins and reads
+     * [lookalike] as the command.
+     */
+    private fun holeBefore(log: Path, lookalike: ByteArray): Pair<Long, Long> {
+        val bytes = Files.readAllBytes(log)
+        val at =
+            (0..bytes.size - lookalike.size).firstOrNull { offset ->
+                lookalike.indices.all { bytes[offset + it] == lookalike[it] }
+            }
+        checkNotNull(at) { "$log does not hold the lookalike verbatim" }
+        val factory = StorageEngineFactory.defaultStorageEngine().commandReaderFactory()
+        val config = Config.defaults()
+        val logFile =
+            LogFilesBuilder.logFilesBasedOnlyBuilder(log.parent, DefaultFileSystemAbstraction())
+                .withCommandReaderFactory(factory)
+                .withConfig(config)
+                .build()
+                .logFile
+        val version = log.fileName.toString().substringAfterLast('.').toLong()
+        var entry = -1L
+        logFile.getReader(logFile.extractHeader(version).startPosition, NO_MORE_CHANNELS).use {
+            reader ->
+            val entries = VersionAwareLogEntryReader(factory, BinarySupportedKernelVersions(config))
+            LogEntryCursor(entries, reader).use { cursor ->
+                var position = reader.currentLogPosition.byteOffset
+                while (position < at && cursor.next()) {
+                    entry = position
+                    position = reader.currentLogPosition.byteOffset
+                }
+            }
+        }
+        check(entry >= 0) { "no log entry of $log holds the lookalike" }
+        return entry + ENTRY_HEADER to at.toLong()
+    }
+
+    @Test
     fun `a member that wrote store pages back just before losing power recovers`() {
         val systems = ConcurrentHashMap<Int, PowerLossFileSystem>()
         val cluster = powerLossCluster(systems)
@@ -303,5 +392,26 @@ class PowerLossTest {
 
         /** Bytes lost after a checkpoint: less than the 1 KiB Neo4j checks beyond a log's end. */
         const val HOLE = 600L
+
+        /** A log entry's version and type, before its command. */
+        const val ENTRY_HEADER = 2
+
+        /**
+         * Bytes that Neo4j reads as a label token command whose name record has -1 bytes: the
+         * command type, the token id, then the record before the change: in use, its name id, one
+         * name record (id, type, in use, -1 bytes, no next record). Its integers read the same in
+         * either byte order. A byte array property holds them verbatim.
+         */
+        val TOKEN_LOOKALIKE =
+            byteArrayOf(8) +
+                byteArrayOf(1, 0, 0, 1) +
+                byteArrayOf(1) +
+                byteArrayOf(1, 0, 0, 1) +
+                byteArrayOf(1, 0, 0, 1) +
+                byteArrayOf(1, 0, 0, 0, 0, 0, 0, 1) +
+                byteArrayOf(1, 0, 0, 1) +
+                byteArrayOf(1) +
+                ByteArray(4) { -1 } +
+                ByteArray(8) { -1 }
     }
 }

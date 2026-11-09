@@ -326,9 +326,13 @@
           <!-- Neo4j 5.26.27's Bolt server releases connection memory it never allocated and, with
                assertions on, logs an AssertionError whenever a connection closes; plain Neo4j
                Community does the same. -->
+          <!-- Neo4j's decoders of transaction log commands assert on what they read. After a power
+               loss with holes in the unforced log, garbage then fails the database's start with an
+               AssertionError instead of ending the readable log, as it does where assertions are
+               off, as in production (PowerLossTest). -->
           <!-- The fork number, so that JVMs of one build take ports from different parts of
                TestPorts' range; in systemPropertyVariables, Maven 3.9 leaves it empty. -->
-          <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddozendb.test.fork=${surefire.forkNumber} -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker</argLine>
+          <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddozendb.test.fork=${surefire.forkNumber} -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker -da:org.neo4j.internal.recordstorage.LogCommandSerializationV4_2 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_0 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_11</argLine>
           <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
           <properties>
             <configurationParameters>
