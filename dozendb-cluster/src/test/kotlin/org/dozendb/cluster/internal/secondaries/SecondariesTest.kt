@@ -326,6 +326,24 @@ class SecondariesTest {
     }
 
     @Test
+    fun `WAIT waits for secondaries too`() {
+        val cluster = cluster()
+
+        val created = cluster.waited("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY WAIT")
+
+        assertThat(created).hasSize(3).allSatisfy {
+            assertThat(it).containsEntry("state", "CaughtUp")
+        }
+        // At once, without waiting any further.
+        assertThat(cluster.secondary.registered(FILMS)?.database()?.isStarted).isTrue()
+
+        assertThat(cluster.waited("DROP DATABASE $FILMS WAIT")).hasSize(3).allSatisfy {
+            assertThat(it).containsEntry("state", "CaughtUp")
+        }
+        assertThat(cluster.secondary.registered(FILMS)).isNull()
+    }
+
+    @Test
     fun `a secondary is deleted with its database`() {
         val cluster = cluster()
         cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
@@ -341,6 +359,9 @@ class SecondariesTest {
             assertThat(cluster.secondary.marked()).doesNotContain(id.toString())
         }
     }
+
+    private fun ClusterHarness.waited(command: String): List<Map<String, Any?>> =
+        awaitLeader(SYSTEM).query(command)
 
     private fun ClusterHarness.Member.query(statement: String): List<Map<String, Any?>> =
         database(SYSTEM).executeTransactionally(statement, emptyMap()) { result ->

@@ -934,8 +934,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     /**
      * The members of the cluster that host [wanted], which WAIT waits for: those it is placed on,
-     * or, for one dropped or not placed, the enabled servers, which may hold it. Each reports its
-     * databases when probed; this member reads its own.
+     * as primaries or secondaries, or, for one dropped or not placed, the enabled servers, which
+     * may hold it. Each reports its databases when probed; this member reads its own.
      */
     override fun hostingServers(wanted: WantedDatabase): List<HostingServer> {
         val placed = if (wanted.id == null) emptySet() else systemGraph.hosts(wanted.name)

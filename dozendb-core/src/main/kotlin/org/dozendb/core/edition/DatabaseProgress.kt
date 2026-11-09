@@ -135,7 +135,7 @@ class DatabaseProgress(
          * Where a server hosting [databases] stands with [wanted]: caught up, failed, or, as null,
          * not there yet. A database that failed to start is not running, as a stopped one is. One
          * wanted online is caught up once it runs and the server knows its leader, so that it takes
-         * writes at once.
+         * writes at once; a secondary, which follows no leader, once it runs.
          */
         fun progressOf(
             databases: List<DatabaseState>,
@@ -151,7 +151,8 @@ class DatabaseProgress(
                 return caughtUp.takeIf { same == null || same.status !in RUNNING }
             }
             return when (same?.status) {
-                DatabaseState.Status.ONLINE -> caughtUp.takeIf { same.leaderKnown }
+                DatabaseState.Status.ONLINE ->
+                    caughtUp.takeIf { same.leaderKnown || same.mode == CopyMode.SECONDARY }
                 DatabaseState.Status.FAILED -> { address ->
                     ServerProgress(
                         address,

@@ -3,6 +3,7 @@ package org.dozendb.core.edition
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.core.edition.DatabaseState.Status
+import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 
 /** Where a server stands with a database that WAIT waits for. */
@@ -23,6 +24,21 @@ class DatabaseProgressTest {
         assertThat(state(DatabaseState("films", id, Status.STARTING), online)).isNull()
         assertThat(state(DatabaseState("films", id, Status.FAILED, "full disk"), online))
             .isEqualTo(ServerProgress.State.Failed)
+    }
+
+    @Test
+    fun `a secondary wanted online is caught up once it runs, as it follows no leader`() {
+        val secondary =
+            DatabaseState(
+                "films",
+                id,
+                Status.ONLINE,
+                leaderKnown = false,
+                mode = CopyMode.SECONDARY,
+            )
+
+        assertThat(state(secondary, online)).isEqualTo(ServerProgress.State.CaughtUp)
+        assertThat(state(secondary.copy(status = Status.COPYING), online)).isNull()
     }
 
     @Test

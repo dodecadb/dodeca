@@ -166,13 +166,14 @@ internal class Neo4jSystemGraph(
     }
 
     /**
-     * The servers that host a primary of the database [name]; none if it is not placed, or does not
-     * exist.
+     * The servers that host a copy of the database [name], a primary or a secondary; none if it is
+     * not placed, or does not exist.
      */
     fun hosts(name: String): Set<MemberId> = replication.readingSystem {
         system().beginTx().use { tx ->
             Placements.database(tx, name)
-                ?.let { Placements.hosts(it, CopyMode.PRIMARY) }
+                ?.let(Placements::copies)
+                ?.keys
                 ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
         }
     }
