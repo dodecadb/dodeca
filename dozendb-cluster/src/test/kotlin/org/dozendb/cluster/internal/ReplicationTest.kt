@@ -1,6 +1,8 @@
 package org.dozendb.cluster.internal
 
 import java.nio.file.Path
+import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.assertj.core.api.Assertions.assertThat
@@ -12,6 +14,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.storageengine.api.TransactionIdStore
 
@@ -25,13 +28,23 @@ class ReplicationTest {
         harness?.close()
     }
 
-    private fun cluster(size: Int = 3): ClusterHarness {
+    private fun cluster(
+        size: Int = 3,
+        settings: Map<Setting<*>, Any> = emptyMap(),
+    ): ClusterHarness {
         println("Cluster harness in $root")
-        return ClusterHarness(root, size).also {
+        return ClusterHarness(root, size, settings = settings).also {
             harness = it
             it.start()
         }
     }
+
+    /** What this member counts of the replication of the default database. */
+    private fun ClusterHarness.Member.replications(): ClusterMetrics.Counters =
+        database("system")
+            .dependencyResolver
+            .resolveDependency(ClusterMetrics::class.java)
+            .of(ClusterHarness.DEFAULT_DATABASE)
 
     private fun ClusterHarness.Member.write(cypher: String) {
         database().executeTransactionally(cypher)
@@ -125,12 +138,32 @@ class ReplicationTest {
 
     @Test
     fun `a write that loses its majority fails with an unknown outcome, saying so`() {
-        val cluster = cluster()
+        // The leader steps down once it has not heard from a majority for an election timeout:
+        // seconds here, so that the write is in flight by then. A write after that is refused.
+        val cluster =
+            cluster(
+                settings =
+                    mapOf(
+                        ClusterSettings.electionTimeoutMin to Duration.ofSeconds(5),
+                        ClusterSettings.electionTimeoutMax to Duration.ofSeconds(6),
+                    )
+            )
         val leader = cluster.awaitLeader()
         leader.write("CREATE (:Committed)")
+        val replicated = leader.replications().replicationNew.sum()
         cluster.running().filter { it != leader }.forEach { it.stop() }
 
-        val error = catchThrowable { leader.write("CREATE (:Stranded)") }
+        val write = CompletableFuture.supplyAsync {
+            catchThrowable { leader.write("CREATE (:Stranded)") }
+        }
+        await atMost
+            Duration.ofSeconds(4) untilAsserted
+            {
+                assertThat(leader.replications().replicationNew.sum())
+                    .describedAs("transactions handed to Raft")
+                    .isGreaterThan(replicated)
+            }
+        val error = write.get(1, TimeUnit.MINUTES)
 
         assertThat(statusOf(error)).isEqualTo(Status.Transaction.TransactionCommitFailed)
         assertThat(generateSequence(error) { it.cause }.map { it.message }.toList()).anyMatch {
