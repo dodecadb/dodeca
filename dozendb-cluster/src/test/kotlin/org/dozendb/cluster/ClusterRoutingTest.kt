@@ -95,6 +95,54 @@ class ClusterRoutingTest {
     }
 
     @Test
+    fun `secondaries read and route, and followers read too`() {
+        val secondaries = listOf(MemberId(UUID(0, 5)), MemberId(UUID(0, 4)))
+        val addresses = bolt + secondaries.associateWith { HostPort("replica${it.uuid}", 7687) }
+
+        val endpoints =
+            ClusterRouting.endpoints(
+                leader(members[1]),
+                members,
+                addresses::get,
+                readsOnLeader = false,
+                failed = setOf(secondaries[0]),
+                secondaries = secondaries,
+            )
+
+        val replica4 = addresses.getValue(secondaries[1])
+        val replica5 = addresses.getValue(secondaries[0])
+        assertThat(endpoints.writers).containsExactly(address(2))
+        assertThat(endpoints.readers).containsExactly(address(1), address(3), replica4)
+        assertThat(endpoints.routers)
+            .containsExactly(address(1), address(2), address(3), replica4, replica5)
+    }
+
+    @Test
+    fun `without reads on primaries only secondaries read, while one can`() {
+        val secondary = MemberId(UUID(0, 4))
+        val addresses = bolt + (secondary to HostPort("replica", 7687))
+        fun readers(failed: Set<MemberId>, readsOnLeader: Boolean) =
+            ClusterRouting.endpoints(
+                    leader(members[1]),
+                    members,
+                    addresses::get,
+                    readsOnLeader = readsOnLeader,
+                    failed = failed,
+                    secondaries = listOf(secondary),
+                    readsOnPrimaries = false,
+                )
+                .readers
+
+        assertThat(readers(emptySet(), readsOnLeader = false))
+            .containsExactly(HostPort("replica", 7687))
+        assertThat(readers(emptySet(), readsOnLeader = true))
+            .containsExactly(HostPort("replica", 7687), address(2))
+        assertThat(readers(setOf(secondary), readsOnLeader = false))
+            .describedAs("no secondary can read")
+            .containsExactly(address(1), address(3))
+    }
+
+    @Test
     fun `members whose copy failed neither write nor read, but route`() {
         val endpoints =
             ClusterRouting.endpoints(

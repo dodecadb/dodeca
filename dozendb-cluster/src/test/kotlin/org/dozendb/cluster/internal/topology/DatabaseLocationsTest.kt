@@ -3,12 +3,16 @@ package org.dozendb.cluster.internal.topology
 import java.time.Duration
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.fake.InMemoryConsensus
 import org.dozendb.consensus.fake.InMemoryConsensus.InMemoryConsensusLog
 import org.dozendb.consensus.fake.RecordingStateMachine
+import org.dozendb.core.edition.DatabaseState
+import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
 
@@ -27,8 +31,32 @@ class DatabaseLocationsTest {
             )
         }
 
+    /** Members that report a secondary of films: one that runs it, one that copies it in. */
+    private val secondary = reporting(DatabaseState.Status.ONLINE)
+    private val copying = reporting(DatabaseState.Status.COPYING)
+    private val placedSecondaries = HashSet<MemberId>()
+
+    private fun reporting(status: DatabaseState.Status) =
+        consensus.newMember(
+            metadata =
+                mapOf(
+                    MemberMetadata.DATABASES to
+                        DatabaseStatesCodec.encode(
+                            listOf(
+                                DatabaseState(
+                                    films.name,
+                                    films.id,
+                                    status,
+                                    leaderKnown = false,
+                                    mode = CopyMode.SECONDARY,
+                                )
+                            )
+                        )
+                )
+        )
+
     init {
-        val all = listOf(free) + hosts
+        val all = listOf(free, secondary, copying) + hosts
         all.forEach { it.start() }
         all.forEach { it.startGroup(system, RecordingStateMachine(), all.map { m -> m.self }) }
         hosts.forEach { it.startGroup(films, RecordingStateMachine(), hosts.map { m -> m.self }) }
@@ -48,7 +76,7 @@ class DatabaseLocationsTest {
                 Duration.ofHours(1),
             )
         directory.refresh()
-        return DatabaseLocations(member, directory)
+        return DatabaseLocations(member, directory) { placedSecondaries }
     }
 
     @Test
@@ -69,6 +97,18 @@ class DatabaseLocationsTest {
         assertThat(location.voters).containsExactlyElementsOf(hosts.map { it.self })
         assertThat(location.leader).isEqualTo(hosts[0].self.id)
         assertThat(location.local).isTrue()
+    }
+
+    @Test
+    fun `a database's secondaries run it where the system graph places them`() {
+        placedSecondaries += listOf(secondary.self.id, copying.self.id, hosts[1].self.id)
+
+        assertThat(locations(free).secondaries(films)).containsExactly(secondary.self.id)
+
+        placedSecondaries.clear()
+        assertThat(locations(free).secondaries(films))
+            .describedAs("placed elsewhere now, it drops its copy")
+            .isEmpty()
     }
 
     @Test

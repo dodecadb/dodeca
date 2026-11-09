@@ -18,14 +18,20 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
+import org.neo4j.driver.AccessMode
+import org.neo4j.driver.AuthTokens
+import org.neo4j.driver.GraphDatabase
+import org.neo4j.driver.SessionConfig
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.FileUtils
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
+import org.neo4j.kernel.impl.transaction.stats.TransactionCounters
 import org.neo4j.storageengine.api.TransactionIdStore
 
 /**
@@ -53,12 +59,15 @@ class SecondariesTest {
     ): ClusterHarness =
         ClusterHarness(root, size, settings = settings).also {
             harness = it
-            for (member in it.members.drop(2)) {
-                member.settings =
-                    mapOf<Setting<*>, Any>(
-                        DozenDbSettings.initialServerModeConstraint to
-                            InstanceModeConstraint.SECONDARY
-                    ) + own[member.index].orEmpty()
+            for (member in it.members) {
+                val constraint =
+                    if (member.index < 2) emptyMap()
+                    else
+                        mapOf<Setting<*>, Any>(
+                            DozenDbSettings.initialServerModeConstraint to
+                                InstanceModeConstraint.SECONDARY
+                        )
+                member.settings = constraint + own[member.index].orEmpty()
             }
             it.start()
         }
@@ -326,6 +335,85 @@ class SecondariesTest {
     }
 
     @Test
+    fun `routing tables send reads to secondaries, and only to them where primaries take none`() {
+        val cluster =
+            cluster(
+                mapOf(BoltConnector.enabled to true),
+                own =
+                    mapOf(
+                        0 to
+                            mapOf(
+                                ClusterSettings.readsOnPrimaries to false,
+                                ClusterSettings.readsOnLeader to false,
+                            )
+                    ),
+            )
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+        cluster.awaitSecondary()
+        val everyone = cluster.members.map { it.boltAddress() }.toSet()
+
+        for (member in cluster.members) {
+            eventually {
+                val routes = member.routes(FILMS)
+                val leader = cluster.awaitLeader(FILMS) { cluster.primaries }
+                assertThat(routes["ROUTE"]).describedAs("on $member").isEqualTo(everyone)
+                assertThat(routes["WRITE"]).containsExactly(leader.boltAddress())
+                assertThat(routes["READ"])
+                    .isEqualTo(
+                        if (member.index == 0) setOf(cluster.secondary.boltAddress()) else everyone
+                    )
+            }
+        }
+    }
+
+    @Test
+    fun `with server-side routing a secondary forwards writes, and takes reads of other servers`() {
+        val cluster =
+            cluster(
+                mapOf(
+                    BoltConnector.enabled to true,
+                    GraphDatabaseSettings.routing_default_router to
+                        GraphDatabaseSettings.RoutingMode.SERVER,
+                    ClusterSettings.readsOnPrimaries to false,
+                ),
+                size = 4,
+            )
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+        val runs = { member: ClusterHarness.Member ->
+            member.registered(FILMS)?.database()?.isStarted == true
+        }
+        eventually { assertThat(cluster.members.drop(2).count(runs)).isEqualTo(1) }
+        val (secondary, other) =
+            cluster.members.drop(2).partition(runs).let { (on, off) ->
+                on.single() to off.single()
+            }
+
+        GraphDatabase.driver("neo4j://${secondary.boltAddress()}", AuthTokens.none()).use {
+            it.session(SessionConfig.forDatabase(FILMS)).use { session ->
+                session.run("CREATE (:Film {id: 1})").consume()
+            }
+        }
+        eventually { assertThat(secondary.films()).isEqualTo(1) }
+
+        val started = { secondary.transactions().numberOfStartedTransactions }
+        val before = started()
+        GraphDatabase.driver("neo4j://${other.boltAddress()}", AuthTokens.none()).use {
+            val config =
+                SessionConfig.builder()
+                    .withDatabase(FILMS)
+                    .withDefaultAccessMode(AccessMode.READ)
+                    .build()
+            it.session(config).use { session ->
+                assertThat(
+                        session.run("MATCH (f:Film) RETURN count(f) AS c").single()["c"].asLong()
+                    )
+                    .isEqualTo(1)
+            }
+        }
+        assertThat(started()).describedAs("ran on the secondary").isGreaterThan(before)
+    }
+
+    @Test
     fun `WAIT waits for secondaries too`() {
         val cluster = cluster()
 
@@ -359,6 +447,18 @@ class SecondariesTest {
             assertThat(cluster.secondary.marked()).doesNotContain(id.toString())
         }
     }
+
+    /** The addresses of each role of the routing table [member] has for [database]. */
+    private fun ClusterHarness.Member.routes(database: String): Map<String, Set<Any?>> =
+        (query("CALL dbms.routing.getRoutingTable({}, '$database') YIELD servers")
+                .single()["servers"]
+                as List<*>)
+            .map { it as Map<*, *> }
+            .groupBy({ it["role"] as String }, { it["addresses"] as List<*> })
+            .mapValues { (_, addresses) -> addresses.flatten().toSet() }
+
+    private fun ClusterHarness.Member.transactions(): TransactionCounters =
+        database(FILMS).dependencyResolver.resolveDependency(TransactionCounters::class.java)
 
     private fun ClusterHarness.waited(command: String): List<Map<String, Any?>> =
         awaitLeader(SYSTEM).query(command)

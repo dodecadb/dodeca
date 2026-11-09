@@ -407,7 +407,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 selfLastCommitted = ::lastCommittedHere,
                 selfReport = metadata,
             )
-        locations = DatabaseLocations(consensus, directory)
+        locations =
+            DatabaseLocations(consensus, directory) { database ->
+                systemGraph.secondaries(database.name)
+            }
         val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
         balancer =
             LeaderBalancer(
@@ -1103,6 +1106,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ttl,
                 singleAddress,
                 singleAddress,
+                config.get(ClusterSettings.readsOnPrimaries),
             )
         return DefaultRoutingService(
             logProvider,
@@ -1193,6 +1197,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 electionTimeout,
                 logs.getLog(ForwardingLocations::class.java),
+                config.get(ClusterSettings.readsOnPrimaries),
             )
         globalModule.globalLife.add(
             ForwardingWatch(forwarding, remote, electionTimeout.multipliedBy(2))

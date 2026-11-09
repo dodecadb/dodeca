@@ -137,6 +137,16 @@ class ClusterSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "Whether routing tables list the primaries that are not the writer as readers, or " +
+                "only the secondaries. Without secondaries that can read a database, its " +
+                "primaries are readers whatever this says. Server-side routing reads where " +
+                "routing tables do."
+        )
+        val readsOnPrimaries: Setting<Boolean> =
+            newBuilder("dbms.routing.reads_on_primaries_enabled", BOOL, true).immutable().build()
+
+        @JvmField
+        @field:Description(
             "Address other members use to reach this server's routing connector " +
                 "(server.routing.listen_address), to forward the writes of databases this " +
                 "member leads. A port without a host uses server.default_advertised_address."

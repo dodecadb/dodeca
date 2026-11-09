@@ -5,6 +5,7 @@ import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.assertj.core.api.Assertions.catchThrowable
+import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.internal.topology.DatabaseLocations
@@ -13,7 +14,9 @@ import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.fake.InMemoryConsensus
 import org.dozendb.consensus.fake.RecordingStateMachine
+import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.remote.RemoteFailure
+import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 import org.neo4j.bolt.protocol.common.message.AccessMode
 import org.neo4j.bolt.protocol.common.message.request.connection.RoutingContext
@@ -48,11 +51,32 @@ class ForwardingLocationsTest {
     private val self = logs[0]
     /** A member that hosts only system. */
     private val outsider = consensus.newMember()
+    /** A member that runs a secondary of films, where [placedSecondaries] has one. */
+    private val secondary =
+        consensus.newMember(
+            metadata =
+                mapOf(
+                    MemberMetadata.DATABASES to
+                        DatabaseStatesCodec.encode(
+                            listOf(
+                                DatabaseState(
+                                    films.name,
+                                    films.id,
+                                    DatabaseState.Status.ONLINE,
+                                    leaderKnown = false,
+                                    mode = CopyMode.SECONDARY,
+                                )
+                            )
+                        )
+                )
+        )
+    private val placedSecondaries = HashSet<MemberId>()
     private val addresses = HashMap<MemberId, HostPort>()
     private val reported = HashSet<MemberId>()
 
     private fun forwarding(
         member: InMemoryConsensus.InMemoryConsensusLog = self,
+        readsOnPrimaries: Boolean = true,
         hosted: (NamedDatabaseId) -> Boolean = { it == filmsId },
     ): ForwardingLocations {
         val directory =
@@ -68,20 +92,21 @@ class ForwardingLocationsTest {
         directory.refresh()
         return ForwardingLocations(
             hosted,
-            DatabaseLocations(member, directory),
+            DatabaseLocations(member, directory) { placedSecondaries },
             member,
             { addresses[it] },
             { it in reported },
             { _, _ -> true },
             Duration.ofMillis(100),
             NullLog.getInstance(),
+            readsOnPrimaries,
         )
     }
 
     private val locations by lazy { forwarding() }
 
     init {
-        val all = logs + outsider
+        val all = logs + outsider + secondary
         all.forEach { it.start() }
         all.forEach { it.startGroup(system, RecordingStateMachine(), all.map { log -> log.self }) }
         logs.forEach { it.startGroup(films, RecordingStateMachine(), logs.map { log -> log.self }) }
@@ -89,6 +114,8 @@ class ForwardingLocationsTest {
             addresses[log.self.id] = HostPort("core$i", 7688)
             reported += log.self.id
         }
+        addresses[secondary.self.id] = HostPort("replica", 7688)
+        reported += secondary.self.id
         consensus.electLeader(system, logs[0].self.id)
         consensus.electLeader(films, logs[1].self.id)
     }
@@ -117,6 +144,27 @@ class ForwardingLocationsTest {
         val follower = logs.filter { it != logs[1] }.minBy { it.self.id }
         assertThat(read.uri.addresses.single().hostname)
             .isEqualTo(addresses.getValue(follower.self.id).host)
+    }
+
+    @Test
+    fun `reads of a database not hosted here run on a follower or a secondary`() {
+        placedSecondaries += secondary.self.id
+        val follower = logs.filter { it != logs[1] }.minBy { it.self.id }.self.id
+        fun reader(readsOnPrimaries: Boolean): String {
+            val outside = forwarding(outsider, readsOnPrimaries) { false }
+            val read = locationOf(mode = AccessMode.READ, at = outside)
+            return (read as Location.Remote.Internal.Direct).uri.addresses.single().hostname
+        }
+
+        assertThat(reader(readsOnPrimaries = true))
+            .isEqualTo(addresses.getValue(minOf(follower, secondary.self.id)).host)
+        assertThat(reader(readsOnPrimaries = false))
+            .describedAs("only secondaries read while one can")
+            .isEqualTo("replica")
+        placedSecondaries.clear()
+        assertThat(reader(readsOnPrimaries = false))
+            .describedAs("no secondary to read on")
+            .isEqualTo(addresses.getValue(follower).host)
     }
 
     @Test

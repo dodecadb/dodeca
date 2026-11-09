@@ -8,6 +8,8 @@ import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.edition.DatabaseState
+import org.dozendb.core.servers.CopyMode
 import org.neo4j.configuration.GraphDatabaseSettings.SYSTEM_DATABASE_NAME
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.Transaction
@@ -16,11 +18,14 @@ import org.neo4j.graphdb.Transaction
  * Which members vote in a database's group and which one leads it, as this member knows it: its own
  * view where it votes in the group, else what the members that vote in it last reported (see
  * [MemberDirectory]), so that a member that does not host a database can still send clients to
- * those that do.
+ * those that do. Also which members run its secondaries.
+ *
+ * @property placedSecondaries the servers the system graph places a database's secondaries on.
  */
 internal class DatabaseLocations(
     private val consensus: ConsensusLog,
     private val directory: MemberDirectory,
+    private val placedSecondaries: (DatabaseRef) -> Set<MemberId> = { emptySet() },
 ) {
     /**
      * @property voters the voting members of the group.
@@ -56,6 +61,19 @@ internal class DatabaseLocations(
                 }
                 .filter { database -> of(database)?.voters.orEmpty().any { it.id == member } }
                 .mapTo(HashSet()) { it.name }
+        }
+
+    /**
+     * The members that run a secondary of [database], as they last reported, where the system graph
+     * places one: a server that it no longer places one on drops it, maybe before it reports so.
+     */
+    fun secondaries(database: DatabaseRef): List<MemberId> =
+        placedSecondaries(database).sorted().filter { member ->
+            directory.databaseStates(member).orEmpty().any {
+                it.id == database.id &&
+                    it.mode == CopyMode.SECONDARY &&
+                    it.status == DatabaseState.Status.ONLINE
+            }
         }
 
     /** Where [database] is, or null while no member is known to vote in its group. */

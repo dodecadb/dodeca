@@ -16,11 +16,12 @@ import org.neo4j.values.virtual.MapValue
 
 /**
  * Routing tables for drivers that route (`neo4j://`), from the Raft group of each database where it
- * is known ([DatabaseLocations]): writes to the leader, reads to the followers and optionally the
- * leader, leaving out members whose copy failed, this one too. Every member routes every database,
- * also one it does not host: its table names the members that do, and while it knows no leader for
- * it, it asks the members again first, for at most [refreshWait]. A database whose group no member
- * is known to run, and server-side routing, keep Community's table that names only this member.
+ * is known ([DatabaseLocations]): writes to the leader, reads to the followers unless only
+ * secondaries are to read ([readsOnPrimaries]), to the secondaries and optionally the leader,
+ * leaving out members whose copy failed, this one too. Every member routes every database, also one
+ * it does not host: its table names the members that do, and while it knows no leader for it, it
+ * asks the members again first, for at most [refreshWait]. A database whose group no member is
+ * known to run, and server-side routing, keep Community's table that names only this member.
  */
 internal class ClusterRoutingTableProvider(
     private val locations: DatabaseLocations,
@@ -30,6 +31,7 @@ internal class ClusterRoutingTableProvider(
     private val ttl: RoutingTableTTLProvider,
     private val local: ClientSideRoutingTableProvider,
     private val serverSide: ServerSideRoutingTableProvider,
+    private val readsOnPrimaries: Boolean = true,
 ) : ClientSideRoutingTableProvider, ServerSideRoutingTableProvider {
     override fun getRoutingResultForClientSideRouting(
         databaseReference: DatabaseReferenceImpl.Internal,
@@ -61,6 +63,8 @@ internal class ClusterRoutingTableProvider(
                     .map { it.id }
                     .filter { database.id in directory.readOnlyDatabases(it) }
                     .toSet(),
+                locations.secondaries(database),
+                readsOnPrimaries,
             )
         return RoutingResult(
             endpoints.routers.map(::socketAddress),

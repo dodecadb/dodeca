@@ -54,10 +54,12 @@ internal interface ForwardedTransaction {
  * transaction fails, saying how to reach it. A transaction keeps the place it chose for a database,
  * or the failure to find one, so it waits only once for a leader, up to [leaderWait].
  *
- * The leaders and hosts come from the database's Raft group ([locations]), and their routing
- * connectors from what members report ([routingAddress], [reported], [running]).
+ * The leaders and hosts come from the database's Raft group and secondaries ([locations]), and
+ * their routing connectors from what members report ([routingAddress], [reported], [running]).
  *
  * @property hosted whether a database is hosted here, its copy registered on this member.
+ * @property readsOnPrimaries whether followers take reads where secondaries can, as routing tables
+ *   have it.
  */
 internal class ForwardingLocations(
     private val hosted: (NamedDatabaseId) -> Boolean,
@@ -68,6 +70,7 @@ internal class ForwardingLocations(
     private val running: (MemberId, UUID) -> Boolean,
     private val leaderWait: Duration,
     private val log: InternalLog,
+    private val readsOnPrimaries: Boolean = true,
 ) {
     /** The member each database's writes went to last, to log changes. */
     private val targets = ConcurrentHashMap<UUID, HostPort>()
@@ -140,16 +143,26 @@ internal class ForwardingLocations(
     }
 
     /**
-     * A member that runs [ref] for reads that are not hosted here: a follower that takes forwarded
-     * transactions, else the leader, by id.
+     * A member that runs [ref] for reads that are not hosted here and takes forwarded transactions,
+     * as routing tables list readers: the first by id of the followers, unless only secondaries are
+     * to read and one can, and the secondaries; else the leader.
      */
     private fun host(ref: DatabaseRef): MemberId? {
-        val location = locations.of(ref) ?: return null
-        return location.voters
-            .map { it.id }
-            .filter { running(it, ref.id) && routingAddress(it) != null }
-            .sortedWith(compareBy<MemberId> { it == location.leader }.thenBy { it })
-            .firstOrNull()
+        val location = locations.of(ref)
+        val primaries =
+            location
+                ?.voters
+                .orEmpty()
+                .map { it.id }
+                .filter {
+                    running(it, ref.id) && routingAddress(it) != null
+                }
+        val secondaries = locations.secondaries(ref).filter { routingAddress(it) != null }
+        val followers = primaries.filter { it != location?.leader }
+        val readers =
+            (if (readsOnPrimaries || secondaries.isEmpty()) followers else emptyList()) +
+                secondaries
+        return readers.minOrNull() ?: primaries.firstOrNull()
     }
 
     /** The routing address of [leader], waiting up to [leaderWait] for its first report. */
