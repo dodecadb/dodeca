@@ -109,7 +109,10 @@ class PowerLossTest {
 
     @Test
     fun `members that lose power during writes recover every acknowledged write`() {
-        val seed = System.nanoTime()
+        val seed = System.getProperty("dozendb.seed")?.toLong() ?: System.nanoTime()
+        // Printed first, for failures anywhere: the random choices repeat with
+        // -Ddozendb.seed=<seed>, though the threads' timing does not.
+        println("PowerLossTest seed $seed")
         val random = Random(seed)
         val systems = ConcurrentHashMap<Int, PowerLossFileSystem>()
         val cluster = powerLossCluster(systems)
