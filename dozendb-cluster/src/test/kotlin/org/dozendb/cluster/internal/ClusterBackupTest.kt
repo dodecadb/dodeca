@@ -6,6 +6,7 @@ import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -125,7 +126,7 @@ class ClusterBackupTest {
 
     @Test
     fun `a follower that applies late waits until it holds the writes acknowledged before`() {
-        val fileSystems = mutableMapOf<Int, SlowLogFileSystem>()
+        val fileSystems = ConcurrentHashMap<Int, SlowLogFileSystem>()
         val cluster =
             ClusterHarness(
                     root,

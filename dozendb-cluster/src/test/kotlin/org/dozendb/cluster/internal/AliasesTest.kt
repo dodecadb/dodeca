@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.KeyStore
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 import javax.crypto.KeyGenerator
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -226,7 +227,7 @@ class AliasesTest {
 
     @Test
     fun `a lagging follower routes new aliases, and serves them to sessions with bookmarks`() {
-        val fileSystems = mutableMapOf<Int, SlowLogFileSystem>()
+        val fileSystems = ConcurrentHashMap<Int, SlowLogFileSystem>()
         val cluster = cluster { fileSystems.getOrPut(it.index) { SlowLogFileSystem() } }
         val leader = cluster.awaitLeader(SYSTEM)
         val follower = cluster.members.first { it != leader }
