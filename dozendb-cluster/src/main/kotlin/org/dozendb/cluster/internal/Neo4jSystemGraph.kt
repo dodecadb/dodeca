@@ -61,6 +61,7 @@ internal class Neo4jSystemGraph(
                     ?.firstOrNull()
                     ?.let { MemberId.parse(it as String) },
             hosts = Placements.hosts(node, CopyMode.PRIMARY).mapTo(HashSet(), ::MemberId),
+            secondaries = Placements.hosts(node, CopyMode.SECONDARY).mapTo(HashSet(), ::MemberId),
             created = created(node),
         )
     }

@@ -605,7 +605,7 @@ class ServerLifecycleTest {
             listOf(
                 "0, 0" to "the number of primaries is 0, not 1 to 11",
                 "12, 0" to "the number of primaries is 12, not 1 to 11",
-                "1, 1" to "databases have no secondaries yet",
+                "1, 21" to "the number of secondaries is 21, not 0 to 20",
             )) {
             assertThat(
                     catchThrowable {
@@ -618,6 +618,10 @@ class ServerLifecycleTest {
         }
         assertThat(cluster.rows("CALL dbms.showTopologyGraphConfig()").single())
             .containsEntry("defaultPrimariesCount", 2L)
+            .containsEntry("defaultSecondariesCount", 0L)
+        cluster.administer("CALL dbms.setDefaultAllocationNumbers(2, 1)")
+        assertThat(cluster.rows("CALL dbms.showTopologyGraphConfig()").single())
+            .containsEntry("defaultSecondariesCount", 1L)
     }
 
     @Test

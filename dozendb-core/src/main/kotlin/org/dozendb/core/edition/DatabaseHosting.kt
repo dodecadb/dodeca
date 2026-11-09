@@ -12,9 +12,6 @@ import org.neo4j.kernel.impl.api.TransactionalProcessFactory
  * server alone hosts each database, as in Neo4j Community.
  */
 interface DatabaseHosting {
-    /** How Neo4j reports that the databases are hosted. */
-    val hostedOnMode: HostedOnMode
-
     /**
      * Whether a database's ID generators reuse freed IDs from the start. A hosting that must first
      * learn which IDs are free enables reuse itself later.
@@ -34,6 +31,9 @@ interface DatabaseHosting {
 
 /** A database as a [DatabaseHosting] hosts it. */
 interface HostedDatabase {
+    /** How Neo4j reports that the database is hosted. */
+    val hostedOnMode: HostedOnMode
+
     /** The leases the database's transactions take. */
     val leaseService: LeaseService
 

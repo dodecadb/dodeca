@@ -582,8 +582,8 @@ private class DatabaseCommands(
     private data class Requested(val primaries: Int?, val secondaries: Int?)
 
     /**
-     * The numbers of copies [topology] asks for, checked for the database [name]: 1 to 11
-     * primaries, as Neo4j Enterprise takes them. Secondaries are refused until DozenDB has them.
+     * The numbers of copies [topology] asks for, checked for the database [name]: 1 to 11 primaries
+     * and 0 to 20 secondaries, as Neo4j Enterprise takes them.
      */
     @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for a number out of range.
     private fun topology(
@@ -600,14 +600,9 @@ private class DatabaseCommands(
                 "$failed: a topology has 1 to $MAX_PRIMARIES primaries, not $primaries."
             )
         }
-        if (secondaries != null && secondaries != 0L) {
+        if (secondaries != null && secondaries !in 0..MAX_SECONDARIES) {
             throw InvalidArgumentException(
-                ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_51N31)
-                    .withParam(GqlParams.StringParam.item, "SECONDARIES")
-                    .withParam(GqlParams.StringParam.context, "DozenDB")
-                    .build(),
-                "$failed: secondaries are not supported yet; every copy of a database is a " +
-                    "primary.",
+                "$failed: a topology has 0 to $MAX_SECONDARIES secondaries, not $secondaries."
             )
         }
         return Requested(primaries?.toInt(), secondaries?.toInt())
@@ -1236,6 +1231,7 @@ private class DatabaseCommands(
 
         /** The most primaries a topology may ask for, as in Neo4j Enterprise. */
         const val MAX_PRIMARIES = 11
+        const val MAX_SECONDARIES = 20
 
         val SUPPORTED_OPTIONS =
             listOf(

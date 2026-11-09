@@ -18,6 +18,7 @@ import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.Role
 import org.dozendb.core.edition.HostedDatabase
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
 import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.internal.kernel.api.exceptions.TransactionFailureException
 import org.neo4j.kernel.api.KernelTransactionHandle
@@ -70,6 +71,8 @@ internal class ReplicatedDatabase(
     private val afterGroupChange: () -> Unit = {},
 ) : HostedDatabase {
     val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+
+    override val hostedOnMode: HostedOnMode = HostedOnMode.RAFT
 
     /**
      * True from creating a new store until the group starts. Neo4j then commits one local

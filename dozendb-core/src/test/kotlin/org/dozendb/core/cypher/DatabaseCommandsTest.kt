@@ -161,9 +161,11 @@ class DatabaseCommandsTest {
         val secondaries = server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY 1 SECONDARY")
         assertThat(secondaries)
             .hasMessage(
-                "$failed: secondaries are not supported yet; every copy of a database is a primary."
+                "$failed: 'films' needs 1 server that can host it as a secondary, and this server " +
+                    "runs without clustering."
             )
-        assertThat(gqlStatusesOf(secondaries)).contains("51N31")
+        assertThat(server.failure("CREATE DATABASE films TOPOLOGY 1 PRIMARY 21 SECONDARIES"))
+            .hasMessage("$failed: a topology has 0 to 20 secondaries, not 21.")
         assertThat(server.names()).doesNotContain("films")
 
         server.administer("CREATE DATABASE films OPTIONS {}")

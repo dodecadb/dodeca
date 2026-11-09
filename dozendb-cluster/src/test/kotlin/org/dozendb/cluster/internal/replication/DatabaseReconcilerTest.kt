@@ -7,6 +7,7 @@ import org.assertj.core.api.Assertions.entry
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId
@@ -58,7 +59,18 @@ class DatabaseReconcilerTest {
         designatedSeeder: MemberId? = null,
         hosts: Set<MemberId> = members.map { it.id }.filter { it !in graph.free }.toSet(),
         created: Boolean = false,
-    ) = DesiredDatabase(id, online, creator, seedUri, designatedSeeder, hosts, created)
+        secondaries: Set<MemberId> = emptySet(),
+    ) =
+        DesiredDatabase(
+            id,
+            online,
+            creator,
+            seedUri,
+            designatedSeeder,
+            hosts = hosts,
+            secondaries = secondaries,
+            created = created,
+        )
 
     @Test
     fun `the creator of a seeded database creates its store from the seed, the others copy it`() {
@@ -520,6 +532,113 @@ class DatabaseReconcilerTest {
         assertThat(local.groups).containsExactly(films.databaseId().uuid())
     }
 
+    @Test
+    fun `a secondary copies the database from the members that hold it, marks it, and starts it`() {
+        graph.databases =
+            listOf(
+                desired(films, creator = creator, hosts = setOf(creator), secondaries = setOf(self))
+            )
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.copies).containsExactly(creatorAddress to films)
+        assertThat(local.marks).containsExactly(films.databaseId().uuid())
+        assertThat(local.registered[films])
+            .isEqualTo(LocalDatabase(true, false, CopyMode.SECONDARY))
+        assertThat(local.groups).describedAs("it runs no group").isEmpty()
+        assertThat(local.seeds).containsEntry(films, null)
+    }
+
+    @Test
+    fun `a system leader that hosts a new database as a secondary names its creator first`() {
+        graph.leading = true
+        graph.databases = listOf(desired(films, hosts = setOf(creator), secondaries = setOf(self)))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).containsExactly(films to creator)
+        assertThat(local.copyAttempts).describedAs("nothing to copy yet").isEmpty()
+    }
+
+    @Test
+    fun `a secondary goes as soon as it is no longer placed here`() {
+        local.addSecondary(films)
+        graph.databases =
+            listOf(
+                desired(films, creator = creator, hosts = setOf(creator), secondaries = emptySet())
+            )
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.dropped).containsExactly(films)
+        assertThat(local.marks).isEmpty()
+    }
+
+    @Test
+    fun `a primary placed here as a secondary leaves its group first, then is copied as one`() {
+        local.add(films, started = true)
+        graph.databases =
+            listOf(
+                desired(films, creator = creator, hosts = setOf(creator), secondaries = setOf(self))
+            )
+
+        assertThat(reconciler.reconcile()).describedAs("waits to leave its group").isTrue()
+        assertThat(local.dropped).isEmpty()
+
+        local.notVoting += films
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(local.dropped).containsExactly(films)
+
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.registered[films])
+            .isEqualTo(LocalDatabase(true, false, CopyMode.SECONDARY))
+        assertThat(local.marks).containsExactly(films.databaseId().uuid())
+    }
+
+    @Test
+    fun `a secondary placed here as a primary is replaced by a copy that joins the group`() {
+        local.addSecondary(films)
+        graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator, self)))
+
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(local.dropped).containsExactly(films)
+        assertThat(local.marks).isEmpty()
+
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.registered[films]).isEqualTo(LocalDatabase(true, false, CopyMode.PRIMARY))
+        assertThat(local.groups).containsExactly(films.databaseId().uuid())
+    }
+
+    @Test
+    fun `a primary's store placed here as a secondary while this member was down runs its group first`() {
+        local.stored[films.name()] = true
+        local.groups += films.databaseId().uuid()
+        graph.databases =
+            listOf(
+                desired(films, creator = creator, hosts = setOf(creator), secondaries = setOf(self))
+            )
+
+        reconciler.reconcile()
+
+        assertThat(local.registered[films]).isEqualTo(LocalDatabase(true, false, CopyMode.PRIMARY))
+        assertThat(local.copies).isEmpty()
+    }
+
+    @Test
+    fun `a secondary's mark whose database the system graph lacks is forgotten`() {
+        val orphan = UUID.randomUUID()
+        local.marks += orphan
+        local.addSecondary(films)
+        graph.databases =
+            listOf(
+                desired(films, creator = creator, hosts = setOf(creator), secondaries = setOf(self))
+            )
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.marks).containsExactly(films.databaseId().uuid())
+    }
+
     private class FakeSystemGraph : SystemGraph {
         var databases: List<DesiredDatabase> = emptyList()
         /** What this member's system graph holds once confirmed current, if it was behind. */
@@ -568,10 +687,26 @@ class DatabaseReconcilerTest {
         val dropped = mutableListOf<NamedDatabaseId>()
         val deletedStores = mutableListOf<String>()
 
+        /** The databases whose stores are secondaries', by id. */
+        val marks = mutableSetOf<UUID>()
+
         fun add(id: NamedDatabaseId, started: Boolean) {
             registered[id] = LocalDatabase(started, false)
             stored[id.name()] = true
             groups += id.databaseId().uuid()
+        }
+
+        /** A running secondary of [id]. */
+        fun addSecondary(id: NamedDatabaseId) {
+            registered[id] = LocalDatabase(true, false, CopyMode.SECONDARY)
+            stored[id.name()] = true
+            marks += id.databaseId().uuid()
+        }
+
+        override fun secondaries(): Set<UUID> = marks.toSet()
+
+        override fun unmark(id: UUID) {
+            marks -= id
         }
 
         override fun registered(): Map<NamedDatabaseId, LocalDatabase> = registered.toMap()
@@ -595,28 +730,29 @@ class DatabaseReconcilerTest {
 
         override fun left(id: NamedDatabaseId): Boolean = id in notMember
 
-        override fun create(id: NamedDatabaseId) {
+        override fun create(id: NamedDatabaseId, mode: CopyMode) {
             check(id !in registered) { "$id is registered" }
-            registered[id] = LocalDatabase(started = false, failed = false)
+            registered[id] = LocalDatabase(started = false, failed = false, mode = mode)
         }
 
         /** The seeds each database was started with. */
         val seeds = mutableMapOf<NamedDatabaseId, StoreSeed?>()
 
         override fun start(id: NamedDatabaseId, seed: StoreSeed?) {
-            check(registered.getValue(id) == LocalDatabase(started = false, failed = false))
+            val state = registered.getValue(id)
+            check(!state.started && !state.failed)
             seeds[id] = seed
-            registered[id] = LocalDatabase(started = true, failed = false)
+            registered[id] = state.copy(started = true)
             stored[id.name()] = true
-            groups += id.databaseId().uuid()
+            if (state.mode == CopyMode.PRIMARY) groups += id.databaseId().uuid()
         }
 
         override fun stop(id: NamedDatabaseId) {
-            registered[id] = LocalDatabase(started = false, failed = false)
+            registered[id] = registered.getValue(id).copy(started = false, failed = false)
         }
 
         override fun leave(id: NamedDatabaseId) {
-            registered[id] = LocalDatabase(started = false, failed = false)
+            registered[id] = registered.getValue(id).copy(started = false, failed = false)
             left += id
         }
 
@@ -624,6 +760,7 @@ class DatabaseReconcilerTest {
             registered.remove(id)
             stored.remove(id.name())
             groups.remove(id.databaseId().uuid())
+            marks.remove(id.databaseId().uuid())
             dropped += id
         }
 
@@ -637,12 +774,13 @@ class DatabaseReconcilerTest {
             groups.remove(id)
         }
 
-        override fun copy(source: HostPort, id: NamedDatabaseId) {
+        override fun copy(source: HostPort, id: NamedDatabaseId, mode: CopyMode) {
             copyAttempts += source
             if (source in unreachable) throw IOException("$source is unreachable")
             check(id.name() !in stored) { "${id.name()} has files" }
             stored[id.name()] = true
             copies += source to id
+            if (mode == CopyMode.SECONDARY) marks += id.databaseId().uuid()
         }
     }
 

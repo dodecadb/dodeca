@@ -227,6 +227,30 @@ class ClusterSettings : SettingsDeclaration {
                 .build()
 
         @JvmField
+        @field:Description(
+            "The number of secondaries a new database has when CREATE DATABASE gives no number of " +
+                "secondaries, and the default database of a new cluster at most. Taken at the " +
+                "cluster's first start; dbms.setDefaultAllocationNumbers changes it later. Named " +
+                "like Neo4j Enterprise's setting."
+        )
+        val defaultSecondaries: Setting<Int> =
+            newBuilder("initial.dbms.default_secondaries_count", INT, 0)
+                .addConstraint(range(0, 20))
+                .build()
+
+        @JvmField
+        @field:Description(
+            "How often a secondary asks its upstream for the transactions it lacks. While an " +
+                "answer brings as many as one pull carries, it asks again at once; a read that " +
+                "waits for a transaction the secondary lacks asks at once too. Named like Neo4j " +
+                "Enterprise's setting."
+        )
+        val pullInterval: Setting<Duration> =
+            newBuilder("db.cluster.catchup.pull_interval", DURATION, Duration.ofSeconds(1))
+                .addConstraint(min(Duration.ofMillis(1)))
+                .build()
+
+        @JvmField
         @field:Internal
         @field:Description(
             "For tests: how long leaders must have stayed put on every member before balancing " +

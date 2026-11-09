@@ -5,26 +5,38 @@ import org.dozendb.cluster.internal.replication.LocalDatabase
 import org.dozendb.cluster.internal.replication.LocalDatabases
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.replication.StoreSeed
+import org.dozendb.cluster.internal.secondaries.ClusterHosting
+import org.dozendb.cluster.internal.secondaries.Secondaries
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.core.edition.DatabaseManager
 import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.servers.CopyMode
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.kernel.database.NamedDatabaseId
 
-/** This member's databases, through the database manager, their files and replication. */
+/**
+ * This member's databases, through the database manager, their files, and their replication as
+ * primaries or secondaries.
+ */
 internal class Neo4jLocalDatabases(
     private val manager: DatabaseManager,
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
     private val stores: Neo4jLocalStores,
+    private val hosting: ClusterHosting,
     private val replication: ReplicationService,
+    private val secondaries: Secondaries,
     private val seeder: () -> DatabaseSeeder?,
 ) : LocalDatabases {
     override fun registered(): Map<NamedDatabaseId, LocalDatabase> =
-        repository.registeredDatabases().mapValues { (_, context) ->
-            LocalDatabase(started = context.database().isStarted, failed = context.isFailed)
+        repository.registeredDatabases().mapValues { (id, context) ->
+            LocalDatabase(
+                started = context.database().isStarted,
+                failed = context.isFailed,
+                mode = hosting.mode(id),
+            )
         }
 
     override fun stored(): Set<String> = stores.stored()
@@ -33,13 +45,17 @@ internal class Neo4jLocalDatabases(
 
     override fun groups(): Set<UUID> = replication.localGroups()
 
-    override fun catchingUp(id: NamedDatabaseId): Boolean = replication.catchingUp(id)
+    override fun secondaries(): Set<UUID> = secondaries.marked()
+
+    override fun catchingUp(id: NamedDatabaseId): Boolean =
+        replication.catchingUp(id) || secondaries.catchingUp(id)
 
     override fun votes(id: NamedDatabaseId): Boolean? = replication.votes(id)
 
     override fun left(id: NamedDatabaseId): Boolean = replication.left(id)
 
-    override fun create(id: NamedDatabaseId) {
+    override fun create(id: NamedDatabaseId, mode: CopyMode) {
+        hosting.host(id, mode)
         manager.createDatabase(id)
     }
 
@@ -69,12 +85,19 @@ internal class Neo4jLocalDatabases(
         replication.replica(id)?.handOverOnStop = false
         manager.dropDatabase(id)
         replication.remove(id)
+        secondaries.remove(id)
     }
 
     override fun deleteStore(name: String) = stores.delete(name)
 
     override fun removeGroup(id: UUID) = replication.removeGroup(id)
 
-    override fun copy(source: HostPort, id: NamedDatabaseId) =
-        stores.copyNew(source, DatabaseRef(id.name(), id.databaseId().uuid()))
+    override fun unmark(id: UUID) = secondaries.unmark(id)
+
+    override fun copy(source: HostPort, id: NamedDatabaseId, mode: CopyMode) =
+        when (mode) {
+            CopyMode.PRIMARY ->
+                stores.copyNew(source, DatabaseRef(id.name(), id.databaseId().uuid()))
+            CopyMode.SECONDARY -> secondaries.copy(source, id)
+        }
 }

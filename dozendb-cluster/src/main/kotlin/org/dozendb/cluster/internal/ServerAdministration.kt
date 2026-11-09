@@ -71,8 +71,8 @@ class ServerAdministration(
 
     /**
      * Sets the number of [primaries] and [secondaries] that a new database has when CREATE DATABASE
-     * gives no topology, as `dbms.setDefaultAllocationNumbers` does: 1 to 11 primaries, and no
-     * secondaries, which databases do not have yet.
+     * gives no topology, as `dbms.setDefaultAllocationNumbers` does: 1 to 11 primaries, and 0 to 20
+     * secondaries.
      */
     fun setDefaults(primaries: Long, secondaries: Long) {
         val failed = "Could not set the default numbers of copies"
@@ -81,14 +81,13 @@ class ServerAdministration(
                 "$failed: the number of primaries is $primaries, not 1 to $MAXIMUM_PRIMARIES."
             )
         }
-        if (secondaries != 0L) {
+        if (secondaries !in 0..MAXIMUM_SECONDARIES) {
             throw InvalidArgumentException(
-                "$failed: databases have no secondaries yet, so the number of secondaries is 0, " +
-                    "not $secondaries."
+                "$failed: the number of secondaries is $secondaries, not 0 to $MAXIMUM_SECONDARIES."
             )
         }
         changing(failed) { tx, _ ->
-            Placements.setDefaults(tx, Placements.Defaults(primaries.toInt(), 0))
+            Placements.setDefaults(tx, Placements.Defaults(primaries.toInt(), secondaries.toInt()))
         }
     }
 
@@ -185,5 +184,6 @@ class ServerAdministration(
     private companion object {
         /** The most primaries a database can have, as in Neo4j Enterprise. */
         const val MAXIMUM_PRIMARIES = 11L
+        const val MAXIMUM_SECONDARIES = 20L
     }
 }

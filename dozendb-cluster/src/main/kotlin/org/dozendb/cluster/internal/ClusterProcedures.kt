@@ -129,9 +129,8 @@ class ClusterProcedures {
     @Procedure(name = "dbms.setDefaultAllocationNumbers", mode = Mode.DBMS)
     @Description(
         "Sets the number of primaries and secondaries that a new database has when CREATE " +
-            "DATABASE gives no TOPOLOGY: 1 to 11 primaries, and 0 secondaries, which DozenDB " +
-            "does not support yet. Runs on the leader of the system database, as Neo4j " +
-            "Enterprise's procedure of the same name."
+            "DATABASE gives no TOPOLOGY: 1 to 11 primaries, and 0 to 20 secondaries. Runs on the " +
+            "leader of the system database, as Neo4j Enterprise's procedure of the same name."
     )
     fun setDefaultAllocationNumbers(
         @Name("primaries") primaries: Long,

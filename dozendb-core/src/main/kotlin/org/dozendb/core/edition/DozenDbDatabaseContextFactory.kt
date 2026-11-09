@@ -91,7 +91,7 @@ internal class DozenDbDatabaseContextFactory(
         lateinit var database: Database
         val creationContext =
             ModularDatabaseCreationContext(
-                hosting?.hostedOnMode ?: HostedOnMode.SINGLE,
+                hosted?.hostedOnMode ?: HostedOnMode.SINGLE,
                 serverIdentity,
                 namedDatabaseId,
                 globalModule,

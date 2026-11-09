@@ -36,8 +36,12 @@ import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.internal.routing.ClusterRoutingValidator
 import org.dozendb.cluster.internal.routing.ConfirmedReferences
+import org.dozendb.cluster.internal.secondaries.ClusterHosting
 import org.dozendb.cluster.internal.secondaries.PullProtocol
 import org.dozendb.cluster.internal.secondaries.PullSource
+import org.dozendb.cluster.internal.secondaries.Secondaries
+import org.dozendb.cluster.internal.secondaries.SecondaryCopies
+import org.dozendb.cluster.internal.secondaries.SecondaryMarks
 import org.dozendb.cluster.internal.storecopy.Neo4jLocalStores
 import org.dozendb.cluster.internal.storecopy.StoreCopySource
 import org.dozendb.cluster.internal.topology.ClusterTopologyInfoService
@@ -115,6 +119,8 @@ import org.neo4j.storageengine.api.TransactionIdStore
 class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(globalModule) {
     private val cluster: ClusterService
     private val replication: ReplicationService
+    private val secondaries: Secondaries
+    private val clusterHosting: ClusterHosting
     private val directory: MemberDirectory
     private val locations: DatabaseLocations
     private val consensus: ConsensusLog
@@ -139,7 +145,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val sendingRefusal: String?
 
     override val hosting: DatabaseHosting
-        get() = replication
+        get() = clusterHosting
 
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
@@ -273,6 +279,39 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             )
         replication = replicationService
         globalModule.globalDependencies.satisfyDependency(replicationService)
+        secondaries =
+            Secondaries(
+                consensus,
+                upstreams = { database ->
+                    // A random primary that runs it, until upstream strategies choose.
+                    locations
+                        .of(database)
+                        ?.voters
+                        .orEmpty()
+                        .filter { it.id != consensus.self.id }
+                        .map { it.raftAddress }
+                        .shuffled()
+                },
+                copies =
+                    object : SecondaryCopies {
+                        override fun copy(source: HostPort, database: DatabaseRef) =
+                            stores.copyNew(source, database, seeded = false)
+
+                        override fun stage(source: HostPort, database: DatabaseRef) =
+                            stores.stageSecondary(source, database)
+                    },
+                marks =
+                    SecondaryMarks(
+                        config.get(ClusterSettings.raftDirectory).resolve(SECONDARIES_FILE)
+                    ),
+                control = { databaseControl() },
+                pullInterval = config.get(ClusterSettings.pullInterval),
+                refusal = { database ->
+                    notLeaderMessage(database.name, locations.of(database)?.leader)
+                },
+                logProvider = logService.internalLogProvider,
+            )
+        clusterHosting = ClusterHosting(replicationService, secondaries)
         val fileSystem = globalModule.fileSystem
         if (fileSystem is SingleFsyncFileSystem) {
             fileSystem.policy = FsyncPolicy(replicationService::singleFsync)
@@ -290,8 +329,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 globalModule.fileSystem,
                 replicating = { id ->
-                    replicationService.running().any { it.namedDatabaseId == id }
+                    replicationService.running().any { it.namedDatabaseId == id } ||
+                        secondaries.running(id)
                 },
+                raft = { id -> replicationService.running().any { it.namedDatabaseId == id } },
                 snapshots = { name ->
                     replicationService
                         .running()
@@ -315,6 +356,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ),
         )
         globalModule.databaseEventListeners.registerDatabaseEventListener(replication)
+        globalModule.databaseEventListeners.registerDatabaseEventListener(secondaries)
         val formation = ClusterFormation(consensus, initialMembers(config), neo4jVersion, userLog)
         directory =
             MemberDirectory(
@@ -431,6 +473,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         membership.close()
                         cluster.stop()
                     } finally {
+                        secondaries.close()
                         replication.close()
                     }
                 }
@@ -468,7 +511,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
      * starting, or as failed if their group could not start; and whether it knows their leaders.
      */
     private fun reportedStates(): List<DatabaseState> {
-        val catchingUp = replication.catchingUp()
+        val catchingUp = replication.catchingUp() + secondaries.catchingUp()
         val copying = localStores.copying()
         val starting = replication.starting()
         val failedToStart = replication.failedToStart()
@@ -575,7 +618,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     databaseManager,
                     repository,
                     localStores,
+                    clusterHosting,
                     replication,
+                    secondaries,
                     ::seeder,
                 ),
                 memberId,
@@ -610,7 +655,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 defaults =
                     Placements.Defaults(
                         globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
-                        0,
+                        globalModule.globalConfig.get(ClusterSettings.defaultSecondaries),
                     ),
             )
         administration =
@@ -623,7 +668,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 defaults =
                     Placements.Defaults(
                         globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
-                        0,
+                        globalModule.globalConfig.get(ClusterSettings.defaultSecondaries),
                     ),
                 autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
             )
@@ -904,7 +949,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             defaults =
                 Placements.Defaults(
                     globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
-                    0,
+                    globalModule.globalConfig.get(ClusterSettings.defaultSecondaries),
                 ),
             holders = { name ->
                 val id = systemGraph.databaseId(name)
@@ -1142,6 +1187,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private companion object {
         /** This member's [org.dozendb.cluster.MembershipRecord], in the Raft directory. */
         const val MEMBERSHIP_FILE = "membership"
+
+        /** The databases this member holds as secondaries, next to its membership file. */
+        const val SECONDARIES_FILE = "secondaries"
 
         /** How long a member that is asked what it reports may take to answer. */
         val PROBE_DEADLINE: Duration = Duration.ofSeconds(2)

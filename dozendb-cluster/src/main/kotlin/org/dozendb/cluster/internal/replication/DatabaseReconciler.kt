@@ -10,6 +10,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.CopyMode
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLog
 
@@ -23,8 +24,10 @@ internal data class DesiredDatabase(
     val seedUri: String? = null,
     /** The member to name its creator, which may hold its restored store; null for any. */
     val designatedSeeder: MemberId? = null,
-    /** The servers it is placed on; none while it is not placed yet. */
+    /** The servers that host its primaries; none while it is not placed yet. */
     val hosts: Set<MemberId> = emptySet(),
+    /** The servers that host its secondaries. */
+    val secondaries: Set<MemberId> = emptySet(),
     /** Whether its store was created: from then on every server copies it, its creator too. */
     val created: Boolean = false,
 )
@@ -59,8 +62,12 @@ internal interface SystemGraph {
     fun nameCreator(database: NamedDatabaseId, creator: MemberId, initialMembers: List<Member>)
 }
 
-/** The state of a database registered on this member. */
-internal data class LocalDatabase(val started: Boolean, val failed: Boolean)
+/** The state of a database registered on this member, hosted in [mode]. */
+internal data class LocalDatabase(
+    val started: Boolean,
+    val failed: Boolean,
+    val mode: CopyMode = CopyMode.PRIMARY,
+)
 
 /** This member's databases: the database manager, their stores and their Raft groups. */
 internal interface LocalDatabases {
@@ -76,7 +83,10 @@ internal interface LocalDatabases {
     /** Ids of the Raft groups with state on this member. */
     fun groups(): Set<UUID>
 
-    /** Whether [id] is being replaced by a copy because it fell behind its group's log. */
+    /** Ids of the databases whose stores here are secondaries'. */
+    fun secondaries(): Set<UUID>
+
+    /** Whether [id] is being replaced by a copy because it fell behind its log or its upstreams. */
     fun catchingUp(id: NamedDatabaseId): Boolean
 
     /**
@@ -91,8 +101,11 @@ internal interface LocalDatabases {
      */
     fun left(id: NamedDatabaseId): Boolean
 
-    /** Registers [id] with the database manager; starting it creates its store if there is none. */
-    fun create(id: NamedDatabaseId)
+    /**
+     * Registers [id] with the database manager, hosted in [mode]; starting it creates its store if
+     * there is none.
+     */
+    fun create(id: NamedDatabaseId, mode: CopyMode)
 
     /** Starts [id]; first, if it has no store and a [seed], creates its store from the seed. */
     fun start(id: NamedDatabaseId, seed: StoreSeed?)
@@ -112,8 +125,14 @@ internal interface LocalDatabases {
     /** Deletes the Raft group [id], whose database is gone. */
     fun removeGroup(id: UUID)
 
-    /** Copies the store of [id], which this member lacks, from the member at [source]. */
-    fun copy(source: HostPort, id: NamedDatabaseId)
+    /** Forgets that the store of the database [id] is a secondary's. */
+    fun unmark(id: UUID)
+
+    /**
+     * Copies the store of [id], which this member lacks, from the member at [source], for a copy in
+     * [mode]: a secondary's is marked once it is in place.
+     */
+    fun copy(source: HostPort, id: NamedDatabaseId, mode: CopyMode)
 }
 
 /**
@@ -124,31 +143,37 @@ internal interface LocalDatabases {
  * with its own databases once it has started and after every system transaction it applies,
  * whichever member ran it.
  *
- * A member hosts the databases placed on it (see `org.dozendb.core.servers.Placements`). The store
- * of a new database is created by one of them, its creator, and copied by the others. The system
- * leader names the creator of a database without one, itself if the database is placed on it, else
- * one of the servers it is placed on, in a replicated system transaction, before the store is
- * created: so the creator survives restarts and leader changes, and no two members create the same
- * database. The same transaction records the initial members of the database's group, the servers
- * it is placed on: every member that creates the group without local state uses them, so that no
- * two members bootstrap it differently. A member creates a store only as the creator, only while
- * the system graph does not record the store created, and only if it has no Raft group for the
- * database yet; otherwise it copies the store, from the members that hold it, and its group waits
- * to be added (see `MembershipReconciler`): so a creator that the database moved off and back to
- * copies it too. Stores are created and copied while their database is online.
+ * A member hosts the databases placed on it (see `org.dozendb.core.servers.Placements`), as
+ * primaries or secondaries. The store of a new database is created by one of them, its creator, and
+ * copied by the others. The system leader names the creator of a database without one, itself if
+ * the database is placed on it, else one of the servers it is placed on, in a replicated system
+ * transaction, before the store is created: so the creator survives restarts and leader changes,
+ * and no two members create the same database. The same transaction records the initial members of
+ * the database's group, the servers it is placed on: every member that creates the group without
+ * local state uses them, so that no two members bootstrap it differently. A member creates a store
+ * only as the creator, only while the system graph does not record the store created, and only if
+ * it has no Raft group for the database yet; otherwise it copies the store, from the members that
+ * hold it, and its group waits to be added (see `MembershipReconciler`): so a creator that the
+ * database moved off and back to copies it too. Stores are created and copied while their database
+ * is online.
  *
  * A member that holds a database no longer placed on it keeps it while it votes in the database's
  * group, which the system leader then removes it from once the servers it is placed on vote, and
  * deletes it afterwards: a move never lowers the number of copies. A database not placed yet, as
  * the default database of a new cluster before the system leader places it, is left as it is.
  *
- * A local store counts only together with the Raft group of its database. A store without one is a
- * leftover: of a database dropped while this member was down that has the same name, or of a copy
- * or creation that did not finish. The member that forms a cluster with databases of its own starts
- * their groups as it forms it, so that their stores count. Such stores, Raft groups and databases
- * the system graph lacks are deleted, but only once the system leader confirmed that this member's
- * copy of the system graph is current: after a restart it may lack transactions this member already
- * acted on.
+ * A secondary copies the store once its creator created it, and pulls its transactions; it votes in
+ * no group, so it goes as soon as it is no longer placed here. A primary placed here as a secondary
+ * leaves its group first, as one placed elsewhere does, and is copied again; a secondary's store
+ * placed here as a primary is replaced by a copy.
+ *
+ * A local store counts only together with the Raft group of its database, or a secondary's with its
+ * mark. A store without either is a leftover: of a database dropped while this member was down that
+ * has the same name, or of a copy or creation that did not finish. The member that forms a cluster
+ * with databases of its own starts their groups as it forms it, so that their stores count. Such
+ * stores, Raft groups and databases the system graph lacks are deleted, but only once the system
+ * leader confirmed that this member's copy of the system graph is current: after a restart it may
+ * lack transactions this member already acted on.
  *
  * The default database is created, copied, started and stopped like any other; like without
  * clustering the reconciler never drops it while the system graph has it.
@@ -275,6 +300,8 @@ internal class DatabaseReconciler(
         data class Store(val name: String) : Deletion
 
         data class Group(val id: UUID) : Deletion
+
+        data class Mark(val id: UUID) : Deletion
     }
 
     private fun deletions(desired: List<DesiredDatabase>): List<Deletion> {
@@ -293,14 +320,13 @@ internal class DatabaseReconciler(
                     registered.none { it.name() == name } &&
                     (database == null || (database.online && !trusted(database.id)))
             }
-        val groups =
-            databases.groups() -
-                SYSTEM.uuid -
-                desired.map { it.id.uuid }.toSet() -
-                registered.map { it.uuid }.toSet()
+        val known = desired.map { it.id.uuid }.toSet() + registered.map { it.uuid }
+        val groups = databases.groups() - SYSTEM.uuid - known
+        val marks = databases.secondaries() - known
         return dropped.map { Deletion.Database(it) } +
             stores.map { Deletion.Store(it) } +
-            groups.map { Deletion.Group(it) }
+            groups.map { Deletion.Group(it) } +
+            marks.map { Deletion.Mark(it) }
     }
 
     /** Returns false if [deletion] has to wait. */
@@ -323,13 +349,31 @@ internal class DatabaseReconciler(
                 )
                 databases.removeGroup(deletion.id)
             }
+            is Deletion.Mark -> {
+                log.info(
+                    "Forgetting secondary %s, whose database the system graph lacks",
+                    deletion.id,
+                )
+                databases.unmark(deletion.id)
+            }
         }
         return true
     }
 
-    /** Whether the local store of [id] belongs to it: complete, with the database's Raft group. */
+    /**
+     * Whether the local store of [id] belongs to it as a copy in [mode]: complete, with the
+     * database's Raft group for a primary, marked for a secondary.
+     */
+    private fun trusted(id: NamedDatabaseId, mode: CopyMode): Boolean =
+        databases.complete(id.name()) &&
+            when (mode) {
+                CopyMode.PRIMARY -> id.uuid in databases.groups()
+                CopyMode.SECONDARY -> id.uuid in databases.secondaries()
+            }
+
+    /** Whether the local store of [id] belongs to it, in either mode. */
     private fun trusted(id: NamedDatabaseId): Boolean =
-        databases.complete(id.name()) && id.uuid in databases.groups()
+        trusted(id, CopyMode.PRIMARY) || trusted(id, CopyMode.SECONDARY)
 
     /** Brings [database] in line with the system graph; returns false to be tried again. */
     private fun converge(database: DesiredDatabase): Boolean {
@@ -337,8 +381,14 @@ internal class DatabaseReconciler(
         if (databases.catchingUp(id)) return false
         val state = databases.registered()[id]
         val placed = database.hosts.isNotEmpty()
-        val here = self in database.hosts
-        val leaving = placed && !here
+        val wanted =
+            when (self) {
+                in database.hosts -> CopyMode.PRIMARY
+                in database.secondaries -> CopyMode.SECONDARY
+                else -> null
+            }
+        // A primary no longer placed here as one, which waits to leave the database's group.
+        val leaving = placed && state?.mode == CopyMode.PRIMARY && wanted != CopyMode.PRIMARY
         when {
             state == null ->
                 return when {
@@ -346,7 +396,7 @@ internal class DatabaseReconciler(
                     // is kept instead, as without clustering.
                     databases.registered().keys.any { it.name() == id.name() } ->
                         id.name() == defaultDatabase
-                    here -> create(database)
+                    wanted != null -> create(database, wanted)
                     // Placed elsewhere: as the system leader, it names the creator, in a system
                     // transaction, which reconciles again; tried again if it failed.
                     placed ->
@@ -364,17 +414,31 @@ internal class DatabaseReconciler(
                     // Not placed yet: the system leader places it.
                     else -> true
                 }
-            leaving && databases.votes(id) == false -> {
+            // No group counts a secondary in: it goes at once.
+            state.mode == CopyMode.SECONDARY && wanted != CopyMode.SECONDARY -> {
                 log.info(
-                    "Deleting database %s here: it is placed on other servers, and this member " +
-                        "left its group",
+                    "Deleting secondary %s here: %s",
                     id,
+                    if (wanted == null) "it is placed on other servers"
+                    else "it is placed here as a primary, which is copied anew",
                 )
                 databases.drop(id)
-                return true
+                // The primary is created next time.
+                return wanted == null
+            }
+            leaving && databases.votes(id) == false -> {
+                log.info(
+                    "Deleting database %s here: it is placed on other servers%s, and this member " +
+                        "left its group",
+                    id,
+                    if (wanted == CopyMode.SECONDARY) " as a primary, here as a secondary" else "",
+                )
+                databases.drop(id)
+                // The secondary is copied next time.
+                return wanted == null
             }
             // As when it started its group as a member, which the group removed meanwhile.
-            here && databases.left(id) -> {
+            wanted == CopyMode.PRIMARY && databases.left(id) -> {
                 // Only once the system leader confirmed it is placed here: a member that was
                 // removed from the cluster stops its databases instead, and keeps them.
                 if (!systemGraph.awaitCurrent()) return false
@@ -390,7 +454,7 @@ internal class DatabaseReconciler(
             }
             database.online && !state.started && !state.failed -> {
                 log.info("Starting database %s, online in the system graph", id)
-                databases.start(id, seed(database))
+                databases.start(id, if (state.mode == CopyMode.PRIMARY) seed(database) else null)
             }
             // Stopping also clears a failure, so that starting it again tries anew.
             !database.online && (state.started || state.failed) -> {
@@ -402,21 +466,32 @@ internal class DatabaseReconciler(
         return !leaving
     }
 
-    /** Creates [database] here; returns false to be tried again. */
-    private fun create(database: DesiredDatabase): Boolean {
+    /** Creates [database] here, as [wanted] places it; returns false to be tried again. */
+    private fun create(database: DesiredDatabase, wanted: CopyMode): Boolean {
         val id = database.id
-        if (!trusted(id)) {
+        if (wanted == CopyMode.PRIMARY && id.uuid in databases.secondaries()) {
+            // A leftover now, replaced by a copy below.
+            log.info("Database %s is placed here as a primary; its secondary's store goes", id)
+            databases.unmark(id.uuid)
+        }
+        // A primary's store leaves its group first, as a primary placed elsewhere does.
+        val mode =
+            if (wanted == CopyMode.SECONDARY && trusted(id, CopyMode.PRIMARY)) CopyMode.PRIMARY
+            else wanted
+        if (!trusted(id, mode)) {
             // Created or copied once it is started.
             if (!database.online) return true
             // A leftover, deleted once the system graph is confirmed current. The default
             // database's files are kept instead, and replaced by a copy, as when this member
             // stopped while it started a copy, before its group ran here.
             if (id.name() in databases.stored() && id.name() != defaultDatabase) return false
-            if (!provideStore(database)) return false
+            if (!provideStore(database, mode)) return false
         }
-        log.info("Creating database %s", id)
-        databases.create(id)
-        if (database.online) databases.start(id, seed(database))
+        log.info("Creating %s %s", if (mode == CopyMode.PRIMARY) "database" else "secondary", id)
+        databases.create(id, mode)
+        if (database.online) {
+            databases.start(id, if (mode == CopyMode.PRIMARY) seed(database) else null)
+        }
         return true
     }
 
@@ -430,24 +505,25 @@ internal class DatabaseReconciler(
         }
 
     /**
-     * Makes sure that [database] can start here: with a copy of its store, or as its creator.
-     * Returns false to be tried again.
+     * Makes sure that [database] can start here in [mode]: with a copy of its store, or as its
+     * creator, which is a primary. Returns false to be tried again.
      */
-    private fun provideStore(database: DesiredDatabase): Boolean {
+    private fun provideStore(database: DesiredDatabase, mode: CopyMode): Boolean {
         val id = database.id
         val creator = database.creator
         return when {
-            database.created -> copyFromCluster(database)
+            database.created -> copyFromCluster(database, mode)
+            // Also for a secondary: nothing is copied before its creator created the store.
             creator == null -> {
                 // The creator is named in a system transaction, which reconciles again.
                 if (systemGraph.leading()) nameCreator(database)
                 false
             }
-            creator == self && id.uuid !in databases.groups() -> {
+            mode == CopyMode.PRIMARY && creator == self && id.uuid !in databases.groups() -> {
                 log.info("Creating the store of new database %s, as its creator", id)
                 true
             }
-            else -> copyFromCluster(database)
+            else -> copyFromCluster(database, mode)
         }
     }
 
@@ -489,12 +565,17 @@ internal class DatabaseReconciler(
         }
     }
 
-    private fun copyFromCluster(database: DesiredDatabase): Boolean {
+    private fun copyFromCluster(database: DesiredDatabase, mode: CopyMode): Boolean {
         val id = database.id
         for (source in sources(database)) {
             try {
-                log.info("Copying new database %s from %s", id, source)
-                databases.copy(source, id)
+                log.info(
+                    "Copying new %s %s from %s",
+                    if (mode == CopyMode.PRIMARY) "database" else "secondary",
+                    id,
+                    source,
+                )
+                databases.copy(source, id, mode)
                 return true
             } catch (e: InterruptedException) {
                 throw e

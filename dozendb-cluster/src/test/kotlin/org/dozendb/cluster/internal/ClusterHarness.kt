@@ -41,6 +41,7 @@ import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.api.DatabaseNotFoundException
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
@@ -129,9 +130,16 @@ internal class ClusterHarness(
                     )
             val first = !started
             started = true
+            // A server that may host only secondaries hosts no primary of the default database.
             val expected =
-                if (first) index < size && config.get(ClusterSettings.defaultPrimaries) >= size
-                else hostedDefault
+                if (first) {
+                    index < size &&
+                        config.get(ClusterSettings.defaultPrimaries) >= size &&
+                        config.get(DozenDbSettings.initialServerModeConstraint) !=
+                            InstanceModeConstraint.SECONDARY
+                } else {
+                    hostedDefault
+                }
             if (expected) awaitDefaultDatabase(first)
         }
 

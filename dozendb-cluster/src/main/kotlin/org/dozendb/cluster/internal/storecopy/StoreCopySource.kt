@@ -23,19 +23,21 @@ import org.neo4j.logging.InternalLog
  * A copy is a crash image that Neo4j recovery completes ([StoreSnapshots]), with every transaction
  * log file whole.
  *
- * Only a database whose transactions go through Raft here is copied: a new database is not, until
- * its creator has initialised it. A request may name the database's id, which a database of that
- * name here must have: a database dropped and created again keeps its name.
+ * Only a database that replicates here is copied, as a primary whose transactions go through Raft,
+ * or as a secondary that pulls them: a new database is not, until its creator has initialised it. A
+ * request may name the database's id, which a database of that name here must have: a database
+ * dropped and created again keeps its name.
  *
- * The copy states the Raft snapshot it holds, read before the store snapshot is taken: every
- * transaction up to it is closed by then, so the copied transaction logs reach it. A request may
- * name the lowest index the snapshot must reach. Without one, as for a member's first copy, the
- * copy states a snapshot only if the member has applied entries.
+ * A primary's copy states the Raft snapshot it holds, read before the store snapshot is taken:
+ * every transaction up to it is closed by then, so the copied transaction logs reach it. A request
+ * may name the lowest index the snapshot must reach. Without one, as for a member's first copy, the
+ * copy states a snapshot only if the member has applied entries. A secondary's copy states none.
  *
  * A member that has no such database yet, as a creator that is still creating it, or that has not
  * applied up to the requested index waits up to [maximumWait], then refuses.
  *
- * @property replicating whether a database's transactions go through Raft here.
+ * @property replicating whether a database replicates here, as a primary or a secondary.
+ * @property raft whether a database's transactions go through Raft here, as a primary's.
  * @property snapshots the current snapshot of a database replicating here, by name.
  * @property served called with a database's name after a copy of it was sent.
  */
@@ -44,6 +46,7 @@ internal class StoreCopySource(
     private val fs: FileSystemAbstraction,
     private val replicating: (NamedDatabaseId) -> Boolean,
     private val snapshots: (String) -> Snapshot?,
+    private val raft: (NamedDatabaseId) -> Boolean = replicating,
     private val log: InternalLog,
     private val maximumWait: Duration = Duration.ofSeconds(10),
     private val served: (String) -> Unit = {},
@@ -53,12 +56,13 @@ internal class StoreCopySource(
         val deadline = System.nanoTime() + maximumWait.toNanos()
         val database = awaitReplicating(name, id, deadline)
         val snapshot =
-            if (minimumIndex < 0) {
+            when {
+                // A secondary runs no Raft group.
+                !raft(database.namedDatabaseId) -> null
                 // A member's first copy starts from the beginning of the log; a new group may not
                 // have applied anything yet.
-                snapshots(name)
-            } else {
-                awaitSnapshot(name, minimumIndex, deadline)
+                minimumIndex < 0 -> snapshots(name)
+                else -> awaitSnapshot(name, minimumIndex, deadline)
             }
         val storeSnapshot = StoreSnapshots.take(database, fs)
         log.info(

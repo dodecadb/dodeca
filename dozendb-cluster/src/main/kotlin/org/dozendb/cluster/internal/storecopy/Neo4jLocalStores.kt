@@ -5,6 +5,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import org.dozendb.cluster.LocalStores
 import org.dozendb.cluster.internal.replication.StagedCopy
+import org.dozendb.cluster.internal.secondaries.StagedStore
 import org.dozendb.consensus.BulkTransfer
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
@@ -93,16 +94,29 @@ internal class Neo4jLocalStores(
         }
     }
 
-    /** Copies the database [database], which this member lacks, from [source]. */
-    fun copyNew(source: HostPort, database: DatabaseRef) {
+    /**
+     * Copies the database [database], which this member lacks, from [source]. A copy for a primary
+     * leaves its Raft position as the group's seed; one for a secondary, which runs no group, does
+     * not ([seeded]).
+     */
+    fun copyNew(source: HostPort, database: DatabaseRef, seeded: Boolean = true) {
         copying[database.name] = database.id
         try {
             val staged = fetch(source, database.name, database.id, NO_MINIMUM)
             moveIntoPlace(staged)
-            leaveSeed(staged)
+            if (seeded) leaveSeed(staged)
         } finally {
             copying.remove(database.name)
         }
+    }
+
+    /**
+     * Copies [database] from [source] next to it, for a secondary that needs a newer copy, while it
+     * keeps running: any copy will do, as its source's logs no longer hold what the secondary has.
+     */
+    fun stageSecondary(source: HostPort, database: DatabaseRef): StagedStore {
+        val staged = fetch(source, database.name, database.id, NO_MINIMUM)
+        return StagedStore { moveIntoPlace(staged) }
     }
 
     /** The ids of the databases that [copyNew] copies now, by name. */
