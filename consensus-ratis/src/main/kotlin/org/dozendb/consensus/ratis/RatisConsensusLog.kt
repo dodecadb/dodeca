@@ -104,7 +104,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     /**
      * Groups being added to the running server. Ratis serves requests for a group before it has
      * started it; a leader's snapshot notification that arrives before its log is open leaves Ratis
-     * reporting the installation as in progress for good. Until started, a group is not offered.
+     * reporting the installation as in progress for good. Until started, a group is not offered,
+     * and its leader's requests are refused ([RefuseUnavailableGroups]).
      */
     private val startingGroups: MutableSet<UUID> = ConcurrentHashMap.newKeySet()
     private val listeners = ConcurrentHashMap<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
@@ -169,7 +170,15 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                     if (GrpcServices.Type.SERVER in types) {
                         builder
                             .intercept(RefuseWhileStopping { stopping })
-                            .intercept(RefuseClosedGroups { stateMachines[it]?.closed == true })
+                            .intercept(
+                                RefuseUnavailableGroups {
+                                    when {
+                                        it in startingGroups -> "starting"
+                                        stateMachines[it]?.closed == true -> "closed"
+                                        else -> null
+                                    }
+                                }
+                            )
                             .addService(
                                 ProbeService.definition(::describeSelf, ::publishAnnouncement)
                             )

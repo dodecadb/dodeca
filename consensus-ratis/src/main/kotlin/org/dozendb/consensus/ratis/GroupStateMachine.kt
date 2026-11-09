@@ -138,7 +138,8 @@ internal class GroupStateMachine(
 
     /**
      * Whether Ratis closed the group on this member, or is about to because an entry failed to
-     * apply. A leader keeps trying such a member as one that is down; see [RefuseClosedGroups].
+     * apply. A leader keeps trying such a member as one that is down; see
+     * [RefuseUnavailableGroups].
      */
     @Volatile
     var closed: Boolean = false

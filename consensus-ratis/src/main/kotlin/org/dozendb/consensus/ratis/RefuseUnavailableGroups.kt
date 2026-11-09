@@ -18,13 +18,16 @@ import org.apache.ratis.thirdparty.io.grpc.Status
 import org.apache.ratis.thirdparty.io.grpc.StatusRuntimeException
 
 /**
- * Refuses the appends and snapshot notifications a leader sends for a group that is [closed] on
- * this member, as after an entry failed to apply here. Ratis closes such a group on this member
- * only, and the leader keeps trying the member as one that is down; Ratis would log an error for
- * each of these requests. The call is closed instead, before Ratis sees the request, with the
- * failure Ratis answers for a closed group, which the leader handles as such.
+ * Refuses the appends and snapshot notifications a leader sends for a group that cannot take them
+ * on this member, as [unavailable] says why: one that is closed, as after an entry failed to apply
+ * here, or one still starting, as when the others formed the group first. Ratis closes a failed
+ * group on this member only, and the leader keeps trying the member as one that is down; Ratis
+ * would log an error for each of these requests. The call is closed instead, before Ratis sees the
+ * request, with the failure Ratis answers for a group that is not ready, which the leader handles
+ * as such.
  */
-internal class RefuseClosedGroups(private val closed: (UUID) -> Boolean) : ServerInterceptor {
+internal class RefuseUnavailableGroups(private val unavailable: (UUID) -> String?) :
+    ServerInterceptor {
     override fun <Q, R> interceptCall(
         call: ServerCall<Q, R>,
         headers: Metadata,
@@ -99,7 +102,7 @@ internal class RefuseClosedGroups(private val closed: (UUID) -> Boolean) : Serve
         }
     }
 
-    /** The failure for [message], if it is a request for a closed group. */
+    /** The failure for [message], if it is a request for a group that cannot take it. */
     private fun refusal(message: Any?): StatusRuntimeException? {
         val request: RaftRpcRequestProto =
             when (message) {
@@ -108,9 +111,9 @@ internal class RefuseClosedGroups(private val closed: (UUID) -> Boolean) : Serve
                 else -> return null
             }
         val group = RaftGroupId.valueOf(request.raftGroupId.id)
-        if (!closed(group.uuid)) return null
+        val why = unavailable(group.uuid) ?: return null
         // With the call id the leader finds the request that failed, as for Ratis' own failures.
-        val failure = ServerNotReadyException("$group is closed on this member")
+        val failure = ServerNotReadyException("$group is $why on this member")
         return if (message is AppendEntriesRequestProto) {
             GrpcUtil.wrapException(failure, request.callId, message.entriesCount == 0)
         } else {

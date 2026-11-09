@@ -731,6 +731,68 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a member whose group is still starting refuses the leader's requests for it, without logging each`() =
+        runBlocking<Unit> {
+            val cluster = RatisTestCluster(root, 3).also { cluster = it }
+            cluster.nodes.forEach { it.start() }
+            val members = cluster.nodes.map { it.consensus.self }
+            val slow = cluster.nodes.first()
+            val others = cluster.nodes - slow
+            // Ratis asks the state machine where it stands while it starts the group.
+            val entered = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val held =
+                object : ReplicatedStateMachine by slow.machine {
+                    override fun lastAppliedIndex(): Long {
+                        if (entered.count > 0) {
+                            entered.countDown()
+                            release.await(1, TimeUnit.MINUTES)
+                        }
+                        return slow.machine.lastAppliedIndex()
+                    }
+                }
+
+            LogCapture().use { log ->
+                val starting = thread {
+                    slow.consensus.startGroup(cluster.database, held, members)
+                }
+                try {
+                    assertThat(entered.await(1, TimeUnit.MINUTES)).isTrue()
+                    others.forEach {
+                        it.consensus.startGroup(cluster.database, it.machine, members)
+                    }
+                    // The others elect a leader, which tries the member whose group is starting.
+                    val leaderTried =
+                        Regex(
+                            " - (${others.joinToString("|") { "${it.id}" }})@group-\\w+->" +
+                                "${slow.id}-\\S+: Failed appendEntries"
+                        )
+                    await atMost
+                        RatisTestCluster.AWAIT until
+                        {
+                            log.lines().any(leaderTried::containsMatchIn)
+                        }
+                } finally {
+                    release.countDown()
+                    starting.join()
+                }
+                assertThat(
+                        log.lines().filter {
+                            Regex(" ERROR \\S+ - ${slow.id}@group-").containsMatchIn(it)
+                        }
+                    )
+                    .isEmpty()
+            }
+            val leader = cluster.awaitLeader()
+            assertThat(leader.write("after")).isInstanceOf(CommitResult.Committed::class.java)
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(slow.machine.payloads()).containsExactly("after")
+                }
+        }
+
+    @Test
     fun `a leader ends the streams it gave up on to a member whose group failed`() =
         runBlocking<Unit> {
             val cluster = RatisTestCluster(root, 3).also { cluster = it }
