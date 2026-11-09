@@ -220,6 +220,22 @@ internal class Neo4jSystemGraph(
         }
     }
 
+    /** Asks the system secondary [member] to turn primary, on the `system` leader. */
+    fun promoteSecondary(member: MemberId) = replication.readingSystem {
+        system().beginTx().use { tx ->
+            ServerRecords.lock(tx)
+            check(SystemSecondaryRecords.promote(tx, member)) {
+                "server $member is not a system secondary"
+            }
+            tx.commit()
+        }
+    }
+
+    /** Whether the system secondary [member] is asked to turn primary. */
+    fun promoted(member: MemberId): Boolean = replication.readingSystem {
+        system().beginTx().use { tx -> SystemSecondaryRecords.promoted(tx, member) }
+    }
+
     /** Whether DROP SERVER dropped [member]. */
     fun dropped(member: MemberId): Boolean = replication.readingSystem {
         system().beginTx().use { tx -> member.uuid in ServerRecords.dropped(tx) }

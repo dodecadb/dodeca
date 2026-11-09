@@ -13,13 +13,15 @@ import org.neo4j.graphdb.Transaction
  * the system graph records them: a DozenDB `DozenDbSystemSecondary` node for each, with its `id`,
  * the `raft_address` other servers reach it at, and when it was admitted, `added_at`. The system
  * leader records a server when it admits it as a system secondary; the record goes when the server
- * is dropped or turns primary.
+ * is dropped or turns primary. While the leader asks it to turn primary, its record has `promote`
+ * set.
  */
 internal object SystemSecondaryRecords {
     private val LABEL = Label.label("DozenDbSystemSecondary")
     private const val ID = "id"
     private const val ADDRESS = "raft_address"
     private const val ADDED_AT = "added_at"
+    private const val PROMOTE = "promote"
 
     /** The recorded system secondaries, ordered by id. */
     fun all(tx: Transaction): List<Member> =
@@ -50,6 +52,17 @@ internal object SystemSecondaryRecords {
         }
         return true
     }
+
+    /** Asks the system secondary [id] to turn primary; returns whether it has a record. */
+    fun promote(tx: Transaction, id: MemberId): Boolean {
+        val node = tx.findNode(LABEL, ID, id.toString()) ?: return false
+        node.setProperty(PROMOTE, true)
+        return true
+    }
+
+    /** Whether the system secondary [id] is asked to turn primary. */
+    fun promoted(tx: Transaction, id: MemberId): Boolean =
+        tx.findNode(LABEL, ID, id.toString())?.getProperty(PROMOTE, false) == true
 
     /** Deletes the record of the system secondary [id]; returns whether there was one. */
     fun remove(tx: Transaction, id: MemberId): Boolean {

@@ -61,9 +61,11 @@ import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupMembership
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.LogPosition
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.Role
+import org.dozendb.consensus.Snapshot
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.dozendb.consensus.ratis.TlsConfig
@@ -659,6 +661,35 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 }
             }
 
+            override fun promote(member: MemberId) {
+                if (!replication.systemWritable) {
+                    throw MembershipChangeException(
+                        "This member does not lead the system database, which asks system " +
+                            "secondaries to turn primary."
+                    )
+                }
+                try {
+                    systemGraph.promoteSecondary(member)
+                } catch (e: Exception) {
+                    throw MembershipChangeException(
+                        "Asking system secondary $member to turn primary failed: ${e.message}",
+                        e,
+                    )
+                }
+            }
+
+            override fun promoted(): Boolean =
+                try {
+                    systemGraph.promoted(memberId)
+                } catch (e: Exception) {
+                    if (e is InterruptedException) Thread.currentThread().interrupt()
+                    false
+                }
+
+            override fun turnSecondary() = turnSystemSecondary()
+
+            override fun turnPrimary(): Boolean = turnSystemPrimary()
+
             override fun forget(member: MemberId) {
                 if (!replication.systemWritable) {
                     throw MembershipChangeException(
@@ -676,6 +707,80 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 }
             }
         }
+
+    /**
+     * Turns `system` here, whose group no longer counts this member in, into a secondary from its
+     * own store: with `system` stopped, while nothing reads it, its group goes, its store is marked
+     * a secondary's, and it starts again as the same database, which then pulls.
+     */
+    private fun turnSystemSecondary() {
+        val id = NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID
+        replication.replacingSystem {
+            databaseControl().stop(id)
+            replication.release(id)
+            secondaries.mark(id)
+            clusterHosting.switchSystem(CopyMode.SECONDARY)
+            check(databaseControl().start(id)) { "the system database did not start again" }
+        }
+        systemApplied()
+    }
+
+    /**
+     * Turns `system` here from a secondary into a primary that runs its group from its own store,
+     * as other databases switch ([Neo4jLocalDatabases]): the store's last transaction tells the
+     * index of its Raft entry, the leader of `system` its term, which seed the group; when the
+     * leader's log no longer holds that entry, `system` is replaced by a copy of the leader's with
+     * its snapshot. It runs the group as a member that waits to be added. Returns false, pulling
+     * on, while the leader is not known.
+     */
+    private fun turnSystemPrimary(): Boolean {
+        val id = NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID
+        val location = locations.of(systemDatabase) ?: return false
+        val leader = location.voters.firstOrNull { it.id == location.leader } ?: return false
+        val last = secondaries.stopPulling(id) ?: return false
+        val index = last.consensusIndex()
+        val told = if (index < 0) null else entryTerm(systemDatabase, index)
+        if (told == EntryTerm.Unknown) {
+            secondaries.startPulling(id)
+            return false
+        }
+        val copy =
+            if (told == EntryTerm.Pruned) {
+                try {
+                    localStores.stageReplicated(leader.raftAddress, systemDatabase, index)
+                } catch (e: Exception) {
+                    if (e is InterruptedException) throw e
+                    globalModule.logService
+                        .getInternalLog(ClusterService::class.java)
+                        .warn("Copying the system database from %s failed: %s", leader, e.message)
+                    secondaries.startPulling(id)
+                    return false
+                }
+            } else {
+                null
+            }
+        replication.replacingSystem {
+            databaseControl().stop(id)
+            secondaries.remove(id)
+            when {
+                copy != null -> {
+                    copy.moveIntoPlace()
+                    consensus.seed(systemDatabase, copy.snapshot)
+                }
+                told is EntryTerm.Known ->
+                    consensus.seed(
+                        systemDatabase,
+                        Snapshot(LogPosition(index, told.term), index),
+                    )
+            }
+            clusterHosting.switchSystem(CopyMode.PRIMARY)
+            // Without voting until the leader adds it.
+            consensus.joinGroup(systemDatabase, location.voters.filter { it.id != memberId })
+            check(databaseControl().start(id)) { "the system database did not start again" }
+        }
+        systemApplied()
+        return true
+    }
 
     /**
      * Community's read-only checker, which also tells the balancer when the databases read-only

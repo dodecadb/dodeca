@@ -8,6 +8,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.Role
 import org.dozendb.consensus.fake.InMemoryConsensus
@@ -119,6 +120,58 @@ class ClusterServiceTest {
             .isInstanceOf(ClusterFormationException::class.java)
             .hasMessageContaining("server.cluster.system_database_mode=SECONDARY")
             .hasMessageContaining("secondaries never form a cluster")
+    }
+
+    @Test
+    fun `the only voter of system is not turned into a system secondary`() {
+        val alone =
+            consensus.newMember(
+                metadata =
+                    metadata + (MemberMetadata.SYSTEM_DATABASE_MODE to CopyMode.SECONDARY.name)
+            )
+        val admitted = mutableListOf<MemberId>()
+        val hosting =
+            object : SystemHosting {
+                override val pulls = false
+
+                override fun pulled() = false
+
+                override fun copyPulled(source: HostPort) = error("no copy")
+
+                override fun dropped() = false
+
+                override fun admit(member: Member) {
+                    admitted += member.id
+                }
+
+                override fun forget(member: MemberId) = error("nothing to forget")
+
+                override fun promote(member: MemberId) = error("nothing to promote")
+
+                override fun promoted() = false
+
+                override fun turnSecondary() = error("no turn")
+
+                override fun turnPrimary() = error("no turn")
+            }
+        val service =
+            ClusterService(
+                alone,
+                system,
+                ClusterFormation(alone, listOf(alone.self.raftAddress), "5.26.27", log, sleep = {}),
+                FakeStores(),
+                InMemoryMembershipStore(),
+                log,
+                metadata = { ownMetadata },
+                systemHosting = hosting,
+            )
+        service.start()
+
+        assertThatThrownBy { service.addMember(alone.self.raftAddress) }
+            .isInstanceOf(MembershipChangeException::class.java)
+            .hasMessageContaining("the only voting member of the system database")
+        assertThat(admitted).isEmpty()
+        assertThat(service.groupMembers(system).map { it.id }).containsExactly(alone.self.id)
     }
 
     @Test

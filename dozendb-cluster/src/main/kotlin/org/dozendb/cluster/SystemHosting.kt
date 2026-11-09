@@ -34,10 +34,34 @@ interface SystemHosting {
     fun admit(member: Member)
 
     /**
-     * Deletes the record of the system secondary [member], as when it is dropped, on the leader of
-     * `system`.
+     * Deletes the record of the system secondary [member], as when it is dropped or once it turned
+     * primary, on the leader of `system`.
      *
      * @throws MembershipChangeException if this member does not lead `system`, or deleting failed.
      */
     fun forget(member: MemberId)
+
+    /**
+     * Asks the system secondary [member] to turn primary, in its record, on the leader of `system`.
+     *
+     * @throws MembershipChangeException if this member does not lead `system`, or recording failed.
+     */
+    fun promote(member: MemberId)
+
+    /** Whether the system graph here asks this member, a system secondary, to turn primary. */
+    fun promoted(): Boolean
+
+    /**
+     * Turns `system` here, whose group no longer counts this member in, into a secondary from its
+     * own store, which pulls on from there.
+     */
+    fun turnSecondary()
+
+    /**
+     * Turns `system` here from a secondary into a primary from its own store, seeded as the leader
+     * of `system` tells, from a copy if the leader's log no longer holds what the store needs: it
+     * runs the group and waits to be added. Returns false to be tried again, as while no leader is
+     * known.
+     */
+    fun turnPrimary(): Boolean
 }

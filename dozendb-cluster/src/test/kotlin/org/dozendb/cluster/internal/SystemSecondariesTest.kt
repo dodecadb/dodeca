@@ -288,6 +288,73 @@ class SystemSecondariesTest {
         }
     }
 
+    @Test
+    fun `a primary restarted as a system secondary turns secondary in place once admitted again`() {
+        val cluster = cluster()
+        val turning = cluster.newMember().also { it.start() }
+        cluster.admit(turning)
+        val leader = cluster.systemLeader()
+        eventually { assertThat(voters(leader)).contains(turning.serverId) }
+        turning.stop()
+        turning.settings = mapOf(ClusterSettings.systemDatabaseMode to CopyMode.SECONDARY)
+        turning.start()
+
+        // It votes on until it is admitted again.
+        eventually { assertThat(turning.status(SYSTEM)?.role).isIn(Role.Follower, Role.Leader) }
+        assertThat(turning.cluster.pullsSystem).isFalse()
+        cluster.admit(turning)
+
+        eventually {
+            assertThat(turning.cluster.pullsSystem).isTrue()
+            assertThat(voters(cluster.systemLeader())).doesNotContain(turning.serverId)
+            assertThat(cluster.systemLeader().roles(SYSTEM))
+                .containsExactly("primary", "primary", "primary", "secondary")
+        }
+        assertThat(turning.cluster.state).isEqualTo(MemberState.MEMBER)
+        cluster.administer("CREATE DATABASE films")
+        eventually { assertThat(turning.databaseNames()).contains("films") }
+        assertThat(turning.marked).contains(SYSTEM_ID)
+    }
+
+    @Test
+    fun `a system secondary restarted as a primary turns primary in place once admitted again`() {
+        val cluster = cluster()
+        val turning = cluster.startSecondary()
+        cluster.admit(turning)
+        eventually { assertThat(turning.cluster.state).isEqualTo(MemberState.MEMBER) }
+        cluster.administer("CREATE DATABASE films")
+        eventually { assertThat(turning.databaseNames()).contains("films") }
+        turning.stop()
+        turning.settings = mapOf(ClusterSettings.systemDatabaseMode to CopyMode.PRIMARY)
+        turning.start()
+
+        // It pulls on until it is admitted again.
+        assertThat(turning.cluster.pullsSystem).isTrue()
+        cluster.administer("CREATE DATABASE books")
+        eventually { assertThat(turning.databaseNames()).contains("books") }
+        cluster.admit(turning)
+
+        assertThat(voters(cluster.systemLeader())).contains(turning.serverId)
+        eventually {
+            assertThat(turning.status(SYSTEM)?.role).isIn(Role.Follower, Role.Leader)
+            assertThat(
+                    cluster.systemLeader().database(SYSTEM).beginTx().use { tx ->
+                        SystemSecondaryRecords.all(tx)
+                    }
+                )
+                .isEmpty()
+        }
+        assertThat(turning.cluster.pullsSystem).isFalse()
+        assertThat(turning.cluster.state).isEqualTo(MemberState.MEMBER)
+        assertThat(turning.marked).doesNotContain(SYSTEM_ID)
+        cluster.administer("CREATE DATABASE music")
+        eventually { assertThat(turning.databaseNames()).contains("music") }
+    }
+
+    /** The ids of the voting members of `system`, as [member] knows them. */
+    private fun voters(member: ClusterHarness.Member): List<String> =
+        member.cluster.groupMembers(member.cluster.systemDatabase).map { it.id.uuid.toString() }
+
     private companion object {
         const val SYSTEM = "system"
         val SYSTEM_ID = NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid().toString()

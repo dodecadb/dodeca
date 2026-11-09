@@ -4,6 +4,8 @@ import java.time.Duration
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -101,6 +103,13 @@ class ClusterService(
     private val levelRefreshRequested = AtomicBoolean(false)
     private val followRequested = AtomicBoolean(false)
 
+    /** Turns `system` here between primary and secondary, one change at a time. */
+    private val modeChanges: ScheduledExecutorService =
+        Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "dozendb-system-mode").apply { isDaemon = true }
+        }
+    private val turning = AtomicBoolean(false)
+
     /** Whether this member hosts `system` as a secondary, which pulls it. */
     @Volatile
     var pullsSystem: Boolean = false
@@ -160,6 +169,7 @@ class ClusterService(
             if (systemDatabase.id in consensus.localGroups()) {
                 userLog.info("Rejoining the cluster from local Raft state")
                 checkRejoin()
+                if (systemMode == CopyMode.SECONDARY) logOtherMode(CopyMode.PRIMARY)
                 null
             } else {
                 formation.awaitFormation(systemDatabase.id).also { found ->
@@ -231,6 +241,9 @@ class ClusterService(
         }
         pullsSystem = true
         if (state == MemberState.REMOVED) userLog.error(REMOVED_MESSAGE)
+        if (state == MemberState.MEMBER && systemMode == CopyMode.PRIMARY) {
+            logOtherMode(CopyMode.SECONDARY)
+        }
         if (state == MemberState.JOINING) {
             userLog.info(
                 "This server hosts the system database as a secondary and is not part of the " +
@@ -263,8 +276,107 @@ class ClusterService(
     }
 
     /**
+     * Tells why this member, which hosts `system` in [mode], does not host it as configured: the
+     * mode changes once `addMember` admits it again.
+     */
+    private fun logOtherMode(mode: CopyMode) {
+        userLog.info(
+            "This server is configured to host the system database as a %s " +
+                "(%s=%s), but hosts it as a %s: it does so until CALL " +
+                "dozendb.cluster.addMember('%s') on the leader of the system database changes it.",
+            systemMode.label,
+            SYSTEM_DATABASE_MODE_SETTING,
+            systemMode.name,
+            mode.label,
+            self.raftAddress,
+        )
+    }
+
+    /**
+     * Turns `system` here into a secondary, in the background, as this member, configured as one,
+     * left its group: the leader of `system` admitted it as a secondary, or DROP SERVER removed it,
+     * which the system graph it then pulls tells.
+     */
+    private fun turnSecondary(hosting: SystemHosting) {
+        changeMode {
+            userLog.info(
+                "This server left the group of the system database: it turns into a secondary of " +
+                    "it, as configured, from its own store"
+            )
+            statusListener?.close()
+            statusListener = null
+            hosting.turnSecondary()
+            pullsSystem = true
+            userLog.info("This server pulls the system database as a secondary now")
+            true
+        }
+    }
+
+    /**
+     * Turns `system` here into a primary, in the background, as the leader of `system` asks this
+     * system secondary, configured as a primary, to: it runs the group from its own store and waits
+     * to be added. Tried again while it cannot be.
+     */
+    private fun turnPrimary(hosting: SystemHosting) {
+        changeMode {
+            if (!hosting.turnPrimary()) return@changeMode false
+            pullsSystem = false
+            val roleLogger = RoleChangeLogger(userLog)
+            statusListener =
+                consensus.addStatusListener(systemDatabase) {
+                    roleLogger(it)
+                    followMembership()
+                }
+            userLog.info(
+                "This server runs the group of the system database from its own store, as the " +
+                    "leader of the system database asked: it votes in it once the leader adds it"
+            )
+            true
+        }
+    }
+
+    /**
+     * Runs [change] on the mode changes' thread unless one runs, again after a while if it returns
+     * false.
+     */
+    private fun changeMode(change: () -> Boolean) {
+        if (!turning.compareAndSet(false, true)) return
+        try {
+            modeChanges.execute {
+                var done = false
+                try {
+                    done = change()
+                } catch (e: Exception) {
+                    userLog.error("Changing how this server hosts the system database failed", e)
+                } finally {
+                    turning.set(false)
+                }
+                if (done) systemChanged() else retryLater()
+            }
+        } catch (_: RejectedExecutionException) {
+            // Stopping.
+            turning.set(false)
+        }
+    }
+
+    private fun retryLater() {
+        try {
+            modeChanges.schedule(
+                {
+                    followRequested.set(false)
+                    systemChanged()
+                },
+                MODE_CHANGE_RETRY_MILLIS,
+                TimeUnit.MILLISECONDS,
+            )
+        } catch (_: RejectedExecutionException) {
+            // Stopping.
+        }
+    }
+
+    /**
      * A system secondary is a member once the system graph records it, and removed once it records
-     * it dropped.
+     * it dropped. Configured as a primary, it turns primary once the system graph asks it to.
      */
     @Synchronized
     private fun followPulled(hosting: SystemHosting) {
@@ -279,6 +391,10 @@ class ClusterService(
             remember { it.copy(state = MemberState.REMOVED) }
             userLog.error(REMOVED_MESSAGE)
             onRemoved()
+            return
+        }
+        if (state == MemberState.MEMBER && systemMode == CopyMode.PRIMARY && hosting.promoted()) {
+            turnPrimary(hosting)
         }
     }
 
@@ -290,6 +406,7 @@ class ClusterService(
     @Synchronized
     private fun followMembership() {
         val hosting = systemHosting
+        if (turning.get()) return
         if (pullsSystem && hosting != null) return followPulled(hosting)
         val membership =
             try {
@@ -307,6 +424,9 @@ class ClusterService(
             )
         }
         if (state == MemberState.MEMBER && membership.removed) {
+            // Configured as a secondary, it pulls on: the system graph then tells whether it was
+            // admitted as a secondary or dropped.
+            if (systemMode == CopyMode.SECONDARY && hosting != null) return turnSecondary(hosting)
             remember { it.copy(state = MemberState.REMOVED) }
             userLog.error(REMOVED_MESSAGE)
             onRemoved()
@@ -541,6 +661,7 @@ class ClusterService(
     }
 
     fun stop() {
+        modeChanges.shutdownNow()
         levelRefresh.shutdownNow()
         directory?.stop()
         statusListener?.close()
@@ -605,9 +726,15 @@ class ClusterService(
      * started with initial members of this cluster, without Raft state of its own, and on the same
      * Neo4j version. A primary is first brought up to date with the `system` group; this returns
      * once it votes in it. A system secondary, which pulls `system`, is admitted by the leader of
-     * `system`, which records it ([SystemHosting.admit]); this returns once it is recorded. Returns
-     * at once if it is a server of the cluster already. It joins the group of each database once it
-     * has copied it.
+     * `system`, which records it ([SystemHosting.admit]); this returns once it is recorded. It
+     * joins the group of each database once it has copied it.
+     *
+     * A server of the cluster already changes its mode, on the leader of `system`, if it reports
+     * the other one, as after it restarted with the other setting: a primary is recorded as a
+     * secondary and removed from the `system` group, which makes it turn secondary from its own
+     * store; refused if no voter would be left. A secondary is asked, in its record, to turn
+     * primary, which it does from its own store once it pulled that, and is added to the group, and
+     * its record goes; this returns once that is done. Otherwise this returns at once.
      *
      * @throws MembershipChangeException if the member cannot be added.
      */
@@ -623,7 +750,16 @@ class ClusterService(
                 )
             }
         val candidate = peer.member
-        if (servers.all().any { it.id == candidate.id }) return candidate
+        val voter = servers.voters().members.any { it.id == candidate.id }
+        val recorded = servers.secondaries().any { it.id == candidate.id }
+        val hosting = systemHosting
+        if (voter || recorded) {
+            if (hosting != null && secondary(peer) && voter) turnIntoSecondary(hosting, candidate)
+            if (hosting != null && !secondary(peer) && recorded) {
+                turnIntoPrimary(hosting, address, candidate, voter)
+            }
+            return candidate
+        }
         checkCanJoin(address, peer)
         if (secondary(peer)) {
             val hosting =
@@ -685,6 +821,79 @@ class ClusterService(
             throw MembershipChangeException("Removing member $member failed: ${e.message}", e)
         }
         userLog.info("Removed member %s from the cluster", member)
+    }
+
+    /**
+     * Records the voter [candidate] a system secondary, then removes it from the `system` group.
+     */
+    private fun turnIntoSecondary(hosting: SystemHosting, candidate: Member) {
+        if (servers.voters().members.size <= 1) {
+            throw MembershipChangeException(
+                "Member $candidate is the only voting member of the system database: it stays a " +
+                    "primary of it until another server is one."
+            )
+        }
+        userLog.info("Turning server %s into a secondary of the system database", candidate)
+        hosting.admit(candidate)
+        try {
+            runBlocking { consensus.removeMember(systemDatabase, candidate.id, CHANGE_TIMEOUT) }
+        } catch (e: ConsensusUnavailableException) {
+            throw MembershipChangeException(
+                "Removing server $candidate from the group of the system database failed: " +
+                    "${e.message}",
+                e,
+            )
+        }
+        userLog.info(
+            "Server %s left the group of the system database: it pulls it as a secondary",
+            candidate,
+        )
+    }
+
+    /**
+     * Asks the system secondary [candidate] to turn primary, waits until it runs the `system`
+     * group, adds it unless it is a [voter] already, and deletes its record.
+     */
+    private fun turnIntoPrimary(
+        hosting: SystemHosting,
+        address: HostPort,
+        candidate: Member,
+        voter: Boolean,
+    ) {
+        userLog.info("Turning server %s into a primary of the system database", candidate)
+        if (!voter) {
+            hosting.promote(candidate.id)
+            awaitRunsSystem(address, candidate)
+            try {
+                runBlocking { consensus.addMember(systemDatabase, candidate, CHANGE_TIMEOUT) }
+            } catch (e: ConsensusUnavailableException) {
+                throw MembershipChangeException(
+                    "Adding server $candidate to the group of the system database failed: " +
+                        "${e.message}",
+                    e,
+                )
+            }
+        }
+        hosting.forget(candidate.id)
+        userLog.info("Server %s is a primary of the system database", candidate)
+    }
+
+    /** Waits until [candidate] at [address] runs the `system` group, as it turned primary. */
+    private fun awaitRunsSystem(address: HostPort, candidate: Member) {
+        val deadline = System.nanoTime() + PROMOTION_TIMEOUT.toNanos()
+        while (true) {
+            val peer = runCatching { runBlocking { consensus.probe(address) } }.getOrNull()
+            if (peer?.member?.id == candidate.id && systemDatabase.id in peer.groups) return
+            if (System.nanoTime() - deadline >= 0) {
+                throw MembershipChangeException(
+                    "Server $candidate did not turn primary within " +
+                        "${PROMOTION_TIMEOUT.toSeconds()} seconds: it does once it has pulled the " +
+                        "request and the leader of the system database is known. Run " +
+                        "dozendb.cluster.addMember again to finish."
+                )
+            }
+            Thread.sleep(CONFIRMATION_POLL_MILLIS)
+        }
     }
 
     private fun requireMember() {
@@ -750,6 +959,11 @@ class ClusterService(
         val CHANGE_TIMEOUT: Duration = Duration.ofMinutes(10)
 
         const val CONFIRMATION_POLL_MILLIS = 200L
+
+        const val MODE_CHANGE_RETRY_MILLIS = 2_000L
+
+        /** How long a system secondary may take to turn primary once asked. */
+        val PROMOTION_TIMEOUT: Duration = Duration.ofMinutes(2)
 
         const val SYSTEM_DATABASE_MODE_SETTING = "server.cluster.system_database_mode"
 
