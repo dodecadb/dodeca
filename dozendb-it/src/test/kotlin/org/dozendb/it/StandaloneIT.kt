@@ -145,17 +145,25 @@ class StandaloneIT {
                 "db.cluster.raft.leader_transfer.priority_tag",
                 "initial.dbms.automatically_enable_free_servers",
                 "initial.dbms.default_primaries_count",
+                "initial.dbms.default_secondaries_count",
                 "initial.server.tags",
                 "initial.server.mode_constraint",
                 "initial.server.allowed_databases",
                 "initial.server.denied_databases",
                 "dbms.dozendb.routing.reads_on_leader",
                 "dbms.dozendb.routing.forward_bolt_writes",
+                "dbms.routing.reads_on_primaries_enabled",
                 "dbms.dozendb.reads.default_consistency",
                 "server.dozendb.cluster.listen_address",
                 "server.dozendb.cluster.advertised_address",
                 "server.dozendb.cluster.raft_directory",
                 "server.dozendb.cluster.single_fsync",
+                "server.cluster.system_database_mode",
+                "server.cluster.catchup.upstream_strategy",
+                "server.cluster.catchup.connect_randomly_to_server_tags",
+                "server.cluster.catchup.connect_randomly_to_server_group",
+                "server.cluster.catchup.user_defined_upstream_strategy",
+                "db.cluster.catchup.pull_interval",
                 "server.routing.advertised_address",
                 "server.metrics.enabled",
                 "server.metrics.prefix",
@@ -437,6 +445,17 @@ class StandaloneIT {
         assertThat(failed("CREATE (:Place)", "places").message).contains("read-only")
         assertThat(failed("CREATE DATABASE wide TOPOLOGY 2 PRIMARIES", "system").message)
             .contains("runs without clustering")
+        // Secondaries pull from other servers, which a server without clustering does not have.
+        val noSecondaries = "can host it as a secondary, and this server runs without clustering"
+        assertThat(failed("CREATE DATABASE read TOPOLOGY 1 PRIMARY 1 SECONDARY", "system").message)
+            .contains(noSecondaries)
+        assertThat(
+                failed("ALTER DATABASE places SET TOPOLOGY 1 PRIMARY 2 SECONDARIES", "system")
+                    .message
+            )
+            .contains(noSecondaries)
+        assertThat(dozenDb.rows("SHOW DATABASE places YIELD requestedSecondariesCount", "system"))
+            .containsExactly(mapOf("requestedSecondariesCount" to 0L))
     }
 
     @Test
