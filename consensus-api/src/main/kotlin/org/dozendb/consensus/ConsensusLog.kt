@@ -176,6 +176,13 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
      */
     public fun seed(database: DatabaseRef, snapshot: Snapshot)
 
+    /**
+     * The term of the entry at [index] in this member's log of [database], or of its latest
+     * snapshot if that ends at [index]; null if this member holds neither, as when its log no
+     * longer holds the entry, or the group does not run here.
+     */
+    public fun termOf(database: DatabaseRef, index: Long): Long?
+
     /** The largest payload, in bytes, that [submit] accepts. The same on every member. */
     public val maxEntrySize: Int
 

@@ -422,6 +422,13 @@ class InMemoryConsensus {
         override fun latestSnapshot(database: DatabaseRef): Snapshot? =
             synchronized(lock) { snapshots[database.id] }
 
+        override fun termOf(database: DatabaseRef, index: Long): Long? =
+            synchronized(lock) {
+                val group = groups[database.id] ?: return null
+                if (database.id !in localState || index <= group.compactedUpTo) return null
+                group.log.getOrNull((index - 1).toInt())?.term
+            }
+
         /** Not needed: this fake never asks for a copy of entries a state machine holds. */
         override fun seed(database: DatabaseRef, snapshot: Snapshot) {}
 

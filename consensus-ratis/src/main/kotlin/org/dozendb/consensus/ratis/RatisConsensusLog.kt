@@ -534,6 +534,21 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         }
     }
 
+    override fun termOf(database: DatabaseRef, index: Long): Long? {
+        val division =
+            server?.let {
+                runCatching { it.getDivision(RaftGroupId.valueOf(database.id)) }.getOrNull()
+            } ?: return null
+        raftLog(division, database).getTermIndex(index)?.let {
+            return it.term
+        }
+        return stateMachines[database.id]
+            ?.latestSnapshot()
+            ?.position
+            ?.takeIf { it.index == index }
+            ?.term
+    }
+
     override fun seed(database: DatabaseRef, snapshot: Snapshot) {
         groupStateMachine(database.id).seed(snapshot)
     }

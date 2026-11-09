@@ -3,6 +3,7 @@ package org.dozendb.consensus.ratis
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -17,6 +18,7 @@ import org.awaitility.kotlin.during
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.dozendb.consensus.CommitResult
+import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.LogPosition
 import org.dozendb.consensus.ReplicatedStateMachine
 import org.dozendb.consensus.Snapshot
@@ -444,6 +446,27 @@ class SnapshotTest {
                         .endsWith("after")
                 }
             assertThat(leader.consensus.members(cluster.database)).hasSize(4)
+        }
+
+    @Test
+    fun `a member tells the term of the entries its log holds, and of its snapshot`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val first = leader.write("first")
+            val term = leader.consensus.status(cluster.database).term
+
+            assertThat(leader.consensus.termOf(cluster.database, first)).isEqualTo(term)
+
+            cluster.discardLogBeyond(leader, first)
+            val snapshot = checkNotNull(leader.consensus.latestSnapshot(cluster.database))
+            assertThat(leader.consensus.termOf(cluster.database, first))
+                .describedAs("discarded")
+                .isNull()
+            assertThat(leader.consensus.termOf(cluster.database, snapshot.position.index))
+                .isEqualTo(snapshot.position.term)
+            assertThat(leader.consensus.termOf(DatabaseRef("other", UUID.randomUUID()), first))
+                .isNull()
         }
 
     @Test
