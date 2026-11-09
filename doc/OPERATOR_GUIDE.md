@@ -824,8 +824,11 @@ level says which formats members write. A newer version can read the formats
 of the cluster's level, so it can run next to the previous version; it writes
 newer formats only once the upgrade is finished.
 
-1. On one member at a time: shut it down, replace the DozenDB jar in Neo4j's
-   `lib/`, and start it. Before the next member, wait until it has started
+1. Start once `CALL dozendb.cluster.status()` shows the group of every
+   database on every member: a database created moments ago has its only copy
+   on the member that created it until the others copied it. Then, on one
+   member at a time: shut it down, replace the DozenDB jar in Neo4j's `lib/`,
+   and start it. Before the next member, wait until it has started
    (Neo4j logs `Started.`), `CALL dozendb.cluster.status()` on it shows the
    group of every database with the role `FOLLOWER` or `LEADER`, and it has
    caught up with the writes it missed: for each database, its `appliedIndex`

@@ -143,6 +143,9 @@ class UpgradeIT {
     @Test
     fun `members are upgraded one at a time while writes go on, then the upgrade is finished`() {
         Startables.deepStart(members).join()
+        // As the operator guide says: start once every member runs every database, as a new
+        // database's creator holds its only copy until the others copied it.
+        members.forEach(::awaitServing)
 
         val writer =
             routingDriver().use { driver ->
