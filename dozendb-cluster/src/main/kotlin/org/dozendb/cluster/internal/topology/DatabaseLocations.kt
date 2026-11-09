@@ -64,15 +64,17 @@ internal class DatabaseLocations(
         }
 
     /**
-     * The members that run a secondary of [database], as they last reported, where the system graph
-     * places one: a server that it no longer places one on drops it, maybe before it reports so.
+     * The members that run a secondary of [database] and pull, as they last reported, where the
+     * system graph places one: a server that it no longer places one on drops it, maybe before it
+     * reports so. A paused secondary serves no data it stopped updating.
      */
     fun secondaries(database: DatabaseRef): List<MemberId> =
         placedSecondaries(database).sorted().filter { member ->
             directory.databaseStates(member).orEmpty().any {
                 it.id == database.id &&
                     it.mode == CopyMode.SECONDARY &&
-                    it.status == DatabaseState.Status.ONLINE
+                    it.status == DatabaseState.Status.ONLINE &&
+                    !it.paused
             }
         }
 

@@ -49,12 +49,15 @@ class DatabaseRowsTest {
         lastCommitted: Long? = null,
         failure: String? = null,
         mode: CopyMode = CopyMode.PRIMARY,
+        paused: Boolean = false,
     ) =
         Copy(
             member,
             answering,
             SocketAddress("host${member.uuid.leastSignificantBits}", 7687),
-            status?.let { DatabaseState("films", id.databaseId().uuid(), it, failure) },
+            status?.let {
+                DatabaseState("films", id.databaseId().uuid(), it, failure, paused = paused)
+            },
             readOnly,
             lastCommitted,
             mode,
@@ -151,6 +154,16 @@ class DatabaseRowsTest {
         assertThat(rows.getValue(d).status()).isEqualTo("store copying")
         assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(2)
         assertThat(rows.values.map { it.actualSecondariesCount() }).containsOnly(1)
+    }
+
+    @Test
+    fun `a paused secondary says so`() {
+        val rows =
+            rows(listOf(copy(a), copy(b, mode = CopyMode.SECONDARY, paused = true)), leader = a)
+
+        assertThat(rows.getValue(b).status()).isEqualTo("online")
+        assertThat(rows.getValue(b).statusMessage()).isEqualTo("Secondary replication is paused")
+        assertThat(rows.getValue(a).statusMessage()).isEmpty()
     }
 
     @Test

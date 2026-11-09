@@ -126,11 +126,11 @@ internal class Neo4jLocalDatabases(
     private fun toPrimary(id: NamedDatabaseId): ModeSwitch {
         val ref = DatabaseRef(id.name(), id.databaseId().uuid())
         // It pulls no more meanwhile, so that its last transaction stays its last.
-        val last = secondaries.pause(id) ?: return ModeSwitch.NEEDS_COPY
+        val last = secondaries.stopPulling(id) ?: return ModeSwitch.NEEDS_COPY
         val index = last.consensusIndex()
         val told = if (index < 0) null else entryTerm(ref, index)
         if (told != null && told !is EntryTerm.Known) {
-            secondaries.resume(id)
+            secondaries.startPulling(id)
             return if (told == EntryTerm.Unknown) ModeSwitch.LATER else ModeSwitch.NEEDS_COPY
         }
         manager.releaseDatabase(id)

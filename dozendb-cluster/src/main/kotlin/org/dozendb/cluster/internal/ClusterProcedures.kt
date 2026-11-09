@@ -27,6 +27,8 @@ class ClusterProcedures {
 
     @JvmField @Context var administration: ServerAdministration? = null
 
+    @JvmField @Context var secondaries: SecondaryReplication? = null
+
     @SystemProcedure
     @Procedure(name = "dozendb.cluster.status", mode = Mode.DBMS)
     @Description("The Raft status of every database group on this member.")
@@ -322,6 +324,51 @@ class ClusterProcedures {
             throw ProcedureFailure(e.message.orEmpty(), e)
         }
 
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.secondaryReplicationDisable", mode = Mode.DBMS)
+    @Description(
+        "The toggle can pause or resume the secondary replication process: with pause, the " +
+            "secondary of the database on the connected server pulls no transactions until it is " +
+            "resumed, or the database or the server starts again; routing tables leave it out " +
+            "meanwhile. Returns its state, paused or running, as Neo4j Enterprise's procedure of " +
+            "the same name."
+    )
+    fun secondaryReplicationDisable(
+        @Name("databaseName") databaseName: String,
+        @Name("pause") pause: Boolean,
+    ): Stream<ReplicationStateRow> = toggled(databaseName, pause)
+
+    @Admin
+    @SystemProcedure
+    @Procedure(
+        name = "dbms.cluster.readReplicaToggle",
+        mode = Mode.DBMS,
+        deprecatedBy = "dbms.cluster.secondaryReplicationDisable",
+    )
+    @Description(
+        "The toggle can pause or resume read replica (deprecated in favor of " +
+            "dbms.cluster.secondaryReplicationDisable)."
+    )
+    // Neo4j looks for Java's annotation with deprecatedBy, and warns without it.
+    @Suppress("DEPRECATED_JAVA_ANNOTATION")
+    @java.lang.Deprecated
+    fun readReplicaToggle(
+        @Name("databaseName") databaseName: String,
+        @Name("pause") pause: Boolean,
+    ): Stream<ReplicationStateRow> = toggled(databaseName, pause)
+
+    private fun toggled(databaseName: String, pause: Boolean): Stream<ReplicationStateRow> {
+        val replication = checkNotNull(secondaries) { "DozenDB clustering is not running" }
+        val state =
+            try {
+                replication.toggle(databaseName, pause)
+            } catch (e: IllegalArgumentException) {
+                throw ProcedureFailure(e.message.orEmpty(), e)
+            }
+        return Stream.of(ReplicationStateRow(state))
+    }
+
     private fun requireCluster(): ClusterService =
         checkNotNull(cluster) { "DozenDB clustering is not running" }
 
@@ -401,4 +448,6 @@ class ClusterProcedures {
     @JvmRecord data class UpgradeRow(val previousFormatLevel: Long, val formatLevel: Long)
 
     @JvmRecord data class AddedMemberRow(val memberId: String, val raftAddress: String)
+
+    @JvmRecord data class ReplicationStateRow(val state: String)
 }

@@ -706,6 +706,103 @@ class SecondariesTest {
     }
 
     @Test
+    fun `a paused secondary pulls nothing and is left out of routing tables until resumed`() {
+        val cluster =
+            cluster(
+                mapOf(
+                    BoltConnector.enabled to true,
+                    GraphDatabaseSettings.bookmark_ready_timeout to Duration.ofSeconds(1),
+                )
+            )
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+        cluster.awaitSecondary()
+        cluster.write("UNWIND range(1, 10) AS i CREATE (:Film {id: i})")
+        eventually { assertThat(cluster.secondary.films()).isEqualTo(10) }
+        val toggle = { pause: Boolean ->
+            cluster.secondary
+                .query("CALL dbms.cluster.secondaryReplicationDisable('$FILMS', $pause)")
+                .single()["state"]
+        }
+
+        assertThat(toggle(true)).isEqualTo("paused")
+
+        eventually {
+            for (member in cluster.members) {
+                assertThat(member.routes(FILMS)["READ"])
+                    .describedAs("on $member")
+                    .doesNotContain(cluster.secondary.boltAddress())
+            }
+            assertThat(
+                    cluster.members[0]
+                        .query("SHOW DATABASE $FILMS YIELD serverID, statusMessage")
+                        .single { it["serverID"] == cluster.secondary.serverId }["statusMessage"]
+                )
+                .isEqualTo("Secondary replication is paused")
+        }
+        val routing =
+            GraphDatabase.driver("neo4j://${cluster.primaries[0].boltAddress()}", AuthTokens.none())
+        val direct =
+            GraphDatabase.driver("bolt://${cluster.secondary.boltAddress()}", AuthTokens.none())
+        try {
+            val bookmarks =
+                routing.session(SessionConfig.forDatabase(FILMS)).use { session ->
+                    session.executeWrite {
+                        it.run("UNWIND range(11, 20) AS i CREATE (:Film {id: i})").consume()
+                    }
+                    session.lastBookmarks()
+                }
+            val config = SessionConfig.builder().withDatabase(FILMS).withBookmarks(bookmarks)
+            assertThat(
+                    catchThrowable {
+                        direct.session(config.build()).use {
+                            it.run("MATCH (f:Film) RETURN count(f)").consume()
+                        }
+                    }
+                )
+                .describedAs("a read after a later write")
+                .isNotNull()
+            val linearizable =
+                TransactionConfig.builder()
+                    .withMetadata(mapOf("dozendb.consistency" to "linearizable"))
+                    .build()
+            assertThat(
+                    catchThrowable {
+                        direct.session(SessionConfig.forDatabase(FILMS)).use {
+                            it.run("MATCH (f:Film) RETURN count(f)", linearizable).consume()
+                        }
+                    }
+                )
+                .hasMessageContaining("is paused on this member")
+        } finally {
+            routing.close()
+            direct.close()
+        }
+        assertThat(cluster.secondary.films()).isEqualTo(10)
+
+        assertThat(toggle(false)).isEqualTo("running")
+        eventually { assertThat(cluster.secondary.films()).isEqualTo(20) }
+        eventually {
+            assertThat(cluster.members[0].routes(FILMS)["READ"])
+                .contains(cluster.secondary.boltAddress())
+        }
+        assertThat(
+                catchThrowable {
+                    cluster.primaries[0].query(
+                        "CALL dbms.cluster.secondaryReplicationDisable('$FILMS', true)"
+                    )
+                }
+            )
+            .hasMessageContaining("Database 'films' does not run as a secondary on this server")
+        assertThat(
+                cluster.secondary
+                    .query("CALL dbms.cluster.readReplicaToggle('$FILMS', true)")
+                    .single()["state"]
+            )
+            .describedAs("the deprecated name")
+            .isEqualTo("paused")
+    }
+
+    @Test
     fun `WAIT waits for secondaries too`() {
         val cluster = cluster()
 

@@ -25,6 +25,14 @@ class DatabaseStatesCodecTest {
                     leaderKnown = false,
                     mode = CopyMode.SECONDARY,
                 ),
+                DatabaseState(
+                    "letters",
+                    UUID.randomUUID(),
+                    Status.ONLINE,
+                    leaderKnown = false,
+                    mode = CopyMode.SECONDARY,
+                    paused = true,
+                ),
             )
 
         assertThat(DatabaseStatesCodec.decode(DatabaseStatesCodec.encode(states))).isEqualTo(states)
@@ -69,6 +77,17 @@ class DatabaseStatesCodecTest {
 
         assertThat(DatabaseStatesCodec.decode("films\t$id\tONLINE\ttrue\t"))
             .containsExactly(DatabaseState("films", id, Status.ONLINE, mode = CopyMode.PRIMARY))
+        assertThat(DatabaseStatesCodec.decode("films\t$id\tONLINE\tfalse\t\tsecondary"))
+            .describedAs("before pauses")
+            .containsExactly(
+                DatabaseState(
+                    "films",
+                    id,
+                    Status.ONLINE,
+                    leaderKnown = false,
+                    mode = CopyMode.SECONDARY,
+                )
+            )
     }
 
     @Test

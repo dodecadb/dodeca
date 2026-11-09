@@ -16,7 +16,8 @@ data class WantedDatabase(val name: String, val id: UUID?, val online: Boolean)
  * A database on one server: running, stopped, being copied from another server, or failed with
  * [failure]. [leaderKnown] tells whether the server knows the leader of its copies, which takes its
  * writes: in a cluster, of its Raft group; a server without clustering leads its own. The server
- * hosts it in [mode]: a server without clustering hosts primaries.
+ * hosts it in [mode]: a server without clustering hosts primaries. A secondary may be [paused]: it
+ * pulls nothing until it is resumed.
  */
 data class DatabaseState(
     val name: String,
@@ -25,6 +26,7 @@ data class DatabaseState(
     val failure: String? = null,
     val leaderKnown: Boolean = true,
     val mode: CopyMode = CopyMode.PRIMARY,
+    val paused: Boolean = false,
 ) {
     enum class Status {
         ONLINE,

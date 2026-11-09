@@ -279,6 +279,51 @@ class ClusterBackupTest {
     }
 
     @Test
+    fun `a backup from a paused secondary holds what it held when paused`() {
+        val cluster =
+            ClusterHarness(root, 3, settings = mapOf(ClusterSettings.defaultSecondaries to 1))
+                .also { harness = it }
+        val secondary = cluster.members[2]
+        secondary.settings =
+            mapOf(DozenDbSettings.initialServerModeConstraint to InstanceModeConstraint.SECONDARY)
+        cluster.start()
+        val primaries = cluster.members - secondary
+        fun write(from: Int) =
+            repeat(10) {
+                cluster
+                    .awaitLeader { primaries }
+                    .database()
+                    .executeTransactionally(
+                        "CREATE (:Written {n: ${'$'}n})",
+                        mapOf("n" to (from + it).toLong()),
+                    )
+            }
+        write(0)
+        await withPollInterval
+            Duration.ofMillis(100) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                assertThat(
+                        secondary.database().executeTransactionally(
+                            "MATCH (w:Written) RETURN count(w) AS c",
+                            emptyMap(),
+                        ) {
+                            it.next()["c"] as Long
+                        }
+                    )
+                    .isEqualTo(10)
+            }
+        secondary
+            .database("system")
+            .executeTransactionally("CALL dbms.cluster.secondaryReplicationDisable('neo4j', true)")
+        write(10)
+
+        val (max, count) = restored(backup(secondary, "--type=FULL"))
+        assertThat(count).isEqualTo(10)
+        assertThat(max).isEqualTo(9)
+    }
+
+    @Test
     fun `a database created with WAIT is backed up at once, from any server that hosts it`() {
         val cluster = ClusterHarness(root, 3).also { harness = it }
         cluster.start()

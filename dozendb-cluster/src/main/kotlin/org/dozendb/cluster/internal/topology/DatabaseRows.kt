@@ -40,10 +40,11 @@ internal object DatabaseRows {
      * the database is placed on servers, [placed], in either mode, the status says how its copies
      * move, with Neo4j Enterprise's names: `store copying` on a server that copies the database in,
      * `initial` on one it is placed on that has not created it yet, and `deallocating` on one it
-     * moves off, which still runs it, and may still lead it until it hands the leadership over.
-     * With [txInfo], each row of a member that answers has the copy's last transaction id and how
-     * far it is behind the newest copy's. The values that belong to the database itself, such as
-     * its type and store, are those of [own], Neo4j Community's row for this member.
+     * moves off, which still runs it, and may still lead it until it hands the leadership over. A
+     * paused secondary says so in its status message. With [txInfo], each row of a member that
+     * answers has the copy's last transaction id and how far it is behind the newest copy's. The
+     * values that belong to the database itself, such as its type and store, are those of [own],
+     * Neo4j Community's row for this member.
      */
     fun rows(
         own: DatabaseDetails,
@@ -76,6 +77,7 @@ internal object DatabaseRows {
                     !copy.answering -> DatabaseDetails.STATUS_MESSAGE_UNKNOWN
                     copy.state?.status == DatabaseState.Status.FAILED ->
                         copy.state.failure.orEmpty()
+                    running && copy.state.paused -> PAUSED
                     else -> ""
                 }
             val lastCommitted = copy.lastCommittedTxId.takeIf { txInfo && copy.answering }
@@ -114,4 +116,5 @@ internal object DatabaseRows {
     private const val INITIAL = "initial"
     private const val DEALLOCATING = "deallocating"
     private const val UNKNOWN_ROLE = "unknown"
+    private const val PAUSED = "Secondary replication is paused"
 }

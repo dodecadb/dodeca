@@ -114,6 +114,34 @@ internal class Secondaries(
     fun running(id: NamedDatabaseId): Boolean = secondary(id)?.pulling == true
 
     /**
+     * Pauses the secondary of the database [name] here if [pause], else resumes it, for
+     * `dbms.cluster.secondaryReplicationDisable`: a paused secondary pulls nothing, also not for
+     * reads that wait, until it is resumed or starts again. Returns its state, `paused` or
+     * `running`.
+     *
+     * @throws IllegalArgumentException if [name] does not run here as a secondary.
+     */
+    fun toggle(name: String, pause: Boolean): String {
+        val puller =
+            databases[name]?.takeIf { it.secondary.pulling }
+                ?: throw IllegalArgumentException(
+                    "Database '$name' does not run as a secondary on this server"
+                )
+        puller.paused = pause
+        if (pause) {
+            log.info("Paused the pulls of secondary %s", name)
+            puller.wake()
+        } else {
+            log.info("Resumed the pulls of secondary %s", name)
+            puller.schedule(Duration.ZERO)
+        }
+        return if (pause) PAUSED else RUNNING
+    }
+
+    /** Whether the secondary of the database [name] here is paused. */
+    fun paused(name: String): Boolean = databases[name]?.paused == true
+
+    /**
      * Waits up to [timeout] until the secondary [id] holds every write acknowledged before the
      * call, for a linearizable read or a backup: a read barrier ([ReadBarrierProtocol]) on one of
      * its primaries, its leader first, tells which transaction that takes, and the secondary pulls
@@ -129,6 +157,13 @@ internal class Secondaries(
                     Cluster.ReplicationFailure,
                     "Database ${id.name()} is not running as a secondary on this member",
                 )
+        if (puller.paused) {
+            throw ReadConsistencyException(
+                Cluster.ReplicationFailure,
+                "The replication of secondary ${id.name()} is paused on this member: it holds no " +
+                    "writes after the pause",
+            )
+        }
         val ref = ref(id)
         val refusals = mutableListOf<String>()
         for (primary in primaries(ref)) {
@@ -221,15 +256,15 @@ internal class Secondaries(
      * Stops the secondary [id] pulling, once no pull applies transactions, and returns its last
      * transaction; null if it does not run here and pull.
      */
-    fun pause(id: NamedDatabaseId): TransactionId? {
+    fun stopPulling(id: NamedDatabaseId): TransactionId? {
         val puller = pulling(id) ?: return null
         puller.secondary.stop()
         puller.wake()
         return puller.secondary.last()
     }
 
-    /** Has the secondary [id], which [pause] stopped, pull again. */
-    fun resume(id: NamedDatabaseId) {
+    /** Has the secondary [id], which [stopPulling] stopped, pull again. */
+    fun startPulling(id: NamedDatabaseId) {
         val puller = databases[id.name()]?.takeIf { it.secondary.namedDatabaseId == id } ?: return
         puller.secondary.start()
         puller.schedule(Duration.ZERO)
@@ -237,6 +272,8 @@ internal class Secondaries(
 
     override fun databaseStart(eventContext: DatabaseEventContext) {
         val puller = databases[eventContext.databaseName] ?: return
+        // A pause is not kept across a start.
+        puller.paused = false
         puller.secondary.start()
         puller.schedule(Duration.ZERO)
     }
@@ -273,6 +310,9 @@ internal class Secondaries(
 
         /** The transaction reads wait for, while the secondary lacks it. */
         private var wanted: Wanted? = null
+
+        /** Paused by `dbms.cluster.secondaryReplicationDisable`: it pulls nothing. */
+        @Volatile var paused = false
 
         private val progress = ReentrantLock()
         private val pulled = progress.newCondition()
@@ -316,7 +356,7 @@ internal class Secondaries(
             want(transactionId, upstream, until)
             progress.withLock {
                 while (true) {
-                    if (!secondary.pulling) return false
+                    if (!secondary.pulling || paused) return false
                     if (secondary.last().id() >= transactionId) return true
                     val left = until - System.nanoTime()
                     if (left <= 0) return false
@@ -387,7 +427,7 @@ internal class Secondaries(
     private fun pull(puller: Puller): Duration? {
         val secondary = puller.secondary
         val name = secondary.ref.name
-        if (!secondary.pulling || databases[name] !== puller) return null
+        if (!secondary.pulling || puller.paused || databases[name] !== puller) return null
         // While reads wait, it pulls again soon.
         val idle = { if (puller.wanted() == null) pullInterval else WANTED_RETRY }
         val upstream = puller.wanted()?.upstream ?: upstreams(secondary.ref).firstOrNull()
@@ -541,6 +581,9 @@ internal class Secondaries(
 
         /** Pulls are short: a few threads serve every secondary of a member. */
         const val PULL_THREADS = 4
+
+        const val PAUSED = "paused"
+        const val RUNNING = "running"
 
         /** How soon a secondary pulls again while reads wait for what it lacks. */
         val WANTED_RETRY: Duration = Duration.ofMillis(50)

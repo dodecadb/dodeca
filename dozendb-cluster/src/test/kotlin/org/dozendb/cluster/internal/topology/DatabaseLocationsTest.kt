@@ -34,9 +34,10 @@ class DatabaseLocationsTest {
     /** Members that report a secondary of films: one that runs it, one that copies it in. */
     private val secondary = reporting(DatabaseState.Status.ONLINE)
     private val copying = reporting(DatabaseState.Status.COPYING)
+    private val paused = reporting(DatabaseState.Status.ONLINE, paused = true)
     private val placedSecondaries = HashSet<MemberId>()
 
-    private fun reporting(status: DatabaseState.Status) =
+    private fun reporting(status: DatabaseState.Status, paused: Boolean = false) =
         consensus.newMember(
             metadata =
                 mapOf(
@@ -49,6 +50,7 @@ class DatabaseLocationsTest {
                                     status,
                                     leaderKnown = false,
                                     mode = CopyMode.SECONDARY,
+                                    paused = paused,
                                 )
                             )
                         )
@@ -56,7 +58,7 @@ class DatabaseLocationsTest {
         )
 
     init {
-        val all = listOf(free, secondary, copying) + hosts
+        val all = listOf(free, secondary, copying, paused) + hosts
         all.forEach { it.start() }
         all.forEach { it.startGroup(system, RecordingStateMachine(), all.map { m -> m.self }) }
         hosts.forEach { it.startGroup(films, RecordingStateMachine(), hosts.map { m -> m.self }) }
@@ -101,7 +103,8 @@ class DatabaseLocationsTest {
 
     @Test
     fun `a database's secondaries run it where the system graph places them`() {
-        placedSecondaries += listOf(secondary.self.id, copying.self.id, hosts[1].self.id)
+        placedSecondaries +=
+            listOf(secondary.self.id, copying.self.id, paused.self.id, hosts[1].self.id)
 
         assertThat(locations(free).secondaries(films)).containsExactly(secondary.self.id)
 

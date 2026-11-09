@@ -595,7 +595,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                             )
                         it.name in starting -> it.copy(status = DatabaseState.Status.STARTING)
                         else -> it
-                    }.copy(leaderKnown = it.name in led, mode = clusterHosting.mode(it.name))
+                    }.copy(
+                        leaderKnown = it.name in led,
+                        mode = clusterHosting.mode(it.name),
+                        paused = secondaries.paused(it.name),
+                    )
                 }
         return states +
             copying.map { (name, id) ->
@@ -1084,11 +1088,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /**
      * Waits until this member has applied what its database's Raft group had committed: a Raft
      * ReadIndex, as for linearizable reads, on the leader or a follower; a secondary pulls up to a
-     * read barrier.
+     * read barrier, unless it is paused: its backup then holds what it held when paused, as Neo4j
+     * Enterprise documents for point-in-time backups.
      */
     override fun latestWrites(): LatestWrites = LatestWrites { database, timeout ->
         if (secondaries.secondary(database) != null) {
-            secondaries.awaitLatest(database, timeout)
+            if (!secondaries.paused(database.name())) secondaries.awaitLatest(database, timeout)
             return@LatestWrites
         }
         val replica =
@@ -1319,6 +1324,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         globalProcedures.registerComponent(
             ServerAdministration::class.java,
             { administration },
+            true,
+        )
+        globalProcedures.registerComponent(
+            SecondaryReplication::class.java,
+            { SecondaryReplication { name, pause -> secondaries.toggle(name, pause) } },
             true,
         )
         globalProcedures.registerProcedure(ClusterProcedures::class.java)
