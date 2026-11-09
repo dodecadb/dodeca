@@ -16,6 +16,8 @@ import org.neo4j.logging.NullLog
 class DatabaseReconcilerTest {
     private val self = MemberId(UUID.randomUUID())
     private val creator = MemberId(UUID.randomUUID())
+    /** A server that is no member here, which hosts secondaries. */
+    private val other = MemberId(UUID.randomUUID())
     private val creatorAddress = HostPort("creator", 7000)
     private val otherAddress = HostPort("other", 7000)
     private val graph = FakeSystemGraph()
@@ -26,6 +28,8 @@ class DatabaseReconcilerTest {
     private var systemMembers: List<Member>? = members
     private var removed = false
     private var answering: (MemberId) -> Boolean = { true }
+    /** The members that run each database, as far as this member knows; all of them by default. */
+    private var runs: (MemberId, NamedDatabaseId) -> Boolean = { _, _ -> true }
     private val reconciler =
         DatabaseReconciler(
             graph,
@@ -42,6 +46,7 @@ class DatabaseReconcilerTest {
             { systemMembers },
             { answering(it) },
             { removed },
+            { member, id -> runs(member, id) },
             NullLog.getInstance(),
         )
 
@@ -572,6 +577,48 @@ class DatabaseReconcilerTest {
 
         assertThat(local.dropped).containsExactly(films)
         assertThat(local.marks).isEmpty()
+    }
+
+    @Test
+    fun `a secondary placed elsewhere goes once its replacement runs`() {
+        local.addSecondary(films)
+        graph.databases =
+            listOf(
+                desired(
+                    films,
+                    creator = creator,
+                    hosts = setOf(creator),
+                    secondaries = setOf(other),
+                )
+            )
+        runs = { _, _ -> false }
+
+        assertThat(reconciler.reconcile()).describedAs("waits for its replacement").isTrue()
+        assertThat(local.dropped).isEmpty()
+
+        runs = { member, _ -> member == other }
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.dropped).containsExactly(films)
+    }
+
+    @Test
+    fun `a secondary of an offline database placed elsewhere goes at once`() {
+        local.addSecondary(films)
+        graph.databases =
+            listOf(
+                desired(
+                    films,
+                    online = false,
+                    creator = creator,
+                    hosts = setOf(creator),
+                    secondaries = setOf(other),
+                )
+            )
+        runs = { _, _ -> false }
+
+        reconciler.reconcile()
+
+        assertThat(local.dropped).containsExactly(films)
     }
 
     @Test

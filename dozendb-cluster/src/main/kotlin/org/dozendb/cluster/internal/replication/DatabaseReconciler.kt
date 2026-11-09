@@ -182,10 +182,13 @@ internal interface LocalDatabases {
  * deletes it afterwards: a move never lowers the number of copies. A database not placed yet, as
  * the default database of a new cluster before the system leader places it, is left as it is.
  *
- * A secondary copies the store once its creator created it, and pulls its transactions; it votes in
- * no group, so it goes as soon as it is no longer placed here. A primary placed here as a secondary
- * leaves its group first, as one placed elsewhere does, and is copied again; a secondary's store
- * placed here as a primary is replaced by a copy.
+ * A secondary copies the store once its creator created it, and pulls its transactions. It votes in
+ * no group: one no longer placed here goes once every secondary placed now runs, so that a move
+ * never lowers the number of secondaries either; at once while the database is offline. A primary
+ * placed here as a secondary leaves its group first, as one placed elsewhere does, then turns
+ * secondary from its own store; a secondary placed here as a primary turns primary from its own
+ * store and joins the group, unless the group's log moved on, when it is copied again
+ * ([LocalDatabases.switch]).
  *
  * A local store counts only together with the Raft group of its database, or a secondary's with its
  * mark. A store without either is a leftover: of a database dropped while this member was down that
@@ -210,6 +213,7 @@ internal interface LocalDatabases {
  *   settled.
  * @property answering whether a member answers this one.
  * @property removed whether this member was removed from the cluster.
+ * @property runs whether a member reports a database running, as far as this member knows.
  */
 internal class DatabaseReconciler(
     private val systemGraph: SystemGraph,
@@ -220,6 +224,7 @@ internal class DatabaseReconciler(
     private val systemMembers: () -> List<Member>?,
     private val answering: (MemberId) -> Boolean,
     private val removed: () -> Boolean,
+    private val runs: (MemberId, NamedDatabaseId) -> Boolean,
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
@@ -450,6 +455,12 @@ internal class DatabaseReconciler(
                         ModeSwitch.LATER -> return false
                         ModeSwitch.NEEDS_COPY -> {}
                     }
+                }
+                // A replacement first.
+                if (
+                    wanted == null && database.online && database.secondaries.any { !runs(it, id) }
+                ) {
+                    return false
                 }
                 log.info(
                     "Deleting secondary %s here: %s",

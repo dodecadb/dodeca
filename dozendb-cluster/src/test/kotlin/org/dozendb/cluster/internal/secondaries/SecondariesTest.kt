@@ -674,6 +674,35 @@ class SecondariesTest {
     }
 
     @Test
+    fun `DEALLOCATE moves a secondary to another server`() {
+        val cluster = cluster(size = 4)
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+        val runs = { member: ClusterHarness.Member ->
+            member.registered(FILMS)?.database()?.isStarted == true
+        }
+        eventually { assertThat(cluster.members.drop(2).count(runs)).isEqualTo(1) }
+        cluster.write("UNWIND range(1, 10) AS i CREATE (:Film {id: i})")
+        val (old, new) =
+            cluster.members.drop(2).partition(runs).let { (on, off) ->
+                on.single() to off.single()
+            }
+
+        cluster.administer("DEALLOCATE DATABASES FROM SERVER '${old.serverId}'")
+
+        eventually {
+            assertThat(new.registered(FILMS)?.database()?.isStarted).isTrue()
+            assertThat(new.films()).isEqualTo(10)
+            assertThat(old.registered(FILMS)).isNull()
+            assertThat(
+                    cluster.members[0]
+                        .query("SHOW SERVERS YIELD serverId, state")
+                        .single { it["serverId"] == old.serverId }["state"]
+                )
+                .isEqualTo("Deallocated")
+        }
+    }
+
+    @Test
     fun `WAIT waits for secondaries too`() {
         val cluster = cluster()
 

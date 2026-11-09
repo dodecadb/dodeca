@@ -702,6 +702,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 { consensus.membership(systemDatabase).takeIf { it.settled }?.members },
                 { directory.answering(it) },
                 { cluster.state == MemberState.REMOVED },
+                { member, id ->
+                    directory.databaseStates(member).orEmpty().any {
+                        it.id == id.databaseId().uuid() && it.status == DatabaseState.Status.ONLINE
+                    }
+                },
                 globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
             )
         servers =
