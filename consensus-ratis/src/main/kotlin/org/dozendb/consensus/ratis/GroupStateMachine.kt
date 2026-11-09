@@ -136,6 +136,11 @@ internal class GroupStateMachine(
     var shutDownAsNonMember: Boolean = false
         private set
 
+    /** Whether an entry failed to apply here, after which Ratis closes the group. */
+    @Volatile
+    var applyFailed: Boolean = false
+        private set
+
     /**
      * Whether Ratis closed the group on this member, or is about to because an entry failed to
      * apply. A leader keeps trying such a member as one that is down; see
@@ -588,6 +593,7 @@ internal class GroupStateMachine(
             applyEntry(trx.logEntry)
         } catch (e: Throwable) {
             // Ratis closes the group once this returns.
+            applyFailed = true
             closed = true
             throw e
         }

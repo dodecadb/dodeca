@@ -257,16 +257,17 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     /**
      * Ratis closes a group on this member when an entry fails to apply, and does not run it again.
      * Such a group is removed from the server with its state machine, its storage kept, so that it
-     * is added again from there and catches up. A group closed because this member left it stays.
+     * is added again from there and catches up. A group closed for another reason stays: one this
+     * member left may still be closing, which waits for this state machine to apply the entries it
+     * stored, so removing it would wait forever.
      */
     private fun removeFailedGroup(database: DatabaseRef) {
         val raftServer = requireServer()
         val groupId = RaftGroupId.valueOf(database.id)
         if (groupId !in raftServer.groupIds) return
+        if (stateMachines[database.id]?.applyFailed != true) return
         val division = runCatching { raftServer.getDivision(groupId) }.getOrNull() ?: return
-        val left =
-            stateMachines[database.id]?.shutDownAsNonMember == true || !isVoter(division.raftConf)
-        if (division.info.isAlive || left) return
+        if (division.info.isAlive) return
         // Returns once Ratis finished closing the group, which frees its storage.
         val reply =
             raftServer.groupManagement(

@@ -638,6 +638,46 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a member removed while down knows it once its state machine is attached`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val removed = cluster.nodes.first { it != leader }
+            // Entries it stores without applying them, as a member that restarts has until its
+            // database attaches its state machine.
+            removed.consensus.detachGroup(cluster.database)
+            assertThat(leader.write("one")).isInstanceOf(CommitResult.Committed::class.java)
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(removed.consensus.status(cluster.database).commitIndex)
+                        .isEqualTo(leader.consensus.status(cluster.database).commitIndex)
+                }
+            removed.stop()
+            leader.consensus.removeMember(cluster.database, removed.id, CHANGE_TIMEOUT)
+
+            removed.start()
+            // Its election finds it left out, before its state machine is attached.
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(removed.consensus.status(cluster.database).role)
+                        .isEqualTo(Role.Inactive)
+                }
+            val attached = thread {
+                removed.consensus.startGroup(cluster.database, removed.machine, emptyList())
+            }
+
+            attached.join(RatisTestCluster.AWAIT.toMillis())
+            assertThat(attached.isAlive).describedAs("attaching it waits for nothing").isFalse()
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(removed.consensus.membership(cluster.database).removed).isTrue()
+                }
+        }
+
+    @Test
     fun `a removed leader hands over to the remaining members`() =
         runBlocking<Unit> {
             val cluster = formCluster()
