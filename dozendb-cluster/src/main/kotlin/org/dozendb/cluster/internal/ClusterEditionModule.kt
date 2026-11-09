@@ -31,6 +31,9 @@ import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.DatabaseReconciler
 import org.dozendb.cluster.internal.replication.DesiredDatabase
+import org.dozendb.cluster.internal.replication.EntryTerm
+import org.dozendb.cluster.internal.replication.EntryTermProtocol
+import org.dozendb.cluster.internal.replication.EntryTermSource
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
@@ -393,6 +396,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 served = { name -> metrics.of(name).copiesServed.increment() },
             ),
         )
+        consensus.registerBulkSource(EntryTermProtocol.NAME, EntryTermSource(consensus))
         consensus.registerBulkSource(
             ReadBarrierProtocol.NAME,
             ReadBarrierSource(
@@ -689,6 +693,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     replication,
                     secondaries,
                     ::seeder,
+                    ::entryTerm,
+                    consensus::seed,
                 ),
                 memberId,
                 defaultDatabase,
@@ -1248,6 +1254,23 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             secondaries.awaitLatest(id, bookmarkTimeout())
         } else {
             replication.awaitLinearizable(id)
+        }
+    }
+
+    /** The term of the entry at [index] in the log of [database], as its leader tells it. */
+    private fun entryTerm(database: DatabaseRef, index: Long): EntryTerm {
+        val location = locations.of(database) ?: return EntryTerm.Unknown
+        val leader =
+            location.voters.firstOrNull { it.id == location.leader } ?: return EntryTerm.Unknown
+        return try {
+            consensus.fetchBulk(
+                leader.raftAddress,
+                EntryTermProtocol.NAME,
+                EntryTermProtocol.encode(database, index),
+                EntryTermProtocol::read,
+            )
+        } catch (_: ConsensusUnavailableException) {
+            EntryTerm.Unknown
         }
     }
 

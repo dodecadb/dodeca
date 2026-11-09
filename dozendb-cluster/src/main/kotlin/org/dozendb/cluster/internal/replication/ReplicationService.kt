@@ -149,8 +149,16 @@ internal class ReplicationService(
 
     /** Forgets the dropped database [namedDatabaseId] and deletes its Raft group here. */
     fun remove(namedDatabaseId: NamedDatabaseId) {
-        replica(namedDatabaseId)?.let { databases.remove(namedDatabaseId.name(), it) }
+        release(namedDatabaseId)
         metrics?.forget(namedDatabaseId.name())
+    }
+
+    /**
+     * Forgets the replication of [namedDatabaseId], which this member no longer hosts as a primary,
+     * and deletes its Raft group here; its counts stay.
+     */
+    fun release(namedDatabaseId: NamedDatabaseId) {
+        replica(namedDatabaseId)?.let { databases.remove(namedDatabaseId.name(), it) }
         consensus.removeGroup(
             DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
         )

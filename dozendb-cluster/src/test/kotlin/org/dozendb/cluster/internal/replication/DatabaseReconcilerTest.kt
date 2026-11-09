@@ -575,7 +575,7 @@ class DatabaseReconcilerTest {
     }
 
     @Test
-    fun `a primary placed here as a secondary leaves its group first, then is copied as one`() {
+    fun `a primary placed here as a secondary leaves its group first, then turns secondary`() {
         local.add(films, started = true)
         graph.databases =
             listOf(
@@ -583,21 +583,66 @@ class DatabaseReconcilerTest {
             )
 
         assertThat(reconciler.reconcile()).describedAs("waits to leave its group").isTrue()
-        assertThat(local.dropped).isEmpty()
+        assertThat(local.switched).isEmpty()
 
         local.notVoting += films
-        assertThat(reconciler.reconcile()).isTrue()
-        assertThat(local.dropped).containsExactly(films)
-
         assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.switched).containsExactly(films to CopyMode.SECONDARY)
         assertThat(local.registered[films])
             .isEqualTo(LocalDatabase(true, false, CopyMode.SECONDARY))
         assertThat(local.marks).containsExactly(films.databaseId().uuid())
+        assertThat(local.groups).isEmpty()
+        assertThat(local.dropped).isEmpty()
+        assertThat(local.copies).isEmpty()
     }
 
     @Test
-    fun `a secondary placed here as a primary is replaced by a copy that joins the group`() {
+    fun `a secondary placed here as a primary turns primary and joins the group`() {
         local.addSecondary(films)
+        graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator, self)))
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.switched).containsExactly(films to CopyMode.PRIMARY)
+        assertThat(local.registered[films]).isEqualTo(LocalDatabase(true, false, CopyMode.PRIMARY))
+        assertThat(local.groups).containsExactly(films.databaseId().uuid())
+        assertThat(local.marks).isEmpty()
+        assertThat(local.dropped).isEmpty()
+        assertThat(local.copies).isEmpty()
+    }
+
+    @Test
+    fun `a secondary placed here as a primary tries again while its group cannot tell`() {
+        local.addSecondary(films)
+        local.toPrimary = ModeSwitch.LATER
+        graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator, self)))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(local.registered[films])
+            .isEqualTo(LocalDatabase(true, false, CopyMode.SECONDARY))
+        assertThat(local.dropped).isEmpty()
+    }
+
+    @Test
+    fun `a secondary's store placed here as a primary while this member was down turns primary`() {
+        local.stored[films.name()] = true
+        local.marks += films.databaseId().uuid()
+        graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator, self)))
+
+        reconciler.reconcile()
+        reconciler.reconcile()
+
+        assertThat(local.switched).containsExactly(films to CopyMode.PRIMARY)
+        assertThat(local.registered[films]).isEqualTo(LocalDatabase(true, false, CopyMode.PRIMARY))
+        assertThat(local.copies).isEmpty()
+    }
+
+    @Test
+    fun `a secondary placed here as a primary whose group moved on is replaced by a copy`() {
+        local.addSecondary(films)
+        local.toPrimary = ModeSwitch.NEEDS_COPY
         graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator, self)))
 
         assertThat(reconciler.reconcile()).isTrue()
@@ -621,6 +666,13 @@ class DatabaseReconcilerTest {
         reconciler.reconcile()
 
         assertThat(local.registered[films]).isEqualTo(LocalDatabase(true, false, CopyMode.PRIMARY))
+        assertThat(local.copies).isEmpty()
+
+        local.notVoting += films
+        reconciler.reconcile()
+
+        assertThat(local.registered[films])
+            .isEqualTo(LocalDatabase(true, false, CopyMode.SECONDARY))
         assertThat(local.copies).isEmpty()
     }
 
@@ -772,6 +824,27 @@ class DatabaseReconcilerTest {
 
         override fun removeGroup(id: UUID) {
             groups.remove(id)
+        }
+
+        /** What a switch to a primary answers; a switch to a secondary always happens. */
+        var toPrimary = ModeSwitch.SWITCHED
+        val switched = mutableListOf<Pair<NamedDatabaseId, CopyMode>>()
+
+        override fun switch(id: NamedDatabaseId, mode: CopyMode): ModeSwitch {
+            val state = registered.getValue(id)
+            check(state.mode != mode) { "$id is a ${state.mode} already" }
+            if (mode == CopyMode.PRIMARY && toPrimary != ModeSwitch.SWITCHED) return toPrimary
+            switched += id to mode
+            registered[id] = LocalDatabase(started = false, failed = false, mode = mode)
+            val uuid = id.databaseId().uuid()
+            when (mode) {
+                CopyMode.SECONDARY -> {
+                    groups -= uuid
+                    marks += uuid
+                }
+                CopyMode.PRIMARY -> marks -= uuid
+            }
+            return ModeSwitch.SWITCHED
         }
 
         override fun copy(source: HostPort, id: NamedDatabaseId, mode: CopyMode) {

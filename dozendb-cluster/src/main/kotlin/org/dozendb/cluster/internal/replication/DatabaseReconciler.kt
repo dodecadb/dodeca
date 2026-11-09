@@ -62,6 +62,18 @@ internal interface SystemGraph {
     fun nameCreator(database: NamedDatabaseId, creator: MemberId, initialMembers: List<Member>)
 }
 
+/** What [LocalDatabases.switch] did. */
+internal enum class ModeSwitch {
+    /** The database is registered again in the other mode, from its own store, and stopped. */
+    SWITCHED,
+
+    /** Its store cannot serve in the other mode, as the group moved on: it needs a copy. */
+    NEEDS_COPY,
+
+    /** Not now, as while the group has no leader: to be tried again. */
+    LATER,
+}
+
 /** The state of a database registered on this member, hosted in [mode]. */
 internal data class LocalDatabase(
     val started: Boolean,
@@ -127,6 +139,14 @@ internal interface LocalDatabases {
 
     /** Forgets that the store of the database [id] is a secondary's. */
     fun unmark(id: UUID)
+
+    /**
+     * Hosts [id], registered here in the other mode, in [mode] from its own store: registers it
+     * again, stopped. A primary must have left its group: its group goes, and its store is marked a
+     * secondary's. A secondary's store seeds the group it then joins, as far as the group's leader
+     * still holds the entry of its last transaction.
+     */
+    fun switch(id: NamedDatabaseId, mode: CopyMode): ModeSwitch
 
     /**
      * Copies the store of [id], which this member lacks, from the member at [source], for a copy in
@@ -414,19 +434,51 @@ internal class DatabaseReconciler(
                     // Not placed yet: the system leader places it.
                     else -> true
                 }
-            // No group counts a secondary in: it goes at once.
+            // No group counts a secondary in: it goes at once, or turns primary from its store.
             state.mode == CopyMode.SECONDARY && wanted != CopyMode.SECONDARY -> {
+                if (wanted == CopyMode.PRIMARY) {
+                    when (databases.switch(id, CopyMode.PRIMARY)) {
+                        ModeSwitch.SWITCHED -> {
+                            log.info(
+                                "Secondary %s here turned primary from its own store, placed " +
+                                    "here as one: it joins the database's group",
+                                id,
+                            )
+                            if (database.online) databases.start(id, seed(database))
+                            return true
+                        }
+                        ModeSwitch.LATER -> return false
+                        ModeSwitch.NEEDS_COPY -> {}
+                    }
+                }
                 log.info(
                     "Deleting secondary %s here: %s",
                     id,
                     if (wanted == null) "it is placed on other servers"
-                    else "it is placed here as a primary, which is copied anew",
+                    else
+                        "it is placed here as a primary, and the database's group no longer " +
+                            "holds what its store needs: it is copied anew",
                 )
                 databases.drop(id)
                 // The primary is created next time.
                 return wanted == null
             }
             leaving && databases.votes(id) == false -> {
+                if (wanted == CopyMode.SECONDARY) {
+                    when (databases.switch(id, CopyMode.SECONDARY)) {
+                        ModeSwitch.SWITCHED -> {
+                            log.info(
+                                "Database %s here left its group, placed here as a secondary: it " +
+                                    "turned secondary from its own store",
+                                id,
+                            )
+                            if (database.online) databases.start(id, null)
+                            return true
+                        }
+                        ModeSwitch.LATER -> return false
+                        ModeSwitch.NEEDS_COPY -> {}
+                    }
+                }
                 log.info(
                     "Deleting database %s here: it is placed on other servers%s, and this member " +
                         "left its group",
@@ -469,15 +521,13 @@ internal class DatabaseReconciler(
     /** Creates [database] here, as [wanted] places it; returns false to be tried again. */
     private fun create(database: DesiredDatabase, wanted: CopyMode): Boolean {
         val id = database.id
-        if (wanted == CopyMode.PRIMARY && id.uuid in databases.secondaries()) {
-            // A leftover now, replaced by a copy below.
-            log.info("Database %s is placed here as a primary; its secondary's store goes", id)
-            databases.unmark(id.uuid)
-        }
-        // A primary's store leaves its group first, as a primary placed elsewhere does.
+        // A store of the other mode starts in its mode, then switches, as one that runs does.
         val mode =
-            if (wanted == CopyMode.SECONDARY && trusted(id, CopyMode.PRIMARY)) CopyMode.PRIMARY
-            else wanted
+            when {
+                trusted(id, wanted) -> wanted
+                trusted(id, wanted.other) -> wanted.other
+                else -> wanted
+            }
         if (!trusted(id, mode)) {
             // Created or copied once it is started.
             if (!database.online) return true

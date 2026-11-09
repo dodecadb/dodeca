@@ -162,6 +162,19 @@ class DatabaseManager(
         }
     }
 
+    /** Stops [id] and unregisters it, keeping its files, so that it can be created anew. */
+    @Synchronized
+    fun releaseDatabase(id: NamedDatabaseId) {
+        val context = repository.getDatabaseContext(id)
+        if (context.isEmpty) {
+            log.warn("Cannot release '%s': it does not exist.", id)
+            return
+        }
+        stopDatabase(context.get())
+        repository.remove(id)
+        log.info("Released '%s', keeping its files.", id)
+    }
+
     /** Stops [id] without a checkpoint, unregisters it and deletes its files. */
     @Synchronized
     fun dropDatabase(id: NamedDatabaseId) {

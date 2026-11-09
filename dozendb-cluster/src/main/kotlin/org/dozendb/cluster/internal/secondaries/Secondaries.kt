@@ -25,6 +25,7 @@ import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.kernel.api.exceptions.Status.Cluster
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLogProvider
+import org.neo4j.storageengine.api.TransactionId
 
 /** Copies of a database for a secondary, from another member that runs it. */
 internal interface SecondaryCopies {
@@ -212,6 +213,27 @@ internal class Secondaries(
 
     /** Forgets the mark of the database [id], which is gone. */
     fun unmark(id: UUID) = marks.remove(id)
+
+    /** Marks the store of [id], a primary's until now, a secondary's. */
+    fun mark(id: NamedDatabaseId) = marks.add(id.databaseId().uuid())
+
+    /**
+     * Stops the secondary [id] pulling, once no pull applies transactions, and returns its last
+     * transaction; null if it does not run here and pull.
+     */
+    fun pause(id: NamedDatabaseId): TransactionId? {
+        val puller = pulling(id) ?: return null
+        puller.secondary.stop()
+        puller.wake()
+        return puller.secondary.last()
+    }
+
+    /** Has the secondary [id], which [pause] stopped, pull again. */
+    fun resume(id: NamedDatabaseId) {
+        val puller = databases[id.name()]?.takeIf { it.secondary.namedDatabaseId == id } ?: return
+        puller.secondary.start()
+        puller.schedule(Duration.ZERO)
+    }
 
     override fun databaseStart(eventContext: DatabaseEventContext) {
         val puller = databases[eventContext.databaseName] ?: return

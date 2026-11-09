@@ -84,8 +84,9 @@ class SecondariesTest {
         awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command)
     }
 
+    /** Writes on the leader, as the members that run the database's group agree on it. */
     private fun ClusterHarness.write(statement: String) {
-        awaitLeader(FILMS) { primaries.filter { it.running } }
+        awaitLeader(FILMS) { members.filter { it.running && it.status(FILMS) != null } }
             .database(FILMS)
             .executeTransactionally(statement)
     }
@@ -543,6 +544,44 @@ class SecondariesTest {
     }
 
     @Test
+    fun `a copy placed on its server in the other mode switches mode from its own store`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+        cluster.awaitSecondary()
+        cluster.write("UNWIND range(1, 100) AS i CREATE (:Film {id: i})")
+        val served = { cluster.members.sumOf { it.metrics().copiesServed.sum() } }
+        val copies = served()
+
+        cluster.administer("ALTER DATABASE $FILMS SET TOPOLOGY 1 PRIMARY 2 SECONDARIES")
+
+        eventually {
+            assertThat(cluster.members[0].roles(FILMS).values)
+                .containsExactlyInAnyOrder("primary", "secondary", "secondary")
+        }
+        val roles = cluster.members[0].roles(FILMS)
+        val switched = cluster.primaries.single { roles[it.serverId] == "secondary" }
+        assertThat(switched.status(FILMS)).describedAs("it runs no Raft group").isNull()
+        assertThat(switched.films()).isEqualTo(100)
+        cluster.write("CREATE (:Film {id: 101})")
+        eventually { assertThat(switched.films()).isEqualTo(101) }
+        assertThat(served()).describedAs("nothing copied").isEqualTo(copies)
+
+        cluster.administer("ALTER DATABASE $FILMS SET TOPOLOGY 2 PRIMARIES 1 SECONDARY")
+
+        eventually {
+            assertThat(switched.status(FILMS)?.role).describedAs("it runs the group").isNotNull()
+            val leader = cluster.awaitLeader(FILMS) { cluster.primaries }
+            assertThat(leader.cluster.groupMembers(leader.status(FILMS)!!.database).map { it.id })
+                .containsExactlyInAnyOrderElementsOf(cluster.primaries.map { it.cluster.self.id })
+        }
+        cluster.write("CREATE (:Film {id: 102})")
+        eventually { assertThat(switched.films()).isEqualTo(102) }
+        assertThat(cluster.members[0].roles(FILMS).filterKeys { it == switched.serverId }.values)
+            .containsExactly("primary")
+        assertThat(served()).describedAs("nothing copied").isEqualTo(copies)
+    }
+
+    @Test
     fun `WAIT waits for secondaries too`() {
         val cluster = cluster()
 
@@ -588,6 +627,12 @@ class SecondariesTest {
 
     private fun ClusterHarness.Member.transactions(): TransactionCounters =
         database(FILMS).dependencyResolver.resolveDependency(TransactionCounters::class.java)
+
+    /** The role of each server that runs [database] online, by server id, as [this] shows it. */
+    private fun ClusterHarness.Member.roles(database: String): Map<Any?, Any?> =
+        query("SHOW DATABASE $database YIELD serverID, role, currentStatus")
+            .filter { it["currentStatus"] == "online" }
+            .associate { it["serverID"] to it["role"] }
 
     private fun ClusterHarness.waited(command: String): List<Map<String, Any?>> =
         awaitLeader(SYSTEM).query(command)
