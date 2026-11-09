@@ -70,6 +70,31 @@ class MemberDirectoryTest {
     }
 
     @Test
+    fun `while no server is known, it probes the bootstrap addresses and learns the voters`() {
+        val outside = consensus.newMember().also { it.start() }
+        val bootstrapping =
+            MemberDirectory(
+                    outside,
+                    system,
+                    { null },
+                    { null },
+                    { emptyList() },
+                    NullLog.getInstance(),
+                    Duration.ofHours(1),
+                    servers = { throw ConsensusUnavailableException("no voter known yet") },
+                    bootstrap = { listOf(outside.self.raftAddress, logs[1].self.raftAddress) },
+                )
+                .also(others::add)
+
+        val answered = bootstrapping.refresh()
+
+        assertThat(answered).containsExactly(logs[1].self.id)
+        assertThat(bootstrapping.boltAddress(logs[1].self.id)).isEqualTo(HostPort("core1", 7687))
+        assertThat(GroupViews.reportedByVoters(system.id, bootstrapping.groups()).values)
+            .containsExactly(logs.map { it.self })
+    }
+
+    @Test
     fun `a refresh with a deadline leaves out a member that answers later, as it was`() {
         directory.refresh()
         logs[2].probeDelay = Duration.ofMinutes(1)

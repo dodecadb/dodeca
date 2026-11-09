@@ -12,7 +12,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
-import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.Member
 import org.neo4j.logging.Log
 
 /**
@@ -20,13 +20,13 @@ import org.neo4j.logging.Log
  * terms), so that a member that does not run a group learns its new leader before it next probes
  * this one: its routing tables then send writes there within moments of an election, also while the
  * previous leader is gone and counts as leading as it last reported, with a lower term. Each
- * announcement goes to every member of the `system` group at once, waiting for each for at most
+ * announcement goes to every one of the cluster's [servers] at once, waiting for each for at most
  * [deadline]; changes meanwhile are announced together after it. A member that misses one, or runs
  * a version without announcements, learns of the change when it next probes this member.
  */
 internal class LeaderAnnouncer(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val servers: () -> List<Member>,
     private val leading: () -> Map<UUID, Long>,
     private val deadline: Duration,
     private val log: Log,
@@ -69,7 +69,7 @@ internal class LeaderAnnouncer(
             val now = leading()
             if (now == announced) return
             announced = now
-            val others = consensus.members(systemDatabase).filter { it.id != consensus.self.id }
+            val others = servers().filter { it.id != consensus.self.id }
             runBlocking {
                 others
                     .map { member ->

@@ -21,10 +21,12 @@ import org.dozendb.consensus.Snapshot
 import org.neo4j.logging.Log
 
 /**
- * A voting member as seen from this member; [boltAddress] is null while it is not known, and
- * [routingAddress] also if the member takes no forwarded writes.
+ * A server of the cluster as seen from this member; [boltAddress] is null while it is not known,
+ * and [routingAddress] also if the member takes no forwarded writes.
  *
- * @property databases the databases whose groups the member votes in, as this member knows them.
+ * @property databases the databases whose groups the member votes in, as this member knows them,
+ *   and `system`.
+ * @property isSecondary whether it hosts `system` as a secondary instead of voting in its group.
  */
 data class MemberView(
     val member: Member,
@@ -35,6 +37,7 @@ data class MemberView(
     val databases: List<String> = emptyList(),
     val dozenDbVersion: String? = null,
     val formatLevels: FormatLevels? = null,
+    val isSecondary: Boolean = false,
 )
 
 /** The cluster's format level before and after [ClusterService.finishUpgrade]. */
@@ -49,12 +52,12 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
  * group, makes sure this member starts from the cluster's databases, follows and changes the
  * cluster's members, and reports status. It knows nothing about Neo4j internals.
  *
- * The members of the `system` group are the members of the cluster. A member that starts without
- * Raft state and finds the cluster formed without it joins it: it copies the databases it needs to
- * start, runs the `system` group without voting in it, and waits until a member of the cluster adds
- * it with [addMember]. A member removed with [removeMember] stops its databases and takes no part
- * in the cluster any more; to be added again it needs its data directory deleted, after which it
- * joins as a new member.
+ * The cluster's servers are the members of the `system` group and the system secondaries
+ * ([servers]). A member that starts without Raft state and finds the cluster formed without it
+ * joins it: it copies the databases it needs to start, runs the `system` group without voting in
+ * it, and waits until a member of the cluster adds it with [addMember]. A member removed with
+ * [removeMember] stops its databases and takes no part in the cluster any more; to be added again
+ * it needs its data directory deleted, after which it joins as a new member.
  *
  * A member runs one DozenDB version, which supports [formatLevels]; the cluster's format level says
  * which formats members write. It rises when an administrator finishes an upgrade with
@@ -67,6 +70,7 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
  * @property formatLevelStore where the cluster records its format level, once `system` runs.
  * @property upgradeConfirmation how long [finishUpgrade] waits for every member to record the
  *   cluster's format level.
+ * @property servers the cluster's servers.
  */
 class ClusterService(
     private val consensus: ConsensusLog,
@@ -81,6 +85,7 @@ class ClusterService(
     val formatLevels: FormatLevels = FormatLevels.SUPPORTED,
     private val formatLevelStore: FormatLevelStore? = null,
     private val upgradeConfirmation: Duration = Duration.ofSeconds(30),
+    private val servers: ClusterServers = ClusterServers(consensus, systemDatabase),
 ) {
     private var statusListener: AutoCloseable? = null
     private val levelRefresh: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
@@ -224,14 +229,14 @@ class ClusterService(
     }
 
     /**
-     * Before a member that has Raft state rejoins: refuses if a member it reaches runs another
+     * Before a member that has Raft state rejoins: refuses if a server it reaches runs another
      * Neo4j version, or says that the cluster uses a format level this member does not support, as
-     * after an upgrade was finished without it. Members it does not reach are not checked.
+     * after an upgrade was finished without it. Servers it does not reach are not checked.
      */
     private fun checkRejoin() {
         val others =
             try {
-                consensus.members(systemDatabase).filter { it.id != self.id }
+                servers.all().filter { it.id != self.id }
             } catch (_: ConsensusUnavailableException) {
                 return
             }
@@ -317,10 +322,10 @@ class ClusterService(
     }
 
     /**
-     * Finishes a rolling upgrade: raises the cluster's format level to the newest level a voting
-     * member supports, so that members write the formats it names, once every voting member
-     * supports it. Returns once every member recorded the level: from then on none starts with a
-     * DozenDB version that does not support it. Runs on the leader of `system`.
+     * Finishes a rolling upgrade: raises the cluster's format level to the newest level a server
+     * supports, so that servers write the formats it names, once every server supports it. Returns
+     * once every server recorded the level: from then on none starts with a DozenDB version that
+     * does not support it. Runs on the leader of `system`.
      *
      * @throws UpgradeException if a member does not answer, does not support that level yet, or
      *   does not record it in time.
@@ -335,7 +340,7 @@ class ClusterService(
             )
         }
         val current = store.formatLevel()
-        val others = consensus.members(systemDatabase).filter { it.id != self.id }
+        val others = servers.all().filter { it.id != self.id }
         val supported =
             mapOf(self to formatLevels) +
                 probeAll(others).associate { (member, answer) ->
@@ -467,7 +472,7 @@ class ClusterService(
     /** The latest snapshot of [database] on this member: its log may lack entries up to it. */
     fun latestSnapshot(database: DatabaseRef): Snapshot? = consensus.latestSnapshot(database)
 
-    /** The voting members of the `system` group, the members of the cluster. */
+    /** The servers of the cluster: the voting members of `system`, then its secondaries. */
     fun members(): List<MemberView> {
         val leader = consensus.status(systemDatabase).leader
         val groups =
@@ -480,7 +485,9 @@ class ClusterService(
                         emptyList()
                     }
                 }
-        return consensus.members(systemDatabase).map { member ->
+        val voters = servers.voters().members
+        val secondaries = servers.secondaries().filter { s -> voters.none { it.id == s.id } }
+        return (voters + secondaries).map { member ->
             val reported =
                 if (member.id == consensus.self.id) metadata()
                 else directory?.reported(member.id).orEmpty()
@@ -498,6 +505,7 @@ class ClusterService(
                 databases =
                     listOf(systemDatabase.name) +
                         groups.filterValues { member.id in it }.keys.map { it.name }.sorted(),
+                isSecondary = member in secondaries,
             )
         }
     }
@@ -523,7 +531,7 @@ class ClusterService(
                 )
             }
         val candidate = peer.member
-        if (consensus.members(systemDatabase).any { it.id == candidate.id }) return candidate
+        if (servers.all().any { it.id == candidate.id }) return candidate
         checkCanJoin(address, peer)
         userLog.info("Adding member %s to the cluster", candidate)
         try {

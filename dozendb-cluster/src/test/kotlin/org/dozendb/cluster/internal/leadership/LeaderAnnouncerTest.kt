@@ -28,7 +28,7 @@ class LeaderAnnouncerTest {
     private val announcer =
         LeaderAnnouncer(
             logs[0],
-            system,
+            { logs[0].members(system) },
             {
                 asked.incrementAndGet()
                 leading

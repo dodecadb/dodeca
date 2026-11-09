@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.LongAdder
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupProgress
+import org.dozendb.consensus.Member
 import org.dozendb.core.monitoring.MetricRegistry
 import org.dozendb.core.monitoring.MetricsContributor
 import org.dozendb.core.monitoring.SummaryHistogram
@@ -14,14 +15,14 @@ import org.neo4j.kernel.database.AbstractDatabase
 
 /**
  * The cluster's metrics. Per database, Neo4j Enterprise's Raft metrics under `cluster.raft.` with
- * its names, and DozenDB's under `dozendb.cluster.`; for the DBMS, the member count.
+ * its names, and DozenDB's under `dozendb.cluster.`; for the DBMS, the number of [servers].
  *
  * Replication and store copy counts are kept per database name from when this member started: a
  * copy restarts its database, which would otherwise reset them.
  */
 internal class ClusterMetrics(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val servers: () -> List<Member>,
 ) : MetricsContributor {
     /** What this member counts of one database, from when it started. */
     class Counters {
@@ -55,8 +56,12 @@ internal class ClusterMetrics(
     }
 
     override fun dbms(metrics: MetricRegistry.MetricGroup) {
-        metrics.gauge("dozendb.cluster.members", "Voting members of the cluster, as known here.") {
-            runCatching { consensus.members(systemDatabase).size }.getOrNull()
+        metrics.gauge(
+            "dozendb.cluster.members",
+            "Servers of the cluster, as known here: the members of the system database's group " +
+                "and its secondaries.",
+        ) {
+            runCatching { servers().size }.getOrNull()
         }
     }
 

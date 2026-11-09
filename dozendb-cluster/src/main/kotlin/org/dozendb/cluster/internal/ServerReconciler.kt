@@ -28,14 +28,15 @@ import org.neo4j.logging.InternalLog
 
 /**
  * Keeps the server records of the system graph (see [ServerRecords]) in line with the cluster's
- * members, on the `system` leader, in replicated transactions:
+ * servers, the members of `system` and the system secondaries it records
+ * ([SystemSecondaryRecords]), on the `system` leader, in replicated transactions:
  * - Until the initial servers are recorded, every member of `system` counts as enabled. The leader
  *   records each with the options it reports, from its `initial.server.*` settings, once it has its
  *   report, and marks the initial servers recorded once every member has a record. This covers a
  *   new cluster and one formed before DozenDB recorded servers alike.
  * - Afterwards, a member that joins is Free until ENABLE SERVER records it, or at once while
  *   `auto_enable_free_servers` is set.
- * - The record of a server that left `system` is deleted, with the databases placed on it.
+ * - The record of a server that left the cluster is deleted, with the databases placed on it.
  * - A server that DROP SERVER dropped is removed from `system` (see [remove]), and is never enabled
  *   again. Once it left, it is asked whether it still answers where it was, as SHOW SERVERS shows
  *   it Dropped while it does; its address is forgotten once it no longer does.
@@ -165,9 +166,15 @@ class ServerReconciler(
             }
         if (!membership.settled) return true
         if (!current()) return true
-        val members = membership.members.map { it.id }
+        val voters = membership.members.map { it.id }
         var dropped = emptyMap<UUID, DroppedServer>()
-        reading { system().beginTx().use { tx -> dropped = ServerRecords.dropped(tx) } }
+        var members = voters
+        reading {
+            system().beginTx().use { tx ->
+                dropped = ServerRecords.dropped(tx)
+                members = servers(voters, tx)
+            }
+        }
         // Asked before the records' lock is taken, as one that does not answer takes a while.
         val left = dropped.values.filter { it.address != null && MemberId(it.id) !in members }
         val gone = left.filterNot(::answers)
@@ -178,7 +185,7 @@ class ServerReconciler(
                 ServerRecords.lock(tx)
                 val records = ServerRecords.records(tx)
                 var changed = ServerRecords.removeDuplicates(tx)
-                for (id in records.keys - members.map { it.uuid }.toSet()) {
+                for (id in records.keys - servers(voters, tx).map { it.uuid }.toSet()) {
                     log.info("Deleting the record of server %s, which left the cluster", id)
                     ServerRecords.delete(tx, id)
                     changed = true
@@ -219,6 +226,10 @@ class ServerReconciler(
         return again
     }
 
+    /** The servers: the members of `system`, [voters], and the system secondaries [tx] reads. */
+    private fun servers(voters: List<MemberId>, tx: Transaction): List<MemberId> =
+        (voters + SystemSecondaryRecords.all(tx).map { it.id }).distinct()
+
     /** Whether the dropped [server] answers at its address, as itself. */
     private fun answers(server: DroppedServer): Boolean {
         val address = server.address?.let { runCatching { HostPort.parse(it) }.getOrNull() }
@@ -254,7 +265,7 @@ class ServerReconciler(
         if (!membership.settled) {
             throw AllocationException("the cluster's members are changing: try again in a moment")
         }
-        val members = membership.members.map { it.id }
+        val members = servers(membership.members.map { it.id }, tx)
         val (_, all) = enable(tx, members, joined = false)
         if (!all) {
             throw AllocationException(

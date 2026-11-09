@@ -89,6 +89,19 @@ internal class ReplicationService(
         }
     }
 
+    /**
+     * Runs [block], which reads the system database, unless `system` is being replaced by a copy
+     * now: then returns null at once, instead of waiting as [readingSystem] does.
+     */
+    fun <T> tryReadingSystem(block: () -> T): T? {
+        if (!systemLock.readLock().tryLock()) return null
+        try {
+            return block()
+        } finally {
+            systemLock.readLock().unlock()
+        }
+    }
+
     /** The id of the default database, once it was created here. */
     val defaultDatabaseId: UUID?
         get() = databases[defaultDatabaseName]?.ref?.id

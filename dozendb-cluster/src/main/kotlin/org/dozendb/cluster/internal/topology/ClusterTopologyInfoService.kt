@@ -9,10 +9,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.internal.InitialServerOptions
+import org.dozendb.cluster.internal.SystemSecondaryRecords
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
+import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.servers.CopyMode
@@ -50,15 +52,17 @@ internal class ClusterTopologyInfoService(
     private val locations: DatabaseLocations,
     private val report: (MemberId) -> Map<String, String>?,
     private val probeDeadline: Duration = Duration.ofSeconds(1),
+    private val voters: () -> List<Member> = { consensus.members(systemDatabase) },
 ) : TopologyInfoService {
     /**
-     * A server for each member of the cluster: Enabled with its record, Free without one, except
-     * that every member counts as enabled, with the options it reports, until the servers the
-     * cluster started with are recorded (see `ServerReconciler`). It hosts the databases it reports
-     * running, and is to host `system` and the databases placed on it that are requested online. A
-     * deallocating server is Deallocated once no database is placed on it and it votes in no
-     * database's group. A dropped server is Dropped while the cluster still has it, and after that
-     * while it answers where it was.
+     * A server for each server of the cluster, a member of `system` or a system secondary that
+     * [transaction] reads: Enabled with its record, Free without one, except that every member
+     * counts as enabled, with the options it reports, until the servers the cluster started with
+     * are recorded (see `ServerReconciler`). It hosts the databases it reports running, and is to
+     * host `system` and the databases placed on it that are requested online. A deallocating server
+     * is Deallocated once no database is placed on it and it votes in no database's group. A
+     * dropped server is Dropped while the cluster still has it, and after that while it answers
+     * where it was.
      */
     override fun servers(transaction: Transaction): Set<ServerDetails> {
         val answering = answering()
@@ -66,7 +70,7 @@ internal class ClusterTopologyInfoService(
         val dropped = ServerRecords.dropped(transaction)
         val initialRecorded = ServerRecords.initialServersEnabled(transaction)
         val online = requestedOnline(transaction)
-        val members = systemMembers()
+        val members = clusterServers(transaction)
         val servers =
             members.mapTo(LinkedHashSet()) { member ->
                 val record = records[member.uuid]
@@ -213,6 +217,7 @@ internal class ClusterTopologyInfoService(
     ): Set<DatabaseDetails> {
         val answering = answering()
         val hosts = hosting(transaction)
+        val servers = { clusterServers(transaction) }
         return community.databases(transaction, databaseIds, requestedExtras).flatMapTo(
             HashSet()
         ) { own ->
@@ -222,7 +227,7 @@ internal class ClusterTopologyInfoService(
             val placed = placed(transaction, id.name())
             DatabaseRows.rows(
                 own,
-                members(location, placed.keys, hosts, database, answering).map {
+                members(location, placed.keys, hosts, servers, database, answering).map {
                     copy(it, it in answering, database, placed[it])
                 },
                 location?.leader,
@@ -245,13 +250,13 @@ internal class ClusterTopologyInfoService(
     /**
      * The voting members of a database's group at [location], the servers it is [placed] on, and
      * the [answering] members that report running a secondary of [database], as one it moves off
-     * does until it drops it; while none of them is known, the members of the cluster that [hosts];
-     * this member alone while consensus does not run.
+     * does until it drops it; while none of them is known, the [servers] that [hosts].
      */
     private fun members(
         location: DatabaseLocations.Location?,
         placed: Set<MemberId>,
         hosts: (MemberId) -> Boolean,
+        servers: () -> List<MemberId>,
         database: DatabaseRef,
         answering: Set<MemberId>,
     ): List<MemberId> {
@@ -262,18 +267,25 @@ internal class ClusterTopologyInfoService(
             }
         }
         if (voters == null && placed.isEmpty() && secondaries.isEmpty()) {
-            return systemMembers().filter(hosts)
+            return servers().filter(hosts)
         }
         return (voters.orEmpty() + placed + secondaries.sortedBy { it.uuid }).distinct()
     }
 
-    /** The members of the cluster; this member alone while consensus does not run. */
-    private fun systemMembers(): List<MemberId> =
-        try {
-            consensus.members(systemDatabase).map { it.id }
-        } catch (_: ConsensusUnavailableException) {
-            listOf(consensus.self.id)
-        }
+    /**
+     * The servers of the cluster, the voters of `system` and the system secondaries that
+     * [transaction] reads; this member alone while the voters are not known, as while consensus
+     * does not run.
+     */
+    private fun clusterServers(transaction: Transaction): List<MemberId> {
+        val voters =
+            try {
+                voters().map { it.id }
+            } catch (_: ConsensusUnavailableException) {
+                listOf(consensus.self.id)
+            }
+        return (voters + SystemSecondaryRecords.all(transaction).map { it.id }).distinct()
+    }
 
     /**
      * Whether a member hosts the databases other than `system`, as the system graph that

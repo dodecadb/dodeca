@@ -31,14 +31,17 @@ import org.neo4j.logging.Log
 /**
  * The Bolt and routing addresses of the cluster's members, and what else they report about
  * themselves. Every member reports its advertised addresses and its databases when probed; the
- * directory probes the members of the `system` group periodically, and on demand: soon after
- * someone asks for a member it does not know yet, and when someone waits for it ([awaitRefresh]). A
- * probe on demand waits for each member for at most [demandDeadline], on a thread of its own, so
- * that a member that answers nothing at all holds up only the periodic probe, which finds out that
- * it no longer answers. A member that does not answer keeps its last known address and report, and
- * a report that arrives after a later one of the same member is left out
- * ([MemberMetadata.REPORT_NUMBER]). This member's own come from [selfBoltAddress],
- * [selfRoutingAddress], [selfDatabases], [selfReadOnly], [selfLastCommitted] and [selfReport].
+ * directory probes the cluster's [servers] periodically, and on demand: soon after someone asks for
+ * a member it does not know yet, and when someone waits for it ([awaitRefresh]). A probe on demand
+ * waits for each member for at most [demandDeadline], on a thread of its own, so that a member that
+ * answers nothing at all holds up only the periodic probe, which finds out that it no longer
+ * answers. A member that does not answer keeps its last known address and report, and a report that
+ * arrives after a later one of the same member is left out ([MemberMetadata.REPORT_NUMBER]). This
+ * member's own come from [selfBoltAddress], [selfRoutingAddress], [selfDatabases], [selfReadOnly],
+ * [selfLastCommitted] and [selfReport].
+ *
+ * While no server is known, as on a system secondary that just started, it probes the [bootstrap]
+ * addresses, the initial members, instead: what those report tells the servers.
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
@@ -52,6 +55,8 @@ class MemberDirectory(
     private val selfLastCommitted: () -> Map<UUID, Long> = { emptyMap() },
     private val selfReport: () -> Map<String, String> = { emptyMap() },
     private val demandDeadline: Duration = Duration.ofSeconds(1),
+    private val servers: () -> List<Member> = { consensus.members(systemDatabase) },
+    private val bootstrap: () -> List<HostPort> = { emptyList() },
 ) {
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
@@ -209,7 +214,7 @@ class MemberDirectory(
 
     /**
      * Records what a member announces about itself, as one that starts or stops leading a group
-     * does, as if it had answered a probe: unless it is not a member of the `system` group, or a
+     * does, as if it had answered a probe: unless it is not one of the cluster's servers, or a
      * later report of it is recorded already. Whether it answers probes stays as it was.
      */
     fun announced(peer: PeerInfo) {
@@ -217,7 +222,7 @@ class MemberDirectory(
         if (member == consensus.self.id) return
         val known =
             try {
-                consensus.members(systemDatabase).any { it.id == member }
+                servers().any { it.id == member }
             } catch (_: ConsensusUnavailableException) {
                 false
             }
@@ -238,7 +243,7 @@ class MemberDirectory(
      */
     fun refresh(deadline: Duration? = null): Set<MemberId> {
         val probe = probes.incrementAndGet()
-        val others = consensus.members(systemDatabase).filter { it.id != consensus.self.id }
+        val others = others(deadline)
         val answers = runBlocking {
             others
                 .map { member ->
@@ -282,6 +287,41 @@ class MemberDirectory(
         }
         if (!late) refreshed = true
         return answering
+    }
+
+    /**
+     * The other servers, to probe; while none is known, the members that answer at the [bootstrap]
+     * addresses, waiting for each for at most [deadline].
+     */
+    private fun others(deadline: Duration?): List<Member> {
+        val known =
+            try {
+                servers()
+            } catch (e: ConsensusUnavailableException) {
+                val addresses = bootstrap()
+                if (addresses.isEmpty()) throw e
+                return runBlocking {
+                    addresses
+                        .map { address ->
+                            async {
+                                runCatching {
+                                    if (deadline == null) consensus.probe(address)
+                                    else
+                                        withTimeoutOrNull(deadline.toMillis()) {
+                                            consensus.probe(address)
+                                        }
+                                }
+                                    .getOrNull()
+                                    ?.member
+                            }
+                        }
+                        .awaitAll()
+                }
+                    .filterNotNull()
+                    .filter { it.id != consensus.self.id }
+                    .distinctBy { it.id }
+            }
+        return known.filter { it.id != consensus.self.id }
     }
 
     /** Records what [peer] reports, unless a later report of it is recorded already. */

@@ -59,6 +59,8 @@ import org.neo4j.logging.Log
  *   leadership over.
  * @property systemRunning whether the `system` database runs here, so that [databases] can read it:
  *   this member may lead `system` before.
+ * @property systemSecondaries the system secondaries, servers of the cluster that pull `system`
+ *   instead of voting in it, which databases can be placed on as on any server.
  */
 class MembershipReconciler(
     private val consensus: ConsensusLog,
@@ -72,6 +74,7 @@ class MembershipReconciler(
     private val systemRunning: () -> Boolean = { true },
     private val handOverGrace: Duration = Duration.ofSeconds(30),
     private val nanoTime: () -> Long = System::nanoTime,
+    private val systemSecondaries: () -> List<Member> = { emptyList() },
 ) : AutoCloseable {
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -146,14 +149,16 @@ class MembershipReconciler(
         if (!systemRunning()) return true
         val cluster = consensus.membership(systemDatabase)
         if (!cluster.settled) return true
-        val reports = groupsReported(cluster.members).toMutableMap()
+        // A system secondary can host primaries of the other databases.
+        val servers = (cluster.members + systemSecondaries()).distinctBy { it.id }
+        val reports = groupsReported(servers).toMutableMap()
         var again = false
         val databases = databases()
         handOvers.keys.retainAll(databases.keys.map { it.id }.toSet())
         overdue.retainAll(handOvers.keys)
         for ((group, placed) in databases) {
             if (group.id == systemDatabase.id || placed.isEmpty()) continue
-            val hosting = cluster.members.filter { it.id in placed }
+            val hosting = servers.filter { it.id in placed }
             val voters = voters(group, reports)
             if (voters == null) {
                 // No member that answers votes in it, or they disagree: look again later.

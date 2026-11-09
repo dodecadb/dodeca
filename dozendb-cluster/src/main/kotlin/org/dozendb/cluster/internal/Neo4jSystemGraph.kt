@@ -178,13 +178,25 @@ internal class Neo4jSystemGraph(
         }
     }
 
-    /** The servers that host a secondary of the database [name]; none if it does not exist. */
+    /**
+     * The servers that host a secondary of the database [name]: for `system`, the system
+     * secondaries; none if it does not exist.
+     */
     fun secondaries(name: String): Set<MemberId> = replication.readingSystem {
         system().beginTx().use { tx ->
-            Placements.database(tx, name)
-                ?.let { Placements.hosts(it, CopyMode.SECONDARY) }
-                ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
+            if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
+                SystemSecondaryRecords.all(tx).mapTo(HashSet()) { it.id }
+            } else {
+                Placements.database(tx, name)
+                    ?.let { Placements.hosts(it, CopyMode.SECONDARY) }
+                    ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
+            }
         }
+    }
+
+    /** The system secondaries, servers that pull `system` instead of voting in its group. */
+    fun systemSecondaries(): List<Member> = replication.readingSystem {
+        system().beginTx().use { tx -> SystemSecondaryRecords.all(tx) }
     }
 
     /** The server tags of each enabled server, from its server record. */

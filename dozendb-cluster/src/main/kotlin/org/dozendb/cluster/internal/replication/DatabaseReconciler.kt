@@ -209,8 +209,8 @@ internal interface LocalDatabases {
  *
  * @property sources the addresses of the members to copy a new database from, the members that hold
  *   it, its creator first if it has one.
- * @property systemMembers the members of the `system` group, or null while a change of them is not
- *   settled.
+ * @property systemMembers the servers of the cluster, the members of the `system` group and its
+ *   secondaries, or null while a change of the members is not settled.
  * @property answering whether a member answers this one.
  * @property removed whether this member was removed from the cluster.
  * @property runs whether a member reports a database running, as far as this member knows.

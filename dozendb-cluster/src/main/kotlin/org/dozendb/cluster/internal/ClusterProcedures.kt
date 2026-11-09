@@ -58,7 +58,10 @@ class ClusterProcedures {
 
     @SystemProcedure
     @Procedure(name = "dozendb.cluster.members", mode = Mode.DBMS)
-    @Description("The voting members of the cluster, as seen from this member.")
+    @Description(
+        "The servers of the cluster, as seen from this member: the voting members of the system " +
+            "database's group, LEADER or FOLLOWER, and its secondaries, SECONDARY."
+    )
     fun members(): Stream<MemberRow> =
         requireCluster().members().stream().map {
             MemberRow(
@@ -66,7 +69,12 @@ class ClusterProcedures {
                 raftAddress = it.member.raftAddress.toString(),
                 boltAddress = it.boltAddress?.toString(),
                 routingAddress = it.routingAddress?.toString(),
-                role = if (it.isLeader) "LEADER" else "FOLLOWER",
+                role =
+                    when {
+                        it.isSecondary -> "SECONDARY"
+                        it.isLeader -> "LEADER"
+                        else -> "FOLLOWER"
+                    },
                 self = it.isSelf,
                 databases = it.databases,
                 dozendbVersion = it.dozenDbVersion,

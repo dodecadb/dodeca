@@ -7,6 +7,7 @@ import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.ClusterFormation
+import org.dozendb.cluster.ClusterServers
 import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.FormatLevelStore
@@ -55,6 +56,7 @@ import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
+import org.dozendb.consensus.GroupMembership
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
@@ -72,6 +74,7 @@ import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
 import org.dozendb.core.edition.WantedDatabase
 import org.dozendb.core.security.MemberLogins
+import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
@@ -133,6 +136,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val directory: MemberDirectory
     private val locations: DatabaseLocations
     private val consensus: ConsensusLog
+    private val clusterServers: ClusterServers
     private val membership: MembershipReconciler
     private val balancer: LeaderBalancer
     private val announcer: LeaderAnnouncer
@@ -251,7 +255,31 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     )
                 )
             )
-        val metrics = ClusterMetrics(consensus, systemDatabase)
+        clusterServers =
+            ClusterServers(
+                consensus,
+                systemDatabase,
+                // Not while `system` starts or is replaced by a copy, which takes a while: the
+                // servers are then as last read.
+                recorded = {
+                    checkNotNull(
+                        if (replicationService.replica(systemDatabase)?.isRunning() == true) {
+                            replicationService.tryReadingSystem(systemGraph::systemSecondaries)
+                        } else {
+                            null
+                        }
+                    ) {
+                        "the system database cannot be read now"
+                    }
+                },
+                pullsSystem = { clusterHosting.mode(systemDatabase.name) == CopyMode.SECONDARY },
+                reportedVoters = {
+                    locations.of(systemDatabase)?.let {
+                        GroupMembership(it.voters, it.settled, removed = false)
+                    }
+                },
+            )
+        val metrics = ClusterMetrics(consensus, clusterServers::all)
         globalModule.globalDependencies.satisfyDependency(metrics)
         stores =
             Neo4jLocalStores(
@@ -323,7 +351,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 answering = { directory.answering(it) },
                 addresses = {
                     try {
-                        consensus.members(systemDatabase).associate { it.id to it.raftAddress }
+                        clusterServers.all().associate { it.id to it.raftAddress }
                     } catch (_: ConsensusUnavailableException) {
                         emptyMap()
                     }
@@ -431,6 +459,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 selfReadOnly = ::readOnlyHere,
                 selfLastCommitted = ::lastCommittedHere,
                 selfReport = metadata,
+                servers = clusterServers::all,
+                bootstrap = {
+                    if (clusterHosting.mode(systemDatabase.name) == CopyMode.SECONDARY) {
+                        initialMembers(config)
+                    } else {
+                        emptyList()
+                    }
+                },
             )
         locations =
             DatabaseLocations(consensus, directory) { database ->
@@ -469,7 +505,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         announcer =
             LeaderAnnouncer(
                 consensus,
-                systemDatabase,
+                clusterServers::all,
                 ::leadingHere,
                 ANNOUNCEMENT_DEADLINE,
                 logService.getInternalLog(LeaderAnnouncer::class.java),
@@ -494,12 +530,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         override fun recordFormatLevel(level: Int) =
                             systemGraph.recordFormatLevel(level)
                     },
+                servers = clusterServers,
             )
         globalModule.globalDependencies.satisfyDependency(cluster)
         globalModule.databaseEventListeners.registerDatabaseEventListener(
             object : DatabaseEventListenerAdapter() {
                 override fun databaseStart(eventContext: DatabaseEventContext) {
                     if (eventContext.databaseName == systemDatabase.name) {
+                        clusterServers.systemChanged()
                         cluster.requestFormatLevelRefresh()
                         // A Free server reports it before it hosts the default database.
                         clusterId =
@@ -519,6 +557,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 logService.getInternalLog(MembershipReconciler::class.java),
                 systemRunning = { replicationService.replica(systemDatabase)?.isRunning() == true },
+                systemSecondaries = clusterServers::secondaries,
             )
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
@@ -673,6 +712,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             directory,
             locations,
             directory::reported,
+            voters = { clusterServers.voters().members },
         )
 
     /** The base wiring, with the databases following the replicated system graph. */
@@ -703,7 +743,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 memberId,
                 defaultDatabase,
                 ::copySources,
-                { consensus.membership(systemDatabase).takeIf { it.settled }?.members },
+                clusterServers::settled,
                 { directory.answering(it) },
                 { cluster.state == MemberState.REMOVED },
                 { member, id ->
@@ -764,6 +804,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         // Transactions applied from Raft fire no transaction event listeners: refresh what the
         // listeners refresh after local commits.
         replication.afterSystemApply = {
+            clusterServers.systemChanged()
             databaseIdCache.invalidateAll()
             referenceCache.invalidateAll()
             (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
@@ -848,7 +889,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private fun copySources(database: DesiredDatabase): List<HostPort> {
         val id = database.id
         val voters = locations.of(DatabaseRef(id.name(), id.databaseId().uuid()))?.voters.orEmpty()
-        val hosts = consensus.members(systemDatabase).filter { it.id in database.hosts }
+        val hosts = clusterServers.all().filter { it.id in database.hosts }
         return (voters + hosts)
             .distinctBy { it.id }
             .filter { it.id != memberId }
@@ -937,9 +978,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         )
 
     /**
-     * Whether this member is the only one, as Neo4j's routing asks before routing. Not while it
-     * stops: then the database checks that follow refuse the route as unavailable, which drivers
-     * retry on another member, instead of failing it with an unknown error.
+     * Whether this member is the cluster's only server, as Neo4j's routing asks before routing. Not
+     * while it stops: then the database checks that follow refuse the route as unavailable, which
+     * drivers retry on another member, instead of failing it with an unknown error.
      */
     private fun alone(): Boolean =
         try {
@@ -978,8 +1019,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
      */
     override fun hostingServers(wanted: WantedDatabase): List<HostingServer> {
         val placed = if (wanted.id == null) emptySet() else systemGraph.hosts(wanted.name)
-        return consensus
-            .members(systemDatabase)
+        return clusterServers
+            .all()
             .filter { if (placed.isEmpty()) systemGraph.enabled(it.id) else it.id in placed }
             .map { member ->
                 object : HostingServer {
@@ -1007,11 +1048,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
      * placed on that server first.
      */
     override fun seedServers(): SeedServers = SeedServers { id ->
-        require(
-            consensus.members(systemDatabase).any {
-                it.id.uuid == id && systemGraph.enabled(it.id)
-            }
-        ) {
+        require(clusterServers.all().any { it.id.uuid == id && systemGraph.enabled(it.id) }) {
             "server $id is not an enabled server of this cluster: SHOW SERVERS lists the servers"
         }
     }
@@ -1040,18 +1077,15 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             },
         )
 
-    /** The members of the cluster, with the options they report from `initial.server.*`. */
+    /** The servers of the cluster, with the options they report from `initial.server.*`. */
     override fun servers(): Servers =
         object : Servers {
-            override fun ids(): Set<UUID> =
-                consensus.members(systemDatabase).mapTo(HashSet()) { it.id.uuid }
+            override fun ids(): Set<UUID> = clusterServers.all().mapTo(HashSet()) { it.id.uuid }
 
             // Asked now: the directory may not have probed a member that just joined.
             override fun initialOptions(id: UUID): ServerOptions? {
                 if (id == memberId.uuid) return ServerOptions.initial(globalModule.globalConfig)
-                val member =
-                    consensus.members(systemDatabase).firstOrNull { it.id.uuid == id }
-                        ?: return null
+                val member = clusterServers.all().firstOrNull { it.id.uuid == id } ?: return null
                 val peer =
                     try {
                         runBlocking {
@@ -1067,11 +1101,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             }
 
             override fun address(id: UUID): String? =
-                consensus
-                    .members(systemDatabase)
-                    .firstOrNull { it.id.uuid == id }
-                    ?.raftAddress
-                    ?.toString()
+                clusterServers.all().firstOrNull { it.id.uuid == id }?.raftAddress?.toString()
 
             override fun holding(tx: Transaction, id: UUID): Set<String> {
                 // As members report it now, as SHOW SERVERS judges Deallocated: a member that
