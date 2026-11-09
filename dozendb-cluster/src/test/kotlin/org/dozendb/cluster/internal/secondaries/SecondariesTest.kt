@@ -467,6 +467,9 @@ class SecondariesTest {
             }
         }
         eventually { assertThat(secondary.films()).isEqualTo(1) }
+        // Until it learns that the secondary runs the database, it reads on a follower; SHOW
+        // DATABASES asks the members.
+        eventually { assertThat(other.roles(FILMS)[secondary.serverId]).isEqualTo("secondary") }
 
         val started = { secondary.transactions().numberOfStartedTransactions }
         val before = started()
