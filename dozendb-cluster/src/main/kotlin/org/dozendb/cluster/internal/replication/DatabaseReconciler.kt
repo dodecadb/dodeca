@@ -422,6 +422,10 @@ internal class DatabaseReconciler(
                     databases.registered().keys.any { it.name() == id.name() } ->
                         id.name() == defaultDatabase
                     wanted != null -> create(database, wanted)
+                    // A copy that moved off this member while it was down starts as it was: a
+                    // primary's group counts it in until the system leader removes it, and a
+                    // secondary serves until its replacement runs. It goes as below.
+                    database.online && trusted(id) -> create(database, CopyMode.PRIMARY)
                     // Placed elsewhere: as the system leader, it names the creator, in a system
                     // transaction, which reconciles again; tried again if it failed.
                     placed ->

@@ -566,6 +566,45 @@ class DatabaseReconcilerTest {
     }
 
     @Test
+    fun `a primary that moved off this member while it was down starts, and goes once it left`() {
+        local.stored[films.name()] = true
+        local.groups += films.databaseId().uuid()
+        graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator, other)))
+
+        reconciler.reconcile()
+
+        assertThat(local.registered[films])
+            .describedAs("its group counts it in until the system leader removes it")
+            .isEqualTo(LocalDatabase(true, false, CopyMode.PRIMARY))
+        local.notVoting += films
+        local.notMember += films
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.dropped).containsExactly(films)
+    }
+
+    @Test
+    fun `a secondary that moved off this member while it was down goes once its replacement runs`() {
+        local.stored[films.name()] = true
+        local.marks += films.databaseId().uuid()
+        graph.databases =
+            listOf(
+                desired(
+                    films,
+                    creator = creator,
+                    hosts = setOf(creator),
+                    secondaries = setOf(other),
+                )
+            )
+        runs = { member, _ -> member == other }
+
+        reconciler.reconcile()
+        reconciler.reconcile()
+
+        assertThat(local.dropped).containsExactly(films)
+        assertThat(local.marks).isEmpty()
+    }
+
+    @Test
     fun `a secondary goes as soon as it is no longer placed here`() {
         local.addSecondary(films)
         graph.databases =
