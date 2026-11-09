@@ -5,9 +5,10 @@ many databases (`CREATE`, `DROP`, `START` and `STOP DATABASE`), property
 existence, key and type constraints, roles and privileges, local and remote
 database aliases, online backup and restore, metrics and the query and
 security logs, and Raft-based replication with automatic leader failover,
-writes on any member, and database leaders balanced over the members. A
-cluster of three or more voting members survives the loss of a minority of
-members without losing acknowledged writes.
+writes on any member, database leaders balanced over the members, databases
+placed on servers by their topologies, and secondaries that pull transactions
+to serve reads. A cluster of three or more voting members survives the loss
+of a minority of members without losing acknowledged writes.
 
 DozenDB is a single jar installed into Neo4j Community's `lib/`. It began as an
 add-on to [DozerDB](https://dozerdb.org) and contains a Kotlin port of the

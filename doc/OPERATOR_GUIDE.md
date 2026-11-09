@@ -2,9 +2,12 @@
 
 ## Cluster members
 
-The members of a cluster are the voting members of the Raft group of the
-`system` database: every member hosts `system`. Every other database has its
-own Raft group, whose members are the servers the database is placed on (see
+The members of a cluster, its servers, are the voting members of the Raft
+group of the `system` database, the primaries of `system`, and the servers
+that host `system` as a secondary, which pull it instead (see
+[`system` as a secondary](#system-as-a-secondary)): every member hosts
+`system`. Every other database has its own Raft group, whose members are the
+servers the database is placed on as a primary (see
 [Placing databases](#placing-databases)): the leader of `system` adds members
 to each database's group and removes them from it until they match.
 
@@ -13,16 +16,16 @@ Two procedures show the members, on any member:
 - `CALL dozendb.cluster.members()` lists the cluster's members with their Raft
   and Bolt addresses, where each takes writes that other members forward
   (`routingAddress`, see [Writes on any member](#writes-on-any-member)), which
-  one leads `system`, and in `databases` the databases whose groups each member
-  votes in.
+  one leads `system`, which host it as secondaries (`SECONDARY`), and in
+  `databases` the databases whose groups each member votes in.
 - `CALL dozendb.cluster.status()` lists, for every database running on the
   member asked, the member's role, the leader, Raft indexes, and in `members`
   the ids of the members that vote in the database's group.
 
 Changing the members needs an administrator, and changes one member at a time.
-A change needs a majority of the members before it and a majority after it: in
-a cluster of three, one member may be down while another is added or dropped,
-and in a cluster of two both must be up to drop one.
+A change of the primaries of `system` needs a majority of them before it and a
+majority after it: with three, one may be down while another is added or
+dropped, and with two both must be up to drop one.
 
 ### Adding a member
 
@@ -42,7 +45,9 @@ and in a cluster of two both must be up to drop one.
 
 3. Run that call on any member. It returns once the new member votes in the
    group of `system`, which brings it up to date first. The new member is now
-   a Free server: it hosts no other database.
+   a Free server: it hosts no other database. A server that hosts `system` as
+   a secondary is added on the leader of `system` instead (see
+   [`system` as a secondary](#system-as-a-secondary)).
 4. Enable it: `ENABLE SERVER '<its id>'`, with the id `SHOW SERVERS` shows
    (see [Servers](#servers)). As in Neo4j Enterprise, this places no database
    on it: new databases, topologies that grow and `REALLOCATE DATABASES` do
@@ -62,7 +67,10 @@ started again.
 version, still starts, belongs to another cluster (its databases came from
 elsewhere) or was dropped from this one. A server whose certificate the
 members do not trust is not reachable: the error says why, for example
-`unable to find valid certification path`.
+`unable to find valid certification path`. So is a server whose host name
+was missing from DNS until moments ago, as while its container was replaced:
+Java caches failed lookups for 10 seconds (`networkaddress.cache.negative.ttl`),
+and the error says `Unable to resolve host`. Try again then.
 
 ### Dropping a member
 
@@ -144,9 +152,9 @@ A server is in one of these states:
 - **Enabled**: databases can be placed on it, and its options are recorded in
   the system graph. The members a cluster forms with are enabled at its first
   start, each with the options of its `initial.server.*` settings.
-- **Free**: a member added to a running cluster. It votes in the group of
-  `system` and hosts no other database until `ENABLE SERVER` enables it, so
-  clients connected to it find no other database there.
+- **Free**: a member added to a running cluster. It hosts `system`, as a
+  primary or a secondary, and no other database until `ENABLE SERVER` enables
+  it, so clients connected to it find no other database there.
 - **Cordoned**: an enabled server that keeps the copies it hosts and takes no
   new ones.
 - **Deallocating**: its copies move to other servers, and it takes no new
@@ -155,9 +163,9 @@ A server is in one of these states:
   placed on it and it votes in no database's group. It can be dropped.
 - **Dropped**: dropped from the cluster, and still running.
 
-A Free server can lead `system`, as it votes in its group, and changes the
-databases' groups as any leader of `system` does, through the members that
-vote in them.
+A Free server that hosts `system` as a primary can lead it, as it votes in its
+group, and changes the databases' groups as any leader of `system` does,
+through the members that vote in them.
 
 `health` is `Available` while the server answers the member asked, and
 `Unavailable` otherwise; `hosting` lists the databases running on it, none
@@ -203,9 +211,12 @@ Both refuse a Free server. The options:
 - `tags`: strings without duplicates or commas, which name the server for the
   leader priority (see [Where databases are led](#where-databases-are-led)).
   Default: none.
-- `modeConstraint`: `NONE`, the default, or `PRIMARY`: the server hosts
-  primaries. With `SECONDARY` it hosts no primary, and as DozenDB has no
-  secondaries yet, no database but `system`.
+- `modeConstraint`: `NONE`, the default: the server hosts primaries and
+  secondaries; `PRIMARY`: only primaries; `SECONDARY`: only secondaries (see
+  [Secondaries](#secondaries)). A copy whose mode the new constraint does not
+  allow turns into the other mode where it may, without copying the database
+  (see [Changing modes](#changing-modes)). How a server hosts `system` does not
+  depend on it, but on `server.cluster.system_database_mode`.
 - `allowedDatabases`: if not empty, the only databases placed on the server.
   `deniedDatabases`: databases not placed on it. Only one of the two can be
   set. Default: none.
@@ -246,21 +257,25 @@ the server commands run on the leader of `system`.
 ## Placing databases
 
 Each database but `system` is placed on some of the enabled servers, as in
-Neo4j Enterprise: it has a copy, a primary, on each, and runs in a Raft group
-of those servers. Every server hosts `system`.
+Neo4j Enterprise: it has a copy on each, a primary or a secondary. Its
+primaries run in a Raft group of those servers, and its secondaries pull from
+them (see [Secondaries](#secondaries)). Every server hosts `system`.
 
 ```
-CREATE DATABASE films TOPOLOGY 3 PRIMARIES
+CREATE DATABASE films TOPOLOGY 3 PRIMARIES 2 SECONDARIES
 ALTER DATABASE films SET TOPOLOGY 2 PRIMARIES
 ```
 
-Without `TOPOLOGY`, a new database gets the default number of primaries: 1,
-as in Neo4j Enterprise, or `initial.dbms.default_primaries_count` (1 to 11) at
-the cluster's first start. `CALL dbms.setDefaultAllocationNumbers(3, 0)`
-changes it later, for new databases, and `CALL dbms.showTopologyGraphConfig()`
-shows it. The second number, of secondaries, must be 0: DozenDB has no
-secondaries yet. The default database of a new cluster gets the default number
-of primaries, or as many as there are servers if fewer.
+Without `TOPOLOGY`, a new database gets the default numbers: 1 primary and 0
+secondaries, as in Neo4j Enterprise, or `initial.dbms.default_primaries_count`
+(1 to 11) and `initial.dbms.default_secondaries_count` (0 to 20) at the
+cluster's first start, and a `TOPOLOGY` without `SECONDARIES` the default
+number of secondaries. `CALL dbms.setDefaultAllocationNumbers(3, 1)` changes
+both later, for new databases, and `CALL dbms.showTopologyGraphConfig()` shows
+them. `ALTER DATABASE ... SET TOPOLOGY` without `SECONDARIES` keeps the number
+of secondaries. The default database of a new cluster gets the default numbers,
+or as many copies of each as the servers can host if fewer, its primaries
+first.
 
 `ALTER DATABASE films SET ACCESS READ ONLY` (or `READ WRITE`) makes a database
 read-only on every server, as in Neo4j Enterprise. `ALTER DATABASE ... SET
@@ -280,24 +295,30 @@ databases, and give the default database three copies too:
 ### Where copies go
 
 A copy goes to an enabled server, not Cordoned or Deallocating, whose
-`modeConstraint` allows primaries and whose `allowedDatabases` and
+`modeConstraint` allows its mode and whose `allowedDatabases` and
 `deniedDatabases` let it host the database; a server hosts at most one copy of
-a database. New copies go to servers that answer first, then to those that host
-the fewest copies, then by id. When a topology shrinks, copies leave servers
-that are cordoned first, then those that do not answer, then those that host
-the most. A command that cannot place every copy fails and changes nothing,
-such as `CREATE DATABASE` with more primaries than servers can host it.
+a database, a primary or a secondary. Primaries go to servers whose
+`modeConstraint` is `PRIMARY` before those with `NONE`, and secondaries to
+those with `SECONDARY` before those with `NONE`, so that servers that take
+either mode are used last. Within that, new copies go to servers that answer
+first, then to those that host the fewest copies, of either mode, then by id.
+When a topology shrinks, copies leave servers that are cordoned first, then
+those that do not answer, then those that host the most. A command that cannot
+place every copy fails and changes nothing, such as `CREATE DATABASE` with more
+primaries than servers can host it.
 
 ### Moving copies
 
 Copies move when a topology changes, when `ALTER SERVER` options no longer
-allow a copy, and on `DEALLOCATE` and `REALLOCATE`. A move makes the new copy
-first: the new server copies the database from a server that holds it, and
-joins the database's group once it caught up. Only then does the old copy
-leave the group, and is deleted. A copy that leads the database first hands
-the leadership over to one that stays, waiting at most 30 seconds. Reads and
-writes go on throughout. `SHOW DATABASES` lists each copy, with
-`currentStatus`:
+allow a copy, and on `DEALLOCATE` and `REALLOCATE`, secondaries as primaries. A
+move makes the new copy first: the new server copies the database from a server
+that holds it, and joins the database's group once it caught up, or for a
+secondary, runs it. Only then does the old copy leave the group, and is
+deleted. A copy whose server may host it in the other mode only changes its
+mode, keeping its store (see [Changing modes](#changing-modes)). A copy that
+leads the database first hands the leadership over to one that stays, waiting
+at most 30 seconds. Reads and writes go on throughout. `SHOW DATABASES` lists
+each copy, with `currentStatus`:
 
 - `store copying` on a server that copies the database;
 - `initial` on a server it is placed on that has no copy yet;
@@ -323,18 +344,235 @@ As enabling a server places nothing on it, reallocate to give it copies.
 ### Clients
 
 Routing tables, from any server, list the servers a database is placed on, so
-`neo4j://` drivers reach them wherever they connect. A server that does not
-host the database answers from what the others last told it, and a server
-that starts or stops leading a database tells the others at once, so that
-their routing tables follow a new leader within moments. When what they told
-it names no leader, or no server that runs the database, it asks them first. It
-waits up to 1 second for each server's answer, and up to 3 seconds in all, so
-a server that does not answer at all delays it by no more than that. A
-transaction that reaches a server that does not host its database runs on one
-that does, when its client lets the server route it (see
-[Writes on any member](#writes-on-any-member)): a write on the leader, a read
-on any server that runs the database. Otherwise it fails, saying where to
-connect.
+`neo4j://` drivers reach them wherever they connect; secondaries as readers
+(see [Reading from secondaries](#reading-from-secondaries)). A server that does
+not host the database answers from what the others last told it, and a server
+that starts or stops leading a database tells the others at once, so that their
+routing tables follow a new leader within moments. When what they told it names
+no leader, or no server that runs the database, it asks them first. It waits up
+to 1 second for each server's answer, and up to 3 seconds in all, so a server
+that does not answer at all delays it by no more than that. A transaction that
+reaches a server that does not host its database runs on one that does, when
+its client lets the server route it (see [Writes on any
+member](#writes-on-any-member)): a write on the leader, a read on any server
+that runs the database. Otherwise it fails, saying where to connect.
+
+## Secondaries
+
+A database can have secondaries besides its primaries, as in Neo4j
+Enterprise: read-only copies that pull committed transactions from another
+server that hosts the database. They never vote in the database's Raft group
+and never lead it, so they add servers to read from without slowing writes,
+which wait for a majority of the primaries only.
+
+```
+CREATE DATABASE films TOPOLOGY 3 PRIMARIES 2 SECONDARIES
+ALTER DATABASE films SET TOPOLOGY 3 PRIMARIES 4 SECONDARIES
+```
+
+A topology has 0 to 20 secondaries, placed as
+[Where copies go](#where-copies-go) says: on servers whose `modeConstraint` is
+`SECONDARY`, then on those with `NONE`. A new secondary copies the database
+from a server that hosts it, then pulls from there on. `WAIT` waits for it as
+for a primary, until it runs.
+
+### Pulling
+
+A secondary asks an upstream for the transactions it lacks every
+`db.cluster.catchup.pull_interval` (1 second by default, not dynamic), at once
+again while an answer brought as many as one pull carries (about 4 MiB), and
+at once for a read that waits for a transaction it lacks (see
+[Reading from secondaries](#reading-from-secondaries)). It applies them as a
+primary applies the database's Raft entries, so that every copy holds the same
+transactions with the same ids. It forces its transaction log once per pull;
+after a crash it recovers what it forced, and pulls the rest again.
+
+An upstream answers from its transaction logs. When they no longer hold the
+next transaction a secondary needs, as after the secondary was down for longer
+than its upstreams keep their logs (`db.tx_log.rotation.retention_policy`,
+`2 days 2G` by default), the secondary copies the database from its upstreams
+next to its own copy, which keeps serving reads meanwhile, and then puts the
+new copy in place: the database is unavailable on that server for a moment,
+and the server logs `Secondary <database> runs again, from a copy`. A
+secondary whose store holds another history than its upstream's, as files put
+in place by hand, fails with a message that says how to recover: delete the
+database's files on that server and restart it, which copies the database.
+
+A secondary that finds no upstream, or none that answers, logs a warning once
+and retries every interval; `SHOW DATABASES` shows it online with a growing
+lag meanwhile.
+
+### Choosing upstreams
+
+`server.cluster.catchup.upstream_strategy` lists strategies, asked in order
+before every pull: the first that finds servers wins, and the secondary pulls
+from one of them at random. Strategies find only servers that run the
+database and answer. Without any, the strategy is
+`typically-connect-to-random-secondary`; when no strategy finds a server, a
+random primary is the last resort.
+
+| Strategy | Upstream |
+|---|---|
+| `connect-to-random-primary-server` | A primary. |
+| `typically-connect-to-random-secondary` | Another secondary; one pull in ten, a primary. |
+| `connect-randomly-to-server-tags` | A secondary with a tag of `server.cluster.catchup.connect_randomly_to_server_tags` (dynamic). |
+| `connect-randomly-within-server-tags` | A secondary that shares a tag with this server. |
+| `leader-only` | The leader. |
+| `user-defined` | As `server.cluster.catchup.user_defined_upstream_strategy` says (below). |
+| `connect-randomly-to-server-group`, `connect-randomly-within-server-group` | Deprecated names of the two tag strategies; the first takes its tags from `server.cluster.catchup.connect_randomly_to_server_group`. |
+
+`user_defined_upstream_strategy` holds rules separated by `;`, asked in order:
+the first that passes any server wins. A rule chains filters with `->`,
+starting from every server that runs the database: `tags(a, b)` passes those
+with either tag (`groups(...)` is its old name), `min(n)` passes the servers
+it is given if there are at least `n`, else none, and `all()` passes every
+server. `halt()` may end the last rule, which then passes none; otherwise
+`all()` follows the rules. For example, to pull from a server in `eu`, else
+from one in `us` if at least two run there, else from a random primary:
+
+```
+server.cluster.catchup.upstream_strategy=user-defined
+server.cluster.catchup.user_defined_upstream_strategy=tags(eu); tags(us)->min(2); halt()
+```
+
+A server with an unknown strategy, or rules that do not parse, does not start.
+A comma between rules, which one of Neo4j Enterprise's examples has, is
+refused: its meaning is not documented.
+
+### Reading from secondaries
+
+Routing tables, from any server, list a database's secondaries as readers,
+besides its primaries. With `dbms.routing.reads_on_primaries_enabled=false`
+(not dynamic) they list only the secondaries as readers while any of them can
+read, and the primaries when none can. Server-side routing reads where routing
+tables say.
+
+A secondary refuses writes as a follower does: with
+`Neo.ClientError.Cluster.NotALeader`, naming the leader, or by running them on
+the leader when the client lets the server route them (see
+[Writes on any member](#writes-on-any-member)).
+
+A read on a secondary sees what it pulled, about a pull interval behind the
+primaries. A read whose bookmarks name a transaction the secondary lacks has
+it pull from the leader at once, and waits for it as on any server
+(`db.transaction.bookmark_ready_timeout`), so that a driver session reads its
+own writes without waiting for the next pull. A linearizable read (see
+`COMPATIBILITY.md`) on a secondary first asks a primary for the last
+transaction acknowledged before the read, then pulls until it has it; it fails
+as on a follower when no primary answers. A backup taken from a secondary does
+the same first, so that it holds every write acknowledged before it started.
+
+`SHOW DATABASES` lists each secondary with the role `secondary`, `writer`
+false, its `lastCommittedTxn`, and as `replicationLag` how many transactions
+it is behind the copy with the newest, as a negative number;
+`currentSecondariesCount` and `requestedSecondariesCount` count them.
+`SHOW SERVERS` includes them in `hosting` and `requestedHosting`.
+
+### Pausing a secondary
+
+```
+CALL dbms.cluster.secondaryReplicationDisable('films', true)
+CALL dbms.cluster.secondaryReplicationDisable('films', false)
+```
+
+pauses, then resumes, the secondary of `films` on the server connected to, for
+example to read a fixed state over a `bolt://` connection, or to back it up as
+it was. Each returns the secondary's `state`, `paused` or `running`. A paused
+secondary pulls nothing, also not for reads that wait for a bookmark, which
+time out. Routing tables leave it out, so that drivers get no data it stopped
+updating, and `SHOW DATABASES` shows `Secondary replication is paused` as its
+`statusMessage`. A pause ends when the database or the server starts again.
+The procedure needs an administrator, and fails on a server where the database
+does not run as a secondary. `dbms.cluster.readReplicaToggle` is its
+deprecated name.
+
+### Changing modes
+
+A server that loses a primary of a database and may host a secondary of it,
+or the reverse, keeps its copy and changes its mode, without copying the
+database. This happens when `ALTER SERVER` changes a server's `modeConstraint`
+(see [Changing a server](#changing-a-server)), and when a topology changes.
+
+- A primary keeps voting until its replacement votes and the leader of
+  `system` removes it from the database's group. It then starts the database
+  again as a secondary, from its own store.
+- A secondary stops pulling, asks the database's leader for the Raft term of
+  its last transaction, and joins the database's group from its own store. If
+  the leader's Raft log no longer holds that transaction, the server copies
+  the database instead.
+
+The database restarts on that server, which takes a moment; on the others,
+reads and writes go on. For example, to let `read1`, which hosts only
+secondaries, take over the primaries of `core3`, which is to host only
+secondaries:
+
+```
+ALTER SERVER 'read1' SET OPTIONS {modeConstraint: 'NONE'}
+ALTER SERVER 'core3' SET OPTIONS {modeConstraint: 'SECONDARY'}
+```
+
+In the other order, the second command fails and changes nothing while no
+other server can host the primaries.
+
+### `system` as a secondary
+
+With `server.cluster.system_database_mode=SECONDARY` (not dynamic; `PRIMARY`
+by default), a server hosts `system` as a secondary: it pulls `system` from
+the servers that host it instead of voting in its Raft group. A cluster needs
+few primaries of `system`, three, or five to survive the loss of two, and
+administration commands wait for a majority of them only; the other servers
+can be secondaries of `system`. Otherwise a system secondary takes part as any
+server does: it is enabled, hosts databases in either mode, answers routing
+requests, and takes administration commands, which it sends to the leader of
+`system` as a follower does. Reads of `system` that must be current, such as
+`WAIT`, ask a primary of `system` first, as linearizable reads do.
+
+To add one, configure it as for [Adding a member](#adding-a-member), with
+`server.cluster.system_database_mode=SECONDARY`. Its own address must not be
+in `dbms.dozendb.cluster.initial_members`: only primaries of `system` form a
+cluster, and the server refuses to start otherwise. Once the cluster has
+formed, the server copies `system`, pulls it, and logs:
+
+```
+This server hosts the system database as a secondary and is not part of the
+cluster yet. To add it, run CALL dozendb.cluster.addMember('<its Raft address>')
+on the leader of the system database.
+```
+
+Run that call on the leader of `system`, which `dozendb.cluster.members()`
+shows: a `neo4j://` connection in write mode, as Cypher Shell opens by
+default, reaches it with `-d system`. The leader records the server, which
+learns it when it next pulls and is then a Free server, listed by
+`dozendb.cluster.members()` with the role `SECONDARY`. `DROP SERVER` drops it
+as any other server: it learns it from the system graph it pulls, and stops
+its databases.
+
+To change how a server hosts `system`, restart it with the other
+`system_database_mode`, then run `addMember` with its address on the leader of
+`system` again. Until then it hosts `system` as before, and logs that it does.
+A primary that turns secondary is recorded, then removed from the group of
+`system`, which is refused if it is the group's only member; it pulls on from
+its own store. A secondary that turns primary joins the group of `system`
+from its own store, as in [Changing modes](#changing-modes); `addMember`
+returns once it votes there. Its other databases stay as they are.
+
+### Sizing
+
+- **Primaries of `system`**: three, or five in a large cluster, with every
+  other server a secondary of `system`. Administration commands commit with a
+  majority of them, and only they take part in its elections.
+- **Pull interval**: reads without bookmarks on a secondary lag by about
+  `db.cluster.catchup.pull_interval`; reads with bookmarks do not wait for it.
+  A longer interval sends upstreams fewer pulls.
+- **Upstreams**: an upstream reads each pull's transactions from its
+  transaction log and sends them. With many secondaries, let them pull from
+  each other, as `typically-connect-to-random-secondary` does, or by tags, so
+  that the primaries serve few pulls; at a site far from the primaries, let a
+  few secondaries pull from the primaries and the others from them.
+- **Transaction log retention**: a secondary that was down for longer than its
+  upstreams keep their transaction logs copies the whole database. Keep them,
+  on every server that serves pulls, for at least as long as a secondary may
+  be down for maintenance.
 
 ## TLS between members
 
@@ -1014,9 +1252,12 @@ With clustering, each member reports for each database, under
 | `dozendb.cluster.raft.snapshots`, `leader_changes` | Raft snapshots taken and leaders learned of since the member started. |
 | `dozendb.cluster.raft.leadership_transfers` | Leaderships the member handed over to another member on purpose since it started: when it stopped the database, when the database was read-only on it, or to balance leaders (see [Where databases are led](#where-databases-are-led)). |
 | `dozendb.cluster.store_copy.received`, `served`, `repeated`, `received.millis` | Copies of the database the member installed, to join or to catch up; copies it sent to other members; copies it needed within an hour of the previous one, a sign that it does not keep up (see "Raft log retention and catch-up" in `COMPATIBILITY.md`); and how long catching up took. |
+| `cluster.catchup.tx_pull_requests_received` | Pulls of transactions that secondaries sent the member. |
+| `cluster.store_copy.pull_updates`, `pull_update_highest_tx_id_requested`, `pull_update_highest_tx_id_received` | On a secondary: the pulls it sent, the id of the last transaction it had when it last pulled, and the highest transaction id it pulled. Its lag shows in `SHOW DATABASES` (see [Reading from secondaries](#reading-from-secondaries)). |
 
-The server reports `neo4j.dbms.dozendb.cluster.members`, the voting members
-as the member knows them.
+The server reports `neo4j.dbms.dozendb.cluster.members`, the cluster's servers
+as the member knows them: the primaries of `system` and the servers that host
+it as a secondary.
 
 ### Query log
 

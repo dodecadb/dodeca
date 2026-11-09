@@ -137,9 +137,9 @@ Community, such as many databases. Of what Neo4j Enterprise adds, DozenDB
 supports many databases, property existence, key and type constraints, user
 status and home databases, roles and privileges, impersonation, local and
 remote database aliases, the server commands, databases placed on servers by
-their topologies with `ALTER DATABASE ... SET TOPOLOGY` and `SET ACCESS`, and
-clustering of its own. It refuses, with an error, the other Enterprise
-features that reach it, such as composite databases, secondaries,
+their topologies with `ALTER DATABASE ... SET TOPOLOGY` and `SET ACCESS`,
+secondaries, and clustering of its own. It refuses, with an error, the other
+Enterprise features that reach it, such as composite databases,
 `ALTER DATABASE ... SET OPTION`, `CREATE DATABASE` options other than seeds,
 and external authentication.
 
@@ -156,23 +156,61 @@ Enterprise documents: `SHOW SERVERS` with Enterprise's columns,
 DATABASES FROM SERVER[S]`, `[DRYRUN] REALLOCATE DATABASES` and `DROP SERVER`;
 the states `Free`, `Enabled`, `Cordoned`, `Deallocating`, `Deallocated` and
 `Dropped`; the server options; `CREATE DATABASE ... TOPOLOGY` and
-`ALTER DATABASE ... SET TOPOLOGY`, with a default of one primary; the settings
+`ALTER DATABASE ... SET TOPOLOGY`, with a default of one primary and no
+secondaries; secondaries, which pull transactions from upstreams; the settings
 `initial.server.tags`, `initial.server.mode_constraint`,
 `initial.server.allowed_databases`, `initial.server.denied_databases`,
-`initial.dbms.default_primaries_count` and
-`initial.dbms.automatically_enable_free_servers`; and the procedures
+`initial.dbms.default_primaries_count`,
+`initial.dbms.default_secondaries_count`,
+`initial.dbms.automatically_enable_free_servers`,
+`server.cluster.system_database_mode`, `db.cluster.catchup.pull_interval`,
+`server.cluster.catchup.upstream_strategy` with its strategies,
+`server.cluster.catchup.connect_randomly_to_server_tags`,
+`server.cluster.catchup.connect_randomly_to_server_group`,
+`server.cluster.catchup.user_defined_upstream_strategy` and
+`dbms.routing.reads_on_primaries_enabled`; and the procedures
 `dbms.cluster.cordonServer`, `dbms.cluster.uncordonServer`,
 `dbms.cluster.deallocateDatabaseFromServer(s)`,
 `dbms.cluster.deallocateNumberOfDatabases`, `dbms.cluster.reallocateDatabase`,
 `dbms.cluster.reallocateNumberOfDatabases`,
 `dbms.cluster.setAutomaticallyEnableFreeServers`,
-`dbms.setDefaultAllocationNumbers` and `dbms.showTopologyGraphConfig`. See
-`OPERATOR_GUIDE.md`, "Servers" and "Placing databases". Where DozenDB differs:
+`dbms.setDefaultAllocationNumbers`, `dbms.showTopologyGraphConfig`,
+`dbms.cluster.secondaryReplicationDisable` and its deprecated name
+`dbms.cluster.readReplicaToggle`. See `OPERATOR_GUIDE.md`, "Servers",
+"Placing databases" and "Secondaries". Where DozenDB differs, or decides what
+Enterprise does not document:
 
-- No secondaries: a topology has primaries only, the number of secondaries
-  must be 0, and a server with `modeConstraint: 'SECONDARY'` hosts no database
-  but `system`. `initial.dbms.default_secondaries_count`, like any setting
-  DozenDB does not know, fails Neo4j's strict configuration validation.
+- `ALTER DATABASE ... SET TOPOLOGY` without `SECONDARIES` keeps the number of
+  secondaries; `CREATE DATABASE ... TOPOLOGY` without it takes the default
+  number.
+- A copy whose server loses its mode but may host the other keeps its store
+  and changes its mode in place, both ways, primary to secondary once its
+  replacement votes. A server changes how it hosts `system` when restarted
+  with the other `server.cluster.system_database_mode` and added again with
+  `dozendb.cluster.addMember`; until then it keeps its mode and logs why.
+  Enterprise documents mode changes of `system` only through restarts and
+  disaster recovery.
+- Secondaries move as primaries do, the new copy first.
+- A secondary that finds no upstream that answers retries every pull
+  interval; `SHOW DATABASES` shows it online, its lag growing.
+  `replicationLag` counts the transactions behind the copy with the newest, as
+  a negative number, as Neo4j's listing page for 5.26 defines it.
+- `dbms.cluster.secondaryReplicationDisable` returns `state`, `paused` or
+  `running`. A pause ends when the database or the server starts again, so
+  that a forgotten pause does not stop a secondary for good, and routing
+  tables leave paused secondaries out, so that drivers get no data they
+  stopped updating; `bolt://` connections still reach them.
+- Strategies are also accepted as `connect-randomly-to-server-with-tag`, the
+  name of Enterprise's settings page, and `user_defined`. A comma between the
+  rules of `user_defined_upstream_strategy`, which one Enterprise example has,
+  is refused, as its meaning is not documented. The deprecated group
+  strategies log a warning at start.
+- A server with `modeConstraint: 'SECONDARY'` cannot be the
+  `existingDataSeedServer` of `CREATE DATABASE`: the seed server creates the
+  database, which only a primary does.
+- `dbms.cluster.minimum_initial_system_primaries_count` is not supported: a
+  cluster forms from `dbms.dozendb.cluster.initial_members`, which must not
+  name a server with `server.cluster.system_database_mode=SECONDARY`.
 - Enterprise refuses to take a database with more than one primary down to
   one, and to deallocate a server that hosts a database's only primary.
   DozenDB does both, as every move makes the new copy before it removes the
@@ -184,7 +222,9 @@ the states `Free`, `Enabled`, `Cordoned`, `Deallocating`, `Deallocated` and
   database's Raft group, as the leader of `system` knows it, also while the
   server is down, so that a database whose only copy is there is not lost.
 - A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
-  a `Free` server votes in the Raft group of `system`, as every server does.
+  a `Free` server votes in the Raft group of `system`, as every server does
+  that hosts `system` as a primary. A server that hosts `system` as a
+  secondary is added on the leader of `system`.
 - A cluster recovered from backups places each database again on as many
   servers as its topology asks for, or on the default number if that is
   larger, as a standalone server records one primary for each of its
@@ -458,7 +498,8 @@ Neo4j reads the setting's name only up to the dot, and ignores the setting.
 What clustering does not do yet.
 
 - **Replicated databases.** Every database is replicated, `system` included,
-  each in its own Raft group. Administration commands (users,
+  each in its own Raft group of its primaries; its secondaries pull its
+  transactions instead. Administration commands (users,
   `CREATE DATABASE` and the like) run on the leader of `system` and reach every
   member; a follower forwards them there or rejects them, as it does writes
   (below).
@@ -495,7 +536,7 @@ What clustering does not do yet.
 - **`SHOW DATABASES`** lists, as Neo4j Enterprise does, a row for each member
   a database runs on, on whichever member it is run: the member's `serverID`,
   Bolt `address`, `access`, `currentStatus` and `statusMessage`, the role
-  `primary`, and `writer` true only for the leader, while the database is
+  `primary` or `secondary`, and `writer` true only for the leader, while the database is
   online and writable there. A member that does not answer within a second
   shows the role and status `unknown`, and no address, as in Enterprise.
   `lastCommittedTxn` and `replicationLag` are each copy's, the lag counted from
@@ -506,7 +547,9 @@ What clustering does not do yet.
   `dozendb.consistency` set to `linearizable`, or for every transaction with
   `dbms.dozendb.reads.default_consistency`. They apply to Bolt clients
   (drivers, Cypher Shell). The transaction waits on the member that runs it:
-  the leader for a write that a follower forwards there.
+  the leader for a write that a follower forwards there. On a secondary, it
+  asks a primary for the last transaction acknowledged before it, and pulls
+  until it has it.
 - **Transaction size.** A transaction can replicate at most 16 MiB of changes
   in Neo4j's command encoding. A larger one fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is
