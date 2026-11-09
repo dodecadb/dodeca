@@ -18,6 +18,10 @@
     <prometheus.image>prom/prometheus:v3.5.0</prometheus.image>
     <!-- Tests only: no jar to install (see maven-jar-plugin below). -->
     <maven.install.skip>true</maven.install.skip>
+    <!-- Test classes run in this many JVMs at once, each with a cluster that takes up to 4 GB of
+         Docker's memory: three members of 512 MB heap and 64 MB page cache, about 1.3 GB each.
+         With less than 12 GB free, Docker's VM kills containers; pass -Dit.forks=1. -->
+    <it.forks>3</it.forks>
   </properties>
 
   <dependencies>
@@ -91,6 +95,10 @@
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-failsafe-plugin</artifactId>
             <configuration>
+              <forkCount>${it.forks}</forkCount>
+              <reuseForks>true</reuseForks>
+              <!-- For TestPorts, as in the parent; Maven 3.9 leaves it empty elsewhere. -->
+              <argLine>-Ddozendb.test.fork=${surefire.forkNumber}</argLine>
               <systemPropertyVariables>
                 <dozendb.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}.jar</dozendb.plugin.jar>
                 <neo4j.image>${neo4j.image}</neo4j.image>

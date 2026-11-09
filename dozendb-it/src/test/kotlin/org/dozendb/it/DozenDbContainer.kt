@@ -14,6 +14,7 @@ import java.nio.file.Path
 import java.security.KeyStore
 import java.time.Duration
 import java.util.Base64
+import java.util.UUID
 import javax.crypto.SecretKey
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
@@ -463,8 +464,10 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         val dozenDbImage: DockerImageName by lazy {
             val jar = Path.of(property("dozendb.plugin.jar"))
             check(Files.isRegularFile(jar)) { "$jar does not exist; build dozendb-plugin first" }
+            // A tag of this JVM's own, which it deletes when it ends: other JVMs that run tests at
+            // the same time build theirs.
             val image =
-                ImageFromDockerfile("dozendb-it", true)
+                ImageFromDockerfile("dozendb-it:${UUID.randomUUID()}", true)
                     .withFileFromPath("dozendb.jar", jar)
                     .withDockerfileFromBuilder {
                         it.from(communityImage.asCanonicalNameString())

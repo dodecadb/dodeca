@@ -57,6 +57,10 @@
 
     <!-- The Docker image the plugin is tested against and installed into. -->
     <neo4j.image>neo4j:${neo4j.version}-community</neo4j.image>
+
+    <!-- Test classes run in this many JVMs at once, each with this much heap at most. -->
+    <test.forks>4</test.forks>
+    <test.heap>4g</test.heap>
   </properties>
 
   <dependencyManagement>
@@ -315,10 +319,14 @@
         <artifactId>maven-surefire-plugin</artifactId>
         <configuration>
           <trimStackTrace>false</trimStackTrace>
+          <forkCount>${test.forks}</forkCount>
+          <reuseForks>true</reuseForks>
           <!-- Neo4j 5.26.27's Bolt server releases connection memory it never allocated and, with
                assertions on, logs an AssertionError whenever a connection closes; plain Neo4j
                Community does the same. -->
-          <argLine>-da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker</argLine>
+          <!-- The fork number, so that JVMs of one build take ports from different parts of
+               TestPorts' range; in systemPropertyVariables, Maven 3.9 leaves it empty. -->
+          <argLine>-Xmx${test.heap} -Ddozendb.test.fork=${surefire.forkNumber} -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker</argLine>
           <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
           <properties>
             <configurationParameters>

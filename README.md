@@ -43,6 +43,12 @@ mise exec -- ./mvnw verify -Pit       # also run the Testcontainers suites
 
 The plugin jar is written to `dozendb-plugin/target/`.
 
+Each module runs its test classes in 4 JVMs at once, and the Testcontainers
+suites in 3, each with a cluster of its own; `-Dtest.forks=1` and
+`-Dit.forks=1` run them one at a time, as when a test's log should be read on
+its own. The 3 clusters need up to 12 GB of Docker's memory: with less free,
+Docker's VM kills containers, so pass `-Dit.forks=1`.
+
 ## License
 
 GNU General Public License v3.0, the same license as Neo4j Community Edition and
