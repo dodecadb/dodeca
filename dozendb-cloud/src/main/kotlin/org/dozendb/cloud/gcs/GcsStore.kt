@@ -1,5 +1,6 @@
 package org.dozendb.cloud.gcs
 
+import com.google.auth.oauth2.GoogleCredentials
 import com.google.cloud.BaseServiceException
 import com.google.cloud.NoCredentials
 import com.google.cloud.WriteChannel
@@ -21,6 +22,7 @@ import org.dozendb.cloud.internal.ObjectInfo
 import org.dozendb.cloud.internal.ObjectStorageProvider
 import org.dozendb.cloud.internal.ObjectStore
 import org.dozendb.cloud.internal.Upload
+import org.dozendb.cloud.internal.pagedListing
 import org.neo4j.cloud.storage.StorageSystemProviderFactory.ChunkChannelSupplier
 import org.neo4j.configuration.Config
 import org.neo4j.logging.InternalLogProvider
@@ -40,7 +42,11 @@ internal class GcsStorageProvider(
  * service account. `STORAGE_EMULATOR_HOST` points it at an emulator, without credentials, as
  * Google's own tools do. Objects are written by resumable uploads, in order.
  */
-internal class GcsStore(private val storage: Storage) : ObjectStore {
+internal class GcsStore(
+    private val storage: Storage,
+    private val credentialsProblem: String? = null,
+    private val pageSize: Long = 1000,
+) : ObjectStore {
     override val scheme = "gs"
     override val uploadConcurrency = 1
 
@@ -74,26 +80,26 @@ internal class GcsStore(private val storage: Storage) : ObjectStore {
         }
 
     override fun list(container: String, prefix: String): Iterator<Listed> {
-        val blobs =
+        val first =
             call(container, prefix, null) {
-                storage
-                    .list(
-                        container,
-                        BlobListOption.prefix(prefix),
-                        BlobListOption.currentDirectory(),
-                    )
-                    .iterateAll()
-                    .iterator()
+                storage.list(
+                    container,
+                    BlobListOption.prefix(prefix),
+                    BlobListOption.currentDirectory(),
+                    BlobListOption.pageSize(pageSize),
+                )
             }
-        return object : Iterator<Listed> {
-            override fun hasNext() = guarded(container, prefix) { blobs.hasNext() }
-
-            override fun next(): Listed {
-                val blob = guarded(container, prefix) { blobs.next() }
-                return if (blob.isDirectory) Listed.Folder(blob.name)
-                else Listed.Object(blob.name, info(blob))
-            }
-        }
+        return pagedListing(
+            generateSequence(first) { page ->
+                    guarded(container, prefix) { if (page.hasNextPage()) page.nextPage else null }
+                }
+                .map { page ->
+                    page.values.map { blob ->
+                        if (blob.isDirectory) Listed.Folder(blob.name)
+                        else Listed.Object(blob.name, info(blob))
+                    }
+                }
+        )
     }
 
     override fun delete(container: String, key: String) {
@@ -168,6 +174,10 @@ internal class GcsStore(private val storage: Storage) : ObjectStore {
             request()
         } catch (e: BaseServiceException) {
             throw failure(container, key, version, e)
+        } catch (e: IOException) {
+            // Read channels wrap the service's answers.
+            throw (e.cause as? BaseServiceException)?.let { failure(container, key, version, it) }
+                ?: e
         } catch (e: UncheckedIOException) {
             throw e.cause ?: e
         }
@@ -180,7 +190,7 @@ internal class GcsStore(private val storage: Storage) : ObjectStore {
             throw UncheckedIOException(failure(container, key, null, e))
         }
 
-    private fun failure(
+    internal fun failure(
         container: String,
         key: String,
         version: String?,
@@ -193,7 +203,15 @@ internal class GcsStore(private val storage: Storage) : ObjectStore {
                 if (version != null) IOException("$uri changed while it was read: $reason")
                 else NoSuchFileException(uri, null, reason)
             401,
-            403 -> AccessDeniedException(uri, null, reason)
+            403 ->
+                AccessDeniedException(
+                    uri,
+                    null,
+                    credentialsProblem?.let {
+                        "$reason. The request was anonymous: Google's application default " +
+                            "credentials were not found: $it"
+                    } ?: reason,
+                )
             412 -> IOException("$uri changed while it was read: $reason")
             else -> IOException("$uri: $reason")
         }.apply { initCause(e) }
@@ -205,17 +223,33 @@ internal class GcsStore(private val storage: Storage) : ObjectStore {
         /** One client for the process: it keeps its connections and credentials. */
         val shared: GcsStore by lazy { create() }
 
-        private fun create(): GcsStore {
+        /**
+         * A store for the process's environment: an emulator at [emulatorHost], without
+         * credentials, or Google Cloud Storage with the application default credentials. Without
+         * them, requests go anonymous, which public buckets allow; denied ones say why there were
+         * no credentials.
+         */
+        internal fun create(
+            emulatorHost: String? =
+                System.getenv("STORAGE_EMULATOR_HOST")?.takeIf { it.isNotEmpty() }
+        ): GcsStore {
             val options = StorageOptions.http()
-            System.getenv("STORAGE_EMULATOR_HOST")
-                ?.takeIf { it.isNotEmpty() }
-                ?.let { host ->
-                    options
-                        .setHost(if ("://" in host) host else "http://$host")
-                        .setCredentials(NoCredentials.getInstance())
-                        .setProjectId(System.getenv("GOOGLE_CLOUD_PROJECT") ?: "dozendb")
+            if (emulatorHost != null) {
+                options
+                    .setHost(if ("://" in emulatorHost) emulatorHost else "http://$emulatorHost")
+                    .setCredentials(NoCredentials.getInstance())
+                    .setProjectId(System.getenv("GOOGLE_CLOUD_PROJECT") ?: "dozendb")
+                return GcsStore(options.build().service)
+            }
+            val problem =
+                try {
+                    options.setCredentials(GoogleCredentials.getApplicationDefault())
+                    null
+                } catch (e: IOException) {
+                    options.setCredentials(NoCredentials.getInstance())
+                    e.message ?: e.toString()
                 }
-            return GcsStore(options.build().service)
+            return GcsStore(options.build().service, problem)
         }
     }
 }

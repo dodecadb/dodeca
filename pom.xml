@@ -63,6 +63,10 @@
 
     <!-- The Docker image the plugin is tested against and installed into. -->
     <neo4j.image>neo4j:${neo4j.version}-community</neo4j.image>
+    <!-- Emulators of the clouds' storage, for tests of cloud storage. -->
+    <s3mock.image>adobe/s3mock:5.2.3</s3mock.image>
+    <fake-gcs.image>fsouza/fake-gcs-server:1.56.1</fake-gcs.image>
+    <azurite.image>mcr.microsoft.com/azure-storage/azurite:3.37.0</azurite.image>
 
     <!-- Test classes run in this many JVMs at once, each with this much heap at most. -->
     <test.forks>4</test.forks>

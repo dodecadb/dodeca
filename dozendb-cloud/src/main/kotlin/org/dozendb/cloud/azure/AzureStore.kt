@@ -1,7 +1,6 @@
 package org.dozendb.cloud.azure
 
 import com.azure.core.exception.ClientAuthenticationException
-import com.azure.core.exception.HttpResponseException
 import com.azure.core.util.BinaryData
 import com.azure.core.util.Context
 import com.azure.identity.DefaultAzureCredentialBuilder
@@ -13,6 +12,7 @@ import com.azure.storage.blob.models.BlobRequestConditions
 import com.azure.storage.blob.models.BlobStorageException
 import com.azure.storage.blob.models.DownloadRetryOptions
 import com.azure.storage.blob.models.ListBlobsOptions
+import com.microsoft.aad.msal4j.MsalException
 import java.io.IOException
 import java.io.OutputStream
 import java.io.UncheckedIOException
@@ -30,6 +30,8 @@ import org.dozendb.cloud.internal.ObjectInfo
 import org.dozendb.cloud.internal.ObjectStorageProvider
 import org.dozendb.cloud.internal.ObjectStore
 import org.dozendb.cloud.internal.Upload
+import org.dozendb.cloud.internal.growingPart
+import org.dozendb.cloud.internal.pagedListing
 import org.neo4j.cloud.storage.StorageSystemProviderFactory.ChunkChannelSupplier
 import org.neo4j.configuration.Config
 import org.neo4j.logging.InternalLogProvider
@@ -49,11 +51,11 @@ internal class AzureStorageProvider(
  * is used instead, for its storage account only; it also reaches the Azurite emulator. Containers
  * are named `<storage account>/<container>`.
  */
-internal class AzureStore
-private constructor(
+internal class AzureStore(
     private val endpointSuffix: String,
     private val authority: String,
     private val connectionString: String?,
+    private val pageSize: Int = 1000,
 ) : ObjectStore {
     override val scheme = "azb"
     override val uploadConcurrency = 4
@@ -109,29 +111,36 @@ private constructor(
         }
 
     override fun list(container: String, prefix: String): Iterator<Listed> {
-        val items =
+        val pages =
             call(container, prefix) {
                 containerClient(container)
-                    .listBlobsByHierarchy("/", ListBlobsOptions().setPrefix(prefix), null)
+                    .listBlobsByHierarchy(
+                        "/",
+                        ListBlobsOptions().setPrefix(prefix).setMaxResultsPerPage(pageSize),
+                        null,
+                    )
+                    .iterableByPage()
                     .iterator()
             }
-        return object : Iterator<Listed> {
-            override fun hasNext() = guarded(container, prefix) { items.hasNext() }
-
-            override fun next(): Listed {
-                val item = guarded(container, prefix) { items.next() }
-                if (item.isPrefix == true) return Listed.Folder(item.name)
-                val properties = item.properties
-                return Listed.Object(
-                    item.name,
-                    ObjectInfo(
-                        properties.contentLength ?: 0,
-                        properties.lastModified.toInstant(),
-                        properties.eTag,
-                    ),
-                )
-            }
-        }
+        return pagedListing(
+            generateSequence { if (guarded(container, prefix) { pages.hasNext() }) pages else null }
+                .map { iterator ->
+                    guarded(container, prefix) { iterator.next() }
+                        .value
+                        .map { item ->
+                            if (item.isPrefix == true) Listed.Folder(item.name)
+                            else
+                                Listed.Object(
+                                    item.name,
+                                    ObjectInfo(
+                                        item.properties.contentLength ?: 0,
+                                        item.properties.lastModified.toInstant(),
+                                        item.properties.eTag,
+                                    ),
+                                )
+                        }
+                }
+        )
     }
 
     override fun delete(container: String, key: String) {
@@ -177,11 +186,10 @@ private constructor(
     }
 
     /**
-     * Blocks of 8 MiB, twice as big every 5000 blocks, up to the 4000 MiB Azure takes: a blob has
-     * up to 50,000 blocks.
+     * Blocks of 8 MiB, twice as big every 5000 blocks, up to 1 GiB: a blob has up to 50,000 blocks,
+     * which makes blobs of up to 19 TiB (Azure allows 190 TiB).
      */
-    override fun partSize(index: Int) =
-        minOf(FIRST_BLOCK.toLong() shl (index / 5000), MAX_BLOCK).toInt()
+    override fun partSize(index: Int) = growingPart(index, 5000)
 
     private fun block(index: Int) =
         Base64.getEncoder().encodeToString("%010d".format(index).toByteArray())
@@ -235,12 +243,7 @@ private constructor(
         val failure =
             when (e) {
                 is BlobStorageException -> {
-                    val reason =
-                        listOfNotNull(
-                                e.serviceMessage?.lines()?.firstOrNull() ?: e.message,
-                                e.errorCode?.let { "($it)" },
-                            )
-                            .joinToString(" ")
+                    val reason = reason(e)
                     when (e.statusCode) {
                         404 -> NoSuchFileException(uri, null, reason)
                         401,
@@ -249,14 +252,29 @@ private constructor(
                         else -> IOException("$uri: $reason")
                     }
                 }
-                is ClientAuthenticationException ->
-                    AccessDeniedException(uri, null, e.message?.lines()?.firstOrNull())
-                is HttpResponseException -> IOException("$uri: ${e.message}")
                 is UncheckedIOException -> e.cause ?: IOException("$uri: ${e.message}")
-                is IllegalArgumentException -> IOException("$uri: ${e.message}")
-                else -> IOException("$uri: ${e.message}")
+                else -> {
+                    // Signing in fails with the identity library's exceptions, often wrapped:
+                    // the innermost says why.
+                    val causes = generateSequence<Throwable>(e) { it.cause }
+                    val innermost = causes.last()
+                    val message = (innermost.message ?: innermost.toString()).lines().first()
+                    if (causes.any { it is ClientAuthenticationException || it is MsalException }) {
+                        AccessDeniedException(uri, null, "signing in to Azure failed: $message")
+                    } else {
+                        IOException("$uri: $message")
+                    }
+                }
             }
         return failure.apply { if (cause == null) initCause(e) }
+    }
+
+    /** What Azure said: the message in its XML answer, if any, and its error code. */
+    private fun reason(e: BlobStorageException): String {
+        val message =
+            MESSAGE.find(e.serviceMessage ?: e.message.orEmpty())?.groupValues?.get(1)?.trim()
+        val code = e.errorCode?.toString() ?: "status ${e.statusCode}"
+        return if (message.isNullOrEmpty()) code else "$message ($code)"
     }
 
     /** Writes a download into a buffer of the range's size. */
@@ -272,9 +290,8 @@ private constructor(
 
     companion object {
         private const val RETRIES = 3
-        private const val FIRST_BLOCK = 8 shl 20
-        private const val MAX_BLOCK = 4000L shl 20
         private val COPY_POLL = Duration.ofSeconds(1)
+        private val MESSAGE = Regex("<Message>([^<\\n]*)")
 
         private val stores = ConcurrentHashMap<List<String?>, AzureStore>()
 

@@ -209,9 +209,7 @@ class ObjectStorageProviderTest {
         // Ranges of 1 MiB, four ahead: the far seek lands in one fetched already, the seek back
         // fetches anew from where it lands.
         assertThat(store.ranges).allMatch { it.last - it.first < (1 shl 20) }
-        assertThat(store.ranges.map { it.first })
-            .contains(0, 10)
-            .doesNotContain((3L shl 20) + 7)
+        assertThat(store.ranges.map { it.first }).contains(0, 10).doesNotContain((3L shl 20) + 7)
     }
 
     @Test
@@ -278,6 +276,20 @@ class ObjectStorageProviderTest {
         assertThat(listed("s3://films/b")).containsExactly("s3://films/b/c.csv", "s3://films/b/d/")
         assertThat(listed("s3://films/none/")).isEmpty()
         assertThat(fs.listFiles(path("s3://films/")) { it.toString().endsWith(".csv") }).hasSize(2)
+    }
+
+    @Test
+    fun `listings sort each page and drop entries an earlier page gave`() {
+        val info = ObjectInfo(1, Instant.EPOCH, null)
+        val pages =
+            sequenceOf(
+                listOf(Listed.Folder("b/"), Listed.Object("a", info)),
+                listOf(Listed.Folder("b/"), Listed.Object("c", info)),
+                listOf(Listed.Object("d", info)),
+            )
+
+        assertThat(pagedListing(pages).asSequence().map { it.key }.toList())
+            .containsExactly("a", "b/", "c", "d")
     }
 
     @Test

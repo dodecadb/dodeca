@@ -22,6 +22,7 @@ internal class ObjectWriteChannel(
     memory: MemoryTracker,
 ) : WriteableChannel(CHUNK_SIZE, memory) {
     private val permits = Semaphore(store.uploadConcurrency)
+    private val budget = Semaphore(BUDGET)
     private val sent = mutableListOf<CompletableFuture<Void>>()
     private var upload: Upload? = null
     private var part: ByteBuffer? = null
@@ -91,8 +92,15 @@ internal class ObjectWriteChannel(
 
     private fun send(to: Upload, data: ByteBuffer) {
         failure()?.let { throw it }
+        val units = minOf(BUDGET, (data.position() + MIB - 1) / MIB)
         try {
             permits.acquire()
+            try {
+                budget.acquire(units)
+            } catch (e: InterruptedException) {
+                permits.release()
+                throw e
+            }
         } catch (e: InterruptedException) {
             throw interrupted(e)
         }
@@ -104,6 +112,7 @@ internal class ObjectWriteChannel(
                     try {
                         to.part(index, data)
                     } finally {
+                        budget.release(units)
                         permits.release()
                     }
                 },
@@ -148,5 +157,10 @@ internal class ObjectWriteChannel(
     companion object {
         /** What the writer buffers before it moves the bytes to the part being filled. */
         private const val CHUNK_SIZE = 1 shl 20
+
+        private const val MIB = 1 shl 20
+
+        /** The MiB of parts being sent at once, but for a part bigger than all of them. */
+        private const val BUDGET = 64
     }
 }

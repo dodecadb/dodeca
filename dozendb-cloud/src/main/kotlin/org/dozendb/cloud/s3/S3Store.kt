@@ -14,6 +14,8 @@ import org.dozendb.cloud.internal.ObjectInfo
 import org.dozendb.cloud.internal.ObjectStorageProvider
 import org.dozendb.cloud.internal.ObjectStore
 import org.dozendb.cloud.internal.Upload
+import org.dozendb.cloud.internal.growingPart
+import org.dozendb.cloud.internal.pagedListing
 import org.neo4j.cloud.storage.StorageSystemProviderFactory.ChunkChannelSupplier
 import org.neo4j.configuration.Config
 import org.neo4j.logging.InternalLogProvider
@@ -46,7 +48,13 @@ internal class S3StorageProvider(
  * for an S3-compatible store, it addresses buckets in the path and sends checksums only where S3
  * requires them, as such stores expect.
  */
-internal class S3Store(private val s3: S3Client, private val checksums: Boolean) : ObjectStore {
+internal class S3Store(
+    private val s3: S3Client,
+    internal val checksums: Boolean,
+    private val pageSize: Int = 1000,
+    private val copyLimit: Long = 5L shl 30,
+    private val copyPart: Long = 512L shl 20,
+) : ObjectStore {
     override val scheme = "s3"
     override val uploadConcurrency = 4
 
@@ -88,20 +96,20 @@ internal class S3Store(private val s3: S3Client, private val checksums: Boolean)
     override fun list(container: String, prefix: String): Iterator<Listed> {
         val pages =
             call(container, prefix) {
-                s3.listObjectsV2Paginator { it.bucket(container).prefix(prefix).delimiter("/") }
+                s3.listObjectsV2Paginator {
+                        it.bucket(container).prefix(prefix).delimiter("/").maxKeys(pageSize)
+                    }
                     .iterator()
             }
-        val entries = generateSequence {
-            if (guarded(container, prefix) { pages.hasNext() }) pages else null
-        }
-            .flatMap { iterator ->
-                val page = guarded(container, prefix) { iterator.next() }
-                (page.contents().map {
+        return pagedListing(
+            generateSequence { if (guarded(container, prefix) { pages.hasNext() }) pages else null }
+                .map { iterator ->
+                    val page = guarded(container, prefix) { iterator.next() }
+                    page.contents().map {
                         Listed.Object(it.key(), ObjectInfo(it.size(), it.lastModified(), it.eTag()))
-                    } + page.commonPrefixes().map { Listed.Folder(it.prefix()) })
-                    .sortedBy { it.key }
-            }
-        return entries.iterator()
+                    } + page.commonPrefixes().map { Listed.Folder(it.prefix()) }
+                }
+        )
     }
 
     override fun delete(container: String, key: String) {
@@ -112,7 +120,7 @@ internal class S3Store(private val s3: S3Client, private val checksums: Boolean)
         val size =
             head(fromContainer, fromKey)?.size
                 ?: throw NoSuchFileException("s3://$fromContainer/$fromKey")
-        if (size <= MAX_COPY) {
+        if (size <= copyLimit) {
             call(toContainer, toKey) {
                 s3.copyObject {
                     it.sourceBucket(fromContainer)
@@ -124,11 +132,12 @@ internal class S3Store(private val s3: S3Client, private val checksums: Boolean)
             return
         }
         // Single copies stop at 5 GiB: bigger objects copy in ranges.
-        val id = start(toContainer, toKey)
+        // Copied parts carry no checksums, which an upload that declares them would refuse.
+        val id = start(toContainer, toKey, checksums = false)
         try {
             val parts =
-                (0 until size step COPY_PART).mapIndexed { index, from ->
-                    val to = minOf(from + COPY_PART, size) - 1
+                (0 until size step copyPart).mapIndexed { index, from ->
+                    val to = minOf(from + copyPart, size) - 1
                     val copied =
                         call(toContainer, toKey) {
                             s3.uploadPartCopy {
@@ -200,12 +209,12 @@ internal class S3Store(private val s3: S3Client, private val checksums: Boolean)
     }
 
     /**
-     * Parts of 8 MiB, twice as big every 1000 parts: S3 takes 10,000 parts, which makes objects of
-     * up to 8 TiB, more than the 5 TiB S3 allows.
+     * Parts of 8 MiB, twice as big every 1000 parts, up to 1 GiB: S3 takes 10,000 parts, which
+     * makes objects of up to 3.9 TiB (S3 allows 5 TiB).
      */
-    override fun partSize(index: Int) = FIRST_PART shl (index / 1000)
+    override fun partSize(index: Int) = growingPart(index, 1000)
 
-    private fun start(container: String, key: String): String =
+    private fun start(container: String, key: String, checksums: Boolean = this.checksums): String =
         call(container, key) {
             s3.createMultipartUpload {
                     it.bucket(container).key(key)
@@ -256,7 +265,7 @@ internal class S3Store(private val s3: S3Client, private val checksums: Boolean)
             throw UncheckedIOException(failure(container, key, e))
         }
 
-    private fun failure(container: String, key: String, e: SdkException): IOException {
+    internal fun failure(container: String, key: String, e: SdkException): IOException {
         val uri = "s3://$container/$key"
         if (e !is S3Exception) return IOException("$uri: ${e.message}", e)
         val details = e.awsErrorDetails()
@@ -276,14 +285,12 @@ internal class S3Store(private val s3: S3Client, private val checksums: Boolean)
     }
 
     companion object {
-        private const val FIRST_PART = 8 shl 20
-        private const val MAX_COPY = 5L shl 30
-        private const val COPY_PART = 512L shl 20
 
         /** One client for the process: it keeps its connections and credentials. */
         val shared: S3Store by lazy { create() }
 
-        private fun create(): S3Store {
+        /** A store with the SDK's defaults, as the process's environment sets them. */
+        internal fun create(): S3Store {
             val region =
                 try {
                     DefaultAwsRegionProviderChain().region

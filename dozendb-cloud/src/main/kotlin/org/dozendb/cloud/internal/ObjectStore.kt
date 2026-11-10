@@ -121,3 +121,24 @@ internal interface Upload {
     /** Gives the upload up; never throws. */
     fun abort()
 }
+
+/**
+ * Parts of 8 MiB, twice as big every [every] parts, up to 1 GiB: big objects stay within a cloud's
+ * number of parts while small ones are sent in small parts.
+ */
+internal fun growingPart(index: Int, every: Int): Int = (8 shl 20) shl minOf(index / every, 7)
+
+/**
+ * A listing of the pages a cloud answers: each page's entries in key order, without those an
+ * earlier page gave (S3Mock repeats a folder across pages).
+ */
+internal fun pagedListing(pages: Sequence<List<Listed>>): Iterator<Listed> {
+    var last: String? = null
+    return pages
+        .flatMap { page -> page.sortedBy { it.key } }
+        .filter { entry ->
+            val previous = last
+            (previous == null || entry.key > previous).also { if (it) last = entry.key }
+        }
+        .iterator()
+}
