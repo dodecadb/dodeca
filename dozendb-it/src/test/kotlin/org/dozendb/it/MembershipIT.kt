@@ -152,7 +152,8 @@ class MembershipIT {
 
     @Test
     fun `a member is added and another dropped during writes, and nothing acknowledged is lost`() {
-        administer("CREATE DATABASE films")
+        // Members log that they started before `system` elects its leader, which takes writes.
+        eventually { administer("CREATE DATABASE films IF NOT EXISTS") }
         eventually {
             for (member in started) {
                 assertThat(member.rows("MATCH (n) RETURN count(n) AS c", "films")).hasSize(1)
