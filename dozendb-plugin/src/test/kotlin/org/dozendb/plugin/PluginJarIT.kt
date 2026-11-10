@@ -77,6 +77,11 @@ class PluginJarIT {
             )
         assertThat(services("org.neo4j.dbms.archive.CheckDatabase"))
             .containsExactly("org.dozendb.backup.cli.CheckBackup")
+        assertThat(services("org.neo4j.configuration.SettingMigrator"))
+            .containsExactlyInAnyOrder(
+                "org.dozendb.core.DozenDbSettingsMigrator",
+                "org.dozendb.cluster.internal.ClusterSettingsMigrator",
+            )
     }
 
     @Test

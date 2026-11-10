@@ -31,7 +31,11 @@ import org.testcontainers.lifecycle.Startables
 class StandaloneIT {
     private val community =
         DozenDbContainer(DozenDbContainer.communityImage, "community").withHttp()
-    private val dozenDb = DozenDbContainer(DozenDbContainer.dozenDbImage, "dozendb").withHttp()
+    private val dozenDb =
+        DozenDbContainer(DozenDbContainer.dozenDbImage, "dozendb")
+            .withHttp()
+            // Neo4j Enterprise's deprecated name of initial.server.tags.
+            .withEnv("NEO4J_server_groups", "eu")
     private val servers = listOf(community, dozenDb)
 
     @BeforeAll
@@ -104,6 +108,16 @@ class StandaloneIT {
                             )
                     }
             }
+    }
+
+    @Test
+    fun `takes Enterprise's deprecated server groups for the initial server tags, with a warning`() {
+        assertThat(dozenDb.logs)
+            .contains(
+                "Use of deprecated setting 'server.groups'. It is replaced by 'initial.server.tags'."
+            )
+        assertThat(dozenDb.rows("SHOW SERVERS YIELD tags", "system").single()["tags"])
+            .isEqualTo(listOf("eu"))
     }
 
     @Test

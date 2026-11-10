@@ -596,6 +596,8 @@ Enterprise does not document:
   replaced otherwise, Neo4j Community's `neo4j-admin server unbind` included,
   refuses to start until `neo4j-admin server unbind` is run, as under a new id
   it would delete its databases.
+- The deprecated `server.groups` is taken for `initial.server.tags`, which
+  replaced it in Enterprise, with Neo4j's warning that says so.
 - A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
   a `Free` server votes in the Raft group of `system`, as every server does
   that hosts `system` as a primary. A server that hosts `system` as a
@@ -642,6 +644,9 @@ a database with a priority tag when it balances the others, and leaves the
 leadership where it is while no member with the tag can take it over. A
 database whose name contains a dot cannot have a priority tag of its own:
 Neo4j reads the setting's name only up to the dot, and ignores the setting.
+The deprecated `db.cluster.raft.leader_transfer.priority_group` and
+`db.cluster.raft.leader_transfer.priority_group.<database>` are taken for the
+priority tag, with Neo4j's warning that names the setting replacing them.
 
 ## Backup and restore
 
@@ -802,9 +807,7 @@ error, and their procedures do not exist.
   `dbms.listActiveLocks`, `dbms.scheduler.jobs`, `groups` and `failedJobs`,
   `db.checkpoint` and `dbms.checkConfigValue`.
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,
-  `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`, the
-  deprecated `server.groups` and
-  `db.cluster.raft.leader_transfer.priority_group`,
+  `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
   `server.backup.exec_connector.*` and
   `server.backup.store_copy_max_retry_time_per_request`.
 - **Neo4j Browser's Enterprise settings**: `browser.allow_outgoing_connections`,

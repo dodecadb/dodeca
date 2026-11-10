@@ -49,6 +49,19 @@ class ClusterSettingsTest {
     }
 
     @Test
+    fun `the deprecated priority groups are priority tags`() {
+        val config =
+            config(
+                "db.cluster.raft.leader_transfer.priority_group" to "eu",
+                "db.cluster.raft.leader_transfer.priority_group.films" to "us",
+            )
+
+        val tags = DatabasePriorityTag.lookup(config)
+        assertThat(tags("films")).isEqualTo("us")
+        assertThat(tags("neo4j")).isEqualTo("eu")
+    }
+
+    @Test
     fun `parses the initial members`() {
         val config =
             config("dbms.dozendb.cluster.initial_members" to "core1:7700,core2:7701,[::1]:7702")
