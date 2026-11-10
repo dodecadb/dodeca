@@ -170,6 +170,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                     if (GrpcServices.Type.SERVER in types) {
                         builder
                             .intercept(RefuseWhileStopping { stopping })
+                            .intercept(RefuseOtherMembers(peerId))
                             .intercept(
                                 RefuseUnavailableGroups {
                                     when {

@@ -26,10 +26,9 @@ class RatisTestCluster(
 ) : AutoCloseable {
     val database = DatabaseRef("neo4j", UUID.randomUUID())
 
-    inner class Node(val id: MemberId) {
+    inner class Node(val id: MemberId, val port: Int = TestPorts.free()) {
         val directory: Path = Files.createDirectories(root.resolve(id.toString()))
         val machine = RecordingStateMachine()
-        val port = TestPorts.free()
 
         var log: RatisConsensusLog? = null
             private set
@@ -67,7 +66,14 @@ class RatisTestCluster(
         }
     }
 
-    val nodes: List<Node> = List(size) { Node(MemberId(UUID.randomUUID())) }
+    private val all = MutableList(size) { Node(MemberId(UUID.randomUUID())) }
+
+    val nodes: List<Node>
+        get() = all
+
+    /** A new node, with an id of its own, that listens on the port of [replaced]. */
+    fun replacement(replaced: Node): Node =
+        Node(MemberId(UUID.randomUUID()), replaced.port).also { all += it }
 
     /** The directory of [node]'s Raft log for the group. */
     fun logDirectory(node: Node): Path =

@@ -8,13 +8,10 @@ import org.apache.ratis.proto.RaftProtos.RaftRpcRequestProto
 import org.apache.ratis.proto.grpc.RaftServerProtocolServiceGrpc
 import org.apache.ratis.protocol.RaftGroupId
 import org.apache.ratis.protocol.exceptions.ServerNotReadyException
-import org.apache.ratis.thirdparty.io.grpc.ForwardingServerCall
-import org.apache.ratis.thirdparty.io.grpc.ForwardingServerCallListener
 import org.apache.ratis.thirdparty.io.grpc.Metadata
 import org.apache.ratis.thirdparty.io.grpc.ServerCall
 import org.apache.ratis.thirdparty.io.grpc.ServerCallHandler
 import org.apache.ratis.thirdparty.io.grpc.ServerInterceptor
-import org.apache.ratis.thirdparty.io.grpc.Status
 import org.apache.ratis.thirdparty.io.grpc.StatusRuntimeException
 
 /**
@@ -36,70 +33,7 @@ internal class RefuseUnavailableGroups(private val unavailable: (UUID) -> String
         if (call.methodDescriptor.fullMethodName !in GROUP_STREAMS) {
             return next.startCall(call, headers)
         }
-        val refusable = RefusableCall(call)
-        return object :
-            ForwardingServerCallListener.SimpleForwardingServerCallListener<Q>(
-                next.startCall(refusable, headers)
-            ) {
-            override fun onMessage(message: Q) {
-                if (refusable.refused) return
-                val refusal = refusal(message)
-                if (refusal != null) refusable.refuse(refusal) else super.onMessage(message)
-            }
-
-            // Once refused, Ratis learns nothing more of the call, which would log its end.
-            override fun onHalfClose() {
-                if (!refusable.refused) super.onHalfClose()
-            }
-
-            override fun onCancel() {
-                if (!refusable.refused) super.onCancel()
-            }
-
-            override fun onComplete() {
-                if (!refusable.refused) super.onComplete()
-            }
-
-            override fun onReady() {
-                if (!refusable.refused) super.onReady()
-            }
-        }
-    }
-
-    /**
-     * A call refused while Ratis may still answer an earlier request on it, from another thread:
-     * its methods take turns, and do nothing once it is closed.
-     */
-    private class RefusableCall<Q, R>(call: ServerCall<Q, R>) :
-        ForwardingServerCall.SimpleForwardingServerCall<Q, R>(call) {
-        @Volatile
-        var refused = false
-            private set
-
-        private var closed = false
-
-        @Synchronized
-        fun refuse(refusal: StatusRuntimeException) {
-            refused = true
-            close(refusal.status, refusal.trailers ?: Metadata())
-        }
-
-        @Synchronized
-        override fun sendHeaders(headers: Metadata) {
-            if (!closed) super.sendHeaders(headers)
-        }
-
-        @Synchronized
-        override fun sendMessage(message: R) {
-            if (!closed) super.sendMessage(message)
-        }
-
-        @Synchronized
-        override fun close(status: Status, trailers: Metadata) {
-            if (closed) return
-            closed = true
-            super.close(status, trailers)
-        }
+        return startRefusable(call, headers, next) { refusal(it) }
     }
 
     /** The failure for [message], if it is a request for a group that cannot take it. */

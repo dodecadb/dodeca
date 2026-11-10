@@ -108,7 +108,9 @@ lost.
 
 Add the replacement and enable it, then deallocate the failed server: its
 copies are made again on the other servers, from the copies they hold, and it
-leaves each database's group. Once `SHOW SERVERS` shows it `Deallocated`, drop
+leaves each database's group. The replacement may have the failed server's
+address: until the failed server is dropped, the others still count it, down,
+and the replacement answers only for itself. Once `SHOW SERVERS` shows it `Deallocated`, drop
 it. Deallocating first works as well, if the other servers can take its
 copies.
 

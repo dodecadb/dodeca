@@ -940,6 +940,42 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a member at the address of a stopped member answers only for itself`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            leader.write("one")
+            val stopped = cluster.nodes.first { it != leader }
+            stopped.stop()
+            // As a server that replaces a member under a new id, at the same address, does.
+            val replacement = cluster.replacement(stopped).also { it.start() }
+            replacement.consensus.startGroup(
+                cluster.database,
+                replacement.machine,
+                leader.consensus.members(cluster.database),
+            )
+
+            // The leader hears nothing from the stopped member: answers for it would make the
+            // leader count it, and its votes, as those of a member that runs.
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    val contact =
+                        leader.consensus.progress(cluster.database)!!.followerContactMillis!!
+                    assertThat(contact.getValue(stopped.id))
+                        .isGreaterThan(3 * RatisTestCluster.ELECTION_TIMEOUT_MAX.toMillis())
+                }
+            leader.consensus.addMember(cluster.database, replacement.consensus.self, CHANGE_TIMEOUT)
+            leader.consensus.removeMember(cluster.database, stopped.id, CHANGE_TIMEOUT)
+            assertThat(leader.write("two")).isInstanceOf(CommitResult.Committed::class.java)
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(replacement.machine.payloads()).containsExactly("one", "two")
+                }
+        }
+
+    @Test
     fun `a member that joined without a state machine applies the log once one is attached`() =
         runBlocking<Unit> {
             val cluster = RatisTestCluster(root, 3).also { cluster = it }
