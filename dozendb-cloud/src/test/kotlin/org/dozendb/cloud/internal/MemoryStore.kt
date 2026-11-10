@@ -1,6 +1,7 @@
 package org.dozendb.cloud.internal
 
 import java.io.IOException
+import java.io.UncheckedIOException
 import java.net.URI
 import java.nio.ByteBuffer
 import java.nio.file.NoSuchFileException
@@ -73,8 +74,17 @@ internal class MemoryStore(
         return ByteBuffer.wrap(stored.data.copyOfRange(from.toInt(), to.toInt()))
     }
 
-    override fun list(container: String, prefix: String): Iterator<Listed> {
-        check(container, prefix)
+    /** Lazy, as the clouds' pages: a refusal comes with the first entry. */
+    override fun list(container: String, prefix: String): Iterator<Listed> = iterator {
+        try {
+            check(container, prefix)
+        } catch (e: IOException) {
+            throw UncheckedIOException(e)
+        }
+        yieldAll(entries(container, prefix))
+    }
+
+    private fun entries(container: String, prefix: String): List<Listed> {
         val under = "$container/$prefix"
         val entries = sortedMapOf<String, Listed>()
         for ((name, stored) in objects.tailMap(under)) {
@@ -96,7 +106,7 @@ internal class MemoryStore(
                     )
             }
         }
-        return entries.values.iterator()
+        return entries.values.toList()
     }
 
     override fun delete(container: String, key: String) {

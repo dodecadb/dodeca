@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.net.URI
 import java.nio.ByteBuffer
+import java.nio.file.AccessDeniedException
 import java.nio.file.DirectoryNotEmptyException
 import java.nio.file.FileAlreadyExistsException
 import java.nio.file.Files
@@ -316,6 +317,15 @@ class ObjectStorageProviderTest {
         assertThat(listed("s3://films/b")).containsExactly("s3://films/b/c.csv", "s3://films/b/d/")
         assertThat(listed("s3://films/none/")).isEmpty()
         assertThat(fs.listFiles(path("s3://films/")) { it.toString().endsWith(".csv") }).hasSize(2)
+    }
+
+    @Test
+    fun `a folder that the cloud refuses to list fails as its listing opens`() {
+        store.denied += "films"
+
+        assertThatThrownBy { Files.list(path("s3://films/backups/")) }
+            .isInstanceOf(AccessDeniedException::class.java)
+            .hasMessage("s3://films/backups/: denied")
     }
 
     @Test

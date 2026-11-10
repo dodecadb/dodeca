@@ -107,6 +107,12 @@ internal open class ObjectStorageProvider(
         val folder = ensureCorrectPath(dir)
         val prefix = key(folder).let { if (it.isEmpty() || it.endsWith("/")) it else "$it/" }
         val entries = store.list(container(folder), prefix)
+        // The first page now, so that a refusal fails the opening, as an IOException.
+        try {
+            entries.hasNext()
+        } catch (e: UncheckedIOException) {
+            throw e.cause ?: e
+        }
         val system = folder.fileSystem
         return object : DirectoryStream<Path> {
             private var iterated = false
