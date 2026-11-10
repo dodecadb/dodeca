@@ -47,14 +47,16 @@ class BackupSettings : SettingsDeclaration {
         @JvmField
         @field:Description(
             "The providers of the seeds that CREATE DATABASE ... OPTIONS {seedURI: ...} reads, " +
-                "the first one for a URI's scheme first: FileSeedProvider for file: URIs, and " +
+                "the first one for a URI's scheme first: FileSeedProvider for file: URIs, " +
+                "CloudSeedProvider for the s3:, gs: and azb: URIs of cloud storage, " +
+                "S3SeedProvider, Neo4j Enterprise's deprecated name for it, for s3: URIs, and " +
                 "URLConnectionSeedProvider for http:, https: and ftp: URIs. Empty disables seeds."
         )
         val seedProviders: Setting<List<String>> =
             newBuilder(
                     "dbms.databases.seed_from_uri_providers",
                     listOf(STRING),
-                    listOf(SeedProvider.File.name),
+                    listOf(SeedProvider.File.name, SeedProvider.Cloud.name),
                 )
                 .addConstraint(
                     object : SettingConstraint<List<String>>() {

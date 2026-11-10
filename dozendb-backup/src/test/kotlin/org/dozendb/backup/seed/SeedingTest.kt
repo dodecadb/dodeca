@@ -12,6 +12,7 @@ import org.dozendb.backup.Artifacts
 import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.CommunityServer
 import org.dozendb.backup.cli.RestoreCommand
+import org.dozendb.cloud.internal.MemoryCloud
 import org.dozendb.core.StandaloneServer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeAll
@@ -37,8 +38,14 @@ class SeedingTest {
     private lateinit var backup: Path
     private lateinit var dump: Path
     private lateinit var expected: Map<String, Any?>
+    private lateinit var chain: Path
+    private lateinit var differential: Path
+    private lateinit var expectedChain: Map<String, Any?>
 
-    /** A full backup and a dump of the same database, which Neo4j Community wrote. */
+    /**
+     * A full backup and a dump of the same database, which Neo4j Community wrote, and in a folder
+     * of its own a chain of that full backup and a differential backup of a later write.
+     */
     @BeforeAll
     fun seeds(@TempDir(cleanup = CleanupMode.ON_SUCCESS) directory: Path) {
         seeds = Files.createDirectories(directory.resolve("seeds"))
@@ -46,16 +53,25 @@ class SeedingTest {
         CommunityServer.populate(source)
         expected = CommunityServer.summary(source)
         backup = seeds.resolve("films${Artifacts.EXTENSION}")
-        source.backupFull(backup)
+        val full = source.backupFull(backup)
         source.stop()
         val dumped = Admin.run(source.home, ::DumpCommand, "neo4j", "--to-path=$seeds")
         assertThat(dumped.exitCode).describedAs(dumped.toString()).isZero
         dump = seeds.resolve("neo4j.dump")
+        source.start()
+        source.database().executeTransactionally("CREATE (:Batch {n: 1})")
+        expectedChain = CommunityServer.summary(source)
+        chain = Files.createDirectories(directory.resolve("chain"))
+        Files.copy(backup, chain.resolve("films-1${Artifacts.EXTENSION}"))
+        differential = chain.resolve("films-2${Artifacts.EXTENSION}")
+        source.backupDifferential(full.highestAppendIndex, differential)
+        source.stop()
     }
 
     @AfterEach
     fun stop() {
         server?.close()
+        MemoryCloud.clear()
     }
 
     private fun start(vararg settings: Pair<Setting<*>, Any>): StandaloneServer =
@@ -131,16 +147,16 @@ class SeedingTest {
         val server = start()
         val failed = "Failed to create the specified database 'films'"
 
-        assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 's3://bucket/films'}"))
+        assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 'foo://bucket/films'}"))
             .hasMessage(
-                "$failed: no seed provider for 's3' URIs is enabled: " +
-                    "dbms.databases.seed_from_uri_providers is FileSeedProvider."
+                "$failed: no seed provider for 'foo' URIs is enabled: " +
+                    "dbms.databases.seed_from_uri_providers is FileSeedProvider, CloudSeedProvider."
             )
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 'https://host/films'}"))
             .hasMessage(
                 "$failed: no seed provider for 'https' URIs is enabled: " +
-                    "dbms.databases.seed_from_uri_providers is FileSeedProvider; " +
-                    "URLConnectionSeedProvider reads them."
+                    "dbms.databases.seed_from_uri_providers is FileSeedProvider, " +
+                    "CloudSeedProvider; URLConnectionSeedProvider reads them."
             )
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 'films.backup'}"))
             .hasMessage("$failed: seedURI 'films.backup' has no scheme.")
@@ -153,10 +169,9 @@ class SeedingTest {
                     ),
                 )
             )
-            .hasMessage(
-                "$failed: unsupported option(s) 'seedCredentials'. DozenDB supports " +
-                    "'existingData', 'seedURI', 'existingDataSeedServer', " +
-                    "'existingDataSeedInstance', 'storeFormat'."
+            .hasMessageStartingWith(
+                "$failed: unsupported option(s) 'seedCredentials', which Neo4j Enterprise's " +
+                    "deprecated S3SeedProvider takes."
             )
         assertThat(server.failure("CREATE DATABASE films OPTIONS {existingData: 'reuse'}"))
             .hasMessageContaining("existingData")
@@ -201,7 +216,7 @@ class SeedingTest {
 
         assertThat(waited["success"]).isEqualTo(false)
         val message =
-            "Unable to create `films` from its seed ${later.toUri()}: $later is not a file"
+            "Unable to create `films` from its seed ${later.toUri()}: $later does not exist"
         assertThat(waited["message"] as String).contains(message).doesNotContain("Cause")
         assertThat(server.status("films")["currentStatus"]).isNotEqualTo("online")
         assertThat(server.status("films")["statusMessage"] as String).contains(message)
@@ -252,11 +267,77 @@ class SeedingTest {
 
     @Test
     fun `refuses to start with a seed provider DozenDB does not have`() {
-        assertThatThrownBy { start(BackupSettings.seedProviders to listOf("S3SeedProvider")) }
+        assertThatThrownBy { start(BackupSettings.seedProviders to listOf("GcsSeedProvider")) }
             .rootCause()
             .hasMessageContaining(
-                "DozenDB has no seed provider S3SeedProvider: it has FileSeedProvider, " +
-                    "URLConnectionSeedProvider"
+                "DozenDB has no seed provider GcsSeedProvider: it has FileSeedProvider, " +
+                    "URLConnectionSeedProvider, CloudSeedProvider, S3SeedProvider"
+            )
+    }
+
+    @Test
+    fun `creates a database from a chain of backups, a differential one or a folder of them`() {
+        val server = start()
+
+        for ((name, seed) in listOf("films" to differential, "series" to chain)) {
+            val waited =
+                server.waited(
+                    "CREATE DATABASE $name OPTIONS {existingData: 'use', seedURI: " +
+                        "'${seed.toUri()}'} WAIT"
+                )
+            assertThat(waited["success"]).describedAs("$waited").isEqualTo(true)
+            assertThat(CommunityServer.summary(server.database(name))).isEqualTo(expectedChain)
+        }
+        val waited =
+            server.waited("CREATE DATABASE books OPTIONS {seedURI: '${seeds.parent.toUri()}'} WAIT")
+        assertThat(waited["message"] as String).contains("${seeds.parent} holds no backups")
+    }
+
+    @Test
+    fun `creates databases from seeds in cloud storage, where they are`() {
+        MemoryCloud.put("seeds", "films.backup", Files.readAllBytes(backup))
+        MemoryCloud.put("seeds", "neo4j.dump", Files.readAllBytes(dump))
+        for (file in listOf("films-1.backup", "films-2.backup")) {
+            MemoryCloud.put("seeds", "chain/$file", Files.readAllBytes(chain.resolve(file)))
+        }
+        val server = start()
+
+        for ((name, seed, summary) in
+            listOf(
+                Triple("films", "memory://seeds/films.backup", expected),
+                Triple("books", "memory://seeds/neo4j.dump", expected),
+                Triple("series", "memory://seeds/chain/films-2.backup", expectedChain),
+                Triple("shows", "memory://seeds/chain/", expectedChain),
+            )) {
+            val waited =
+                server.waited(
+                    "CREATE DATABASE $name OPTIONS {existingData: 'use', seedURI: '$seed'} WAIT"
+                )
+            assertThat(waited["success"]).describedAs("$name: $waited").isEqualTo(true)
+            assertThat(CommunityServer.summary(server.database(name))).isEqualTo(summary)
+        }
+        val missing =
+            server.waited(
+                "CREATE DATABASE plays OPTIONS {seedURI: 'memory://seeds/no.backup'} WAIT"
+            )
+        assertThat(missing["message"] as String)
+            .contains(
+                "from its seed memory://seeds/no.backup: memory://seeds/no.backup does not exist"
+            )
+    }
+
+    @Test
+    fun `S3SeedProvider reads s3 seeds as CloudSeedProvider does, and nothing else`() {
+        assertThat(SeedProvider.S3.reads("s3")).isTrue
+        assertThat(SeedProvider.S3.reads("gs")).isFalse
+        assertThat(SeedProvider.Cloud.reads("gs")).isTrue
+        val server = start(BackupSettings.seedProviders to listOf("S3SeedProvider"))
+
+        assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 'gs://bucket/films'}"))
+            .hasMessage(
+                "Failed to create the specified database 'films': no seed provider for 'gs' URIs " +
+                    "is enabled: dbms.databases.seed_from_uri_providers is S3SeedProvider; " +
+                    "CloudSeedProvider reads them."
             )
     }
 }
