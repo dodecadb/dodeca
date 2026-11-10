@@ -238,6 +238,8 @@ class StandaloneIT {
                 "dbms.max_databases",
                 "server.dynamic.setting.allowlist",
                 "dbms.databases.seed_from_uri_providers",
+                "dbms.integrations.cloud_storage.azb.blob_endpoint_suffix",
+                "dbms.integrations.cloud_storage.azb.authority_endpoint",
                 "server.backup.enabled",
                 "server.backup.listen_address",
                 "dbms.dozendb.cluster.enabled",
