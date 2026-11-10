@@ -8,6 +8,8 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import org.apache.ratis.proto.RaftProtos.LogEntryProto
 import org.apache.ratis.proto.RaftProtos.RaftConfigurationProto
 import org.apache.ratis.proto.RaftProtos.RoleInfoProto
@@ -121,6 +123,8 @@ internal class GroupStateMachine(
     private var unverified: Long? = null
     /** The last entry delivered to state machines on this member; guarded by [applyLock]. */
     private var lastStateEntry = RaftLog.INVALID_LOG_INDEX
+    /** The index of the last entry applied, as [lastAppliedTermIndex], for [awaitApplied]. */
+    private val appliedIndex = MutableStateFlow(RaftLog.INVALID_LOG_INDEX)
 
     // Guarded by this; used by the snapshot poller and the apply thread.
     private var latestDurable = RaftLog.INVALID_LOG_INDEX
@@ -234,7 +238,7 @@ internal class GroupStateMachine(
             loaded = loaded.copy(installed = false)
             SnapshotRecord.write(directory, loaded)
         }
-        loaded?.let { setLastAppliedTermIndex(termIndex(it.snapshot)) }
+        loaded?.let { appliedUpTo(it.snapshot) }
         start()
         val storedSeed = SnapshotRecord.read(directory, SnapshotRecord.SEED_FILE_NAME)?.snapshot
         val keptSeed = stateLock.withLock {
@@ -565,7 +569,7 @@ internal class GroupStateMachine(
 
     /** Ratis continues the group after the installed snapshot, from the paused state. */
     override fun reinitialize() {
-        record?.let { applyLock.withLock { setLastAppliedTermIndex(termIndex(it.snapshot)) } }
+        record?.let { applyLock.withLock { appliedUpTo(it.snapshot) } }
         start()
     }
 
@@ -655,15 +659,27 @@ internal class GroupStateMachine(
         }
     }
 
+    /** Takes [snapshot]'s entry as the last applied, as when the group continues from it. */
+    private fun appliedUpTo(snapshot: Snapshot) {
+        setLastAppliedTermIndex(termIndex(snapshot))
+        appliedIndex.value = snapshot.position.index
+    }
+
     private fun advance(term: Long, index: Long) {
         val previousTerm = lastAppliedTermIndex.term
         updateLastAppliedTermIndex(term, index)
+        appliedIndex.value = index
         // Applying the first entry of a term can make the leader writable.
         if (term != previousTerm) listener.onGroupChanged(groupId)
     }
 
     /** The term of the last entry applied by this member. */
     fun appliedTerm(): Long = lastAppliedTermIndex.term
+
+    /** Suspends until this member applied the entry at [index], or installed a snapshot past it. */
+    suspend fun awaitApplied(index: Long) {
+        appliedIndex.first { it >= index }
+    }
 
     /** The local state as a snapshot, or null unless a state machine is attached and applied. */
     fun currentSnapshot(): Snapshot? = applyLock.withLock {

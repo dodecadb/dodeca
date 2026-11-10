@@ -7,6 +7,7 @@ import java.io.DataOutputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.time.Duration
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -219,8 +220,8 @@ internal object BulkService {
 
     /**
      * The client side: streams the response into [consume] on the calling thread, over TLS with
-     * [tls] if not null. A failed call, or an [IOException] of [consume], throws what [failure]
-     * makes of a one-line account of it.
+     * [tls] if not null, failing once [timeout] passed if it is not null. A failed call, or an
+     * [IOException] of [consume], throws what [failure] makes of a one-line account of it.
      */
     fun <T> fetch(
         address: HostPort,
@@ -228,6 +229,7 @@ internal object BulkService {
         request: ByteArray,
         tls: SslContext?,
         consume: (InputStream) -> T,
+        timeout: Duration? = null,
         failure: (String, Exception) -> Exception = { message, cause ->
             ConsensusUnavailableException("fetching $name from $address failed: $message", cause)
         },
@@ -243,7 +245,9 @@ internal object BulkService {
                 ClientCalls.blockingServerStreamingCall(
                     channel,
                     method,
-                    CallOptions.DEFAULT,
+                    timeout?.let {
+                        CallOptions.DEFAULT.withDeadlineAfter(it.toNanos(), TimeUnit.NANOSECONDS)
+                    } ?: CallOptions.DEFAULT,
                     encodeRequest(name, request),
                 )
             return ChunkInputStream(chunks).use(consume)

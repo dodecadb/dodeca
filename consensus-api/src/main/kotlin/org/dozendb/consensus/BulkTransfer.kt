@@ -3,6 +3,7 @@ package org.dozendb.consensus
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.time.Duration
 
 /**
  * Serves one kind of bulk data, such as a store copy, to other members.
@@ -34,6 +35,18 @@ public interface BulkTransfer {
         address: HostPort,
         name: String,
         request: ByteArray,
+        consume: (InputStream) -> T,
+    ): T = fetchBulk(address, name, request, null, consume)
+
+    /**
+     * As [fetchBulk] without a timeout, but failing with [ConsensusUnavailableException] once
+     * [timeout] passed before the whole response arrived, if it is not null.
+     */
+    public fun <T> fetchBulk(
+        address: HostPort,
+        name: String,
+        request: ByteArray,
+        timeout: Duration?,
         consume: (InputStream) -> T,
     ): T
 }

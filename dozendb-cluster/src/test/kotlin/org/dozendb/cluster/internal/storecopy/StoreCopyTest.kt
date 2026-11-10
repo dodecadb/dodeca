@@ -66,6 +66,7 @@ class StoreCopyTest {
             address: HostPort,
             name: String,
             request: ByteArray,
+            timeout: Duration?,
             consume: (InputStream) -> T,
         ): T {
             val bytes = ByteArrayOutputStream()

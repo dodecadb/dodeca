@@ -278,6 +278,35 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a member awaits applying an entry, also while its state machine is detached`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val follower = cluster.nodes.first { it != leader }
+            val one = leader.write("one") as CommitResult.Committed
+
+            withTimeout(RatisTestCluster.AWAIT.toMillis()) {
+                follower.consensus.awaitApplied(cluster.database, one.index)
+            }
+            assertThat(follower.machine.payloads()).containsExactly("one")
+
+            follower.consensus.detachGroup(cluster.database)
+            val two = leader.write("two") as CommitResult.Committed
+            val applied = async { follower.consensus.awaitApplied(cluster.database, two.index) }
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    assertThat(follower.consensus.progress(cluster.database)?.appendIndex)
+                        .isGreaterThanOrEqualTo(two.index)
+                }
+            assertThat(applied.isCompleted).describedAs("applied while detached").isFalse()
+
+            follower.consensus.startGroup(cluster.database, follower.machine, emptyList())
+            withTimeout(RatisTestCluster.AWAIT.toMillis()) { applied.await() }
+            assertThat(follower.machine.payloads()).containsExactly("one", "two")
+        }
+
+    @Test
     fun `probe reports identity, metadata and hosted groups`() =
         runBlocking<Unit> {
             val cluster = formCluster()

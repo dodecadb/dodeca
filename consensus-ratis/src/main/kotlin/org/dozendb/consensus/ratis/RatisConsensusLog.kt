@@ -4,6 +4,7 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.net.InetSocketAddress
+import java.time.Duration
 import java.util.EnumSet
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
@@ -667,6 +668,13 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         return GroupStateMachine.decodeLong(reply.message)
     }
 
+    override suspend fun awaitApplied(database: DatabaseRef, index: Long) {
+        val stateMachine =
+            stateMachines[database.id]
+                ?: throw ConsensusUnavailableException("the group of $database does not run here")
+        stateMachine.awaitApplied(index)
+    }
+
     override fun progress(database: DatabaseRef): GroupProgress? {
         val status = status(database)
         if (status.role == Role.Inactive) return null
@@ -937,8 +945,9 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         address: HostPort,
         name: String,
         request: ByteArray,
+        timeout: Duration?,
         consume: (InputStream) -> T,
-    ): T = BulkService.fetch(address, name, request, tls?.client, consume)
+    ): T = BulkService.fetch(address, name, request, tls?.client, consume, timeout)
 
     private fun appliedTerm(database: DatabaseRef): Long =
         stateMachines[database.id]?.appliedTerm() ?: -1

@@ -7,6 +7,7 @@ import java.nio.file.Path
 import java.security.DigestInputStream
 import java.security.DigestOutputStream
 import java.security.MessageDigest
+import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
@@ -126,6 +127,29 @@ class BulkTransferTest {
         assertThatThrownBy { fetch("refusing") { it.readAllBytes() } }
             .isInstanceOf(ConsensusUnavailableException::class.java)
             .hasMessageEndingWith("failed: FAILED_PRECONDITION: there is no database films here")
+    }
+
+    @Test
+    fun `a transfer with a timeout fails once it passed`() {
+        val release = CountDownLatch(1)
+        source.consensus.registerBulkSource("slow") { _, _ -> release.await() }
+
+        try {
+            assertThatThrownBy {
+                    receiver.consensus.fetchBulk(
+                        source.consensus.self.raftAddress,
+                        "slow",
+                        ByteArray(0),
+                        Duration.ofMillis(200),
+                    ) {
+                        it.readAllBytes()
+                    }
+                }
+                .isInstanceOf(ConsensusUnavailableException::class.java)
+                .hasMessageContaining("DEADLINE_EXCEEDED")
+        } finally {
+            release.countDown()
+        }
     }
 
     @Test

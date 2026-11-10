@@ -204,6 +204,15 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
      */
     public suspend fun readIndex(database: DatabaseRef): Long
 
+    /**
+     * Suspends until the local member applied the entry at [index] of the log of [database], or
+     * installed a snapshot past it. An entry that the state machine skips counts as applied. Waits
+     * while no state machine applies the group's entries, as while its database is stopped.
+     *
+     * @throws ConsensusUnavailableException if the group does not run here.
+     */
+    public suspend fun awaitApplied(database: DatabaseRef, index: Long)
+
     /** The local view of the group of [database]. */
     public fun status(database: DatabaseRef): GroupStatus
 

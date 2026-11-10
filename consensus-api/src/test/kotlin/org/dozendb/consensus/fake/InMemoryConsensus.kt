@@ -8,6 +8,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
 import org.dozendb.consensus.BulkSource
 import org.dozendb.consensus.CommitResult
 import org.dozendb.consensus.ConsensusLog
@@ -183,6 +185,8 @@ class InMemoryConsensus {
         private val running = mutableMapOf<UUID, ReplicatedStateMachine>()
         /** The index of the last entry delivered (or skipped) since the group started. */
         private val delivered = mutableMapOf<UUID, Long>()
+        /** Counts deliveries, for [awaitApplied]. */
+        private val deliveries = MutableStateFlow(0L)
         private val snapshots = mutableMapOf<UUID, Snapshot>()
         private val snapshotRequested = mutableSetOf<UUID>()
         private val listeners = mutableMapOf<UUID, CopyOnWriteArrayList<(GroupStatus) -> Unit>>()
@@ -248,6 +252,7 @@ class InMemoryConsensus {
                 index++
             }
             delivered[id] = index
+            deliveries.value++
             return response
         }
 
@@ -626,10 +631,28 @@ class InMemoryConsensus {
             bulkSources[name] = source
         }
 
+        override suspend fun awaitApplied(database: DatabaseRef, index: Long) {
+            synchronized(lock) {
+                if (!isRunning(database)) {
+                    throw ConsensusUnavailableException("the group of $database does not run here")
+                }
+            }
+            deliveries.first {
+                synchronized(lock) {
+                    maxOf(
+                        delivered.getOrDefault(database.id, 0L),
+                        snapshots[database.id]?.position?.index ?: 0L,
+                    ) >= index
+                }
+            }
+        }
+
+        /** Serves at once, so [timeout] never passes. */
         override fun <T> fetchBulk(
             address: HostPort,
             name: String,
             request: ByteArray,
+            timeout: Duration?,
             consume: (InputStream) -> T,
         ): T {
             val target =
