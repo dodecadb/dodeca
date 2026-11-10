@@ -396,7 +396,10 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   `dbms.security.cluster_status_auth_enabled` is `false`, and
   `server.http_enabled_modules` turns them off without
   `ENTERPRISE_MANAGEMENT_ENDPOINTS`. A server with clustering disabled has
-  none: they answer 404. See `OPERATOR_GUIDE.md`, "Cluster status endpoints".
+  none, as in Neo4j Community: they answer 404. Enterprise has no such mode,
+  as a single Enterprise server is a cluster of one; a DozenDB server answers
+  them as a cluster of one too. See `OPERATOR_GUIDE.md`, "Cluster status
+  endpoints".
 - **Linearizable reads**, DozenDB's own, are requested per transaction with
   the metadata key `dozendb.consistency` set to `linearizable`, or for every
   transaction with `dbms.dozendb.reads.default_consistency`. They apply to

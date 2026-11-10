@@ -1365,6 +1365,24 @@ The endpoints need a login, as the rest of the HTTP API does, unless
 that cannot log in. They are off when `server.http_enabled_modules` does not
 name `ENTERPRISE_MANAGEMENT_ENDPOINTS`.
 
+A server with clustering disabled has no cluster status endpoints, as in
+Neo4j Community: they answer 404. A single server whose load balancer or
+health checks ask them, as they would a single Neo4j Enterprise server, runs as
+a cluster of one instead, which leads every database:
+
+```
+dbms.dozendb.cluster.enabled=true
+dbms.dozendb.cluster.initial_members=<its own Raft address>
+dbms.ssl.policy.cluster.enabled=false
+```
+
+Its Raft address is `server.dozendb.cluster.advertised_address`: by default
+`server.default_advertised_address` with port 7700, such as `solo:7700`.
+
+Members added later make it a cluster of more (see
+[Adding a member](#adding-a-member)), with TLS between members if they need it
+(see [TLS between members](#tls-between-members)).
+
 ### Query log
 
 Every member writes `logs/query.log`, as `conf/server-logs.xml` configures it:

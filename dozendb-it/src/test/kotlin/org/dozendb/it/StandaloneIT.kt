@@ -5,6 +5,9 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilAsserted
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.MethodOrderer
@@ -26,8 +29,9 @@ import org.testcontainers.lifecycle.Startables
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class StandaloneIT {
-    private val community = DozenDbContainer(DozenDbContainer.communityImage, "community")
-    private val dozenDb = DozenDbContainer(DozenDbContainer.dozenDbImage, "dozendb")
+    private val community =
+        DozenDbContainer(DozenDbContainer.communityImage, "community").withHttp()
+    private val dozenDb = DozenDbContainer(DozenDbContainer.dozenDbImage, "dozendb").withHttp()
     private val servers = listOf(community, dozenDb)
 
     @BeforeAll
@@ -68,6 +72,39 @@ class StandaloneIT {
         dozenDb.rows("SHOW DATABASES YIELD name, currentStatus", "system").associate {
             it["name"] as String to it["currentStatus"] as String
         }
+
+    @Test
+    fun `answers the cluster status endpoints only as a cluster, of one member if need be`() {
+        for (server in servers) {
+            assertThat(server.get("/db/neo4j/cluster/available").statusCode())
+                .describedAs(server.alias)
+                .isEqualTo(404)
+        }
+        DozenDbContainer(DozenDbContainer.dozenDbImage, "solo")
+            .clusterMember(listOf("solo:7700"), authority = null)
+            .withHttp()
+            .use { solo ->
+                solo.start()
+                await atMost
+                    Duration.ofSeconds(30) untilAsserted
+                    {
+                        assertThat(
+                                listOf("writable", "read-only", "available").associateWith {
+                                    solo.get("/db/neo4j/cluster/$it").let { r ->
+                                        r.statusCode() to r.body()
+                                    }
+                                }
+                            )
+                            .isEqualTo(
+                                mapOf(
+                                    "writable" to (200 to "true"),
+                                    "read-only" to (404 to "false"),
+                                    "available" to (200 to "true"),
+                                )
+                            )
+                    }
+            }
+    }
 
     @Test
     fun `runs the DozenDB entry point with clustering disabled`() {
