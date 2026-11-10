@@ -114,6 +114,14 @@ class UnbindCommandTest {
                 "CALL dozendb.cluster.addMember('127.0.0.1:${member.raftPort}')",
             )
         }
+        // The harness enables a server once it joined; DEALLOCATE needs it to place the copies.
+        eventually {
+            val state =
+                cluster.administer(others, "SHOW SERVERS YIELD serverId, state").associate {
+                    it["serverId"] to it["state"]
+                }
+            assertThat(state[member.serverId]).isEqualTo("Enabled")
+        }
         cluster.administer(others, "DEALLOCATE DATABASES FROM SERVER '$old'")
         eventually {
             val state =
