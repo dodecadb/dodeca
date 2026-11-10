@@ -64,6 +64,8 @@ internal class Neo4jSystemGraph(
             hosts = Placements.hosts(node, CopyMode.PRIMARY).mapTo(HashSet(), ::MemberId),
             secondaries = Placements.hosts(node, CopyMode.SECONDARY).mapTo(HashSet(), ::MemberId),
             created = created(node),
+            default =
+                node.getProperty(TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY, false) == true,
         )
     }
 
@@ -261,6 +263,23 @@ internal class Neo4jSystemGraph(
                 )
             (node?.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY, null) as? String)
                 ?.let(UUID::fromString)
+        }
+    }
+
+    /**
+     * The random id Neo4j gave the `system` database's node when it created the system graph, or
+     * null for none. It never changes, and every copy of the system graph has it: the members of a
+     * cluster share it.
+     */
+    fun systemId(): Long? = replication.readingSystem {
+        system().beginTx().use { tx ->
+            tx.findNode(
+                    TopologyGraphDbmsModel.DATABASE_LABEL,
+                    TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
+                    GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
+                )
+                ?.getProperty(TopologyGraphDbmsModel.DATABASE_STORE_RANDOM_ID_PROPERTY, null)
+                as? Long
         }
     }
 

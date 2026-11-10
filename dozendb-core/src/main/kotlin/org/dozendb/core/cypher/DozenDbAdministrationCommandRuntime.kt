@@ -885,8 +885,8 @@ private class DatabaseCommands(
      * its local aliases. Without, it refuses to drop a database that local aliases target, naming
      * them; remote aliases never stop a drop, they no longer resolve once it is gone. With
      * [aliases], the name may be a local alias's, which stands for its database. Refuses the
-     * default database: it is created at startup, but only on the member that founds a cluster, so
-     * dropping it would keep every other member from starting.
+     * default database, as Neo4j Enterprise does: `dbms.setDefaultDatabase` makes another database
+     * the default first.
      */
     @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for dropping the default database.
     private fun dropDatabase(
@@ -904,7 +904,6 @@ private class DatabaseCommands(
         }
         val name = admin.getDatabaseNameFields("databaseName", databaseName)
         val key = parameter(name.displayNameKey())
-        val defaultDatabase = config.get(GraphDatabaseSettings.initial_default_database)
         val restrict = plan.aliasAction() !is `CascadeAliases$`
         val droppable =
             updating(
@@ -913,8 +912,8 @@ private class DatabaseCommands(
                 ${database(key, aliases)}
                 OPTIONAL MATCH (database)<-[:TARGETS]-(alias:DatabaseName {primary: false})
                 WITH database, alias.displayName AS alias ORDER BY alias
-                WITH database.name AS name, collect(alias) AS aliases
-                RETURN {name: name, aliases: aliases} AS database
+                WITH database.name AS name, database.default AS default, collect(alias) AS aliases
+                RETURN {name: name, default: default, aliases: aliases} AS database
                 """
                     .trimIndent(),
                 VirtualValues.map(name.keys(), name.values()),
@@ -927,7 +926,7 @@ private class DatabaseCommands(
                                     (it as TextValue).stringValue()
                                 }
                             when {
-                                target == defaultDatabase ->
+                                database.get("default") == Values.TRUE ->
                                     ThrowException(
                                         InvalidArgumentException(
                                             "Not allowed to delete the default database " +

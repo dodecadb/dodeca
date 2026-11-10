@@ -1,5 +1,6 @@
 package org.dozendb.core.security
 
+import org.dozendb.core.edition.DefaultDatabase
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.cypher.internal.ast.prettifier.`ExpressionStringifier$`
 import org.neo4j.graphdb.Transaction
@@ -34,22 +35,19 @@ object MetadataScript {
 
     /**
      * The script for [database], as the system graph in [tx] has it, or null for none: nothing was
-     * asked for, the database is `system` or there is no such database. [defaultDatabase] is the
-     * DBMS's default database, the home of users without their own.
+     * asked for, the database is `system` or there is no such database. The default database that
+     * the system graph names is the home of users without their own.
      */
-    fun generate(
-        tx: Transaction,
-        database: String,
-        include: Include,
-        defaultDatabase: String,
-        log: InternalLog,
-    ): String? {
+    fun generate(tx: Transaction, database: String, include: Include, log: InternalLog): String? {
         val name = NormalizedDatabaseName(database).name()
         if (include == Include.NONE || name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
             return null
         }
         val graph = SecurityGraph.read(tx, log)
         val id = graph.databaseId(name) ?: return null
+        val defaultDatabase =
+            DefaultDatabase.name(tx)
+                ?: GraphDatabaseSettings.initial_default_database.defaultValue()
         fun affects(privilege: Privilege) =
             when (val scope = privilege.scope) {
                 PrivilegeScope.AllDatabases,

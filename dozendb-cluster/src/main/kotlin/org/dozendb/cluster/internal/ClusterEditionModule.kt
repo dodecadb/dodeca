@@ -175,6 +175,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     /** The id of the default database as the system graph has it, read once `system` runs. */
     @Volatile private var clusterId: UUID? = null
+
+    /** The system graph's [Neo4jSystemGraph.systemId], read once `system` runs. */
+    @Volatile private var systemId: Long? = null
     private var roles: RolesInitializer? = null
 
     init {
@@ -224,6 +227,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     (replicationService.defaultDatabaseId ?: clusterId)?.let {
                         MemberMetadata.CLUSTER_ID to it.toString()
                     },
+                    systemId?.let { MemberMetadata.SYSTEM_ID to it.toString() },
                 )
         }
         val tuning =
@@ -573,6 +577,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         // A Free server reports it before it hosts the default database.
                         clusterId =
                             runCatching { systemGraph.databaseId(defaultDatabase) }.getOrNull()
+                        systemId = runCatching { systemGraph.systemId() }.getOrNull()
                     }
                 }
             }

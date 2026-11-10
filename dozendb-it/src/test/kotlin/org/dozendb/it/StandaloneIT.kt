@@ -120,7 +120,8 @@ class StandaloneIT {
         val communityProcedures = names(community, "SHOW PROCEDURES YIELD name")
         val dozenDbProcedures = names(dozenDb, "SHOW PROCEDURES YIELD name")
         assertThat(communityProcedures - dozenDbProcedures).isEmpty()
-        assertThat(dozenDbProcedures - communityProcedures).containsExactly("dbms.setConfigValue")
+        assertThat(dozenDbProcedures - communityProcedures)
+            .containsExactlyInAnyOrder("dbms.setConfigValue", "dbms.setDefaultDatabase")
         assertThat(names(dozenDb, "SHOW FUNCTIONS YIELD name"))
             .isEqualTo(names(community, "SHOW FUNCTIONS YIELD name"))
     }

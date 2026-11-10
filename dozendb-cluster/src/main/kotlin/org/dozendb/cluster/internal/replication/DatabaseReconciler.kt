@@ -30,6 +30,8 @@ internal data class DesiredDatabase(
     val secondaries: Set<MemberId> = emptySet(),
     /** Whether its store was created: from then on every server copies it, its creator too. */
     val created: Boolean = false,
+    /** Whether it is the default database. */
+    val default: Boolean = false,
 )
 
 /** What the creator of a database creates its store from, instead of an empty one. */
@@ -199,7 +201,9 @@ internal interface LocalDatabases {
  * lack transactions this member already acted on.
  *
  * The default database is created, copied, started and stopped like any other; like without
- * clustering the reconciler never drops it while the system graph has it.
+ * clustering the reconciler never drops it. It is the one the system graph names, or while it names
+ * none, as before a cluster formed, [initialDefault], the one `initial.dbms.default_database`
+ * names.
  *
  * A member removed from the cluster stops its databases, `system` aside, and changes nothing else.
  *
@@ -219,7 +223,7 @@ internal class DatabaseReconciler(
     private val systemGraph: SystemGraph,
     private val databases: LocalDatabases,
     private val self: MemberId,
-    private val defaultDatabase: String,
+    private val initialDefault: String,
     private val sources: (DesiredDatabase) -> List<HostPort>,
     private val systemMembers: () -> List<Member>?,
     private val answering: (MemberId) -> Boolean,
@@ -239,6 +243,7 @@ internal class DatabaseReconciler(
 
     // Used on the reconciler thread only.
     private var nextRetryDelay = retryDelay
+    private var defaultDatabase = initialDefault
     private var awaitingConfirmation = false
 
     /** Reconciles now and whenever [request] asks for it. */
@@ -292,12 +297,12 @@ internal class DatabaseReconciler(
             }
             return false
         }
-        var desired = systemGraph.databases()
+        var desired = following(systemGraph.databases())
         var again = false
         if (deletions(desired).isNotEmpty()) {
             if (systemGraph.awaitCurrent()) {
                 awaitingConfirmation = false
-                desired = systemGraph.databases()
+                desired = following(systemGraph.databases())
                 for (deletion in deletions(desired)) {
                     again = !delete(deletion) || again
                 }
@@ -316,6 +321,12 @@ internal class DatabaseReconciler(
             again = !converge(database) || again
         }
         return again
+    }
+
+    /** [desired], whose default database the reconciliation follows from now on. */
+    private fun following(desired: List<DesiredDatabase>): List<DesiredDatabase> {
+        defaultDatabase = desired.firstOrNull { it.default }?.id?.name() ?: initialDefault
+        return desired
     }
 
     /** What [desired] tells to delete here. */

@@ -39,7 +39,6 @@ internal class BackupSource(
     private val latestWrites: LatestWrites,
     private val fs: FileSystemAbstraction,
     private val source: String,
-    private val defaultDatabase: String,
     logProvider: InternalLogProvider,
     private val clock: Clock = Clock.systemUTC(),
 ) : BulkSource {
@@ -239,13 +238,7 @@ internal class BackupSource(
                 .databaseFacade()
                 .beginTx()
                 .use {
-                    MetadataScript.generate(
-                        it,
-                        request.database,
-                        request.include,
-                        defaultDatabase,
-                        log,
-                    )
+                    MetadataScript.generate(it, request.database, request.include, log)
                 }
         BackupProtocol.writeStatus(out, Status.OK)
         BackupProtocol.writeScript(out, script)

@@ -6,7 +6,6 @@ import org.dozendb.backup.seed.StoreSeeder
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.LatestWrites
 import org.neo4j.configuration.Config
-import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.ConnectorPortRegister
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.identity.ServerIdentity
@@ -83,7 +82,6 @@ class BackupExtensionFactory :
                 latestWrites,
                 fs,
                 dependencies.serverIdentity().serverId().uuid().toString(),
-                config.get(GraphDatabaseSettings.initial_default_database),
                 logProvider,
             )
         val listener =

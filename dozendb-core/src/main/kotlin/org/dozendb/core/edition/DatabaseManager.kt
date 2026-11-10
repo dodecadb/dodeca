@@ -47,7 +47,7 @@ import org.neo4j.logging.InternalLogProvider
 class DatabaseManager(
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
     private val contextFactory: DatabaseContextFactory<StandaloneDatabaseContext, Optional<*>>,
-    private val defaultDatabase: String,
+    private val defaultDatabase: () -> String?,
     private val counts: DatabaseOperationCounts.Counter,
     private val placement: StorePlacement,
     logProvider: InternalLogProvider,
@@ -241,14 +241,19 @@ class DatabaseManager(
             override fun start() = startDatabase(systemContext())
         }
 
-    /** Creates and starts the default database, which `system` must name. */
+    /** Creates and starts the default database, which `system` must name, once `system` runs. */
     fun defaultDatabaseStarter(): Lifecycle =
         object : LifecycleAdapter() {
             override fun start() {
                 synchronized(this@DatabaseManager) {
+                    val name =
+                        defaultDatabase()
+                            ?: throw DatabaseManagementException(
+                                "The system graph names no default database."
+                            )
                     val id =
-                        repository.databaseIdRepository().getByName(defaultDatabase).orElseThrow {
-                            DatabaseNotFoundHelper.defaultDatabaseNotFound(defaultDatabase)
+                        repository.databaseIdRepository().getByName(name).orElseThrow {
+                            DatabaseNotFoundHelper.defaultDatabaseNotFound(name)
                         }
                     if (repository.getDatabaseContext(id).isPresent) {
                         throw DatabaseManagementException(
@@ -267,12 +272,16 @@ class DatabaseManager(
     fun allDatabaseStopper(): Lifecycle =
         object : LifecycleAdapter() {
             override fun stop() {
+                val default = runCatching { defaultDatabase() }.getOrNull()
                 val system = systemContext()
                 val others =
                     repository.registeredDatabases().filterKeys { !it.isSystemDatabase }.values
                 others.forEach(::stopDatabase)
                 stopDatabase(system)
-                listOfNotNull(repository.getDatabaseContext(defaultDatabase).orElse(null), system)
+                listOfNotNull(
+                        default?.let { repository.getDatabaseContext(it).orElse(null) },
+                        system,
+                    )
                     .firstOrNull {
                         it.isFailed && it.failureCause() !is UnableToStartDatabaseException
                     }

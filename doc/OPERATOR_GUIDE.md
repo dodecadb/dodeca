@@ -813,6 +813,25 @@ logged in `debug.log` with its reason, as in
 member`, and counted in `dozendb.cluster.raft.leadership_transfers` on the
 member that handed over.
 
+## Changing the default database
+
+The default database is the one sessions that name no database use, and the
+home database of users without one of their own. `initial.dbms.default_database`
+names it at the first start only; afterwards, change it as an administrator,
+on `system`:
+
+1. `CREATE DATABASE films WAIT`, unless the new default exists.
+2. `STOP DATABASE neo4j WAIT`, the default database; `SHOW DEFAULT DATABASE`
+   names it.
+3. `CALL dbms.setDefaultDatabase('films')`.
+4. Optionally `START DATABASE neo4j`, now a database like any other, or
+   `DROP DATABASE neo4j`.
+
+With clustering, the call changes the system graph on the leader of `system`,
+and every member follows it; on a follower it fails with
+`Neo.ClientError.Cluster.NotALeader`, which routing drivers retry on the
+leader.
+
 ## Upgrading DozenDB
 
 DozenDB is upgraded one member at a time while the cluster keeps serving.

@@ -47,7 +47,7 @@ end its own way.
 | Metrics | Same, with differences | [Metrics and logs](#metrics-and-logs) |
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
-| Changing the default database | Not supported | [Databases](#databases) |
+| Changing the default database | Same | [Databases](#databases) |
 | Quarantine, recreating databases and cluster status checks | Not supported | [Not supported](#not-supported) |
 | Cluster status endpoints of the HTTP server | Not supported | [Not supported](#not-supported) |
 | Routing policies (the load balancing plugin) | Not supported | [Not supported](#not-supported) |
@@ -95,7 +95,8 @@ places the database on servers (see [Servers](#servers)), and
   with an option other than `existingData`, `seedURI`, `storeFormat` and,
   with clustering, `existingDataSeedServer` or `existingDataSeedInstance`:
   `seedConfig`, `seedCredentials`, `txLogEnrichment` or a misspelt key. Each
-  fails with an error.
+  fails with an error. To keep a database's data, back it up, or stop it and
+  dump it with `neo4j-admin database dump`, before dropping it.
 - **`dbms.max_databases`** counts every database, online or offline, as in
   Enterprise, and `system` too, which Enterprise's documentation leaves open.
 - **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
@@ -131,12 +132,19 @@ places the database on servers (see [Servers](#servers)), and
   needs it or a `seedURI`. Neo4j 5.26 keeps the seeding server in the
   `seeding_servers` property of the `Database` node, as DozenDB does;
   `designated_seeder` is deprecated.
-- **The default database** (`initial.dbms.default_database`) exists from the
-  first start on, stays the default, and cannot be dropped or replaced.
-  Enterprise changes the default database with `dbms.setDefaultDatabase` and
-  can then drop the old one; DozenDB has no such procedure. `STOP DATABASE`
-  and `START DATABASE` apply to it. Stopped, it stays stopped when the server
-  restarts, after starting briefly with it.
+- **The default database** is the one `initial.dbms.default_database` names
+  at the first start, as in Enterprise: changing the setting later changes
+  nothing, where Neo4j Community makes its database the default again at
+  every start. `CALL dbms.setDefaultDatabase('films')` on `system` makes
+  another database the default once the default database is stopped, as in
+  Enterprise; sessions that name no database, and users without a home
+  database, then use it, and the old one is a database like any other,
+  which may be started again or dropped. Where Enterprise's documentation is
+  silent, DozenDB refuses aliases and `system`, and naming the default
+  database changes nothing. The default database cannot be dropped or
+  replaced. `STOP DATABASE` and `START DATABASE` apply to it; stopped, it
+  stays stopped when the server restarts, after starting briefly with it
+  without clustering.
 - **Commands take effect once their transaction commits**, on every database
   the transaction changes, so a command that fails changes no database. A
   database that failed to start is started again by `STOP DATABASE` and
@@ -746,8 +754,6 @@ error, and their procedures do not exist.
 - **Cluster status endpoints of the HTTP server**, such as
   `/db/<database>/cluster/available` and `/dbms/cluster/status`, and
   `dbms.security.cluster_status_auth_enabled`. The paths answer 404.
-- **Changing the default database** with `dbms.setDefaultDatabase` (see
-  [Databases](#databases)).
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
   policies and `dbms.routing.load_balancing.shuffle_enabled`.
 - **Shutting the server down on a panic**
@@ -794,7 +800,9 @@ the built-in roles and gives `admin` to one user (see
 [Roles and privileges](#roles-and-privileges)). Other changes the server
 shows: it writes the query log, at Neo4j's declared default `VERBOSE` (see
 [Metrics and logs](#metrics-and-logs)); failed databases show as `offline`;
-and `dbms.components()` reports the Enterprise edition.
+`dbms.components()` reports the Enterprise edition; and the default database
+changes with `dbms.setDefaultDatabase`, no longer with
+`initial.dbms.default_database`.
 
 ### From Neo4j Enterprise
 

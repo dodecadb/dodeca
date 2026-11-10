@@ -977,7 +977,11 @@ class ClusterService(
                 )
             else -> throw MembershipChangeException("$candidate is a member of another cluster.")
         }
-        val clusterId = peer.metadata[MemberMetadata.CLUSTER_ID]
+        // A member of an older version reports only the cluster id.
+        val identity =
+            MemberMetadata.SYSTEM_ID.takeIf { peer.metadata[it] != null && own[it] != null }
+                ?: MemberMetadata.CLUSTER_ID
+        val clusterId = peer.metadata[identity]
         val started =
             if (secondary(peer)) peer.metadata[MemberMetadata.STORES_READY] == "true"
             else systemDatabase.id in peer.groups
@@ -986,7 +990,7 @@ class ClusterService(
                 "$candidate is still starting; add it once it has started."
             )
         }
-        if (clusterId != own[MemberMetadata.CLUSTER_ID]) {
+        if (clusterId != own[identity]) {
             throw MembershipChangeException(
                 "$candidate waits to join another cluster: its databases come from there. Check " +
                     "its ${MemberMetadata.INITIAL_MEMBERS_SETTING}, delete its data directory " +

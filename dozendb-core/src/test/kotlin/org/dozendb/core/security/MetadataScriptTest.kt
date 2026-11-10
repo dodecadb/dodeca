@@ -70,7 +70,7 @@ class MetadataScriptTest {
 
     private fun script(include: Include, database: String = "films"): String? =
         source.database(SYSTEM).beginTx().use { tx ->
-            MetadataScript.generate(tx, database, include, "neo4j", NullLog.getInstance())
+            MetadataScript.generate(tx, database, include, NullLog.getInstance())
         }
 
     private fun statements(script: String?): List<String> =

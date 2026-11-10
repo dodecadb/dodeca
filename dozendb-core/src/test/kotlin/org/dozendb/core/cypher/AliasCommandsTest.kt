@@ -3,7 +3,6 @@ package org.dozendb.core.cypher
 import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
-import org.assertj.core.api.Assertions.catchThrowable
 import org.assertj.core.api.Assertions.catchThrowableOfType
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.StandaloneServer.Companion.SYSTEM
@@ -536,7 +535,7 @@ class AliasCommandsTest {
     }
 
     @Test
-    fun `refuses to start with a default database named like an alias`() {
+    fun `a default database setting named like an alias changes nothing after the first start`() {
         admin.run("CREATE ALIAS movies FOR DATABASE films")
         drivers.forEach(Driver::close)
         drivers.clear()
@@ -551,14 +550,13 @@ class AliasCommandsTest {
                 ),
             )
 
-        val failure = catchThrowable { server.start() }
+        server.start()
 
-        assertThat(generateSequence(failure) { it.cause }.map { it.message }.toList())
-            .contains(
-                "Failed to initialize system graph component: The default database 'movies' " +
-                    "that initial.dbms.default_database names is a database alias, which cannot " +
-                    "be the default database: drop the alias or choose another default database."
-            )
+        val admin = driver("neo4j", "neo4j-secret-1")
+        assertThat(admin.run("SHOW DEFAULT DATABASE YIELD name"))
+            .containsExactly(mapOf("name" to "neo4j"))
+        assertThat(admin.run("SHOW ALIASES FOR DATABASE YIELD name"))
+            .containsExactly(mapOf("name" to "movies"))
     }
 
     @Test

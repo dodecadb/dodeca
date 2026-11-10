@@ -29,7 +29,6 @@ import org.neo4j.logging.InternalLogProvider
 internal class StandaloneDatabases(
     private val manager: DatabaseManager,
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
-    private val defaultDatabase: String,
     private val seeder: () -> DatabaseSeeder?,
     logProvider: InternalLogProvider,
 ) : TransactionEventListenerAdapter<Any?>() {
@@ -40,8 +39,11 @@ internal class StandaloneDatabases(
     /** The status each database was last asked to have, guarded by `this`. */
     private val requested = HashMap<NamedDatabaseId, Boolean>()
 
-    /** What the system graph asks of a database: whether it is online, and its seed if any. */
-    private data class Desired(val online: Boolean, val seedUri: String?)
+    /**
+     * What the system graph asks of a database: whether it is online, its seed if any, and whether
+     * it is the default database.
+     */
+    private data class Desired(val online: Boolean, val seedUri: String?, val default: Boolean)
 
     /** Follows the system graph from when it starts, once `system` and the default database run. */
     fun starter(): Lifecycle =
@@ -70,10 +72,11 @@ internal class StandaloneDatabases(
     @Synchronized
     private fun follow() {
         val desired = desired()
+        val default = desired.entries.firstOrNull { it.value.default }?.key
         repository
             .registeredDatabases()
             .keys
-            .filter { !it.isSystemDatabase && it.name() != defaultDatabase && it !in desired }
+            .filter { !it.isSystemDatabase && it != default && it !in desired }
             .forEach { id -> attempt("drop", id) { manager.dropDatabase(id) } }
         requested.keys.retainAll(desired.keys)
         desired.forEach { (id, wanted) -> attempt("follow", id) { follow(id, wanted) } }
@@ -85,7 +88,7 @@ internal class StandaloneDatabases(
         val context = repository.getDatabaseContext(id).orElse(null)
         val seed = desired.seedUri?.let { DatabaseManager.Seed.Uri(it, seeder) }
         when {
-            context == null && id.name() == defaultDatabase -> Unit
+            context == null && desired.default -> Unit
             context == null -> {
                 val created = manager.createDatabase(id)
                 if (online) manager.startDatabase(created, seed)
@@ -137,6 +140,10 @@ internal class StandaloneDatabases(
                             Desired(
                                 status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
                                 seedUri,
+                                node.getProperty(
+                                    TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY,
+                                    false,
+                                ) == true,
                             )
                     }
                     .filter { (id, _) -> !id.isSystemDatabase }

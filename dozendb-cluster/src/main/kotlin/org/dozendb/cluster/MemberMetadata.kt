@@ -52,10 +52,19 @@ object MemberMetadata {
     const val MEMBER_STATE = "dozendb.memberState"
 
     /**
-     * The id of the cluster's default database, once it runs on the member. Members of one cluster
-     * report the same, members of another one not.
+     * The id of the database `initial.dbms.default_database` names, once it runs on the member.
+     * Members of one cluster report the same, members of another one not, as long as that database
+     * exists. Older versions tell clusters apart by it alone; see [SYSTEM_ID].
      */
     const val CLUSTER_ID = "dozendb.clusterId"
+
+    /**
+     * The random id Neo4j gave the `system` database's node when it created the cluster's system
+     * graph, once `system` runs on the member: members of one cluster report the same, members of
+     * another one not. Compared instead of [CLUSTER_ID] when both members report it, as it also
+     * holds once another database became the default and that one was dropped.
+     */
+    const val SYSTEM_ID = "dozendb.systemId"
 
     /** The databases on the member and their states, for WAIT; see [DatabaseStatesCodec]. */
     const val DATABASES = "dozendb.databases"

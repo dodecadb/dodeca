@@ -51,6 +51,7 @@ import org.neo4j.dbms.database.DatabaseContextProviderDelegate
 import org.neo4j.dbms.database.DatabaseOperationCounts
 import org.neo4j.dbms.database.DatabaseReferenceCacheClearingListener
 import org.neo4j.dbms.database.DatabaseRepository
+import org.neo4j.dbms.database.DefaultSystemGraphComponent
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.SystemGraphComponent
 import org.neo4j.dbms.database.SystemGraphComponents
@@ -170,7 +171,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             DatabaseManager(
                 repository,
                 contextFactory,
-                defaultDatabase,
+                { DefaultDatabase.name(repository.getSystemDatabaseContext().databaseFacade()) },
                 globalModule.globalDependencies.resolveDependency(
                     DatabaseOperationCounts.Counter::class.java
                 ),
@@ -328,14 +329,14 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         private set
 
     /**
-     * Neo4j Community's system graph components, then DozenDB's roles and privileges; before them,
-     * the check that the default database is no alias.
+     * Neo4j Community's system graph components, then DozenDB's roles and privileges. Community's
+     * component for databases takes the default database from the configuration only while there is
+     * none.
      */
     override fun registerSystemGraphComponents(
         builder: SystemGraphComponents.Builder,
         globalModule: GlobalModule,
     ) {
-        builder.register(DefaultDatabaseCheck(globalModule.globalConfig))
         val roles =
             DozenDbSecurityComponent(
                     globalModule.globalConfig,
@@ -346,7 +347,17 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         // After Community's users, which the roles are given to.
         super.registerSystemGraphComponents(
             object : SystemGraphComponents.Builder() {
-                override fun register(component: SystemGraphComponent) = builder.register(component)
+                override fun register(component: SystemGraphComponent) =
+                    builder.register(
+                        if (component is DefaultSystemGraphComponent) {
+                            FirstStartDefaultDatabase(
+                                globalModule.globalConfig,
+                                globalModule.globalClock,
+                            )
+                        } else {
+                            component
+                        }
+                    )
 
                 override fun build(): SystemGraphComponents {
                     builder.register(roles)
@@ -503,13 +514,14 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             remoteAliases,
         )
 
-    /** Neo4j Community's procedures, and `dbms.setConfigValue`. */
+    /** Neo4j Community's procedures, `dbms.setConfigValue` and `dbms.setDefaultDatabase`. */
     override fun registerEditionSpecificProcedures(
         globalProcedures: GlobalProcedures,
         databaseContextProvider: DatabaseContextProvider<*>,
     ) {
         super.registerEditionSpecificProcedures(globalProcedures, databaseContextProvider)
         globalProcedures.registerProcedure(SettingsProcedures::class.java)
+        globalProcedures.registerProcedure(DefaultDatabaseProcedures::class.java)
     }
 
     /** Starts the default database, then follows the system graph for the other databases. */
@@ -519,7 +531,6 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             StandaloneDatabases(
                 databaseManager,
                 databaseRepository,
-                defaultDatabase,
                 ::seeder,
                 globalModule.logService.internalLogProvider,
             )
