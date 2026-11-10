@@ -1,5 +1,6 @@
 package org.dozendb.core
 
+import java.util.stream.Stream
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.SettingImpl
 import org.neo4j.internal.kernel.api.security.SecurityContext
@@ -16,7 +17,7 @@ import org.neo4j.procedure.Procedure
  * `dbms.setConfigValue`, Neo4j Enterprise's procedure that changes a dynamic setting while the
  * server runs: for administrators, on this server only (in a cluster, on the member it runs on),
  * and lost when the server restarts. Only the settings `server.dynamic.setting.allowlist` names
- * change.
+ * change. `dbms.checkConfigValue` tells whether a value is valid for any setting.
  */
 class SettingsProcedures {
     @JvmField @Context var graph: GraphDatabaseAPI? = null
@@ -62,6 +63,40 @@ class SettingsProcedures {
             checkNotNull(securityContext).subject().executingUser(),
         )
     }
+
+    @Admin
+    @SystemProcedure
+    @Description(
+        "Checks whether a value is valid for a setting, dynamic or not, as the configuration " +
+            "would take it, and changes nothing."
+    )
+    @Procedure(name = "dbms.checkConfigValue", mode = Mode.DBMS)
+    fun checkConfigValue(
+        @Name("setting") setting: String,
+        @Name("value") value: String,
+    ): Stream<ConfigValueCheck> {
+        val config = checkNotNull(graph).dependencyResolver.resolveDependency(Config::class.java)
+        val declared =
+            config.declaredSettings[setting]
+                ?: return Stream.of(ConfigValueCheck(false, "Unknown setting: $setting"))
+        return try {
+            val impl = declared as SettingImpl<Any>
+            val parsed = impl.parse(value)
+            // As the configuration takes it: a relative path from its directory, for instance.
+            val solved =
+                impl.dependency()?.let { impl.parser().solveDependency(parsed, config.get(it)) }
+                    ?: parsed
+            impl.validate(solved, config)
+            Stream.of(ConfigValueCheck(true, ""))
+        } catch (e: IllegalArgumentException) {
+            Stream.of(
+                ConfigValueCheck(false, "Bad value '$value' for setting '$setting': ${e.message}")
+            )
+        }
+    }
+
+    /** A row of `dbms.checkConfigValue`. */
+    class ConfigValueCheck(@JvmField val valid: Boolean, @JvmField val message: String)
 
     /** Whether [pattern], a setting name in which `*` stands for any text, names [setting]. */
     private fun matches(pattern: String, setting: String): Boolean =

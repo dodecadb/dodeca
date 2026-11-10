@@ -17,7 +17,7 @@ import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.graphdb.config.Setting
 
-/** `dbms.setConfigValue`, as an administrator and a user run it through Bolt. */
+/** `dbms.setConfigValue` and `dbms.checkConfigValue`, as an administrator and a user run them. */
 class SettingsProceduresTest {
     @TempDir lateinit var root: Path
     private lateinit var server: StandaloneServer
@@ -146,6 +146,37 @@ class SettingsProceduresTest {
         assertThat(admin.failure("CALL dbms.setConfigValue('db.logs.query.enabled', 'OFF')"))
             .contains("server.dynamic.setting.allowlist does not name it")
         assertThat(admin.setting("db.logs.query.enabled")).isEqualTo("VERBOSE")
+    }
+
+    private fun Driver.check(setting: String, value: String): Pair<Any?, String> =
+        run("CALL dbms.checkConfigValue('$setting', '$value')").single().let {
+            it["valid"] to it["message"] as String
+        }
+
+    @Test
+    fun `an administrator checks values of any setting, which change nothing`() {
+        assertThat(admin.check("db.logs.query.enabled", "OFF")).isEqualTo(true to "")
+        // Not dynamic, and not named by the allowlist.
+        assertThat(admin.check("server.memory.heap.max_size", "2g")).isEqualTo(true to "")
+        assertThat(admin.check("dbms.security.keystore.path", "keystore.p12")).isEqualTo(true to "")
+
+        val (badValid, bad) = admin.check("db.logs.query.enabled", "LOUD")
+        assertThat(badValid).isEqualTo(false)
+        assertThat(bad).contains("Bad value 'LOUD' for setting 'db.logs.query.enabled'")
+        // A constraint of the setting.
+        assertThat(admin.check("server.dynamic.setting.allowlist", "a,a").first).isEqualTo(true)
+        assertThat(admin.check("initial.server.tags", "eu,eu").first).isEqualTo(false)
+        assertThat(admin.check("dbms.no_such_setting", "1"))
+            .isEqualTo(false to "Unknown setting: dbms.no_such_setting")
+        assertThat(admin.setting("db.logs.query.enabled")).isEqualTo("VERBOSE")
+    }
+
+    @Test
+    fun `only administrators may check setting values`() {
+        val alice = driver("alice", "alice-secret-1")
+
+        assertThat(alice.failure("CALL dbms.checkConfigValue('db.logs.query.enabled', 'OFF')"))
+            .contains("Executing admin procedure 'dbms.checkConfigValue' permission has not been")
     }
 
     @Test

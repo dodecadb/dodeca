@@ -1442,7 +1442,9 @@ restart. A member with `dbms.dozendb.routing.forward_bolt_writes=true`
 forwards write transactions to the leader, which the procedure would change
 instead: run it in a read transaction there, as with Cypher Shell's
 `--access-mode read`. `SHOW SETTINGS YIELD name, isDynamic WHERE isDynamic` lists the
-dynamic settings.
+dynamic settings. `CALL dbms.checkConfigValue('db.logs.query.enabled', 'INFO')`
+tells whether a value is valid for a setting, dynamic or not, without changing
+it.
 
 `server.dynamic.setting.allowlist` limits the settings the procedure may
 change: setting names, comma separated, in which `*` stands for any text, such

@@ -750,8 +750,10 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   EXISTS` for a role that exists, is not logged.
 - **`dbms.setConfigValue`** changes a dynamic setting as in Enterprise: for
   administrators, on the member it runs on, until that member restarts, and
-  only a setting that `server.dynamic.setting.allowlist` names. Neo4j
-  Community has neither.
+  only a setting that `server.dynamic.setting.allowlist` names.
+  `dbms.checkConfigValue` tells whether a value is valid for a setting,
+  dynamic or not, with an empty `message` for a valid one. Neo4j Community has
+  neither.
 
 ## Not supported
 
@@ -805,7 +807,7 @@ error, and their procedures do not exist.
   `server.metrics.graphite.*`, `server.directories.metrics`).
 - **Monitoring procedures**: `dbms.listPools`, `db.listLocks`,
   `dbms.listActiveLocks`, `dbms.scheduler.jobs`, `groups` and `failedJobs`,
-  `db.checkpoint` and `dbms.checkConfigValue`.
+  and `db.checkpoint`.
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,
   `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
   `server.backup.exec_connector.*` and

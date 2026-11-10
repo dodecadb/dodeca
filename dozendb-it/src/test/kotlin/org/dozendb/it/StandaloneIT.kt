@@ -167,12 +167,16 @@ class StandaloneIT {
     }
 
     @Test
-    fun `offers Community's procedures and functions, and setConfigValue`() {
+    fun `offers Community's procedures and functions, and Enterprise's that DozenDB adds`() {
         val communityProcedures = names(community, "SHOW PROCEDURES YIELD name")
         val dozenDbProcedures = names(dozenDb, "SHOW PROCEDURES YIELD name")
         assertThat(communityProcedures - dozenDbProcedures).isEmpty()
         assertThat(dozenDbProcedures - communityProcedures)
-            .containsExactlyInAnyOrder("dbms.setConfigValue", "dbms.setDefaultDatabase")
+            .containsExactlyInAnyOrder(
+                "dbms.setConfigValue",
+                "dbms.checkConfigValue",
+                "dbms.setDefaultDatabase",
+            )
         assertThat(names(dozenDb, "SHOW FUNCTIONS YIELD name"))
             .isEqualTo(names(community, "SHOW FUNCTIONS YIELD name"))
     }
