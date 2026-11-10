@@ -61,12 +61,12 @@ internal class ClusterTopologyInfoService(
         get() = groups.system
 
     /**
-     * A server for each server of the cluster, a member of `system` or a system secondary that
-     * [transaction] reads: Enabled with its record, Free without one, except that every member
-     * counts as enabled, with the options it reports, until the servers the cluster started with
-     * are recorded (see `ServerReconciler`). It hosts the databases it reports running, and is to
-     * host `system` and the databases placed on it that are requested online. A deallocating server
-     * is Deallocated once no database is placed on it and it votes in no database's group. A
+     * A server for each server of the cluster, a member of `system`, or a system secondary or lost
+     * server that [transaction] reads: Enabled with its record, Free without one, except that every
+     * member counts as enabled, with the options it reports, until the servers the cluster started
+     * with are recorded (see `ServerReconciler`). It hosts the databases it reports running, and is
+     * to host `system` and the databases placed on it that are requested online. A deallocating
+     * server is Deallocated once no database is placed on it and it votes in no database's group. A
      * dropped server is Dropped while the cluster still has it, and after that while it answers
      * where it was.
      */
@@ -279,9 +279,9 @@ internal class ClusterTopologyInfoService(
     }
 
     /**
-     * The servers of the cluster, the voters of `system` and the system secondaries that
-     * [transaction] reads; this member alone while the voters are not known, as while consensus
-     * does not run.
+     * The servers of the cluster, the voters of `system`, and the system secondaries and the lost
+     * servers, which `system` was re-formed without, that [transaction] reads; this member alone
+     * among the voters while they are not known, as while consensus does not run.
      */
     private fun clusterServers(transaction: Transaction): List<MemberId> {
         val voters =
@@ -290,7 +290,10 @@ internal class ClusterTopologyInfoService(
             } catch (_: ConsensusUnavailableException) {
                 listOf(consensus.self.id)
             }
-        return (voters + SystemSecondaryRecords.all(transaction).map { it.id }).distinct()
+        return (voters +
+                SystemSecondaryRecords.all(transaction).map { it.id } +
+                ServerRecords.lost(transaction).sorted().map(::MemberId))
+            .distinct()
     }
 
     /**

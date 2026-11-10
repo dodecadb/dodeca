@@ -16,6 +16,7 @@ import org.dozendb.cluster.MembershipFile
 import org.dozendb.cluster.internal.ClusterHarness.Companion.AWAIT
 import org.dozendb.cluster.internal.ClusterHarness.Companion.DEFAULT_DATABASE
 import org.dozendb.cluster.internal.admin.unbindSystemDb
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.ServerRecords
 import org.junit.jupiter.api.AfterEach
@@ -188,6 +189,89 @@ class SystemRecoveryTest {
         cluster.awaitEverywhere(listOf(left, secondary), users = listOf("alice", "bob"))
     }
 
+    @Test
+    fun `lost servers are listed, cordoned, and dropped once their databases moved off them`() {
+        val cluster =
+            ClusterHarness(root, 5, settings = mapOf(ClusterSettings.defaultPrimaries to 3)).also {
+                harness = it
+            }
+        // films goes to servers 2 to 4, and the default database not to server 2.
+        cluster.members.take(2).forEach { it.deny(FILMS) }
+        cluster.members[2].deny(DEFAULT_DATABASE)
+        cluster.start()
+        cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 3 PRIMARIES WAIT")
+        cluster
+            .awaitLeader(FILMS) { cluster.members.drop(2) }
+            .database(FILMS)
+            .executeTransactionally("CREATE (:Film {title: 'Heat'})")
+        val lost = cluster.members.take(3)
+        val left = cluster.members.drop(3)
+        cluster.awaitEverywhere(left, films = listOf("Heat"), database = FILMS)
+        val lostIds = lost.map { it.serverId }
+        cluster.members.forEach { it.stop() }
+        left.forEach { assertThat(unbindSystemDb(it.home).exitCode).isZero }
+        val new = cluster.newMember()
+        val servers = left + new
+        servers.forEach { it.initialMembers(servers) }
+        cluster.start(servers)
+        val leader = cluster.awaitLeader(SYSTEM, among = { servers })
+
+        // Lost servers stay servers: Unavailable, as recorded, to host what is placed on them.
+        val rows = leader.showServers()
+        for (id in lostIds) {
+            val row = rows.single { it["serverId"] == id }
+            assertThat(row["health"]).describedAs(id).isEqualTo("Unavailable")
+            assertThat(row["state"]).describedAs(id).isEqualTo("Enabled")
+            assertThat(row["hosting"]).describedAs(id).isEqualTo(emptyList<String>())
+        }
+        assertThat(rows.single { it["serverId"] == lostIds[2] }["requestedHosting"])
+            .isEqualTo(listOf(SYSTEM, FILMS))
+        for (id in lostIds) cluster.administer(
+            "CALL dbms.cluster.cordonServer('$id')",
+            among = servers,
+        )
+        assertThat(leader.showServers().filter { it["serverId"] in lostIds })
+            .hasSize(3)
+            .allSatisfy { assertThat(it["state"]).isEqualTo("Cordoned") }
+
+        // films keeps its majority: its copy on the lost server moves to the new one.
+        cluster.administer(
+            "DEALLOCATE DATABASES FROM SERVER '${lostIds[2]}'",
+            among = servers,
+        )
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(leader.server(lostIds[2])["state"]).isEqualTo("Deallocated")
+            }
+        cluster.awaitEverywhere(listOf(new), films = listOf("Heat"), database = FILMS)
+        cluster.administer("DROP SERVER '${lostIds[2]}'", among = servers)
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(leader.showServers().map { it["serverId"] })
+                    .doesNotContain(lostIds[2])
+                    .contains(lostIds[0], lostIds[1])
+            }
+        leader.database(SYSTEM).beginTx().use { tx ->
+            assertThat(ServerRecords.lost(tx).map { it.toString() })
+                .containsExactlyInAnyOrder(lostIds[0], lostIds[1])
+        }
+    }
+
+    private fun ClusterHarness.Member.deny(database: String) {
+        settings =
+            settings + mapOf(DozenDbSettings.initialServerDeniedDatabases to listOf(database))
+    }
+
+    private fun ClusterHarness.Member.showServers(): List<Map<String, Any?>> =
+        database(SYSTEM).executeTransactionally("SHOW SERVERS YIELD *", emptyMap()) { result ->
+            result.asSequence().map { it.toMap() }.toList()
+        }
+
+    private fun ClusterHarness.Member.server(id: String): Map<String, Any?> =
+        showServers().single { it["serverId"] == id }
+
     private fun ClusterHarness.Member.initialMembers(members: List<ClusterHarness.Member>) {
         settings =
             settings +
@@ -213,8 +297,8 @@ class SystemRecoveryTest {
             it.stream().map { row -> row["user"] as String }.toList()
         }
 
-    private fun ClusterHarness.Member.films(): List<String> =
-        database().executeTransactionally(
+    private fun ClusterHarness.Member.films(database: String = DEFAULT_DATABASE): List<String> =
+        database(database).executeTransactionally(
             "MATCH (f:Film) RETURN f.title AS title ORDER BY title",
             emptyMap(),
         ) {
@@ -226,6 +310,7 @@ class SystemRecoveryTest {
         members: List<ClusterHarness.Member>,
         users: List<String> = emptyList(),
         films: List<String>? = null,
+        database: String = DEFAULT_DATABASE,
     ) {
         await withPollInterval
             Duration.ofMillis(200) atMost
@@ -233,12 +318,15 @@ class SystemRecoveryTest {
             {
                 for (member in members) {
                     assertThat(member.users()).describedAs("$member").containsAll(users)
-                    films?.let { assertThat(member.films()).describedAs("$member").isEqualTo(it) }
+                    films?.let {
+                        assertThat(member.films(database)).describedAs("$member").isEqualTo(it)
+                    }
                 }
             }
     }
 
     private companion object {
         const val SYSTEM = "system"
+        const val FILMS = "films"
     }
 }
