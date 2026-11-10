@@ -77,8 +77,8 @@ to Kotlin and DozerDB was removed; that code is now in `dozendb-core` and
 `dozendb-plugin`. The port started from
 [dozerdb/dozerdb-core](https://github.com/dozerdb/dozerdb-core) branch
 `neo4j-5.26.8`, commit `f76393e`. Ported files keep the Neo4j and DozerDB
-copyright notices and add a DozenDB modification notice; `COMPATIBILITY.md`
-lists how DozenDB behaves differently.
+copyright notices and add a DozenDB modification notice; `COMPATIBILITY.md`,
+"From DozerDB", lists how DozenDB behaves differently.
 
 | DozerDB class | DozenDB code |
 |---|---|
