@@ -199,8 +199,22 @@ class PluginJarIT {
             .contains("GNU GENERAL PUBLIC LICENSE", "Version 3, 29 June 2007")
         assertThat(text("META-INF/license/LICENSE.apache-2.0.txt"))
             .contains("Apache License", "Version 2.0, January 2004")
+        assertThat(text("META-INF/license/LICENSE.mit.txt"))
+            .contains("Azure SDK for Java", "Permission is hereby granted, free of charge")
+        assertThat(text("META-INF/license/LICENSE.bsd-3-clause.txt"))
+            .contains("Protocol Buffers", "ThreeTen", "RE2/J", "Neither the name of")
+        assertThat(text("META-INF/license/LICENSE.bsd-2-clause.txt"))
+            .contains("Stax2 API", "Redistribution and use in source and binary forms")
         assertThat(text("META-INF/NOTICE"))
-            .contains("DozenDB\nCopyright", "Neo4j Sweden AB", "DozerDB", "Apache Ratis")
+            .contains(
+                "DozenDB\nCopyright",
+                "Neo4j Sweden AB",
+                "DozerDB",
+                "Apache Ratis",
+                "AWS SDK for Java",
+                "Azure SDK for Java",
+                "google-cloud-storage",
+            )
     }
 
     @Test

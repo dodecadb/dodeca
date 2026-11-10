@@ -33,3 +33,30 @@ LICENSE.apache-2.0.txt in the jar):
 - Dropwizard Metrics (metrics-core and metrics-jmx), Copyright (c) 2010-2013
   Coda Hale, Yammer.com, 2014-2021 Dropwizard Team, relocated under
   org.dozendb.shaded.
+
+The DozenDB jar also bundles, relocated under org.dozendb.shaded, the SDKs of
+cloud storage and the libraries they use, whose notices are also in the jar's
+META-INF/NOTICE:
+
+- Under the Apache License 2.0: the AWS SDK for Java 2.x, Copyright
+  Amazon.com, Inc. or its affiliates; the Google Cloud Client Library for
+  Java (google-cloud-storage) and Google's libraries it uses (Google API
+  Client, Google HTTP Client, Google Auth Library, GAX, Guava, Gson, Error
+  Prone annotations, J2ObjC annotations, AutoValue annotations), Copyright
+  Google LLC; gRPC (its API, core, stub, protobuf, auth, inprocess, util and
+  OpenTelemetry modules), Copyright The gRPC Authors; OpenCensus and
+  OpenTelemetry, Copyright their authors; PerfMark; Jackson and Woodstox,
+  Copyright FasterXML, LLC; Reactor Core, Copyright VMware, Inc. or its
+  affiliates; Apache HttpComponents (HttpClient 4 and 5, HttpCore 4 and 5)
+  and Apache Commons Codec, Copyright The Apache Software Foundation; and JNA
+  Platform (jna-platform), which is available under the Apache License 2.0 or
+  the LGPL 2.1, Copyright its authors.
+- Under the MIT License (META-INF/license/LICENSE.mit.txt in the jar): the
+  Azure SDK for Java and the Microsoft Authentication Library for Java,
+  Copyright Microsoft Corporation.
+- Under the 3-clause BSD License (META-INF/license/LICENSE.bsd-3-clause.txt):
+  Protocol Buffers, Copyright Google Inc.; the ThreeTen backport and
+  ThreeTen-Extra, Copyright Stephen Colebourne & Michael Nascimento Santos;
+  and RE2/J, Copyright The Go Authors.
+- Under the 2-clause BSD License (META-INF/license/LICENSE.bsd-2-clause.txt):
+  the Stax2 API, Copyright FasterXML.com.
