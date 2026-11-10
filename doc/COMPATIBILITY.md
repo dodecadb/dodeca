@@ -756,7 +756,11 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   neither.
 - **Monitoring procedures**, as in Enterprise: `db.checkpoint` checkpoints the
   database it runs on, or waits for the checkpoint under way, on the member it
-  runs on.
+  runs on. `dbms.scheduler.jobs`, `dbms.scheduler.groups` and
+  `dbms.scheduler.failedJobs` list the jobs of the member's internal job
+  scheduler, the groups that run jobs, and the latest runs that failed. Where
+  Enterprise's documentation says nothing, job ids are `job-<number>`, and times
+  are shown in `db.temporal.timezone`, as Neo4j's other procedures show them.
 
 ## Not supported
 
@@ -811,8 +815,7 @@ error, and their procedures do not exist.
 - **CSV and Graphite metrics** (`server.metrics.csv.*`,
   `server.metrics.graphite.*`, `server.directories.metrics`).
 - **Monitoring procedures**: `dbms.listPools`, `db.listLocks`,
-  `dbms.listActiveLocks`, and `dbms.scheduler.jobs`, `groups` and
-  `failedJobs`.
+  and `dbms.listActiveLocks`.
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,
   `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
   `server.backup.exec_connector.*` and
