@@ -65,7 +65,22 @@ internal open class ObjectStorageProvider(
 
     override fun openAsInputStream(path: StoragePath): InputStream {
         val info = info(path)
-        return if (info.size == 0L) InputStream.nullInputStream() else reader(path, info)
+        if (info.size == 0L) return InputStream.nullInputStream()
+        val container = container(path)
+        val key = key(path)
+        return ObjectInputStream(
+            info.size,
+            {
+                store.read(
+                    container,
+                    key,
+                    info.version,
+                    0,
+                    minOf(ObjectInputStream.HEAD.toLong(), info.size),
+                )
+            },
+            { reader(path, info) },
+        )
     }
 
     override fun openAsOutputStream(path: StoragePath, options: Set<OpenOption>): OutputStream {

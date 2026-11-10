@@ -213,6 +213,46 @@ class ObjectStorageProviderTest {
     }
 
     @Test
+    fun `a stream reads the object's head in one small request, the rest in ranges`() {
+        val data = bytes((3 shl 20) + 5)
+        store.store("films", "big.bin", data)
+
+        fs.openAsInputStream(path("s3://films/big.bin")).use { input ->
+            assertThat(input.readNBytes(10)).isEqualTo(data.copyOfRange(0, 10))
+            assertThat(store.ranges).containsExactly(0L until (256L shl 10))
+            input.mark(Int.MAX_VALUE)
+            assertThat(input.skip(300_000)).isEqualTo(300_000)
+            assertThat(input.readNBytes(100)).isEqualTo(data.copyOfRange(300_010, 300_110))
+            input.reset()
+            assertThat(input.readAllBytes()).isEqualTo(data.copyOfRange(10, data.size))
+        }
+        assertThat(store.ranges.first()).isEqualTo(0L until (256L shl 10))
+        assertThat(store.ranges.drop(1)).allMatch { it.last - it.first < (1 shl 20) }
+    }
+
+    @Test
+    fun `a stream copied after a few bytes are read copies the rest`() {
+        val data = bytes((3 shl 20) + 5)
+        store.store("films", "big.bin", data)
+
+        val out = ByteArrayOutputStream()
+        fs.openAsInputStream(path("s3://films/big.bin")).use {
+            out.write(it.readNBytes(7))
+            it.transferTo(out)
+        }
+        val file = local.resolve("copy.bin")
+        PathBasedOutputStream(file).use { target ->
+            fs.openAsInputStream(path("s3://films/big.bin")).use {
+                target.write(it.readNBytes(7))
+                it.transferTo(target)
+            }
+        }
+
+        assertThat(out.toByteArray()).isEqualTo(data)
+        assertThat(file).hasBinaryContent(data)
+    }
+
+    @Test
     fun `a whole object copies to a stream and to a local file`() {
         val data = bytes((3 shl 20) + 5)
         store.store("films", "big.bin", data)
