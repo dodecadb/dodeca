@@ -1,6 +1,7 @@
 package org.dozendb.backup.cli
 
 import java.io.IOException
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Instant
 import java.time.ZoneOffset.UTC
@@ -248,8 +249,9 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
 
     /**
      * A local --to-path must be an existing directory. In cloud storage, folders always exist, so
-     * the folder is listed instead, which checks the credentials before a backup is taken; the copy
-     * of a database is then made in --temp-path.
+     * the folder's listing is opened instead, which reads its first entries: that checks the
+     * credentials and the bucket before a backup is taken. The copy of a database is then made in
+     * --temp-path.
      */
     private fun checkToPath() {
         if (!CommandPaths.isCloud(toPath)) {
@@ -265,7 +267,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             )
         }
         try {
-            fs.listFiles(toPath)
+            Files.newDirectoryStream(toPath).close()
         } catch (e: IOException) {
             throw CommandFailedException(
                 "Cannot list --to-path ${CommandPaths.display(toPath)}: ${e.message}",
