@@ -16,6 +16,8 @@
   <properties>
     <!-- Its promtool checks the metrics the plugin reports. -->
     <prometheus.image>prom/prometheus:v3.5.0</prometheus.image>
+    <!-- Graphite's carbon and graphite-web receive and render the metrics the plugin sends. -->
+    <graphite.image>graphiteapp/graphite-statsd:1.1.10-5</graphite.image>
     <!-- Tests only: no jar to install (see maven-jar-plugin below). -->
     <maven.install.skip>true</maven.install.skip>
     <!-- Test classes run in this many JVMs at once, each with a cluster that takes up to 4 GB of
@@ -110,6 +112,7 @@
                 <dozendb.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}.jar</dozendb.plugin.jar>
                 <neo4j.image>${neo4j.image}</neo4j.image>
                 <prometheus.image>${prometheus.image}</prometheus.image>
+                <graphite.image>${graphite.image}</graphite.image>
                 <s3mock.image>${s3mock.image}</s3mock.image>
                 <fake-gcs.image>${fake-gcs.image}</fake-gcs.image>
                 <azurite.image>${azurite.image}</azurite.image>
