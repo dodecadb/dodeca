@@ -86,6 +86,7 @@ import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
+import org.dozendb.core.servers.ServerRecords
 import org.dozendb.core.servers.Servers
 import org.dozendb.core.servers.UpstreamRules
 import org.dozendb.core.servers.UpstreamSelection
@@ -188,6 +189,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /** The system graph's [Neo4jSystemGraph.systemId], read once `system` runs. */
     @Volatile private var systemId: Long? = null
     private var roles: RolesInitializer? = null
+
+    /** The transactions this member forwards to others, if it does. */
+    @Volatile private var remoteTransactions: RemoteTransactions? = null
 
     /** What the cluster status endpoints of the HTTP server report. */
     private val statuses = ClusterStatuses(::clusterStatuses)
@@ -1581,12 +1585,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         val logs = globalModule.logService.internalLogProvider
         val remote =
             RemoteTransactions(
-                config,
-                MemberSsl.context(tls),
-                tls.verifyHostname,
-                ::lastSystemTransaction,
-                logs,
-            )
+                    config,
+                    MemberSsl.context(tls),
+                    tls.verifyHostname,
+                    ::lastSystemTransaction,
+                    logs,
+                )
+                .also { remoteTransactions = it }
         val electionTimeout = config.get(ClusterSettings.electionTimeoutMax)
         val forwarding =
             ForwardingLocations(
@@ -1689,6 +1694,21 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         globalProcedures.registerComponent(
             SecondaryReplication::class.java,
             { SecondaryReplication { name, pause -> secondaries.toggle(name, pause) } },
+            true,
+        )
+        val connectivity =
+            ConnectivityChecks(
+                cluster,
+                {
+                    databaseRepository.getSystemDatabaseContext().databaseFacade().beginTx().use {
+                        ServerRecords.records(it)
+                    }
+                },
+                { remoteTransactions },
+            )
+        globalProcedures.registerComponent(
+            ConnectivityChecks::class.java,
+            { connectivity },
             true,
         )
         globalProcedures.registerProcedure(ClusterProcedures::class.java)

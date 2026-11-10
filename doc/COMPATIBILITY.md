@@ -42,6 +42,7 @@ end its own way.
 | Clustering: replication, failover, routing | Own design, same for clients | [Clustering](#clustering) |
 | Server-side routing | Same | [Clustering](#clustering) |
 | Cluster status endpoints of the HTTP server | Same, with differences | [Clustering](#clustering) |
+| Checking connectivity between members | Same, with differences | [Clustering](#clustering) |
 | Servers, topologies and secondaries | Same, with differences | [Servers](#servers) |
 | Leadership balancing and priority tags | Same | [Leadership balancing](#leadership-balancing) |
 | Online backup and restore | Same, with differences | [Backup and restore](#backup-and-restore) |
@@ -463,6 +464,13 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   `false` for plaintext. `client_auth=OPTIONAL` is refused. Certificates are
   read at start, and members accept any certificate from a trusted authority,
   whichever member presents it. See `OPERATOR_GUIDE.md`.
+- **Checking connectivity.** `dbms.cluster.checkConnectivity` checks, as in
+  Enterprise, whether the member it runs on reaches each other member at its
+  ports. DozenDB carries the traffic of Enterprise's cluster and Raft ports on
+  one port, the member's Raft address, so its `CLUSTER` and `RAFT` rows share
+  one check: whether the member there answers as itself. `INTRA_BOLT` is the
+  routing connector, which takes forwarded writes, so only members with TLS
+  between them check it, logging in as the user who calls the procedure.
 - **ID reuse.** IDs freed while a member is a follower are reused only after a
   restart, as in Enterprise's clustering.
 - **Durability (single fsync).** A commit to a replicated database is
@@ -799,8 +807,7 @@ error, and their procedures do not exist.
   declares `server.cypher.parallel.worker_limit`, which has no effect.
 - **Disaster recovery and cluster checks**: quarantine
   (`dbms.quarantineDatabase`), `dbms.cluster.recreateDatabase`,
-  `dbms.cluster.statusCheck`, `dbms.cluster.checkConnectivity`,
-  `dbms.cluster.protocols` and `neo4j-admin dbms unbind-system-db`.
+  `dbms.cluster.statusCheck`, `dbms.cluster.protocols` and `neo4j-admin dbms unbind-system-db`.
   `OPERATOR_GUIDE.md`
   describes how a DozenDB cluster recovers, and "Lost databases" under
   [Running a cluster](#running-a-cluster) how to rebuild a member.

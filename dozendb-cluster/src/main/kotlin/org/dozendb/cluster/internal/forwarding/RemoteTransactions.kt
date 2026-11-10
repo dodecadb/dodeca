@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal.forwarding
 import java.net.URI
 import java.time.Clock
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -127,6 +128,34 @@ internal class RemoteTransactions(
         return transaction
     }
 
+    /**
+     * Opens a connection to the routing connector at [address], logged in as the user of [subject],
+     * as forwarded transactions are: null once it opens, else why not. A new connection, not one of
+     * the pool's, which may have idled since the member went away.
+     */
+    fun connectionFailure(address: SocketAddress, subject: AuthSubject): CompletionStage<String?> {
+        val timeout = config.get(GraphDatabaseSettings.routing_driver_connect_timeout).toMillis()
+        return provider
+            .connect(
+                uri(address),
+                null,
+                AGENT,
+                USER_AGENT,
+                timeout.toInt(),
+                timeout,
+                security,
+                token(subject),
+                MIN_VERSION,
+                NotificationConfig.defaultConfig(),
+                null,
+            )
+            .thenCompose { it.close() }
+            .handle { _, failure ->
+                val cause = (failure as? CompletionException)?.cause ?: failure
+                cause?.let { it.message ?: it.toString() }
+            }
+    }
+
     /** A login on another member as the user of [subject] (see [MemberLogins]). */
     private fun token(subject: AuthSubject): AuthToken =
         AuthTokens.custom(
@@ -138,13 +167,16 @@ internal class RemoteTransactions(
             )
         )
 
+    private fun uri(address: SocketAddress) =
+        URI("bolt", null, address.hostname, address.port, null, null, null)
+
     private fun pool(address: SocketAddress, database: String): PooledBoltConnectionSource =
         pools.computeIfAbsent(address) {
             if (closed) throw shuttingDown(database)
             PooledBoltConnectionSource(
                 logging,
                 Clock.systemUTC(),
-                URI("bolt", null, address.hostname, address.port, null, null, null),
+                uri(address),
                 provider,
                 NoDefaultLogin,
                 { CompletableFuture.completedStage(security) },

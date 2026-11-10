@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import java.util.UUID
 import java.util.stream.Stream
 import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.MembershipChangeException
@@ -7,6 +8,8 @@ import org.dozendb.cluster.UpgradeException
 import org.dozendb.cluster.displayName
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
+import org.neo4j.dbms.systemgraph.InstanceModeConstraint
+import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.api.procedure.SystemProcedure
 import org.neo4j.procedure.Admin
@@ -28,6 +31,10 @@ class ClusterProcedures {
     @JvmField @Context var administration: ServerAdministration? = null
 
     @JvmField @Context var secondaries: SecondaryReplication? = null
+
+    @JvmField @Context var connectivity: ConnectivityChecks? = null
+
+    @JvmField @Context var securityContext: SecurityContext? = null
 
     @SystemProcedure
     @Procedure(name = "dozendb.cluster.status", mode = Mode.DBMS)
@@ -376,6 +383,69 @@ class ClusterProcedures {
             }
         return Stream.of(ReplicationStateRow(state))
     }
+
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.checkConnectivity", mode = Mode.DBMS)
+    @Description(
+        "Checks whether this member reaches each other member at its ports: CLUSTER and RAFT, " +
+            "both the member's Raft address, and INTRA_BOLT, the routing connector of a member " +
+            "that takes forwarded writes. Valid values for 'port-name' are: " +
+            "[CLUSTER, INTRA_BOLT, RAFT]"
+    )
+    fun checkConnectivity(
+        @Name(value = "port-name", defaultValue = "") portName: String,
+        @Name(value = "server", defaultValue = "") server: String,
+    ): Stream<ConnectivityRow> {
+        val port =
+            portName
+                .takeIf { it.isNotEmpty() }
+                ?.let { name ->
+                    ConnectivityChecks.Port.entries.firstOrNull { it.name == name.uppercase() }
+                        ?: throw ProcedureFailure(
+                            "Unknown port '$name'. Valid values for 'port-name' are: " +
+                                "[CLUSTER, INTRA_BOLT, RAFT]",
+                            IllegalArgumentException(name),
+                        )
+                }
+        val id =
+            server
+                .takeIf { it.isNotEmpty() }
+                ?.let {
+                    try {
+                        UUID.fromString(it)
+                    } catch (e: IllegalArgumentException) {
+                        throw ProcedureFailure("Invalid server id '$it'", e)
+                    }
+                }
+        return checkNotNull(connectivity) { "DozenDB clustering is not running" }
+            .check(port, id, checkNotNull(securityContext).subject())
+            .stream()
+            .map {
+                ConnectivityRow(
+                    serverId = it.member.member.id.toString(),
+                    name = it.record?.name ?: it.member.member.id.toString(),
+                    address = it.member.boltAddress?.toString(),
+                    `mode-constraint` =
+                        (it.record?.options?.modeConstraint ?: InstanceModeConstraint.NONE).name,
+                    `port-name` = it.port.name,
+                    `port-address` = it.address.toString(),
+                    result = it.result,
+                )
+            }
+    }
+
+    /** A row of `dbms.cluster.checkConnectivity`, in Neo4j Enterprise's columns. */
+    @JvmRecord
+    data class ConnectivityRow(
+        val serverId: String,
+        val name: String,
+        val address: String?,
+        val `mode-constraint`: String,
+        val `port-name`: String,
+        val `port-address`: String,
+        val result: String,
+    )
 
     private fun requireCluster(): ClusterService =
         checkNotNull(cluster) { "DozenDB clustering is not running" }

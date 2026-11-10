@@ -523,6 +523,22 @@ class ClusterService(
             throw invalid(e.message.orEmpty())
         }
 
+    /**
+     * Asks each of [members] at its Raft address, all at once, who it is: by member, null if it
+     * answers as itself, else why not, as when another member answers there.
+     */
+    fun probeFailures(members: List<Member>): Map<MemberId, String?> =
+        probeAll(members).associate { (member, result) ->
+            member.id to
+                result.fold(
+                    { peer ->
+                        if (peer.member.id == member.id) null
+                        else "${member.raftAddress} answers as member ${peer.member.id}"
+                    },
+                    { it.message ?: it.toString() },
+                )
+        }
+
     private fun probeAll(members: List<Member>): List<Pair<Member, Result<PeerInfo>>> =
         runBlocking {
             members

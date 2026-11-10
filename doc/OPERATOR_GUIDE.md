@@ -1383,6 +1383,29 @@ Members added later make it a cluster of more (see
 [Adding a member](#adding-a-member)), with TLS between members if they need it
 (see [TLS between members](#tls-between-members)).
 
+### Checking connectivity
+
+An administrator checks whether a member reaches the others by calling, on
+that member:
+
+```cypher
+CALL dbms.cluster.checkConnectivity()
+```
+
+It gives a row for each port of each other member, with `result` `OK`, or why
+the member could not reach it. `CLUSTER` and `RAFT` are both the member's Raft
+address, where it must answer as itself: a different member answering there,
+as when one took over the address of a member that was replaced, fails the
+check. `INTRA_BOLT` is the routing connector, which takes forwarded writes
+(see [Writes on any member](#writes-on-any-member)); members without TLS
+between them have no `INTRA_BOLT` rows. The check opens a new connection and
+logs in as the calling user, as forwarded writes do.
+
+`CALL dbms.cluster.checkConnectivity('RAFT', '<server id>')` checks one port
+of one server. All checks run at once, each waiting up to its timeout for a
+member that does not answer: 5 seconds for the Raft port, and
+`dbms.routing.driver.connection.connect_timeout` for the routing connector.
+
 ### Query log
 
 Every member writes `logs/query.log`, as `conf/server-logs.xml` configures it:
