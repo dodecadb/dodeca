@@ -8,6 +8,7 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberId
 
 /** This member's place in the cluster. */
 enum class MemberState {
@@ -30,12 +31,15 @@ enum class MemberState {
  *   with a DozenDB version that does not support it.
  * @property storesToDetach the databases whose stores this member brought to the cluster it formed
  *   and has not yet detached from the Raft groups they may have been replicated in before.
+ * @property memberId the member this record, and the Raft state beside it, belongs to; null in a
+ *   record written before DozenDB kept it.
  */
 data class MembershipRecord(
     val state: MemberState,
     val formation: List<Member> = emptyList(),
     val formatLevel: Int = FormatLevels.INITIAL,
     val storesToDetach: Set<String> = emptySet(),
+    val memberId: MemberId? = null,
 )
 
 /** Keeps this member's [MembershipRecord]. */
@@ -77,7 +81,15 @@ class MembershipFile(private val path: Path) : MembershipStore {
             } ?: FormatLevels.INITIAL
         val storesToDetach =
             fields[STORES_TO_DETACH].orEmpty().split(',').filter { it.isNotEmpty() }.toSet()
-        return MembershipRecord(state, formation, formatLevel, storesToDetach)
+        val memberId =
+            fields[MEMBER_ID]?.let {
+                try {
+                    MemberId.parse(it)
+                } catch (e: IllegalArgumentException) {
+                    throw IOException("$path: invalid member id $it", e)
+                }
+            }
+        return MembershipRecord(state, formation, formatLevel, storesToDetach, memberId)
     }
 
     override fun write(record: MembershipRecord) {
@@ -87,6 +99,7 @@ class MembershipFile(private val path: Path) : MembershipStore {
             appendLine("$FORMATION=${record.formation.joinToString(",") { it.toText() }}")
             appendLine("$FORMAT_LEVEL=${record.formatLevel}")
             appendLine("$STORES_TO_DETACH=${record.storesToDetach.sorted().joinToString(",")}")
+            record.memberId?.let { appendLine("$MEMBER_ID=$it") }
         }
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         Files.createDirectories(path.parent)
@@ -117,5 +130,6 @@ class MembershipFile(private val path: Path) : MembershipStore {
         const val FORMATION = "formation"
         const val FORMAT_LEVEL = "formatLevel"
         const val STORES_TO_DETACH = "storesToDetach"
+        const val MEMBER_ID = "memberId"
     }
 }

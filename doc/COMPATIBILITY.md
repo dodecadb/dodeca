@@ -764,7 +764,8 @@ error, and their procedures do not exist.
   `dbms.cluster.statusCheck`, `dbms.cluster.checkConnectivity`,
   `dbms.cluster.protocols` and `neo4j-admin dbms unbind-system-db`.
   `neo4j-admin server unbind` removes only the server's id, as in Neo4j
-  Community, and none of DozenDB's cluster state. `OPERATOR_GUIDE.md`
+  Community, and none of DozenDB's cluster state: the server then refuses to
+  start, saying how to start it under its id again. `OPERATOR_GUIDE.md`
   describes how a DozenDB cluster recovers, and "Lost databases" under
   [Running a cluster](#running-a-cluster) how to rebuild a member.
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server

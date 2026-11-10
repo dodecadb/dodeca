@@ -205,7 +205,11 @@ class ClusterServiceTest {
         for (index in logs.indices) {
             assertThat(memberships[index].record)
                 .isEqualTo(
-                    MembershipRecord(MemberState.MEMBER, logs.map { it.self }.sortedBy { it.id })
+                    MembershipRecord(
+                        MemberState.MEMBER,
+                        logs.map { it.self }.sortedBy { it.id },
+                        memberId = logs[index].self.id,
+                    )
                 )
             assertThat(services[index].foundingMembers)
                 .isEqualTo(memberships[index].record!!.formation)
@@ -315,7 +319,8 @@ class ClusterServiceTest {
         joining.start()
 
         assertThat(joining.state).isEqualTo(MemberState.JOINING)
-        assertThat(store.record).isEqualTo(MembershipRecord(MemberState.JOINING))
+        assertThat(store.record)
+            .isEqualTo(MembershipRecord(MemberState.JOINING, memberId = joiningLog.self.id))
         // The other databases follow their placements.
         assertThat(stores.copied).containsExactly("system")
         assertThat(joiningLog.status(system).role).isEqualTo(Role.Inactive)
@@ -324,7 +329,8 @@ class ClusterServiceTest {
         assertThat(services[1].addMember(joiningLog.self.raftAddress)).isEqualTo(joiningLog.self)
 
         assertThat(joining.state).isEqualTo(MemberState.MEMBER)
-        assertThat(store.record).isEqualTo(MembershipRecord(MemberState.MEMBER))
+        assertThat(store.record)
+            .isEqualTo(MembershipRecord(MemberState.MEMBER, memberId = joiningLog.self.id))
         assertThat(joiningLog.status(system).role).isEqualTo(Role.Follower)
         assertThat(services[0].members().map { it.member })
             .containsExactlyInAnyOrderElementsOf(logs.map { it.self } + joiningLog.self)

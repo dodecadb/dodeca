@@ -52,6 +52,12 @@ class MembershipChangeException(message: String, cause: Throwable? = null) :
     RuntimeException(message, cause)
 
 /**
+ * This member's cluster state belongs to another member: the server's id changed after the state
+ * was written. The message tells the operator what to do.
+ */
+class ServerIdChangedException(message: String) : RuntimeException(message)
+
+/**
  * Runs this member's part of the cluster: starts consensus, forms, joins or rejoins the `system`
  * group, makes sure this member starts from the cluster's databases, follows and changes the
  * cluster's members, and reports status. It knows nothing about Neo4j internals.
@@ -158,6 +164,9 @@ class ClusterService(
      */
     fun start() {
         record = membershipStore.read()
+        refuseOtherOwner()
+        // Written before DozenDB kept the owner: it is this member's.
+        if (record?.memberId == null && record != null) remember { it }
         val firstStart = record == null
         requireSupported(formatLevel, "as this member last saw it")
         if (systemMode == CopyMode.SECONDARY) {
@@ -437,10 +446,30 @@ class ClusterService(
         }
     }
 
-    /** Changes this member's record with [change] and keeps the result. */
+    /**
+     * Refuses to start under another id than the one this member's cluster state was written for:
+     * the other members count the votes and copies of that id, not of this one, and the databases
+     * here would be deleted as not placed on this member.
+     */
+    private fun refuseOtherOwner() {
+        val owner = record?.memberId ?: return
+        if (owner == self.id) return
+        throw ServerIdChangedException(
+            "The cluster state of this server belongs to server $owner, but this server is now " +
+                "${self.id}: its server id file, data/server_id, was removed or replaced, as Neo4j " +
+                "Community's neo4j-admin server unbind does. Under the new id, the cluster would " +
+                "count neither this server's votes nor its databases, and the server would delete " +
+                "its databases. To start as server $owner again, put back data/server_id from a " +
+                "copy of the data directory. Before anything else, keep a copy of the data " +
+                "directory: it may hold the only copy of a database."
+        )
+    }
+
+    /** Changes this member's record with [change] and keeps the result, with its owner. */
     @Synchronized
     private fun remember(change: (MembershipRecord) -> MembershipRecord) {
-        val update = change(record ?: MembershipRecord(MemberState.JOINING))
+        val update =
+            change(record ?: MembershipRecord(MemberState.JOINING)).copy(memberId = self.id)
         membershipStore.write(update)
         record = update
     }

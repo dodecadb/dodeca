@@ -68,6 +68,21 @@ class MembershipFileTest {
     }
 
     @Test
+    fun `the record keeps the member it belongs to, which older records lack`() {
+        val owner = MemberId(UUID.randomUUID())
+        file.write(MembershipRecord(MemberState.MEMBER, memberId = owner))
+
+        assertThat(file.read()!!.memberId).isEqualTo(owner)
+
+        Files.writeString(
+            directory.resolve("raft").resolve("membership"),
+            "version=1\nstate=MEMBER\nformation=\n",
+        )
+
+        assertThat(file.read()!!.memberId).isNull()
+    }
+
+    @Test
     fun `a damaged record is reported`() {
         Files.createDirectories(directory.resolve("raft"))
         Files.writeString(
