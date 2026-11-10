@@ -155,7 +155,13 @@ internal class Neo4jLocalDatabases(
 
     override fun unmark(id: UUID) = secondaries.unmark(id)
 
-    override fun switch(id: NamedDatabaseId, mode: CopyMode): ModeSwitch =
+    override fun seedSecondary(id: NamedDatabaseId) {
+        // Marked before its seed mark goes: a store with neither counts as a leftover.
+        secondaries.mark(id)
+        stores.unmarkSeed(id.name())
+    }
+
+    override fun switch(id: NamedDatabaseId, mode: CopyMode, pulledBeyond: Long?): ModeSwitch =
         when (mode) {
             CopyMode.SECONDARY -> {
                 replication.replica(id)?.handOverOnStop = false
@@ -166,17 +172,23 @@ internal class Neo4jLocalDatabases(
                 create(id, CopyMode.SECONDARY)
                 ModeSwitch.SWITCHED
             }
-            CopyMode.PRIMARY -> toPrimary(id)
+            CopyMode.PRIMARY -> toPrimary(id, pulledBeyond)
         }
 
     /**
      * Hosts the secondary [id] as a primary from its own store, which seeds the group it joins with
      * the log entry of its last transaction, as far as the group's leader tells its term. A store
      * without replicated transactions, only those that created it, needs no seed: the group starts
-     * from its first entry, or asks for a copy if its leader no longer holds that.
+     * from its first entry, or asks for a copy if its leader no longer holds that. Not before its
+     * last transaction is beyond [pulledBeyond].
      */
-    private fun toPrimary(id: NamedDatabaseId): ModeSwitch {
+    private fun toPrimary(id: NamedDatabaseId, pulledBeyond: Long?): ModeSwitch {
         val ref = groups.of(id)
+        // Its last transaction only moves on.
+        val pulled = secondaries.secondary(id)?.takeIf { it.pulling }?.last()?.appendIndex()
+        if (pulledBeyond != null && pulled != null && pulled <= pulledBeyond) {
+            return ModeSwitch.LATER
+        }
         // It pulls no more meanwhile, so that its last transaction stays its last.
         val last = secondaries.stopPulling(id) ?: return ModeSwitch.NEEDS_COPY
         val index = last.consensusIndex()

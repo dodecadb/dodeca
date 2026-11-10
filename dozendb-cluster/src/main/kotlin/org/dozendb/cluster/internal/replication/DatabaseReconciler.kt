@@ -51,6 +51,11 @@ internal data class DesiredDatabase(
     val recreationStatus: String? = null,
     /** Whether naming its creator failed, which ends its recreation: it waits to be recreated. */
     val recreationFailed: Boolean = false,
+    /**
+     * For a database recreated from [seeders], the append index of the last transaction of the
+     * creator's seed: the other seeders pull beyond it before they join its group.
+     */
+    val seedAppendIndex: Long? = null,
 )
 
 /** What the creator of a database creates its store from, instead of an empty one. */
@@ -84,9 +89,15 @@ internal interface SystemGraph {
 
     /**
      * Names [creator] the creator of [database] and [initialMembers] the initial members of its
-     * group, unless a creator is named already.
+     * group, unless a creator is named already; for a database recreated from its seeders, with the
+     * [seedAppendIndex] of the creator's seed.
      */
-    fun nameCreator(database: NamedDatabaseId, creator: MemberId, initialMembers: List<Member>)
+    fun nameCreator(
+        database: NamedDatabaseId,
+        creator: MemberId,
+        initialMembers: List<Member>,
+        seedAppendIndex: Long? = null,
+    )
 
     /**
      * Records how naming the creator of [database], recreated from its seeders, goes: [message],
@@ -203,6 +214,12 @@ internal interface LocalDatabases {
     /** What the seed kept of the database [name] holds; null if it cannot be read. */
     fun seedState(name: String): Seed?
 
+    /**
+     * Keeps the seed of [id], which another seeder creates, as the store of a secondary of [id],
+     * which pulls the transactions it lacks: marks it a secondary's, and takes its seed mark off.
+     */
+    fun seedSecondary(id: NamedDatabaseId)
+
     /** Deletes the files of the database [name], which is not registered. */
     fun deleteStore(name: String)
 
@@ -216,9 +233,10 @@ internal interface LocalDatabases {
      * Hosts [id], registered here in the other mode, in [mode] from its own store: registers it
      * again, stopped. A primary must have left its group: its group goes, and its store is marked a
      * secondary's. A secondary's store seeds the group it then joins, as far as the group's leader
-     * still holds the entry of its last transaction.
+     * still holds the entry of its last transaction; [LATER][ModeSwitch.LATER] until the append
+     * index of its last transaction is beyond [pulledBeyond], if given.
      */
-    fun switch(id: NamedDatabaseId, mode: CopyMode): ModeSwitch
+    fun switch(id: NamedDatabaseId, mode: CopyMode, pulledBeyond: Long? = null): ModeSwitch
 
     /**
      * Copies the store of [id], which this member lacks, from the member at [source], for a copy in
@@ -647,7 +665,9 @@ internal class DatabaseReconciler(
             // No group counts a secondary in: it goes at once, or turns primary from its store.
             state.mode == CopyMode.SECONDARY && wanted != CopyMode.SECONDARY -> {
                 if (wanted == CopyMode.PRIMARY) {
-                    when (databases.switch(id, CopyMode.PRIMARY)) {
+                    // A seeder's store holds the old group's transactions up to the creator's
+                    // seed, whose Raft indexes mean nothing in the new group.
+                    when (databases.switch(id, CopyMode.PRIMARY, database.seedAppendIndex)) {
                         ModeSwitch.SWITCHED -> {
                             log.info(
                                 "Secondary %s here turned primary from its own store, placed " +
@@ -737,6 +757,18 @@ internal class DatabaseReconciler(
     /** Creates [database] here, as [wanted] places it; returns false to be tried again. */
     private fun create(database: DesiredDatabase, wanted: CopyMode): Boolean {
         val id = database.id
+        // A seeder that does not create the database runs its seed as a secondary, which pulls
+        // what it lacks from the others, and turns primary if it is placed here as one.
+        val creator = database.creator
+        if (database.online && creator != null && creator != self && seeded(database)) {
+            log.info(
+                "Starting the seed of %s as a secondary, which pulls the transactions it lacks; " +
+                    "server %s creates the database",
+                id,
+                creator,
+            )
+            databases.seedSecondary(id)
+        }
         // A store of the other mode starts in its mode, then switches, as one that runs does.
         val mode =
             when {
@@ -831,6 +863,7 @@ internal class DatabaseReconciler(
             return false
         }
         val hosting = members.filter { it.id in database.hosts }
+        var seedAppendIndex: Long? = null
         val creator =
             if (database.recreatedFrom != null && database.seeders.isNotEmpty()) {
                 when (val elected = SeedElection.elect(id, database.seeders, seeds)) {
@@ -838,6 +871,7 @@ internal class DatabaseReconciler(
                         if (elected.member in database.secondaries) {
                             return promote(database, elected.member)
                         } else {
+                            seedAppendIndex = elected.appendIndex
                             elected.member
                         }
                     is Election.Waiting -> {
@@ -875,7 +909,7 @@ internal class DatabaseReconciler(
             return false
         }
         try {
-            systemGraph.nameCreator(id, creator, hosting)
+            systemGraph.nameCreator(id, creator, hosting, seedAppendIndex)
         } catch (e: InterruptedException) {
             throw e
         } catch (e: Exception) {

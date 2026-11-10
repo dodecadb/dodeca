@@ -551,7 +551,7 @@ class DatabaseReconcilerTest {
     }
 
     @Test
-    fun `a seeder that is not the creator keeps its seed until a copy from the creator replaces it`() {
+    fun `a seeder that is not the creator runs its seed as a secondary, then turns primary once it pulled beyond the creator's seed`() {
         local.add(films, started = true)
         val new = recreated(films, seeders = setOf(creator, self))
         graph.databases = listOf(new)
@@ -559,26 +559,44 @@ class DatabaseReconcilerTest {
         reconciler.reconcile()
 
         assertThat(local.keptSeeds).containsKey(films.name())
-        assertThat(local.copies).isEmpty()
 
-        graph.databases = listOf(new.copy(creator = creator))
-        // The creator has not created it yet.
-        local.unreachable += creatorAddress
-        local.unreachable += otherAddress
+        graph.databases = listOf(new.copy(creator = creator, seedAppendIndex = 10))
         reconciler.reconcile()
 
-        assertThat(local.keptSeeds).containsKey(films.name())
-        assertThat(local.deletedStores).isEmpty()
-
-        local.unreachable.clear()
-        reconciler.reconcile()
-
-        assertThat(local.copies).containsExactly(creatorAddress to new.id)
-        assertThat(local.deletedStores).isEmpty()
-        assertThat(local.registered).containsEntry(new.id, LocalDatabase(true, false))
-        // Its database runs from the copy.
-        reconciler.reconcile()
+        assertThat(local.registered)
+            .containsEntry(new.id, LocalDatabase(true, false, CopyMode.SECONDARY))
         assertThat(local.keptSeeds).isEmpty()
+        assertThat(local.copies).isEmpty()
+        assertThat(local.deletedStores).isEmpty()
+
+        // It holds the creator's seed, not yet the transaction that detached it.
+        local.pulled[new.id] = 10
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(local.switched).isEmpty()
+
+        local.pulled[new.id] = 11
+        reconciler.reconcile()
+
+        assertThat(local.switched).containsExactly(new.id to CopyMode.PRIMARY)
+        assertThat(local.copies).isEmpty()
+    }
+
+    @Test
+    fun `a seeder placed as a secondary runs its seed as one`() {
+        local.add(films, started = true)
+        val new =
+            recreated(films, seeders = setOf(creator, self))
+                .copy(hosts = setOf(creator), secondaries = setOf(self))
+        graph.databases = listOf(new)
+        reconciler.reconcile()
+
+        graph.databases = listOf(new.copy(creator = creator, seedAppendIndex = 10))
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.registered)
+            .containsEntry(new.id, LocalDatabase(true, false, CopyMode.SECONDARY))
+        assertThat(local.copies).isEmpty()
+        assertThat(local.switched).isEmpty()
     }
 
     @Test
@@ -641,6 +659,7 @@ class DatabaseReconcilerTest {
 
         assertThat(seeds.asked).containsExactly(other to listOf(10L))
         assertThat(graph.named).containsExactly(new.id to other)
+        assertThat(graph.seedAppendIndexes).containsExactly(12L)
         assertThat(graph.recorded).isEmpty()
     }
 
@@ -1231,13 +1250,18 @@ class DatabaseReconcilerTest {
 
         override fun leading(): Boolean = leading
 
+        /** The seed append indexes named with the creators. */
+        val seedAppendIndexes = mutableListOf<Long?>()
+
         override fun nameCreator(
             database: NamedDatabaseId,
             creator: MemberId,
             initialMembers: List<Member>,
+            seedAppendIndex: Long?,
         ) {
             named += database to creator
             this.initialMembers += initialMembers
+            seedAppendIndexes += seedAppendIndex
         }
 
         /** What was recorded of recreations: the database, the message, and whether it failed. */
@@ -1414,6 +1438,12 @@ class DatabaseReconcilerTest {
             keptSeeds.remove(name)
         }
 
+        override fun seedSecondary(id: NamedDatabaseId) {
+            check(keptSeeds[id.name()] == id.databaseId().uuid()) { "$id has no seed here" }
+            marks += id.databaseId().uuid()
+            keptSeeds.remove(id.name())
+        }
+
         /** What the seeds kept hold, by name; [KEPT] if not set. */
         val seedStates = mutableMapOf<String, Seed?>()
 
@@ -1437,10 +1467,16 @@ class DatabaseReconcilerTest {
         var toPrimary = ModeSwitch.SWITCHED
         val switched = mutableListOf<Pair<NamedDatabaseId, CopyMode>>()
 
-        override fun switch(id: NamedDatabaseId, mode: CopyMode): ModeSwitch {
+        /** The append index of the last transaction of each secondary, if set. */
+        val pulled = mutableMapOf<NamedDatabaseId, Long>()
+
+        override fun switch(id: NamedDatabaseId, mode: CopyMode, pulledBeyond: Long?): ModeSwitch {
             val state = registered.getValue(id)
             check(state.mode != mode) { "$id is a ${state.mode} already" }
             if (mode == CopyMode.PRIMARY && toPrimary != ModeSwitch.SWITCHED) return toPrimary
+            if (mode == CopyMode.PRIMARY && pulledBeyond != null) {
+                if (pulled.getValue(id) <= pulledBeyond) return ModeSwitch.LATER
+            }
             switched += id to mode
             registered[id] = LocalDatabase(started = false, failed = false, mode = mode)
             val uuid = id.databaseId().uuid()

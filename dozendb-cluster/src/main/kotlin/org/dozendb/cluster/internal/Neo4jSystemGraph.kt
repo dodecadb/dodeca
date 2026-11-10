@@ -28,8 +28,10 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * `id@host:port`, and a `dozendb_created` property, true once the store was created, after which
  * every server it is placed on copies it, its creator too. A database recreated from the stores of
  * its seeders has `dozendb_recreation_status`, what naming its creator waits for or why it failed,
- * and `dozendb_recreation_failed` once it did, until its creator is named. A `DozenDB` node holds
- * the cluster's format level in `dozendb_format_level`, once an upgrade raised it.
+ * and `dozendb_recreation_failed` once it did, until its creator is named, then
+ * `dozendb_seed_append_index`, the append index of the last transaction of the creator's seed. A
+ * `DozenDB` node holds the cluster's format level in `dozendb_format_level`, once an upgrade raised
+ * it.
  *
  * @property placement places databases, as [promote] does.
  */
@@ -81,6 +83,8 @@ internal class Neo4jSystemGraph(
                 },
             recreationStatus = recreationStatus(node),
             recreationFailed = node.getProperty(RECREATION_FAILED_PROPERTY, false) == true,
+            seedAppendIndex =
+                (node.getProperty(SEED_APPEND_INDEX_PROPERTY, null) as? Number)?.toLong(),
         )
     }
 
@@ -93,12 +97,16 @@ internal class Neo4jSystemGraph(
         database: NamedDatabaseId,
         creator: MemberId,
         initialMembers: List<Member>,
-    ) = replication.readingSystem { writeCreator(database, creator, initialMembers) }
+        seedAppendIndex: Long?,
+    ) = replication.readingSystem {
+        writeCreator(database, creator, initialMembers, seedAppendIndex)
+    }
 
     private fun writeCreator(
         database: NamedDatabaseId,
         creator: MemberId,
         initialMembers: List<Member>,
+        seedAppendIndex: Long?,
     ) {
         system().beginTx().use { tx ->
             val node = tx.findDatabase(database) ?: return
@@ -110,6 +118,8 @@ internal class Neo4jSystemGraph(
             )
             node.removeProperty(RECREATION_STATUS_PROPERTY)
             node.removeProperty(RECREATION_FAILED_PROPERTY)
+            if (seedAppendIndex != null)
+                node.setProperty(SEED_APPEND_INDEX_PROPERTY, seedAppendIndex)
             tx.commit()
         }
     }
@@ -391,6 +401,7 @@ internal class Neo4jSystemGraph(
             node.removeProperty(CREATED_PROPERTY)
             node.removeProperty(RECREATION_STATUS_PROPERTY)
             node.removeProperty(RECREATION_FAILED_PROPERTY)
+            node.removeProperty(SEED_APPEND_INDEX_PROPERTY)
         }
 
         /** The property that names the id a recreated database had before. */
@@ -398,6 +409,7 @@ internal class Neo4jSystemGraph(
 
         private const val RECREATION_STATUS_PROPERTY = "dozendb_recreation_status"
         private const val RECREATION_FAILED_PROPERTY = "dozendb_recreation_failed"
+        private const val SEED_APPEND_INDEX_PROPERTY = "dozendb_seed_append_index"
 
         /**
          * What naming the creator of the recreated database [node] waits for, or why it failed;

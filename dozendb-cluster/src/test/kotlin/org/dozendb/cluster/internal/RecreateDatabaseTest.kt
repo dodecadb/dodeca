@@ -219,7 +219,8 @@ class RecreateDatabaseTest {
 
     @Test
     fun `a seeder that was down and is behind waits to be reported, then the latest store creates it`() {
-        val cluster = ClusterHarness(root, 3).also { harness = it }
+        val cluster =
+            ClusterHarness(root, 3, settings = ClusterHarness.METRICS).also { harness = it }
         cluster.start()
         cluster.write(FILMS, 3)
         cluster.awaitFilms(cluster.members, 3)
@@ -247,6 +248,15 @@ class RecreateDatabaseTest {
         // The store of the seeders up to date, not the one behind.
         cluster.awaitFilms(cluster.members, 5)
         assertThat(cluster.members.map { it.databaseId(FILMS) }.distinct()).hasSize(1)
+        // The seeders pulled what they lacked, the one behind too, then turned primary: no copy of
+        // the new database.
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(cluster.shown(FILMS).values.map { it["role"] to it["currentStatus"] })
+                    .containsOnly("primary" to "online")
+            }
+        assertThat(cluster.members.map { it.copiesReceived() }).containsOnly(0.0)
         cluster.write(FILMS, 1)
         cluster.awaitFilms(cluster.members, 6)
     }
@@ -359,11 +369,15 @@ class RecreateDatabaseTest {
         awaitLeader(SYSTEM) { among }
             .database(SYSTEM)
             .executeTransactionally(
-                "SHOW DATABASE $database YIELD serverID, currentStatus, statusMessage",
+                "SHOW DATABASE $database YIELD serverID, role, currentStatus, statusMessage",
                 emptyMap(),
             ) {
                 it.asSequence().associate { row -> row["serverID"] as String to row.toMap() }
             }
+
+    /** How many copies of [FILMS] this member received since it started. */
+    private fun ClusterHarness.Member.copiesReceived(): Double =
+        samples()["neo4j_database_${FILMS}_dozendb_cluster_store_copy_received_total"] ?: 0.0
 
     /** The name of this member's server, as SHOW SERVERS has it. */
     private fun ClusterHarness.Member.serverName(): String =

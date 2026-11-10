@@ -33,8 +33,11 @@ internal sealed interface Election {
     /** Not yet: [message] says what it waits for. */
     data class Waiting(val message: String) : Election
 
-    /** The seeder whose store is the latest, which creates the database from it. */
-    data class Creator(val member: MemberId) : Election
+    /**
+     * The seeder whose store is the latest, which creates the database from it; its last
+     * transaction has [appendIndex].
+     */
+    data class Creator(val member: MemberId, val appendIndex: Long) : Election
 
     /** No seeder holds a store, as [message] says. */
     data class NoStore(val message: String) : Election
@@ -123,6 +126,6 @@ internal object SeedElection {
                 )
             }
         }
-        return Election.Creator(creator)
+        return Election.Creator(creator, latest.appendIndex)
     }
 }
