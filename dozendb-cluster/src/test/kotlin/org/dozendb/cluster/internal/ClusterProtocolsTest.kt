@@ -50,6 +50,7 @@ class ClusterProtocolsTest {
                 "dozendb.readBarrier",
                 "dozendb.statusCheck",
                 "dozendb.entryTerm",
+                "dozendb.seedChecksums",
             )
     }
 }

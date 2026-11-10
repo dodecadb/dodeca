@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import org.dozendb.cluster.internal.recreation.SeedChecksums
 import org.dozendb.cluster.internal.replication.EntryTermProtocol
 import org.dozendb.cluster.internal.replication.TransactionEnvelope
 import org.dozendb.cluster.internal.secondaries.PullProtocol
@@ -26,6 +27,7 @@ internal object ClusterProtocols {
             ReadBarrierProtocol.NAME to ReadBarrierProtocol.VERSION.toLong(),
             StatusCheckProtocol.NAME to StatusCheckProtocol.VERSION.toLong(),
             EntryTermProtocol.NAME to EntryTermProtocol.VERSION.toLong(),
+            SeedChecksums.NAME to SeedChecksums.VERSION.toLong(),
         )
 
     /** A row, in Neo4j Enterprise's columns. */

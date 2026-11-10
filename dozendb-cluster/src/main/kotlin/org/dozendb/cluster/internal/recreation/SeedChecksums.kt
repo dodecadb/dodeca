@@ -19,7 +19,7 @@ import java.util.UUID
  */
 internal object SeedChecksums {
     const val NAME = "dozendb.seedChecksums"
-    private const val VERSION: Byte = 1
+    const val VERSION: Byte = 1
 
     data class Request(val name: String, val recreated: UUID, val appendIndexes: List<Long>)
 
