@@ -9,6 +9,7 @@
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbDatabaseContextFactory, with optional
  * hosting on Raft.
  * 2026-11-09: creates a new store in the format CREATE DATABASE asked for.
+ * 2026-11-10: gives each database's checkpoints a flush event of their own.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -30,6 +31,8 @@ import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.ModularDatabaseCreationContext
 import org.neo4j.graphdb.factory.module.id.IdContextFactory
 import org.neo4j.io.device.DeviceMapper
+import org.neo4j.io.pagecache.tracing.DatabaseFlushEvent
+import org.neo4j.io.pagecache.tracing.PageCacheTracer
 import org.neo4j.kernel.api.Kernel
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.DatabaseCreationContext
@@ -40,6 +43,7 @@ import org.neo4j.kernel.impl.api.ExternalIdReuseConditionProvider
 import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.api.TransactionalProcessFactory
 import org.neo4j.kernel.impl.api.TransactionsFactory
+import org.neo4j.kernel.impl.api.tracer.DefaultDatabaseTracer
 import org.neo4j.kernel.impl.factory.AccessCapabilityFactory
 import org.neo4j.kernel.impl.index.DatabaseIndexStats
 import org.neo4j.kernel.impl.pagecache.CommunityVersionStorageFactory
@@ -74,6 +78,31 @@ internal class DozenDbDatabaseContextFactory(
         globalModule,
         idContextFactory,
     ) {
+
+    /**
+     * Neo4j's tracers for [id], but for the flush event its checkpoints count their pages, I/Os,
+     * I/O limit and pauses in: Neo4j's page cache tracer hands every database the same one, so that
+     * the log lines and metrics of databases checkpointing at once counted, and reset, each
+     * other's. Tracers other than Neo4j's default ones stay as they are.
+     */
+    private fun tracers(id: NamedDatabaseId): DatabaseTracers {
+        val tracers = globalModule.tracers
+        if (tracers.getDatabaseTracer(id) !is DefaultDatabaseTracer) {
+            return DatabaseTracers(tracers, id)
+        }
+        val pageCacheTracer = tracers.pageCacheTracer
+        val flush = DatabaseFlushEvent(pageCacheTracer.beginFileFlush())
+        val own =
+            object : PageCacheTracer by pageCacheTracer {
+                override fun beginDatabaseFlush() = flush
+            }
+        return DatabaseTracers(
+            DefaultDatabaseTracer(own),
+            tracers.lockTracer,
+            pageCacheTracer,
+            tracers.getVersionStorageTracer(id),
+        )
+    }
 
     override fun create(
         namedDatabaseId: NamedDatabaseId,
@@ -132,7 +161,7 @@ internal class DozenDbDatabaseContextFactory(
                 GlobalAvailabilityGuardController(globalModule.globalAvailabilityGuard),
                 components.readOnlyDatabases(),
                 controllerService,
-                DatabaseTracers(globalModule.tracers, namedDatabaseId),
+                tracers(namedDatabaseId),
                 globalModule.defaultCommandCommitListeners,
                 TransactionsFactory.DEFAULT,
             )
