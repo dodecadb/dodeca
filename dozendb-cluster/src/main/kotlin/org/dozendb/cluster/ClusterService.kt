@@ -17,6 +17,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberConnection
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.PeerInfo
 import org.dozendb.consensus.Role
@@ -731,6 +732,9 @@ class ClusterService(
 
     /** The latest snapshot of [database] on this member: its log may lack entries up to it. */
     fun latestSnapshot(database: DatabaseRef): Snapshot? = consensus.latestSnapshot(database)
+
+    /** The connections between this member and others that are open now. */
+    fun connections(): List<MemberConnection> = consensus.connections()
 
     /** The servers of the cluster: the voting members of `system`, then its secondaries. */
     fun members(): List<MemberView> {

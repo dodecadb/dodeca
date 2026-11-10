@@ -381,7 +381,7 @@ internal constructor(
  */
 internal object StatusCheckProtocol {
     const val NAME = "dozendb.statusCheck"
-    private const val VERSION = 1
+    const val VERSION = 1
     private const val REPLICATE = 0
     private const val REPORT = 1
     private const val ANSWERED = 0

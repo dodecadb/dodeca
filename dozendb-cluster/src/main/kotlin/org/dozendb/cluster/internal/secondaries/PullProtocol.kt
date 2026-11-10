@@ -30,7 +30,7 @@ import org.neo4j.storageengine.api.CommandReaderFactory
  */
 internal object PullProtocol {
     const val NAME = "dozendb.pull"
-    private const val VERSION = 1
+    const val VERSION = 1
     private const val TAG_END = 0
     private const val TAG_TRANSACTION = 1
     private const val BUFFER_SIZE = 1 shl 16

@@ -17,7 +17,7 @@ import org.neo4j.configuration.connectors.BoltConnector
 /**
  * `dbms.cluster.checkConnectivity`: whether this member reaches each other member at the ports
  * Neo4j Enterprise names, DozenDB's Raft port as CLUSTER and RAFT, and its routing connector as
- * INTRA_BOLT.
+ * INTRA_BOLT. `dbms.cluster.protocols`: the connections between members open now.
  */
 class ConnectivityTest {
     // Kept when a test fails, for the members' logs.
@@ -33,6 +33,46 @@ class ConnectivityTest {
         database("system").executeTransactionally(cypher, emptyMap()) { result ->
             result.asSequence().map { it.toMap() }.toList()
         }
+
+    @Test
+    fun `lists the Raft connections from a leader to the others, over TLS`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        // Its group's members are every member.
+        val leader = cluster.awaitLeader("system")
+        val followers = cluster.members - leader
+
+        await atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                assertThat(
+                        leader.rows("CALL dbms.cluster.protocols()").filter {
+                            it["orientation"] == "outbound" && it["applicationProtocol"] == "raft"
+                        }
+                    )
+                    .containsExactlyInAnyOrderElementsOf(
+                        followers.map {
+                            mapOf(
+                                "orientation" to "outbound",
+                                "remoteAddress" to "127.0.0.1:${it.raftPort}",
+                                "applicationProtocol" to "raft",
+                                "applicationProtocolVersion" to 1L,
+                                "modifierProtocols" to "TLS",
+                            )
+                        }
+                    )
+                for (follower in followers) {
+                    assertThat(follower.rows("CALL dbms.cluster.protocols()"))
+                        .describedAs("on $follower")
+                        .anySatisfy {
+                            assertThat(it)
+                                .containsEntry("orientation", "inbound")
+                                .containsEntry("applicationProtocol", "raft")
+                                .containsEntry("modifierProtocols", "TLS")
+                        }
+                }
+            }
+    }
 
     @Test
     fun `reports each port of each other member, and which do not answer`() {

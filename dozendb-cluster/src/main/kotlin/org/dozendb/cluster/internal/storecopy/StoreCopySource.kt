@@ -129,7 +129,7 @@ internal class StoreCopySource(
 
     companion object {
         const val NAME = "dozendb.storeCopy"
-        private const val REQUEST_VERSION = 2
+        const val REQUEST_VERSION = 2
         private const val POLL_MILLIS = 50L
 
         /**

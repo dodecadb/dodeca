@@ -32,6 +32,24 @@ public data class GroupMembership(
     val removed: Boolean,
 )
 
+/**
+ * A connection between this member and another that is open now.
+ *
+ * @property inbound whether the other member opened it, to this member's consensus port; else this
+ *   member did.
+ * @property remoteAddress the other end: an inbound connection's port is one the other member
+ *   chose, an outbound one's the other member's consensus port.
+ * @property protocols the protocols it carried so far: `raft`, the consensus library's own,
+ *   `probe`, `bulk` and the names of the bulk transfers ([BulkTransfer]).
+ * @property tls whether it is encrypted.
+ */
+public data class MemberConnection(
+    val inbound: Boolean,
+    val remoteAddress: HostPort,
+    val protocols: Set<String>,
+    val tls: Boolean,
+)
+
 /** The consensus layer could not complete an operation, for example because there is no leader. */
 public class ConsensusUnavailableException(message: String, cause: Throwable? = null) :
     Exception(message, cause)
@@ -285,4 +303,11 @@ public interface ConsensusLog : BulkTransfer, AutoCloseable {
         timeout: Duration,
         members: List<Member> = emptyList(),
     )
+
+    /**
+     * The connections between this member and others that are open now: those opened to it, those
+     * it opened for its own calls while the calls last, and those of the groups it leads to the
+     * members it replicates to, while they answer.
+     */
+    public fun connections(): List<MemberConnection> = emptyList()
 }

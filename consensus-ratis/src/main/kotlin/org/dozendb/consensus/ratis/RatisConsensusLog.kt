@@ -74,6 +74,7 @@ import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.LeaderPlacement
 import org.dozendb.consensus.Member
+import org.dozendb.consensus.MemberConnection
 import org.dozendb.consensus.MemberId
 import org.dozendb.consensus.PeerInfo
 import org.dozendb.consensus.ReplicatedStateMachine
@@ -116,6 +117,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     }
     private val properties = raftProperties()
     private val tls = config.tls?.let(::TlsContexts)
+    private val connections = MemberConnections(config.tls != null)
     private val bulkSources = ConcurrentHashMap<String, BulkSource>()
     private val bulkExecutor: ExecutorService = Executors.newCachedThreadPool { runnable ->
         Thread(runnable, "dozendb-bulk-source").apply { isDaemon = true }
@@ -170,6 +172,9 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                 ): NettyServerBuilder =
                     if (GrpcServices.Type.SERVER in types) {
                         builder
+                            .addTransportFilter(connections.filter)
+                            // Called last, with the calls the others let through.
+                            .intercept(connections.interceptor)
                             .intercept(RefuseWhileStopping { stopping })
                             .intercept(RefuseOtherMembers(peerId))
                             .intercept(
@@ -222,10 +227,14 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     }
 
     override suspend fun probe(address: HostPort): PeerInfo =
-        ProbeService.probe(address, self, config.requestTimeout, tls?.client)
+        connections.open(address, PROBE).use {
+            ProbeService.probe(address, self, config.requestTimeout, tls?.client)
+        }
 
     override suspend fun announce(address: HostPort) =
-        ProbeService.announce(address, describeSelf(), config.requestTimeout, tls?.client)
+        connections.open(address, PROBE).use {
+            ProbeService.announce(address, describeSelf(), config.requestTimeout, tls?.client)
+        }
 
     override fun addAnnouncementListener(listener: (PeerInfo) -> Unit): AutoCloseable {
         announcementListeners += listener
@@ -947,7 +956,34 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         request: ByteArray,
         timeout: Duration?,
         consume: (InputStream) -> T,
-    ): T = BulkService.fetch(address, name, request, tls?.client, consume, timeout)
+    ): T =
+        connections.open(address, setOf(MemberConnections.BULK, name)).use {
+            BulkService.fetch(address, name, request, tls?.client, consume, timeout)
+        }
+
+    /**
+     * The connections open now (see [MemberConnections]), and Ratis's own to the members that the
+     * groups this member leads replicate to, while they answered within twice the longest election
+     * timeout: Ratis keeps one connection to each member for every group.
+     */
+    override fun connections(): List<MemberConnection> {
+        val raftServer = server ?: return connections.connections()
+        val recent = config.electionTimeoutMax.toMillis() * 2
+        val replicatedTo =
+            raftServer.groupIds
+                .mapNotNull { runCatching { raftServer.getDivision(it) }.getOrNull() }
+                .map { it.info.roleInfoProto }
+                .filter { it.hasLeaderInfo() }
+                .flatMap { role ->
+                    role.leaderInfo.followerInfoList
+                        .filter { it.lastRpcElapsedTimeMs <= recent }
+                        .map { it.id.address }
+                }
+                .distinct()
+                .mapNotNull { runCatching { HostPort.parse(it) }.getOrNull() }
+                .map { MemberConnection(false, it, RAFT, tls != null) }
+        return connections.connections() + replicatedTo
+    }
 
     private fun appliedTerm(database: DatabaseRef): Long =
         stateMachines[database.id]?.appliedTerm() ?: -1
@@ -1116,6 +1152,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     }
 
     private companion object {
+        val PROBE = setOf(MemberConnections.PROBE)
+        val RAFT = setOf(MemberConnections.RAFT)
         const val RETRY_SLEEP_MS = 200L
         val HANDOVER_RETRY: java.time.Duration = java.time.Duration.ofSeconds(1)
         const val HANDOVER_REASON = "this member stopped applying its entries"

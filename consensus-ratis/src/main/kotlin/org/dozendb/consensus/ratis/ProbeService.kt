@@ -30,7 +30,7 @@ import org.slf4j.LoggerFactory
 internal object ProbeService {
     private val log = LoggerFactory.getLogger(ProbeService::class.java)
 
-    private const val SERVICE_NAME = "dozendb.cluster.Probe"
+    const val SERVICE_NAME = "dozendb.cluster.Probe"
 
     private object BytesMarshaller : MethodDescriptor.Marshaller<ByteArray> {
         override fun stream(value: ByteArray): InputStream = ByteArrayInputStream(value)

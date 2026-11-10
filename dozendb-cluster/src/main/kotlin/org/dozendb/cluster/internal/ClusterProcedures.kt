@@ -438,6 +438,24 @@ class ClusterProcedures {
             }
     }
 
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.protocols", mode = Mode.DBMS)
+    @Description(
+        "Overview of installed protocols: a row per connection between this server and another " +
+            "member that is open now, and per protocol it carried: inbound or outbound, the " +
+            "other end's address, the protocol and its version, and TLS if it is encrypted."
+    )
+    fun protocols(): Stream<ProtocolRow> =
+        ClusterProtocols.rows(requireCluster().connections()).stream().map {
+            ProtocolRow(
+                it.orientation,
+                it.remoteAddress,
+                it.applicationProtocol,
+                it.applicationProtocolVersion,
+                it.modifierProtocols,
+            )
+        }
+
     @Admin
     @SystemProcedure
     @Procedure(name = "dbms.cluster.statusCheck", mode = Mode.DBMS)
@@ -591,4 +609,13 @@ class ClusterProcedures {
     @JvmRecord data class AddedMemberRow(val memberId: String, val raftAddress: String)
 
     @JvmRecord data class ReplicationStateRow(val state: String)
+
+    @JvmRecord
+    data class ProtocolRow(
+        val orientation: String,
+        val remoteAddress: String,
+        val applicationProtocol: String,
+        val applicationProtocolVersion: Long?,
+        val modifierProtocols: String,
+    )
 }

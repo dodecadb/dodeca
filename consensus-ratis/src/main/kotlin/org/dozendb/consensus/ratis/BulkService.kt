@@ -50,7 +50,7 @@ internal object BulkService {
             level = Level.SEVERE
         }
 
-    private const val SERVICE_NAME = "dozendb.cluster.Bulk"
+    const val SERVICE_NAME = "dozendb.cluster.Bulk"
     private const val FORMAT_VERSION: Byte = 1
     private const val CHUNK_SIZE = 1 shl 20
     const val KEEP_ALIVE_SECONDS = 20L
@@ -80,6 +80,14 @@ internal object BulkService {
         }
         return buffer.toByteArray()
     }
+
+    /** The name of the bulk transfer that the request [bytes] asks for, or null if unreadable. */
+    fun transferName(bytes: ByteArray): String? =
+        try {
+            decodeRequest(bytes).first
+        } catch (_: IOException) {
+            null
+        }
 
     private fun decodeRequest(bytes: ByteArray): Pair<String, ByteArray> =
         DataInputStream(ByteArrayInputStream(bytes)).use {

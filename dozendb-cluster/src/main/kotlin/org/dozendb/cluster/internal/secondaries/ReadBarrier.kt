@@ -22,7 +22,7 @@ import org.neo4j.logging.InternalLog
  */
 internal object ReadBarrierProtocol {
     const val NAME = "dozendb.readBarrier"
-    private const val VERSION = 1
+    const val VERSION = 1
     private const val REACHED = 0
     private const val REFUSED = 1
 

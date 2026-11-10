@@ -26,7 +26,7 @@ import org.neo4j.storageengine.api.TransactionIdStore
  * member skips as it skips any entry whose lease is not the entry's term.
  */
 internal object TransactionEnvelope {
-    private const val FORMAT: Byte = 1
+    const val FORMAT: Byte = 1
     private const val KIND_TRANSACTION: Byte = 1
 
     private const val SUBJECT_SYSTEM: Byte = 0

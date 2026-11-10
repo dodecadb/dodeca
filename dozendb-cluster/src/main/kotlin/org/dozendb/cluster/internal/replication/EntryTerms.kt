@@ -34,7 +34,7 @@ internal sealed interface EntryTerm {
  */
 internal object EntryTermProtocol {
     const val NAME = "dozendb.entryTerm"
-    private const val VERSION = 1
+    const val VERSION = 1
     private const val KNOWN = 0
     private const val PRUNED = 1
 
