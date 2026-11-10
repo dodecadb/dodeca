@@ -754,6 +754,9 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   `dbms.checkConfigValue` tells whether a value is valid for a setting,
   dynamic or not, with an empty `message` for a valid one. Neo4j Community has
   neither.
+- **Monitoring procedures**, as in Enterprise: `db.checkpoint` checkpoints the
+  database it runs on, or waits for the checkpoint under way, on the member it
+  runs on.
 
 ## Not supported
 
@@ -806,8 +809,8 @@ error, and their procedures do not exist.
 - **CSV and Graphite metrics** (`server.metrics.csv.*`,
   `server.metrics.graphite.*`, `server.directories.metrics`).
 - **Monitoring procedures**: `dbms.listPools`, `db.listLocks`,
-  `dbms.listActiveLocks`, `dbms.scheduler.jobs`, `groups` and `failedJobs`,
-  and `db.checkpoint`.
+  `dbms.listActiveLocks`, and `dbms.scheduler.jobs`, `groups` and
+  `failedJobs`.
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,
   `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
   `server.backup.exec_connector.*` and

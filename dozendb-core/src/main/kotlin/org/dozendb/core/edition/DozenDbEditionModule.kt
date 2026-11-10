@@ -22,6 +22,7 @@ import org.dozendb.core.SettingsProcedures
 import org.dozendb.core.logging.QueryLog
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.monitoring.MetricsService
+import org.dozendb.core.monitoring.MonitoringProcedures
 import org.dozendb.core.remote.RemoteAliasTransactions
 import org.dozendb.core.security.AliasPasswords
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
@@ -522,6 +523,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         super.registerEditionSpecificProcedures(globalProcedures, databaseContextProvider)
         globalProcedures.registerProcedure(SettingsProcedures::class.java)
         globalProcedures.registerProcedure(DefaultDatabaseProcedures::class.java)
+        globalProcedures.registerProcedure(MonitoringProcedures::class.java)
     }
 
     /** Starts the default database, then follows the system graph for the other databases. */

@@ -175,6 +175,7 @@ class StandaloneIT {
             .containsExactlyInAnyOrder(
                 "dbms.setConfigValue",
                 "dbms.checkConfigValue",
+                "db.checkpoint",
                 "dbms.setDefaultDatabase",
             )
         assertThat(names(dozenDb, "SHOW FUNCTIONS YIELD name"))
