@@ -319,12 +319,33 @@ class DisasterRecoveryIT {
         client.shell("chmod -R a+rX /backups")
         write(members, "films", "UNWIND range(1, 50) AS i CREATE (:Film {i: -i})")
         awaitCount(members, "films", "Film", 250)
-
+        val recreate = "CALL dbms.cluster.recreateDatabase('films', {seedURI: 'file://$backup'})"
+        // Only users who may create and drop databases recreate them.
         write(
             members,
             "system",
-            "CALL dbms.cluster.recreateDatabase('films', {seedURI: 'file://$backup'})",
+            "CREATE USER bob SET PASSWORD 'a long password' CHANGE NOT REQUIRED",
         )
+        write(members, "system", "CREATE ROLE creator")
+        write(members, "system", "GRANT CREATE DATABASE ON DBMS TO creator")
+        write(members, "system", "GRANT ROLE creator TO bob")
+        await withPollInterval
+            Duration.ofSeconds(1) atMost
+            Duration.ofMinutes(1) untilAsserted
+            {
+                for (member in members) {
+                    val refused = member.runAs("bob", "a long password", recreate, "system")
+                    assertThat(refused)
+                        .describedAs(member.alias)
+                        .isInstanceOf(Outcome.Failed::class.java)
+                    refused as Outcome.Failed
+                    assertThat(refused.code).isEqualTo("Neo.ClientError.Security.Forbidden")
+                    assertThat(refused.message)
+                        .contains("needs the CREATE DATABASE and DROP DATABASE privileges")
+                }
+            }
+
+        write(members, "system", recreate)
 
         // The backup's films, under a new id, on every server.
         awaitCount(members, "films", "Film", 200, Duration.ofMinutes(3))
