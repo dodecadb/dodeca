@@ -67,7 +67,7 @@ internal class SingleFsyncFileSystem(
         return when (val file = classify(path)) {
             is File.TransactionLog -> {
                 val logs = databases.computeIfAbsent(file.database) { DatabaseLogs() }
-                TransactionLogChannel(channel, file.database, logs).also { logs.open += it }
+                TransactionLogChannel(channel, path, file.database, logs).also { logs.open += it }
             }
             is File.Checkpoint -> BarrierChannel(channel, file.database, beforeForce = true)
             is File.Store -> BarrierChannel(channel, file.database, beforeForce = false)
@@ -110,9 +110,15 @@ internal class SingleFsyncFileSystem(
         }
     }
 
-    /** A transaction log channel opened for writing. */
+    /**
+     * A transaction log channel opened for writing, on [path]. An interrupt of a thread that uses
+     * it closes the channel without closing this: its writes are then forced through the file
+     * opened anew, as fsync forces a file whatever channel wrote it, so that a store write that
+     * must wait for them neither fails nor goes first.
+     */
     private inner class TransactionLogChannel(
         channel: StoreChannel,
+        private val path: Path,
         private val database: String,
         private val logs: DatabaseLogs,
     ) : DelegatingStoreChannel<StoreChannel>(channel) {
@@ -163,7 +169,13 @@ internal class SingleFsyncFileSystem(
 
         private fun forceNow(metaData: Boolean) {
             val covered = changes.get()
-            delegate.force(metaData)
+            if (delegate.isOpen) {
+                delegate.force(metaData)
+            } else if (this@SingleFsyncFileSystem.delegate.fileExists(path)) {
+                this@SingleFsyncFileSystem.delegate
+                    .open(path, setOf(StandardOpenOption.READ, StandardOpenOption.WRITE))
+                    .use { it.force(metaData) }
+            }
             forcedChanges = covered
             forcedOnce = true
         }

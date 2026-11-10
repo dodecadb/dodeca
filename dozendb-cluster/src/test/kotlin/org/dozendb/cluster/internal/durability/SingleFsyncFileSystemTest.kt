@@ -1,9 +1,11 @@
 package org.dozendb.cluster.internal.durability
 
 import java.nio.ByteBuffer
+import java.nio.channels.ClosedByInterruptException
 import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
@@ -95,6 +97,39 @@ class SingleFsyncFileSystemTest {
             log.flush()
             log.append("transaction")
             log.flush()
+            fs.write(store()).use { store ->
+                recording.events.clear()
+                store.writeAll(ByteBuffer.wrap(ByteArray(8)), 0)
+                assertThat(recording.events)
+                    .containsExactly(
+                        "force neostore.transaction.db.0",
+                        "write neostore.nodestore.db",
+                    )
+
+                recording.events.clear()
+                store.writeAll(ByteBuffer.wrap(ByteArray(8)), 8)
+                assertThat(recording.events)
+                    .describedAs("nothing left to force")
+                    .containsExactly("write neostore.nodestore.db")
+            }
+        }
+    }
+
+    /**
+     * Found by ServerLifecycleTest, which hung: an interrupt closes a channel without closing the
+     * wrapper, whose force then failed with ClosedChannelException in every store write, which the
+     * page cache took for its own channel's and retried for good.
+     */
+    @Test
+    fun `a transaction log that an interrupt closed is forced through its file before store writes`() {
+        fs.write(log()).use { log ->
+            log.append("header")
+            log.flush()
+            log.append("transaction")
+            Thread.currentThread().interrupt()
+            assertThatThrownBy { log.append("interrupted") }
+                .isInstanceOf(ClosedByInterruptException::class.java)
+            assertThat(Thread.interrupted()).isTrue()
             fs.write(store()).use { store ->
                 recording.events.clear()
                 store.writeAll(ByteBuffer.wrap(ByteArray(8)), 0)
