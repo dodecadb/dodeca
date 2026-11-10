@@ -799,6 +799,8 @@ error, and their procedures do not exist.
   `neo4j-admin` lacks them, as in Neo4j Community.
 - **Page cache warmup.** Neo4j Community declares
   `db.memory.pagecache.warmup.*`, which have no effect.
+- **Limiting checkpoint I/O.** Neo4j Community declares
+  `db.checkpoint.iops.limit`, which has no effect.
 - **The `CONTINUOUS` and `VOLUMETRIC` checkpoint policies.** As in Neo4j
   Community, `db.checkpoint` with either logs a warning and checkpoints
   periodically.
