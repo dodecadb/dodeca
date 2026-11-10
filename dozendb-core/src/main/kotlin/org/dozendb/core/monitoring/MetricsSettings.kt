@@ -1,23 +1,31 @@
 package org.dozendb.core.monitoring
 
+import java.nio.file.Path
+import java.time.Duration
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.SettingConstraints.min
+import org.neo4j.configuration.SettingConstraints.range
 import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BOOL
+import org.neo4j.configuration.SettingValueParsers.BYTES
+import org.neo4j.configuration.SettingValueParsers.DURATION
 import org.neo4j.configuration.SettingValueParsers.GLOBBING_PATTERN
+import org.neo4j.configuration.SettingValueParsers.INT
+import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
 import org.neo4j.configuration.SettingValueParsers.STRING
 import org.neo4j.configuration.SettingValueParsers.listOf
+import org.neo4j.configuration.SettingValueParsers.ofEnum
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.configuration.helpers.GlobbingPattern
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.graphdb.config.Setting
+import org.neo4j.io.ByteUnit
 
 /**
  * Neo4j Enterprise's metrics settings, with Enterprise's names and defaults, for the exporters
- * DozenDB implements: Prometheus and JMX. The CSV and Graphite settings stay undeclared, so that
- * Neo4j's strict validation refuses a configuration that names them instead of DozenDB ignoring
- * them. Registered in `META-INF/services`.
+ * DozenDB implements: CSV files, Prometheus and JMX. Registered in `META-INF/services`.
  */
 class MetricsSettings : SettingsDeclaration {
     companion object {
@@ -76,6 +84,62 @@ class MetricsSettings : SettingsDeclaration {
                 .build()
 
         @JvmField
+        @field:Description(
+            "Writes the metrics to CSV files in server.directories.metrics: a file per metric, " +
+                "named after it, with a line every server.metrics.csv.interval."
+        )
+        val csvEnabled: Setting<Boolean> =
+            newBuilder("server.metrics.csv.enabled", BOOL, true).build()
+
+        @JvmField
+        @field:Description("How often a line is written to each CSV file.")
+        val csvInterval: Setting<Duration> =
+            newBuilder("server.metrics.csv.interval", DURATION, Duration.ofSeconds(30))
+                .addConstraint(min(Duration.ofMillis(1)))
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The size at which a CSV file is rotated: renamed `<name>.csv.1`, after shifting the " +
+                "older ones up, and started anew. 0 never rotates."
+        )
+        val csvRotationSize: Setting<Long> =
+            newBuilder("server.metrics.csv.rotation.size", BYTES, ByteUnit.mebiBytes(10))
+                .addConstraint(range(0L, Long.MAX_VALUE))
+                .build()
+
+        @JvmField
+        @field:Description("How many rotated files each CSV file keeps.")
+        val csvRotationKeep: Setting<Int> =
+            newBuilder("server.metrics.csv.rotation.keep_number", INT, 7)
+                .addConstraint(min(1))
+                .build()
+
+        @JvmField
+        @field:Description(
+            "Compresses rotated CSV files: `NONE`, `GZ` (`<name>.csv.1.gz`) or `ZIP` " +
+                "(`<name>.csv.1.zip`)."
+        )
+        val csvRotationCompression: Setting<CsvCompression> =
+            newBuilder(
+                    "server.metrics.csv.rotation.compression",
+                    ofEnum(CsvCompression::class.java),
+                    CsvCompression.NONE,
+                )
+                .build()
+
+        @JvmField
+        @field:Description(
+            "The directory of the CSV metrics files. A relative path is relative to the server's " +
+                "home directory."
+        )
+        val directory: Setting<Path> =
+            newBuilder("server.directories.metrics", PATH, Path.of("metrics"))
+                .setDependency(GraphDatabaseSettings.neo4j_home)
+                .immutable()
+                .build()
+
+        @JvmField
         @field:Description("Publishes the metrics as JMX MBeans, in the domain `neo4j.metrics`.")
         val jmxEnabled: Setting<Boolean> =
             newBuilder("server.metrics.jmx.enabled", BOOL, true).build()
@@ -102,4 +166,11 @@ class MetricsSettings : SettingsDeclaration {
                 .setDependency(GraphDatabaseSettings.default_listen_address)
                 .build()
     }
+}
+
+/** How rotated CSV metrics files are compressed. */
+enum class CsvCompression {
+    NONE,
+    ZIP,
+    GZ,
 }

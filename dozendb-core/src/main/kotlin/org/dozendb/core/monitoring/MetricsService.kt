@@ -1,7 +1,9 @@
 package org.dozendb.core.monitoring
 
 import com.codahale.metrics.jmx.JmxReporter
+import java.time.Duration
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import org.dozendb.core.monitoring.sources.BoltMetrics
 import org.dozendb.core.monitoring.sources.DatabaseMetrics
 import org.dozendb.core.monitoring.sources.DatabaseOperationMetrics
@@ -13,6 +15,7 @@ import org.dozendb.core.monitoring.sources.RoutingMetrics
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DatabaseOperationCounts
 import org.neo4j.dbms.database.StandaloneDatabaseContext
+import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.factory.module.GlobalModule
@@ -20,12 +23,15 @@ import org.neo4j.kernel.api.database.DatabaseSizeService
 import org.neo4j.kernel.database.AbstractDatabase
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.kernel.monitoring.DefaultDatabaseEvent
+import org.neo4j.scheduler.Group
+import org.neo4j.scheduler.JobHandle
+import org.neo4j.scheduler.JobMonitoringParams
 
 /**
- * The metrics of this DBMS, reported through the exporters the settings enable: Prometheus and JMX.
- * A database's metrics are registered when it starts and removed when it stops, is dropped or
- * panics, as Neo4j Enterprise documents: "Database metrics are only available during the lifetime
- * of the database".
+ * The metrics of this DBMS, reported through the exporters the settings enable: CSV files,
+ * Prometheus and JMX. A database's metrics are registered when it starts and removed when it stops,
+ * is dropped or panics, as Neo4j Enterprise documents: "Database metrics are only available during
+ * the lifetime of the database".
  *
  * Added to the global life before the databases start, so it sees every database start.
  */
@@ -54,6 +60,23 @@ private constructor(
         } else {
             null
         }
+
+    private val csv: CsvReporter? =
+        if (config.get(MetricsSettings.csvEnabled)) {
+            CsvReporter(
+                registry,
+                config.get(MetricsSettings.directory),
+                config.get(MetricsSettings.csvRotationSize),
+                config.get(MetricsSettings.csvRotationKeep),
+                config.get(MetricsSettings.csvRotationCompression),
+                globalModule.globalClock,
+                log,
+            )
+        } else {
+            null
+        }
+
+    private var csvJob: JobHandle<*>? = null
 
     private val queries = QueryMetrics()
     private var dbms: MetricRegistry.MetricGroup? = null
@@ -96,9 +119,37 @@ private constructor(
         for (contributor in contributors()) contributor.dbms(dbms)
         jmx?.start()
         prometheus?.start()
+        csvJob = csv?.let { csv ->
+            schedule(
+                Group.METRICS_CSV_WRITE,
+                "Writes the metrics to CSV files",
+                MetricsSettings.csvInterval,
+                csv::report,
+            )
+        }
+    }
+
+    /** Runs [report] every [interval] on Neo4j's thread group [group] for it. */
+    private fun schedule(
+        group: Group,
+        description: String,
+        interval: Setting<Duration>,
+        report: () -> Unit,
+    ): JobHandle<*> {
+        val millis = config.get(interval).toMillis()
+        return globalModule.jobScheduler.scheduleRecurring(
+            group,
+            JobMonitoringParams.systemJob(description),
+            report,
+            millis,
+            millis,
+            TimeUnit.MILLISECONDS,
+        )
     }
 
     override fun stop() {
+        csvJob?.cancel()
+        csvJob = null
         prometheus?.stop()
         jmx?.stop()
         listeners.forEach(globalModule.globalMonitors::removeMonitorListener)
@@ -184,7 +235,8 @@ private constructor(
         ): MetricsService? {
             val config = globalModule.globalConfig
             val exported =
-                config.get(MetricsSettings.jmxEnabled) ||
+                config.get(MetricsSettings.csvEnabled) ||
+                    config.get(MetricsSettings.jmxEnabled) ||
                     config.get(MetricsSettings.prometheusEnabled)
             return if (config.get(MetricsSettings.enabled) && exported) {
                 MetricsService(globalModule, databases)

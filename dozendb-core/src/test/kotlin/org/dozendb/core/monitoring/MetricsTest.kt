@@ -3,15 +3,22 @@ package org.dozendb.core.monitoring
 import java.io.ByteArrayInputStream
 import java.lang.management.ManagementFactory
 import java.nio.file.Path
+import java.time.Duration
 import java.util.zip.GZIPInputStream
 import javax.management.ObjectName
+import kotlin.io.path.exists
+import kotlin.io.path.readText
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilAsserted
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.StandaloneServer.Companion.SYSTEM
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.GlobbingPattern
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.graphdb.config.Setting
@@ -100,19 +107,78 @@ class MetricsTest {
             server.start()
             assertThat(server.metrics()).isNull()
         }
-        server(MetricsSettings.prometheusEnabled to false, MetricsSettings.jmxEnabled to false)
+        server(
+                MetricsSettings.prometheusEnabled to false,
+                MetricsSettings.jmxEnabled to false,
+                MetricsSettings.csvEnabled to false,
+            )
             .use { server ->
                 server.start()
                 assertThat(server.metrics()).isNull()
+                assertThat(server.home.resolve("metrics")).doesNotExist()
             }
     }
 
     @Test
-    fun `Enterprise's CSV and Graphite settings are refused, not ignored`() {
-        for (setting in listOf("server.metrics.csv.enabled", "server.metrics.graphite.enabled")) {
-            assertThatThrownBy { Config.newBuilder().setRaw(mapOf(setting to "true")).build() }
-                .hasMessageContaining("Unrecognized setting")
-                .hasMessageContaining(setting)
+    fun `CSV files hold a line per interval, a database's only while it runs`() {
+        server(MetricsSettings.csvInterval to Duration.ofMillis(100)).use { server ->
+            server.start()
+            server.administer("CREATE DATABASE films WAIT")
+            val metrics = server.home.resolve("metrics")
+            val dbms = metrics.resolve("neo4j.dbms.vm.heap.used.csv")
+            val films = metrics.resolve("neo4j.database.films.check_point.events.csv")
+
+            await atMost
+                Duration.ofSeconds(30) untilAsserted
+                {
+                    assertThat(lines(dbms)).hasSizeGreaterThan(3).first().isEqualTo("t,value")
+                    assertThat(lines(films)).hasSizeGreaterThan(3).first().isEqualTo("t,count")
+                }
+
+            server.administer("STOP DATABASE films WAIT")
+            // A report under way may still write one: count once the next has started.
+            awaitLines(dbms, lines(dbms).size + 2)
+            val written = lines(films).size
+            awaitLines(dbms, lines(dbms).size + 2)
+            assertThat(lines(films)).hasSize(written)
         }
+    }
+
+    private fun lines(file: Path): List<String> =
+        if (file.exists()) file.readText().lines().filter { it.isNotEmpty() } else emptyList()
+
+    private fun awaitLines(file: Path, count: Int) {
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(lines(file)).hasSizeGreaterThanOrEqualTo(count)
+            }
+    }
+
+    @Test
+    fun `Enterprise's CSV settings have Enterprise's defaults`() {
+        val config = Config.defaults(GraphDatabaseSettings.neo4j_home, root)
+
+        assertThat(config.get(MetricsSettings.csvEnabled)).isTrue()
+        assertThat(config.get(MetricsSettings.csvInterval)).isEqualTo(Duration.ofSeconds(30))
+        assertThat(config.get(MetricsSettings.csvRotationSize)).isEqualTo(10L * 1024 * 1024)
+        assertThat(config.get(MetricsSettings.csvRotationKeep)).isEqualTo(7)
+        assertThat(config.get(MetricsSettings.csvRotationCompression))
+            .isEqualTo(CsvCompression.NONE)
+        assertThat(config.get(MetricsSettings.directory)).isEqualTo(root.resolve("metrics"))
+        assertThatThrownBy {
+                Config.newBuilder()
+                    .setRaw(mapOf("server.metrics.csv.rotation.keep_number" to "0"))
+                    .build()
+            }
+            .hasMessageContaining("server.metrics.csv.rotation.keep_number")
+    }
+
+    @Test
+    fun `Enterprise's Graphite settings are refused, not ignored`() {
+        val setting = "server.metrics.graphite.enabled"
+        assertThatThrownBy { Config.newBuilder().setRaw(mapOf(setting to "true")).build() }
+            .hasMessageContaining("Unrecognized setting")
+            .hasMessageContaining(setting)
     }
 }
