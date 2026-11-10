@@ -134,6 +134,7 @@ class StandaloneIT {
         assertThat(dozenDbSettings - communitySettings)
             .containsExactlyInAnyOrder(
                 "dbms.max_databases",
+                "server.dynamic.setting.allowlist",
                 "dbms.databases.seed_from_uri_providers",
                 "server.backup.enabled",
                 "server.backup.listen_address",

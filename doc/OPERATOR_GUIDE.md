@@ -1327,3 +1327,8 @@ forwards write transactions to the leader, which the procedure would change
 instead: run it in a read transaction there, as with Cypher Shell's
 `--access-mode read`. `SHOW SETTINGS YIELD name, isDynamic WHERE isDynamic` lists the
 dynamic settings.
+
+`server.dynamic.setting.allowlist` limits the settings the procedure may
+change: setting names, comma separated, in which `*` stands for any text, such
+as `db.logs.query.*,dbms.max_databases`. The default `*` lets every dynamic
+setting change, and an empty value none. It is read at start.

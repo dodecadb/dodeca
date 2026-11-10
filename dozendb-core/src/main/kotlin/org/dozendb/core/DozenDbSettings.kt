@@ -41,6 +41,15 @@ class DozenDbSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "The settings dbms.setConfigValue may change while the server runs: setting names, " +
+                "comma separated, each of which may have the wildcard '*'. Empty lets none " +
+                "change. Named like Neo4j Enterprise's setting."
+        )
+        val dynamicSettingAllowlist: Setting<List<String>> =
+            newBuilder("server.dynamic.setting.allowlist", listOf(STRING), listOf("*")).build()
+
+        @JvmField
+        @field:Description(
             "Logs successful logins to the security log. When false, only failed logins are " +
                 "logged. Named like Neo4j Enterprise's setting."
         )

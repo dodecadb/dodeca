@@ -707,8 +707,9 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   `system`. A command that changed nothing, such as `CREATE ROLE ... IF NOT
   EXISTS` for a role that exists, is not logged.
 - **`dbms.setConfigValue`** changes a dynamic setting as in Enterprise: for
-  administrators, on the member it runs on, until that member restarts. Neo4j
-  Community has no such procedure.
+  administrators, on the member it runs on, until that member restarts, and
+  only a setting that `server.dynamic.setting.allowlist` names. Neo4j
+  Community has neither.
 
 ## Not supported
 
@@ -749,8 +750,6 @@ error, and their procedures do not exist.
   [Databases](#databases)).
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
   policies and `dbms.routing.load_balancing.shuffle_enabled`.
-- **Restricting `dbms.setConfigValue`** with
-  `server.dynamic.setting.allowlist`: every dynamic setting can be changed.
 - **Shutting the server down on a panic**
   (`server.panic.shutdown_on_panic`): a database that panics fails on its
   own, see [Databases](#databases).

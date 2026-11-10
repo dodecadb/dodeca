@@ -15,7 +15,8 @@ import org.neo4j.procedure.Procedure
 /**
  * `dbms.setConfigValue`, Neo4j Enterprise's procedure that changes a dynamic setting while the
  * server runs: for administrators, on this server only (in a cluster, on the member it runs on),
- * and lost when the server restarts.
+ * and lost when the server restarts. Only the settings `server.dynamic.setting.allowlist` names
+ * change.
  */
 class SettingsProcedures {
     @JvmField @Context var graph: GraphDatabaseAPI? = null
@@ -34,6 +35,14 @@ class SettingsProcedures {
         val declared =
             config.declaredSettings[setting]
                 ?: throw IllegalArgumentException("Unknown setting: $setting")
+        val allowlist = DozenDbSettings.dynamicSettingAllowlist
+        // A setting that is not dynamic is refused below, saying so.
+        if (declared.dynamic() && config.get(allowlist).none { matches(it, setting) }) {
+            throw IllegalArgumentException(
+                "Setting '$setting' may not be changed while the server runs: " +
+                    "${allowlist.name()} does not name it."
+            )
+        }
         val parsed: Any? =
             if (value.isEmpty()) {
                 null
@@ -53,4 +62,8 @@ class SettingsProcedures {
             checkNotNull(securityContext).subject().executingUser(),
         )
     }
+
+    /** Whether [pattern], a setting name in which `*` stands for any text, names [setting]. */
+    private fun matches(pattern: String, setting: String): Boolean =
+        Regex(pattern.split("*").joinToString(".*") { Regex.escape(it) }).matches(setting)
 }

@@ -15,6 +15,7 @@ import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.Neo4jException
+import org.neo4j.graphdb.config.Setting
 
 /** `dbms.setConfigValue`, as an administrator and a user run it through Bolt. */
 class SettingsProceduresTest {
@@ -24,17 +25,30 @@ class SettingsProceduresTest {
 
     @BeforeEach
     fun start() {
+        start(root)
+    }
+
+    private fun start(home: Path, settings: Map<Setting<*>, Any> = emptyMap()) {
         server =
             StandaloneServer(
-                    root,
+                    home,
                     mapOf(
                         GraphDatabaseSettings.auth_enabled to true,
                         BoltConnector.enabled to true,
-                    ),
+                    ) + settings,
                 )
                 .also { it.start() }
         server.administer("ALTER USER neo4j SET PASSWORD 'admin-secret-1' CHANGE NOT REQUIRED")
         server.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+    }
+
+    /** This test's server, started again in [home] with [settings]. */
+    private fun restart(home: String, settings: Map<Setting<*>, Any>): Driver {
+        drivers.forEach(Driver::close)
+        drivers.clear()
+        server.close()
+        start(root.resolve(home), settings)
+        return driver("neo4j", "admin-secret-1")
     }
 
     @AfterEach
@@ -96,6 +110,41 @@ class SettingsProceduresTest {
             .contains("Unknown setting: db.logs.query.enabld")
         assertThat(admin.failure("CALL dbms.setConfigValue('server.metrics.prefix', 'dozen')"))
             .contains("Setting 'server.metrics.prefix' is not dynamic")
+        assertThat(admin.setting("db.logs.query.enabled")).isEqualTo("VERBOSE")
+    }
+
+    @Test
+    fun `only the settings server dynamic setting allowlist names may change`() {
+        val admin =
+            restart(
+                "allowlist",
+                mapOf(
+                    DozenDbSettings.dynamicSettingAllowlist to
+                        listOf("db.logs.query.*", "dbms.max_databases")
+                ),
+            )
+
+        admin.set("db.logs.query.enabled", "INFO")
+        admin.set("dbms.max_databases", "50")
+        assertThat(admin.failure("CALL dbms.setConfigValue('db.checkpoint.iops.limit', '500')"))
+            .contains(
+                "Setting 'db.checkpoint.iops.limit' may not be changed while the server runs: " +
+                    "server.dynamic.setting.allowlist does not name it."
+            )
+        assertThat(admin.setting("db.logs.query.enabled")).isEqualTo("INFO")
+        assertThat(admin.setting("dbms.max_databases")).isEqualTo("50")
+        assertThat(admin.setting("db.checkpoint.iops.limit")).isEqualTo("600")
+        assertThat(admin.setting("server.dynamic.setting.allowlist"))
+            .isEqualTo("db.logs.query.*,dbms.max_databases")
+    }
+
+    @Test
+    fun `an empty server dynamic setting allowlist lets no setting change`() {
+        val admin =
+            restart("empty", mapOf(DozenDbSettings.dynamicSettingAllowlist to emptyList<String>()))
+
+        assertThat(admin.failure("CALL dbms.setConfigValue('db.logs.query.enabled', 'OFF')"))
+            .contains("server.dynamic.setting.allowlist does not name it")
         assertThat(admin.setting("db.logs.query.enabled")).isEqualTo("VERBOSE")
     }
 
