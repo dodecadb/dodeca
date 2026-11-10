@@ -10,6 +10,7 @@ import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.internal.InitialServerOptions
+import org.dozendb.cluster.internal.Neo4jSystemGraph
 import org.dozendb.cluster.internal.SystemSecondaryRecords
 import org.dozendb.cluster.internal.of
 import org.dozendb.consensus.ConsensusLog
@@ -239,6 +240,8 @@ internal class ClusterTopologyInfoService(
                 location?.leader,
                 requestedExtras.txInfo(),
                 placed.keys,
+                Placements.database(transaction, id.name())
+                    ?.let(Neo4jSystemGraph::recreationStatus),
             )
         }
     }

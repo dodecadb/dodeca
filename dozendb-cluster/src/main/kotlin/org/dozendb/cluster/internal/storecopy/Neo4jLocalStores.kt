@@ -12,6 +12,7 @@ import org.dozendb.consensus.BulkTransfer
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Snapshot
+import org.dozendb.core.store.CommittedTransaction
 import org.dozendb.core.store.StoreArchive
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.Config
@@ -21,9 +22,12 @@ import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.kernel.database.DatabaseTracers
+import org.neo4j.kernel.impl.transaction.log.NoSuchLogEntryException
+import org.neo4j.kernel.impl.transaction.log.ReadOnlyTransactionStore
 import org.neo4j.kernel.recovery.LogTailExtractor
 import org.neo4j.logging.InternalLog
 import org.neo4j.memory.EmptyMemoryTracker
+import org.neo4j.monitoring.Monitors
 import org.neo4j.storageengine.api.StorageEngineFactory
 
 /**
@@ -85,7 +89,12 @@ internal class Neo4jLocalStores(
             LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
                 .getTailMetadata(databaseLayout, EmptyMemoryTracker.INSTANCE)
                 .lastCommittedTransaction
-        return StoreState("${storeId.creationTime}/${storeId.random}", last.id())
+        return StoreState(
+            "${storeId.creationTime}/${storeId.random}",
+            last.id(),
+            last.appendIndex(),
+            last.checksum(),
+        )
     }
 
     override fun copyFrom(source: HostPort, databases: List<String>) {
@@ -175,6 +184,46 @@ internal class Neo4jLocalStores(
 
     /** Whether the store of [name] is complete: present and not left half-moved. */
     fun complete(name: String): Boolean = !incomplete(name) && storageExists(name)
+
+    /**
+     * The checksums of the transactions at [appendIndexes] in the store of [name], which must not
+     * be running, read from its logs; null for one its logs no longer or do not yet hold.
+     */
+    fun checksums(name: String, appendIndexes: Collection<Long>): Map<Long, Int?> {
+        val databaseLayout = layout.databaseLayout(name)
+        val engine =
+            StorageEngineFactory.selectStorageEngine(fs, databaseLayout).orElse(null)
+                ?: throw IOException("there is no store of $name")
+        val last =
+            LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
+                .getTailMetadata(databaseLayout, EmptyMemoryTracker.INSTANCE)
+                .lastCommittedTransaction
+        val logs =
+            ReadOnlyTransactionStore(
+                fs,
+                databaseLayout,
+                config,
+                Monitors(),
+                engine.commandReaderFactory(),
+            )
+        return appendIndexes.associateWith { index ->
+            when {
+                index == last.appendIndex() -> last.checksum()
+                index < 1 || index > last.appendIndex() -> null
+                // The transaction after it names its checksum.
+                else ->
+                    try {
+                        logs.getCommandBatches(index + 1).use { cursor ->
+                            if (cursor.next())
+                                CommittedTransaction.of(cursor.get()).previousChecksum
+                            else null
+                        }
+                    } catch (_: NoSuchLogEntryException) {
+                        null
+                    }
+            }
+        }
+    }
 
     /** The databases whose stores here are marked seeds, with the ids they seed. */
     fun seeds(): Map<String, UUID> = placement.seeds()

@@ -26,13 +26,18 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * seeded database, a `dozendb_creator` property that names the member creating the database's
  * store, a `dozendb_initial_members` property that lists the initial members of its group, each as
  * `id@host:port`, and a `dozendb_created` property, true once the store was created, after which
- * every server it is placed on copies it, its creator too. A `DozenDB` node holds the cluster's
- * format level in `dozendb_format_level`, once an upgrade raised it.
+ * every server it is placed on copies it, its creator too. A database recreated from the stores of
+ * its seeders has `dozendb_recreation_status`, what naming its creator waits for or why it failed,
+ * and `dozendb_recreation_failed` once it did, until its creator is named. A `DozenDB` node holds
+ * the cluster's format level in `dozendb_format_level`, once an upgrade raised it.
+ *
+ * @property placement places databases, as [promote] does.
  */
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
     private val replication: ReplicationService,
     private val current: () -> Boolean = replication::awaitSystemCurrent,
+    private val placement: () -> ClusterPlacement,
 ) : SystemGraph, FormatLevelStore {
     override fun databases(): List<DesiredDatabase> = replication.readingSystem {
         system().beginTx().use { tx ->
@@ -74,6 +79,8 @@ internal class Neo4jSystemGraph(
                 (node.getProperty(RECREATED_FROM_PROPERTY, null) as? String)?.let {
                     runCatching { UUID.fromString(it) }.getOrNull()
                 },
+            recreationStatus = recreationStatus(node),
+            recreationFailed = node.getProperty(RECREATION_FAILED_PROPERTY, false) == true,
         )
     }
 
@@ -101,6 +108,34 @@ internal class Neo4jSystemGraph(
                 INITIAL_MEMBERS_PROPERTY,
                 initialMembers.map { it.toText() }.toTypedArray(),
             )
+            node.removeProperty(RECREATION_STATUS_PROPERTY)
+            node.removeProperty(RECREATION_FAILED_PROPERTY)
+            tx.commit()
+        }
+    }
+
+    override fun recordRecreation(database: NamedDatabaseId, message: String, failed: Boolean) =
+        replication.readingSystem {
+            system().beginTx().use { tx ->
+                val node = tx.findDatabase(database) ?: return@use
+                if (node.hasProperty(CREATOR_PROPERTY)) return@use
+                if (
+                    recreationStatus(node) == message &&
+                        node.getProperty(RECREATION_FAILED_PROPERTY, false) == failed
+                ) {
+                    return@use
+                }
+                node.setProperty(RECREATION_STATUS_PROPERTY, message)
+                node.setProperty(RECREATION_FAILED_PROPERTY, failed)
+                tx.commit()
+            }
+        }
+
+    override fun promote(database: NamedDatabaseId, server: MemberId) = replication.readingSystem {
+        system().beginTx().use { tx ->
+            val node = tx.findDatabase(database) ?: return@use
+            if (node.hasProperty(CREATOR_PROPERTY)) return@use
+            placement().promote(tx, database.name(), server.uuid)
             tx.commit()
         }
     }
@@ -354,10 +389,22 @@ internal class Neo4jSystemGraph(
             node.removeProperty(CREATOR_PROPERTY)
             node.removeProperty(INITIAL_MEMBERS_PROPERTY)
             node.removeProperty(CREATED_PROPERTY)
+            node.removeProperty(RECREATION_STATUS_PROPERTY)
+            node.removeProperty(RECREATION_FAILED_PROPERTY)
         }
 
         /** The property that names the id a recreated database had before. */
         const val RECREATED_FROM_PROPERTY = "dozendb_recreated_from"
+
+        private const val RECREATION_STATUS_PROPERTY = "dozendb_recreation_status"
+        private const val RECREATION_FAILED_PROPERTY = "dozendb_recreation_failed"
+
+        /**
+         * What naming the creator of the recreated database [node] waits for, or why it failed;
+         * null once it is named, or for a database not recreated from seeders.
+         */
+        fun recreationStatus(node: Node): String? =
+            node.getProperty(RECREATION_STATUS_PROPERTY, null) as? String
 
         private const val INITIAL_MEMBERS_PROPERTY = "dozendb_initial_members"
         private const val FORMAT_LEVEL_PROPERTY = "dozendb_format_level"

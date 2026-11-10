@@ -36,6 +36,10 @@ import org.dozendb.cluster.internal.leadership.LeaderBalancer
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.cluster.internal.recreation.DatabaseRecreation
+import org.dozendb.cluster.internal.recreation.RecreationSeeds
+import org.dozendb.cluster.internal.recreation.Seed
+import org.dozendb.cluster.internal.recreation.SeedChecksums
+import org.dozendb.cluster.internal.recreation.SeedReports
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.DatabaseReconciler
@@ -263,6 +267,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.SYSTEM_GROUP to groups.systemGroup.toString(),
             ) +
                 cluster.systemReport() +
+                seedReport() +
                 InitialServerOptions.report(ServerOptions.initial(config)) +
                 listOfNotNull(
                     boltHostPort()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
@@ -509,6 +514,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ),
         )
         consensus.registerBulkSource(EntryTermProtocol.NAME, EntryTermSource(consensus))
+        consensus.registerBulkSource(SeedChecksums.NAME) { request, out ->
+            SeedChecksums.serve(request, out, ::seedChecksums)
+        }
         consensus.registerBulkSource(
             ReadBarrierProtocol.NAME,
             ReadBarrierSource(
@@ -1072,6 +1080,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 { repository.getSystemDatabaseContext().databaseFacade() },
                 replication,
                 ::awaitSystemCurrent,
+                ::clusterPlacement,
             )
         reconciler =
             DatabaseReconciler(
@@ -1101,6 +1110,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         it.id == id.databaseId().uuid() && it.status == DatabaseState.Status.ONLINE
                     }
                 },
+                ClusterSeeds(),
                 globalModule.logService.getInternalLog(DatabaseReconciler::class.java),
             )
         servers =
@@ -1156,6 +1166,16 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         globalModule.globalConfig.get(ClusterSettings.defaultSecondaries),
                     ),
                 seeder = ::seeder,
+                quarantined = { id ->
+                    clusterServers
+                        .all()
+                        .filter { member ->
+                            directory.databaseStates(member.id).orEmpty().any {
+                                it.id == id && it.status == DatabaseState.Status.QUARANTINED
+                            }
+                        }
+                        .mapTo(HashSet()) { it.id.uuid }
+                },
             )
         cluster.onRemoved = {
             reconciler.request()
@@ -1749,6 +1769,56 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         }
     }
 
+    /** What this member reports of the seeds it keeps of recreated databases, if any. */
+    private fun seedReport(): Map<String, String> {
+        if (!::reconciler.isInitialized) return emptyMap()
+        val reports = reconciler.seedReports
+        return if (reports.isEmpty()) emptyMap()
+        else mapOf(SeedReports.KEY to SeedReports.encode(reports))
+    }
+
+    /**
+     * The checksums [request] asks for, from the seed this member keeps of the recreated database,
+     * which does not run.
+     */
+    private fun seedChecksums(request: SeedChecksums.Request): Map<Long, Int?> {
+        check(localStores.seeds()[request.name] == request.recreated) {
+            "this member keeps no seed of database ${request.name}, recreated as ${request.recreated}"
+        }
+        check(databaseRepository.getDatabaseContext(request.name).isEmpty) {
+            "database ${request.name} runs here"
+        }
+        return localStores.checksums(request.name, request.appendIndexes)
+    }
+
+    /** The seeds the seeders of recreated databases keep, as they report them. */
+    private inner class ClusterSeeds : RecreationSeeds {
+        override fun reported(member: MemberId): Map<UUID, Seed?>? =
+            directory.reported(member)?.let { SeedReports.decode(it[SeedReports.KEY]) }
+
+        override fun refresh() = directory.refreshSoon()
+
+        override fun checksums(
+            member: MemberId,
+            database: NamedDatabaseId,
+            appendIndexes: List<Long>,
+        ): Map<Long, Int?> {
+            val request =
+                SeedChecksums.Request(database.name(), database.databaseId().uuid(), appendIndexes)
+            if (member == memberId) return seedChecksums(request)
+            val address =
+                clusterServers.all().firstOrNull { it.id == member }?.raftAddress
+                    ?: throw IllegalStateException("the address of server $member is not known")
+            return consensus.fetchBulk(
+                address,
+                SeedChecksums.NAME,
+                SeedChecksums.encodeRequest(request),
+                SEED_CHECKSUMS_TIMEOUT,
+                SeedChecksums::decodeResponse,
+            )
+        }
+    }
+
     /** The term of the entry at [index] in the log of [database], as its leader tells it. */
     private fun entryTerm(database: DatabaseRef, index: Long): EntryTerm {
         val location = locations.of(database) ?: return EntryTerm.Unknown
@@ -1853,6 +1923,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
         /** How long a member waits for each other to take an announcement of what it leads. */
         val ANNOUNCEMENT_DEADLINE: Duration = Duration.ofSeconds(1)
+
+        /**
+         * How long the system leader waits for the seeder of a recreated database whose store is
+         * the latest to read checksums from its logs.
+         */
+        val SEED_CHECKSUMS_TIMEOUT: Duration = Duration.ofMinutes(1)
 
         fun SocketAddress.toHostPort(): HostPort = HostPort(hostname, port)
 

@@ -11,6 +11,7 @@ import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.Node
@@ -31,8 +32,14 @@ import org.neo4j.kernel.database.NormalizedDatabaseName
  * anew, as a new database, and requested online. [Neo4jSystemGraph.RECREATED_FROM_PROPERTY] names
  * the old id.
  *
+ * Its seeders, `seedingServers`, are placed on it, primaries first in their order: those named, or
+ * for none named every enabled server that hosts a copy, primaries first; refused while a server
+ * that hosts a copy does not answer and is not cordoned, and when they are more than its copies.
+ * Seeders whose copies are in quarantine are refused.
+ *
  * @property reading runs a block while the system graph may be read, as catch-up may replace it.
  * @property seeder reads seeds at URIs, if this server can.
+ * @property quarantined the servers whose copies of a database, by id, are in quarantine.
  */
 @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these refusals.
 class DatabaseRecreation
@@ -43,6 +50,7 @@ internal constructor(
     private val placement: ClusterPlacement,
     private val defaults: Placements.Defaults,
     private val seeder: () -> DatabaseSeeder?,
+    private val quarantined: (UUID) -> Set<UUID>,
 ) {
     /**
      * Recreates the database [name] as [options] ask (see [RecreateOptions]); returns its new id.
@@ -50,15 +58,8 @@ internal constructor(
     fun recreate(name: String, options: Map<String, Any?>): UUID {
         val failed = "Could not recreate database '$name'"
         val asked = RecreateOptions.parse(options, failed)
-        if (asked.seedingServers != null && asked.seedingServers.size != 1) {
-            throw InvalidArgumentException(
-                "$failed: recreating a database from the stores of several of its servers, or of " +
-                    "every one, is not supported yet. Name one server in " +
-                    "${RecreateOptions.SEEDING_SERVERS}, or give ${RecreateOptions.SEED_URI} alone."
-            )
-        }
-        val seedingServer =
-            asked.seedingServers?.single()?.let {
+        val named =
+            asked.seedingServers?.map {
                 runCatching { UUID.fromString(it) }.getOrNull()
                     ?: throw InvalidArgumentException(
                         "$failed: '$it' in ${RecreateOptions.SEEDING_SERVERS} is not a server id."
@@ -87,6 +88,17 @@ internal constructor(
                 ServerRecords.lock(tx)
                 val node = database(tx, normalized, failed)
                 val old = UUID.fromString(node.getProperty(UUID_PROPERTY) as String)
+                val current = Placements.defaults(tx, defaults)
+                val primaries = asked.primaries ?: Placements.primaries(node) ?: current.primaries
+                val secondaries =
+                    asked.secondaries ?: Placements.secondaries(node) ?: current.secondaries
+                val seeders = seeders(tx, normalized, named, old, primaries + secondaries, failed)
+                if (named != null && seeders.isEmpty() && uri == null) {
+                    throw InvalidArgumentException(
+                        "$failed: no enabled server hosts a copy of it. Give " +
+                            "${RecreateOptions.SEED_URI}, a backup or dump to recreate it from."
+                    )
+                }
                 PrivilegeRecords.retarget(tx, old, id)
                 node.setProperty(UUID_PROPERTY, "$id")
                 node.setProperty(Neo4jSystemGraph.RECREATED_FROM_PROPERTY, "$old")
@@ -100,10 +112,10 @@ internal constructor(
                 } else {
                     node.removeProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY)
                 }
-                if (seedingServer != null) {
+                if (seeders.isNotEmpty()) {
                     node.setProperty(
                         TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY,
-                        arrayOf("$seedingServer"),
+                        seeders.map { "$it" }.toTypedArray(),
                     )
                 } else {
                     node.removeProperty(TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY)
@@ -112,12 +124,8 @@ internal constructor(
                     TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY,
                     TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
                 )
-                val current = Placements.defaults(tx, defaults)
-                val primaries = asked.primaries ?: Placements.primaries(node) ?: current.primaries
-                val secondaries =
-                    asked.secondaries ?: Placements.secondaries(node) ?: current.secondaries
                 try {
-                    placement.replace(tx, normalized, primaries, secondaries, seedingServer)
+                    placement.replace(tx, normalized, primaries, secondaries, seeders)
                 } catch (e: AllocationException) {
                     throw InvalidArgumentException("$failed: ${e.message}.", e)
                 }
@@ -125,6 +133,71 @@ internal constructor(
             }
         }
         return id
+    }
+
+    /**
+     * The seeders of the database [name], whose id is [old]: those [named], which must be servers,
+     * or for an empty list every enabled server that hosts a copy, primaries first, refused while
+     * one that hosts a copy does not answer and is not cordoned. At most [copies]; none in
+     * quarantine.
+     */
+    private fun seeders(
+        tx: Transaction,
+        name: String,
+        named: List<UUID>?,
+        old: UUID,
+        copies: Int,
+        failed: String,
+    ): List<UUID> {
+        if (named == null) return emptyList()
+        // Asks the servers, so that the states of their copies are current too.
+        val holders = placement.holders(tx, name)
+        val seeders =
+            if (named.isNotEmpty()) {
+                val servers = ServerRecords.records(tx)
+                named.distinct().onEach {
+                    if (it !in servers) {
+                        throw InvalidArgumentException(
+                            "$failed: '$it' in ${RecreateOptions.SEEDING_SERVERS} is not a server."
+                        )
+                    }
+                }
+            } else {
+                val missing = holders.filter {
+                    !it.available && it.record.status != InstanceStatus.CORDONED
+                }
+                if (missing.size == 1) {
+                    throw InvalidArgumentException(
+                        "$failed: server ${missing[0].record.name} hosts a copy of it but is not " +
+                            "available. Start it, or cordon it to recreate the database without it."
+                    )
+                }
+                if (missing.isNotEmpty()) {
+                    throw InvalidArgumentException(
+                        "$failed: servers ${missing.joinToString { it.record.name }} host copies " +
+                            "of it but are not available. Start them, or cordon them to recreate " +
+                            "the database without them."
+                    )
+                }
+                holders.filter { it.record.status == InstanceStatus.ENABLED }.map { it.record.id }
+            }
+        if (seeders.size > copies) {
+            throw InvalidArgumentException(
+                "$failed: it would have $copies copies, fewer than its ${seeders.size} seeding " +
+                    "servers, which each host one. Name fewer servers in " +
+                    "${RecreateOptions.SEEDING_SERVERS}, or give more " +
+                    "${RecreateOptions.PRIMARIES} or ${RecreateOptions.SECONDARIES}."
+            )
+        }
+        val inQuarantine = quarantined(old).let { servers -> seeders.filter { it in servers } }
+        if (inQuarantine.isNotEmpty()) {
+            throw InvalidArgumentException(
+                "$failed: its copies on ${inQuarantine.joinToString()} are in quarantine. Lift " +
+                    "their quarantine first, or leave them out of " +
+                    "${RecreateOptions.SEEDING_SERVERS}."
+            )
+        }
+        return seeders
     }
 
     /** The node of the database [name], refusing `system`, aliases and unknown names. */

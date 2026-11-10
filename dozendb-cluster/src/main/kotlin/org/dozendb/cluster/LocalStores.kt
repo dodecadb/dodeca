@@ -8,8 +8,15 @@ import org.dozendb.consensus.HostPort
  * @property storeId the id Neo4j gave the store when it created it, as `<creation time>/<random>`:
  *   copies of a store keep it, so the copies of one cluster's `system` share it.
  * @property lastTransaction the id of the last transaction committed to it.
+ * @property appendIndex the append index of that transaction in its transaction log.
+ * @property checksum the checksum of that transaction.
  */
-data class StoreState(val storeId: String, val lastTransaction: Long)
+data class StoreState(
+    val storeId: String,
+    val lastTransaction: Long,
+    val appendIndex: Long = lastTransaction,
+    val checksum: Int = 0,
+)
 
 /**
  * This member's databases as far as cluster formation is concerned: whether they existed before

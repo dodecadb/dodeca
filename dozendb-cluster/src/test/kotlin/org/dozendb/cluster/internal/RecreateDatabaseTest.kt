@@ -187,6 +187,128 @@ class RecreateDatabaseTest {
     }
 
     @Test
+    fun `a database is recreated from the stores of every server hosting it, refused while one is quarantined`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        cluster.write(FILMS, 3)
+        cluster.awaitFilms(cluster.members, 3)
+        val old = cluster.members[0].databaseId(FILMS)
+        val quarantined = cluster.members[1]
+        quarantined
+            .database()
+            .executeTransactionally("CALL dbms.quarantineDatabase('$FILMS', true, 'testing')")
+
+        assertThat(refusal(cluster, "{seedingServers: []}"))
+            .contains("its copies on ${quarantined.serverId} are in quarantine")
+        assertThat(refusal(cluster, "{seedingServers: [], primaries: 2}"))
+            .contains("it would have 2 copies, fewer than its 3 seeding servers")
+
+        quarantined
+            .database()
+            .executeTransactionally("CALL dbms.quarantineDatabase('$FILMS', false)")
+        cluster.awaitFilms(cluster.members, 3)
+        cluster.administer("CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: []})")
+
+        cluster.awaitFilms(cluster.members, 3)
+        assertThat(cluster.members.map { it.databaseId(FILMS) }).doesNotContain(old)
+        assertThat(cluster.members.map { it.databaseId(FILMS) }.distinct()).hasSize(1)
+        cluster.write(FILMS, 2)
+        cluster.awaitFilms(cluster.members, 5)
+        assertThat(cluster.shown(FILMS).values.map { it["statusMessage"] }).containsOnly("")
+    }
+
+    @Test
+    fun `a seeder that was down and is behind waits to be reported, then the latest store creates it`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        cluster.write(FILMS, 3)
+        cluster.awaitFilms(cluster.members, 3)
+        val behind = cluster.members[0]
+        val behindId = behind.serverId
+        val seeders = cluster.members.map { it.serverId }
+        behind.stop()
+        val up = cluster.members.drop(1)
+        cluster.write(FILMS, 2, up)
+        cluster.awaitFilms(up, 5)
+
+        cluster.administer(
+            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+                "${seeders.joinToString(prefix = "[", postfix = "]") { "'$it'" }}})",
+            among = up,
+        )
+
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(cluster.shown(FILMS, up).values.map { it["statusMessage"] })
+                    .contains("Waiting for seeder $behindId to report its store.")
+            }
+        behind.start()
+        // The store of the seeders up to date, not the one behind.
+        cluster.awaitFilms(cluster.members, 5)
+        assertThat(cluster.members.map { it.databaseId(FILMS) }.distinct()).hasSize(1)
+        cluster.write(FILMS, 1)
+        cluster.awaitFilms(cluster.members, 6)
+    }
+
+    @Test
+    fun `seeders with stores of different databases fail the recreation, shown, until it is recreated from good ones`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        cluster.write(FILMS, 3)
+        cluster.write(SERIES, 1)
+        cluster.awaitFilms(cluster.members, 3)
+        cluster.awaitFilms(cluster.members, 1, SERIES)
+        val wrong = cluster.members[2]
+        val wrongId = wrong.serverId
+        val wrongName = wrong.serverName()
+        val good = cluster.members.take(2)
+        val goodIds = good.map { it.serverId }
+        val old = wrong.databaseId(FILMS)
+        wrong.stop()
+        // A store of another database in place of its copy, which no Raft group counts.
+        for (kind in listOf("databases", "transactions")) {
+            val data = wrong.home.resolve("data/$kind")
+            data.resolve(FILMS).toFile().deleteRecursively()
+            data.resolve(SERIES).toFile().copyRecursively(data.resolve(FILMS).toFile())
+        }
+        wrong.home.resolve("data/raft/$old").toFile().deleteRecursively()
+
+        assertThat(refusal(cluster, "{seedingServers: []}", among = good))
+            .contains("server $wrongName hosts a copy of it but is not available")
+            .contains("cordon it")
+        cluster.administer(
+            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+                "${(goodIds + wrongId).joinToString(prefix = "[", postfix = "]") { "'$it'" }}})",
+            among = good,
+        )
+        wrong.start()
+
+        // The election takes seeders by id.
+        val (first, second) =
+            listOf(goodIds.minOf { UUID.fromString(it) }, UUID.fromString(wrongId)).sorted()
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(cluster.shown(FILMS).values.map { it["statusMessage"] })
+                    .contains(
+                        "Seeders $first and $second have incompatible storeIds. All seeders " +
+                            "must have compatible storeIds."
+                    )
+            }
+
+        cluster.administer(
+            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+                "${goodIds.joinToString(prefix = "[", postfix = "]") { "'$it'" }}})"
+        )
+
+        cluster.awaitFilms(cluster.members, 3)
+        cluster.write(FILMS, 2)
+        cluster.awaitFilms(cluster.members, 5)
+        assertThat(cluster.shown(FILMS).values.map { it["statusMessage"] }).containsOnly("")
+    }
+
+    @Test
     fun `recreating refuses unknown databases and options, and other options than Enterprise's`() {
         val cluster = ClusterHarness(root, 1).also { harness = it }
         cluster.start()
@@ -194,13 +316,8 @@ class RecreateDatabaseTest {
         cluster.administer("CREATE ALIAS movies FOR DATABASE $FILMS")
         val seed = "file:///nowhere/films.backup"
 
-        fun refusal(database: String, options: String): String? = catchThrowable {
-            cluster.administer("CALL dbms.cluster.recreateDatabase('$database', $options)")
-        }
-            ?.let {
-                generateSequence(it) { e -> e.cause }
-                    .joinToString(" | ") { e -> e.message.orEmpty() }
-            }
+        fun refusal(database: String, options: String): String? =
+            refusal(cluster, options, database)
 
         assertThat(refusal(FILMS, "{}")).contains("give seedingServers")
         assertThat(refusal(FILMS, "{seedURI: '$seed', colour: 'red'}"))
@@ -209,15 +326,53 @@ class RecreateDatabaseTest {
             .contains("seedingServers must be empty")
         assertThat(refusal(FILMS, "{seedURI: '$seed', secondaries: 1}")).contains("needs primaries")
         assertThat(refusal(FILMS, "{seedURI: '$seed', primaries: 12}")).contains("not 1 to 11")
-        assertThat(refusal(FILMS, "{seedingServers: []}")).contains("not supported yet")
         assertThat(refusal(FILMS, "{seedingServers: ['abc']}")).contains("is not a server id")
         assertThat(refusal(FILMS, "{seedingServers: ['${UUID.randomUUID()}']}"))
-            .contains("is not an enabled server")
+            .contains("is not a server")
         assertThat(refusal("system", "{seedURI: '$seed'}")).contains("unbind-system-db")
         assertThat(refusal("movies", "{seedURI: '$seed'}")).contains("it is an alias")
         assertThat(refusal("series", "{seedURI: '$seed'}")).contains("it does not exist")
         assertThat(cluster.members[0].count(FILMS)).isEqualTo(1)
     }
+
+    /** Why recreating [database] with [options] is refused, with its causes; null if it is not. */
+    private fun refusal(
+        cluster: ClusterHarness,
+        options: String,
+        database: String = FILMS,
+        among: List<ClusterHarness.Member> = cluster.members,
+    ): String? = catchThrowable {
+        cluster.administer(
+            "CALL dbms.cluster.recreateDatabase('$database', $options)",
+            among,
+        )
+    }
+        ?.let {
+            generateSequence(it) { e -> e.cause }.joinToString(" | ") { e -> e.message.orEmpty() }
+        }
+
+    /** The rows of SHOW DATABASE [database] on the system leader among [among], by server id. */
+    private fun ClusterHarness.shown(
+        database: String,
+        among: List<ClusterHarness.Member> = members,
+    ): Map<String, Map<String, Any?>> =
+        awaitLeader(SYSTEM) { among }
+            .database(SYSTEM)
+            .executeTransactionally(
+                "SHOW DATABASE $database YIELD serverID, currentStatus, statusMessage",
+                emptyMap(),
+            ) {
+                it.asSequence().associate { row -> row["serverID"] as String to row.toMap() }
+            }
+
+    /** The name of this member's server, as SHOW SERVERS has it. */
+    private fun ClusterHarness.Member.serverName(): String =
+        database(SYSTEM).executeTransactionally(
+            "SHOW SERVERS YIELD serverId, name WHERE serverId = \$id RETURN name",
+            mapOf("id" to serverId),
+        ) {
+            it.next()["name"] as String
+        }
 
     /** Creates [FILMS] on [among] if needed and writes [count] films, as its leader. */
     private fun ClusterHarness.write(
@@ -312,6 +467,7 @@ class RecreateDatabaseTest {
     private companion object {
         const val SYSTEM = "system"
         const val FILMS = "films"
+        const val SERIES = "series"
         const val DEFAULT = ClusterHarness.DEFAULT_DATABASE
     }
 }

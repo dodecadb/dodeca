@@ -68,8 +68,9 @@ class DatabaseRowsTest {
         leader: MemberId? = b,
         txInfo: Boolean = false,
         placed: Set<MemberId> = emptySet(),
+        recreation: String? = null,
     ) =
-        DatabaseRows.rows(own, copies, leader, txInfo, placed).associateBy {
+        DatabaseRows.rows(own, copies, leader, txInfo, placed, recreation).associateBy {
             MemberId(it.serverId().orElseThrow().uuid())
         }
 
@@ -111,6 +112,25 @@ class DatabaseRowsTest {
 
         assertThat(rows.getValue(b).status()).isEqualTo("starting")
         assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(2)
+    }
+
+    @Test
+    fun `copies of a database being recreated that do not run say what its recreation waits for`() {
+        val waiting = "Waiting for seeder $c to report its store."
+        val rows =
+            rows(
+                listOf(copy(a, status = null), copy(b, status = null), copy(c, answering = false)),
+                leader = null,
+                placed = setOf(a, b, c),
+                recreation = waiting,
+            )
+
+        assertThat(rows.getValue(a).status()).isEqualTo("initial")
+        assertThat(rows.getValue(a).statusMessage()).isEqualTo(waiting)
+        assertThat(rows.getValue(b).statusMessage()).isEqualTo(waiting)
+        assertThat(rows.getValue(c).statusMessage()).isEqualTo("Server is unavailable")
+        val running = rows(listOf(copy(a)), leader = a, recreation = waiting)
+        assertThat(running.getValue(a).statusMessage()).isEmpty()
     }
 
     @Test

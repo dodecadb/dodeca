@@ -7,9 +7,14 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import org.dozendb.cluster.internal.recreation.Election
+import org.dozendb.cluster.internal.recreation.RecreationSeeds
+import org.dozendb.cluster.internal.recreation.Seed
+import org.dozendb.cluster.internal.recreation.SeedElection
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.CopyMode
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLog
@@ -39,6 +44,13 @@ internal data class DesiredDatabase(
     val default: Boolean = false,
     /** The id it had before `dbms.cluster.recreateDatabase` recreated it, if it did. */
     val recreatedFrom: UUID? = null,
+    /**
+     * What naming the creator of a database recreated from [seeders] waits for, or why it failed,
+     * as recorded; null once its creator is named.
+     */
+    val recreationStatus: String? = null,
+    /** Whether naming its creator failed, which ends its recreation: it waits to be recreated. */
+    val recreationFailed: Boolean = false,
 )
 
 /** What the creator of a database creates its store from, instead of an empty one. */
@@ -75,6 +87,20 @@ internal interface SystemGraph {
      * group, unless a creator is named already.
      */
     fun nameCreator(database: NamedDatabaseId, creator: MemberId, initialMembers: List<Member>)
+
+    /**
+     * Records how naming the creator of [database], recreated from its seeders, goes: [message],
+     * and whether it [failed]; unless a creator is named. Naming one clears it.
+     */
+    fun recordRecreation(database: NamedDatabaseId, message: String, failed: Boolean)
+
+    /**
+     * Makes [server], which hosts a secondary of [database], host a primary of it instead, unless a
+     * creator is named: a primary turns secondary.
+     *
+     * @throws org.dozendb.core.servers.AllocationException if no placement allows it.
+     */
+    fun promote(database: NamedDatabaseId, server: MemberId)
 }
 
 /** What [LocalDatabases.switch] did. */
@@ -174,6 +200,9 @@ internal interface LocalDatabases {
     /** Takes the seed mark off the store of [name], which its database runs from now. */
     fun unmarkSeed(name: String)
 
+    /** What the seed kept of the database [name] holds; null if it cannot be read. */
+    fun seedState(name: String): Seed?
+
     /** Deletes the files of the database [name], which is not registered. */
     fun deleteStore(name: String)
 
@@ -263,6 +292,8 @@ internal interface LocalDatabases {
  * @property answering whether a member answers this one.
  * @property removed whether this member was removed from the cluster.
  * @property runs whether a member reports a database running, as far as this member knows.
+ * @property seeds what the seeders of recreated databases reported of their seeds, for the system
+ *   leader.
  */
 internal class DatabaseReconciler(
     private val systemGraph: SystemGraph,
@@ -274,6 +305,7 @@ internal class DatabaseReconciler(
     private val answering: (MemberId) -> Boolean,
     private val removed: () -> Boolean,
     private val runs: (MemberId, NamedDatabaseId) -> Boolean,
+    private val seeds: RecreationSeeds,
     private val log: InternalLog,
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
@@ -286,7 +318,17 @@ internal class DatabaseReconciler(
 
     @Volatile private var started = false
 
+    /**
+     * What this member reports of the seeds it keeps as a seeder of recreated databases, by their
+     * ids: each one's state, or null where it holds no store; left out until it kept its store.
+     */
+    @Volatile
+    var seedReports: Map<UUID, Seed?> = emptyMap()
+        private set
+
     // Used on the reconciler thread only.
+    /** The states of the seeds reported, read once each. */
+    private val seedStates = HashMap<UUID, Seed?>()
     private var nextRetryDelay = retryDelay
     private var defaultDatabase = initialDefault
     private var awaitingConfirmation = false
@@ -362,10 +404,45 @@ internal class DatabaseReconciler(
                 again = true
             }
         }
+        reportSeeds(desired)
         for (database in desired) {
             again = !converge(database) || again
         }
         return again
+    }
+
+    /**
+     * Updates [seedReports] for the databases among [desired] recreated from this member's store:
+     * as soon as it is kept, or once there is none to keep.
+     */
+    private fun reportSeeds(desired: List<DesiredDatabase>) {
+        val registered = databases.registered().keys.map { it.name() }.toSet()
+        val stored = databases.stored()
+        val reports = HashMap<UUID, Seed?>()
+        for (database in desired) {
+            if (!seeds(database)) continue
+            val id = database.id.uuid
+            val name = database.id.name()
+            when {
+                seeded(database) ->
+                    reports[id] =
+                        if (id in seedStates) seedStates[id]
+                        else
+                            databases.seedState(name).also {
+                                if (it == null) {
+                                    log.warn(
+                                        "The store kept as the seed of %s cannot be read: this " +
+                                            "member reports none",
+                                        database.id,
+                                    )
+                                }
+                                seedStates[id] = it
+                            }
+                name !in registered && name !in stored -> reports[id] = null
+            }
+        }
+        seedStates.keys.retainAll(reports.keys)
+        if (reports != seedReports) seedReports = reports
     }
 
     /** [desired], whose default database the reconciliation follows from now on. */
@@ -424,10 +501,11 @@ internal class DatabaseReconciler(
                 }
                 .partition { name ->
                     val database = wanted[name]
+                    // A seed of a recreation that is recreated again seeds the new one.
                     database != null &&
                         seeds(database) &&
                         databases.complete(name) &&
-                        name !in seeds
+                        (name !in seeds || seeds[name] == database.recreatedFrom)
                 }
         val unmarked =
             seeds.keys.filter { name ->
@@ -560,7 +638,6 @@ internal class DatabaseReconciler(
                                 systemGraph.leading()
                         ) {
                             nameCreator(database)
-                            false
                         } else {
                             true
                         }
@@ -670,14 +747,15 @@ internal class DatabaseReconciler(
         if (!trusted(id, mode)) {
             // Created or copied once it is started.
             if (!database.online) return true
+            // Recreating it failed: it waits to be recreated again, or dropped.
+            if (database.recreationFailed && database.creator == null) return true
             // A leftover, deleted once the system graph is confirmed current. The default
             // database's files are kept instead, and replaced by a copy, as when this member
-            // stopped while it started a copy, before its group ran here.
-            // A kept seed stays, for its creator to create the database from, once named.
+            // stopped while it started a copy, before its group ran here. A kept seed is no
+            // leftover: the creator creates the database from it, and another seeder keeps it
+            // until a copy from the creator replaces it.
             if (
-                id.name() in databases.stored() &&
-                    id.name() != defaultDatabase &&
-                    !(seeded(database) && (database.creator == null || database.creator == self))
+                id.name() in databases.stored() && id.name() != defaultDatabase && !seeded(database)
             ) {
                 return false
             }
@@ -694,7 +772,8 @@ internal class DatabaseReconciler(
     /**
      * Whether this member keeps its store of the database [database] was recreated from as its
      * seed: as one of its seeders, until its store was created, by its creator from its own seed.
-     * The others are kept as long, should the recreation be tried again.
+     * Another seeder keeps it until a copy from the creator replaces it, should the recreation be
+     * tried again meanwhile.
      */
     private fun seeds(database: DesiredDatabase): Boolean =
         database.recreatedFrom != null && self in database.seeders && !database.created
@@ -737,25 +816,55 @@ internal class DatabaseReconciler(
     }
 
     /**
-     * Names the creator of [database] among the servers it is placed on: its designated seeder if
-     * it has one, which is placed on it first, else this member, else those that answer first, then
-     * by id. They are the initial members of its group.
+     * Names the creator of [database] among the servers it is placed on: for one recreated from the
+     * stores of its seeders, the seeder whose store is the latest ([SeedElection]); else its
+     * designated seeder if it has one, which is placed on it first, else this member, else those
+     * that answer first, then by id. They are the initial members of its group. Returns false to be
+     * tried again; true once recreating the database failed, which it records.
      */
-    private fun nameCreator(database: DesiredDatabase) {
+    private fun nameCreator(database: DesiredDatabase): Boolean {
         val id = database.id
+        if (database.recreationFailed) return true
         val members = systemMembers()
         if (members == null) {
             log.info("Naming the creator of %s waits until the change of members settles", id)
-            return
+            return false
         }
         val hosting = members.filter { it.id in database.hosts }
         val creator =
-            database.designatedSeeder
-                ?: self.takeIf { it in database.hosts }
-                ?: hosting
-                    .sortedWith(compareBy<Member> { !answering(it.id) }.thenBy { it.id })
-                    .firstOrNull()
-                    ?.id
+            if (database.recreatedFrom != null && database.seeders.isNotEmpty()) {
+                when (val elected = SeedElection.elect(id, database.seeders, seeds)) {
+                    is Election.Creator ->
+                        if (elected.member in database.secondaries) {
+                            return promote(database, elected.member)
+                        } else {
+                            elected.member
+                        }
+                    is Election.Waiting -> {
+                        seeds.refresh()
+                        recordRecreation(database, elected.message, failed = false)
+                        return false
+                    }
+                    is Election.Failed -> {
+                        recordRecreation(database, elected.message, failed = true)
+                        return true
+                    }
+                    is Election.NoStore -> {
+                        if (database.seedUri == null) {
+                            recordRecreation(database, elected.message, failed = true)
+                            return true
+                        }
+                        log.info(
+                            "%s Database %s is recreated from its seed URI instead",
+                            elected.message,
+                            id,
+                        )
+                        anyCreator(database, hosting)
+                    }
+                }
+            } else {
+                database.designatedSeeder ?: anyCreator(database, hosting)
+            }
         // It starts the database's group, so it must be one of its initial members.
         if (creator == null || hosting.none { it.id == creator }) {
             log.warn(
@@ -763,7 +872,7 @@ internal class DatabaseReconciler(
                     "the cluster",
                 id,
             )
-            return
+            return false
         }
         try {
             systemGraph.nameCreator(id, creator, hosting)
@@ -771,6 +880,62 @@ internal class DatabaseReconciler(
             throw e
         } catch (e: Exception) {
             log.info("Naming %s the creator of %s failed: %s", creator, id, e.message)
+        }
+        return false
+    }
+
+    /** This member if [database] is placed on it, else of [hosting] the first that answers. */
+    private fun anyCreator(database: DesiredDatabase, hosting: List<Member>): MemberId? =
+        self.takeIf { it in database.hosts }
+            ?: hosting
+                .sortedWith(compareBy<Member> { !answering(it.id) }.thenBy { it.id })
+                .firstOrNull()
+                ?.id
+
+    /**
+     * Makes [seeder], which holds the latest store of the recreated [database] and is placed on it
+     * as a secondary, host a primary, so that it creates the database's group; records the failure
+     * if no placement allows it. Returns as [nameCreator] does.
+     */
+    private fun promote(database: DesiredDatabase, seeder: MemberId): Boolean {
+        log.info(
+            "Seeder %s holds the latest store of recreated database %s, where it hosts a " +
+                "secondary: it hosts a primary instead, to create it",
+            seeder,
+            database.id,
+        )
+        return try {
+            systemGraph.promote(database.id, seeder)
+            false
+        } catch (e: InterruptedException) {
+            throw e
+        } catch (e: AllocationException) {
+            recordRecreation(
+                database,
+                "Seeder $seeder holds the latest store, but cannot host a primary: ${e.message}.",
+                failed = true,
+            )
+            true
+        } catch (e: Exception) {
+            log.info("Placing a primary of %s on %s failed: %s", database.id, seeder, e.message)
+            false
+        }
+    }
+
+    /** Records [message] as the status of recreating [database], unless it is recorded already. */
+    private fun recordRecreation(database: DesiredDatabase, message: String, failed: Boolean) {
+        if (database.recreationStatus == message && database.recreationFailed == failed) return
+        if (failed) {
+            log.warn("Recreating database %s failed: %s", database.id, message)
+        } else {
+            log.info("Recreating database %s: %s", database.id, message)
+        }
+        try {
+            systemGraph.recordRecreation(database.id, message, failed)
+        } catch (e: InterruptedException) {
+            throw e
+        } catch (e: Exception) {
+            log.info("Recording how recreating %s goes failed: %s", database.id, e.message)
         }
     }
 

@@ -1,7 +1,9 @@
 package org.dozendb.cluster.internal
 
+import java.io.IOException
 import java.util.UUID
 import org.dozendb.cluster.DatabaseGroups
+import org.dozendb.cluster.internal.recreation.Seed
 import org.dozendb.cluster.internal.replication.EntryTerm
 import org.dozendb.cluster.internal.replication.LocalDatabase
 import org.dozendb.cluster.internal.replication.LocalDatabases
@@ -137,6 +139,15 @@ internal class Neo4jLocalDatabases(
     override fun markSeed(name: String, recreated: UUID) = stores.markSeed(name, recreated)
 
     override fun unmarkSeed(name: String) = stores.unmarkSeed(name)
+
+    override fun seedState(name: String): Seed? =
+        try {
+            stores.storeState(name)?.let {
+                Seed(it.appendIndex, it.lastTransaction, it.checksum, it.storeId)
+            }
+        } catch (_: IOException) {
+            null
+        }
 
     override fun deleteStore(name: String) = stores.delete(name)
 

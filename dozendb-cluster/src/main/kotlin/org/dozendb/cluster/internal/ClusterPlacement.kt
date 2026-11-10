@@ -8,6 +8,7 @@ import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Move
 import org.dozendb.core.servers.Placement
 import org.dozendb.core.servers.Placements
+import org.dozendb.core.servers.ServerRecord
 import org.dozendb.core.servers.ServerRecords
 import org.neo4j.graphdb.Transaction
 
@@ -77,22 +78,60 @@ internal class ClusterPlacement(
     /**
      * Places the database [name] anew on [primaries] and [secondaries] servers, as a new database,
      * as when it is recreated: its copies go where the allocator puts a new one's, on servers that
-     * answer first, whatever servers they were on, [first] among the primaries if given.
+     * answer first, whatever servers they were on; each of [seeders] hosts one, primaries first, in
+     * their order.
      */
     fun replace(
         tx: Transaction,
         name: String,
         primaries: Int,
         secondaries: Int,
-        first: UUID? = null,
+        seeders: List<UUID> = emptyList(),
     ): Placement {
         prepare(tx)
         val node = checkNotNull(Placements.database(tx, name)) { "there is no database '$name'" }
         Placements.place(tx, node, emptyMap(), primaries, secondaries)
         val copies =
-            Placements.allocator(tx, available).place(name, primaries, secondaries, first = first)
+            Placements.allocator(tx, available)
+                .place(name, primaries, secondaries, prefer = seeders, required = seeders.toSet())
         Placements.place(tx, node, copies, primaries, secondaries)
         return Placement(copies, primaries, secondaries)
+    }
+
+    /** A server that hosts a copy of a database in [mode], with its [record], if it answers. */
+    data class Holder(val record: ServerRecord, val mode: CopyMode, val available: Boolean)
+
+    /**
+     * The servers recorded to host a copy of the database [name], primaries first, then by id,
+     * asked whether they answer.
+     */
+    fun holders(tx: Transaction, name: String): List<Holder> {
+        prepare(tx)
+        val node = Placements.database(tx, name) ?: return emptyList()
+        val records = ServerRecords.records(tx)
+        return Placements.copies(node)
+            .mapNotNull { (id, mode) -> records[id]?.let { Holder(it, mode, available(id)) } }
+            .sortedWith(compareBy<Holder> { it.mode }.thenBy { it.record.id })
+    }
+
+    /**
+     * Makes [server], which hosts a secondary of the database [name], host a primary of it instead,
+     * as the seeder of a recreated database whose store is the latest, which creates it: a primary
+     * turns secondary, so every server keeps its copy.
+     *
+     * @throws AllocationException if no placement allows it.
+     */
+    fun promote(tx: Transaction, name: String, server: UUID) {
+        ServerRecords.lock(tx)
+        val node = checkNotNull(Placements.database(tx, name)) { "there is no database '$name'" }
+        val copies = Placements.allocator(tx, available).promote(name, server)
+        Placements.place(
+            tx,
+            node,
+            copies,
+            Placements.primaries(node) ?: copies.values.count { it == CopyMode.PRIMARY },
+            Placements.secondaries(node) ?: copies.values.count { it == CopyMode.SECONDARY },
+        )
     }
 
     override fun conform(tx: Transaction): List<Move> = moving(tx, dryRun = false) { it.conform() }

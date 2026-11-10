@@ -185,6 +185,34 @@ class StoreCopyTest {
     }
 
     @Test
+    fun `the checksums of a stopped store's transactions are read from its logs by append index`() {
+        val home = root.resolve("source")
+        val service = dbms(home)
+        val written =
+            List(3) { i ->
+                    service.neo4j().executeTransactionally("CREATE (:Film {i: $i})")
+                    service
+                        .neo4j()
+                        .dependencyResolver
+                        .resolveDependency(TransactionIdStore::class.java)
+                        .lastCommittedTransaction
+                }
+                .associate { it.appendIndex() to it.checksum() }
+        service.shutdown()
+        services.clear()
+        val last = written.keys.max()
+
+        val read =
+            stores(home)
+                .checksums(GraphDatabaseSettings.DEFAULT_DATABASE_NAME, written.keys + 0 + last + 1)
+
+        assertThat(read).containsAllEntriesOf(written)
+        assertThat(written.values.toSet()).describedAs("distinct").hasSize(3)
+        assertThat(read[0]).isNull()
+        assertThat(read[last + 1]).isNull()
+    }
+
+    @Test
     fun `a half-moved database is missing and the member counts as having none`() {
         val home = root.resolve("member")
         dbms(home).also { it.shutdown() }

@@ -43,9 +43,11 @@ internal object DatabaseRows {
      * moves off, which still runs it, and may still lead it until it hands the leadership over. A
      * paused secondary says so in its status message. A copy in quarantine on its member is
      * `quarantined`, with the role `unknown` and the quarantine's message, as in Neo4j Enterprise.
-     * With [txInfo], each row of a member that answers has the copy's last transaction id and how
-     * far it is behind the newest copy's. The values that belong to the database itself, such as
-     * its type and store, are those of [own], Neo4j Community's row for this member.
+     * A copy that does not run of a database recreated from its seeders has the status of the
+     * [recreation] as its message: what naming its creator waits for, or why it failed. With
+     * [txInfo], each row of a member that answers has the copy's last transaction id and how far it
+     * is behind the newest copy's. The values that belong to the database itself, such as its type
+     * and store, are those of [own], Neo4j Community's row for this member.
      */
     fun rows(
         own: DatabaseDetails,
@@ -53,6 +55,7 @@ internal object DatabaseRows {
         leader: MemberId?,
         txInfo: Boolean,
         placed: Set<MemberId> = emptySet(),
+        recreation: String? = null,
     ): List<DatabaseDetails> {
         val online =
             copies
@@ -81,6 +84,7 @@ internal object DatabaseRows {
                         copy.state?.status == DatabaseState.Status.QUARANTINED ->
                         copy.state.failure.orEmpty()
                     running && copy.state.paused -> PAUSED
+                    !running && recreation != null -> recreation
                     else -> ""
                 }
             val lastCommitted = copy.lastCommittedTxId.takeIf { txInfo && copy.answering }

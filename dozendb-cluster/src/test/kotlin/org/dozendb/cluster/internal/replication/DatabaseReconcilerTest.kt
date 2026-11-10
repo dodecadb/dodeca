@@ -4,9 +4,12 @@ import java.io.IOException
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.entry
+import org.dozendb.cluster.internal.recreation.RecreationSeeds
+import org.dozendb.cluster.internal.recreation.Seed
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 import org.neo4j.kernel.database.DatabaseIdFactory
@@ -22,6 +25,7 @@ class DatabaseReconcilerTest {
     private val otherAddress = HostPort("other", 7000)
     private val graph = FakeSystemGraph()
     private val local = FakeLocalDatabases()
+    private val seeds = FakeSeeds()
     private val members =
         listOf(Member(self, HostPort("self", 7000)), Member(creator, creatorAddress))
     /** The settled members of the system group, null while they change. */
@@ -47,6 +51,7 @@ class DatabaseReconcilerTest {
             { answering(it) },
             { removed },
             { member, id -> runs(member, id) },
+            seeds,
             NullLog.getInstance(),
         )
 
@@ -546,9 +551,9 @@ class DatabaseReconcilerTest {
     }
 
     @Test
-    fun `a seeder that is not the creator keeps its seed until the database was created, then copies it`() {
+    fun `a seeder that is not the creator keeps its seed until a copy from the creator replaces it`() {
         local.add(films, started = true)
-        val new = recreated(films, seeders = setOf(creator, self), creator = creator)
+        val new = recreated(films, seeders = setOf(creator, self))
         graph.databases = listOf(new)
 
         reconciler.reconcile()
@@ -556,12 +561,281 @@ class DatabaseReconcilerTest {
         assertThat(local.keptSeeds).containsKey(films.name())
         assertThat(local.copies).isEmpty()
 
-        graph.databases = listOf(new.copy(created = true))
+        graph.databases = listOf(new.copy(creator = creator))
+        // The creator has not created it yet.
+        local.unreachable += creatorAddress
+        local.unreachable += otherAddress
         reconciler.reconcile()
 
-        assertThat(local.deletedStores).containsExactly(films.name())
-        assertThat(local.copies.map { it.second }).containsExactly(new.id)
+        assertThat(local.keptSeeds).containsKey(films.name())
+        assertThat(local.deletedStores).isEmpty()
+
+        local.unreachable.clear()
+        reconciler.reconcile()
+
+        assertThat(local.copies).containsExactly(creatorAddress to new.id)
+        assertThat(local.deletedStores).isEmpty()
+        assertThat(local.registered).containsEntry(new.id, LocalDatabase(true, false))
+        // Its database runs from the copy.
+        reconciler.reconcile()
         assertThat(local.keptSeeds).isEmpty()
+    }
+
+    @Test
+    fun `a seeder reports the seed it keeps once kept, and none without a store`() {
+        local.add(films, started = true)
+        val new = recreated(films, seeders = setOf(self, creator))
+        val series = database("series")
+        val newSeries = recreated(series, seeders = setOf(self, creator))
+        graph.databases = listOf(new, newSeries)
+        graph.reachable = false
+
+        reconciler.reconcile()
+
+        // The old copy is kept once the system leader confirmed the system graph current.
+        assertThat(reconciler.seedReports)
+            .containsExactly(entry(newSeries.id.databaseId().uuid(), null))
+
+        graph.reachable = true
+        reconciler.reconcile()
+
+        assertThat(reconciler.seedReports)
+            .containsExactlyInAnyOrderEntriesOf(
+                mapOf(new.id.databaseId().uuid() to KEPT, newSeries.id.databaseId().uuid() to null)
+            )
+
+        graph.databases = listOf(new.copy(creator = creator, created = true))
+        reconciler.reconcile()
+
+        assertThat(reconciler.seedReports).describedAs("created").isEmpty()
+    }
+
+    /** [films] recreated from the stores of [creator] and [other], this member leading system. */
+    private fun recreatedFromOthers(
+        secondaries: Set<MemberId> = emptySet(),
+        seedUri: String? = null,
+    ): DesiredDatabase {
+        systemMembers = members + Member(other, otherAddress)
+        graph.leading = true
+        return recreated(films, seeders = setOf(creator, other))
+            .copy(
+                hosts = setOf(self, creator, other) - secondaries,
+                secondaries = secondaries,
+                seedUri = seedUri,
+            )
+            .also { graph.databases = listOf(it) }
+    }
+
+    private fun DesiredDatabase.reported(member: MemberId, seed: Seed?) {
+        seeds.reports[member] = mapOf(id.databaseId().uuid() to seed)
+    }
+
+    @Test
+    fun `the system leader names the seeder with the latest store the creator, once checked`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT.copy(appendIndex = 12, lastTransaction = 9, checksum = 222))
+        seeds.checksums[other] = mapOf(10L to KEPT.checksum)
+
+        reconciler.reconcile()
+
+        assertThat(seeds.asked).containsExactly(other to listOf(10L))
+        assertThat(graph.named).containsExactly(new.id to other)
+        assertThat(graph.recorded).isEmpty()
+    }
+
+    @Test
+    fun `seeders with the same append index need no checksums asked, and the lowest id creates`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT)
+
+        reconciler.reconcile()
+
+        assertThat(seeds.asked).isEmpty()
+        assertThat(graph.named).containsExactly(new.id to minOf(creator, other))
+    }
+
+    @Test
+    fun `naming the creator waits for every seeder to report, as recorded`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).isEmpty()
+        assertThat(seeds.refreshes).isEqualTo(1)
+        assertThat(graph.recorded)
+            .containsExactly(
+                Triple(new.id, "Waiting for seeder $other to report its store.", false)
+            )
+
+        // Recorded already.
+        graph.databases =
+            listOf(new.copy(recreationStatus = "Waiting for seeder $other to report its store."))
+        reconciler.reconcile()
+        assertThat(graph.recorded).hasSize(1)
+    }
+
+    @Test
+    fun `a seeder whose last transaction differs from the latest store's fails the recreation`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT.copy(appendIndex = 12, lastTransaction = 9, checksum = 222))
+        seeds.checksums[other] = mapOf(10L to 999)
+        val message =
+            "Seeders $other and $creator have different checksums for transaction 7. All " +
+                "seeders must have the same checksum for the same append index."
+
+        reconciler.reconcile()
+
+        assertThat(graph.named).isEmpty()
+        assertThat(graph.recorded).containsExactly(Triple(new.id, message, true))
+
+        // Failed: nothing is tried again until it is recreated anew.
+        graph.databases = listOf(new.copy(recreationStatus = message, recreationFailed = true))
+        seeds.asked.clear()
+
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(seeds.asked).isEmpty()
+        assertThat(graph.recorded).hasSize(1)
+        assertThat(local.registered).isEmpty()
+    }
+
+    @Test
+    fun `seeders with the same append index and different checksums fail too`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT.copy(checksum = 222))
+        val (first, second) = listOf(creator, other).sorted()
+
+        reconciler.reconcile()
+
+        assertThat(graph.recorded.single().second)
+            .startsWith("Seeders $first and $second have different checksums for transaction 7.")
+    }
+
+    @Test
+    fun `seeders with different store ids fail the recreation`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT.copy(storeId = "3/4"))
+        val (first, second) = listOf(creator, other).sorted()
+
+        reconciler.reconcile()
+
+        assertThat(graph.named).isEmpty()
+        assertThat(graph.recorded)
+            .containsExactly(
+                Triple(
+                    new.id,
+                    "Seeders $first and $second have incompatible storeIds. All seeders must " +
+                        "have compatible storeIds.",
+                    true,
+                )
+            )
+    }
+
+    @Test
+    fun `a seeder whose transaction the latest store's log no longer holds passes`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT.copy(appendIndex = 12, lastTransaction = 9, checksum = 222))
+        seeds.checksums[other] = mapOf(10L to null)
+
+        reconciler.reconcile()
+
+        assertThat(graph.named).containsExactly(new.id to other)
+    }
+
+    @Test
+    fun `naming the creator waits while the seeder with the latest store cannot tell checksums`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT.copy(appendIndex = 12, lastTransaction = 9, checksum = 222))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).isEmpty()
+        assertThat(graph.recorded.single().second)
+            .startsWith("Waiting for seeder $other, whose store is the latest")
+        assertThat(graph.recorded.single().third).isFalse()
+    }
+
+    @Test
+    fun `without a store on any seeder the recreation fails, unless it has a seed URI`() {
+        val new = recreatedFromOthers()
+        new.reported(creator, null)
+        new.reported(other, null)
+
+        reconciler.reconcile()
+
+        assertThat(graph.named).isEmpty()
+        assertThat(graph.recorded)
+            .containsExactly(
+                Triple(
+                    new.id,
+                    "No store found on any of the seeders ${listOf(creator, other).sorted().joinToString()}.",
+                    true,
+                )
+            )
+
+        graph.recorded.clear()
+        val seeded = recreatedFromOthers(seedUri = "file:///seeds/films.backup")
+        seeded.reported(creator, null)
+        seeded.reported(other, null)
+
+        reconciler.reconcile()
+
+        // As for a new database: this member, as it is placed on it.
+        assertThat(graph.named).containsExactly(seeded.id to self)
+        assertThat(graph.recorded).isEmpty()
+    }
+
+    @Test
+    fun `the seeder with the latest store hosts a primary before it creates the database`() {
+        val new = recreatedFromOthers(secondaries = setOf(other))
+        new.reported(creator, KEPT)
+        new.reported(other, KEPT.copy(appendIndex = 12, lastTransaction = 9))
+        seeds.checksums[other] = mapOf(10L to KEPT.checksum)
+
+        reconciler.reconcile()
+
+        assertThat(graph.promoted).containsExactly(new.id to other)
+        assertThat(graph.named).isEmpty()
+
+        graph.promoted.clear()
+        graph.promoteRefusal = "server other cannot host a primary of 'films'"
+        reconciler.reconcile()
+
+        assertThat(graph.recorded)
+            .containsExactly(
+                Triple(
+                    new.id,
+                    "Seeder $other holds the latest store, but cannot host a primary: server " +
+                        "other cannot host a primary of 'films'.",
+                    true,
+                )
+            )
+    }
+
+    @Test
+    fun `a seed kept for a recreation that is recreated again seeds the new one`() {
+        local.add(films, started = true)
+        val first = recreated(films, seeders = setOf(self, creator))
+        graph.databases = listOf(first)
+        reconciler.reconcile()
+
+        val second = recreated(first.id, seeders = setOf(self))
+        graph.databases = listOf(second)
+        reconciler.reconcile()
+
+        assertThat(local.keptSeeds)
+            .containsExactly(entry(films.name(), second.id.databaseId().uuid()))
+        assertThat(local.deletedStores).isEmpty()
+        assertThat(reconciler.seedReports)
+            .containsExactly(entry(second.id.databaseId().uuid(), KEPT))
     }
 
     @Test
@@ -965,6 +1239,49 @@ class DatabaseReconcilerTest {
             named += database to creator
             this.initialMembers += initialMembers
         }
+
+        /** What was recorded of recreations: the database, the message, and whether it failed. */
+        val recorded = mutableListOf<Triple<NamedDatabaseId, String, Boolean>>()
+        val promoted = mutableListOf<Pair<NamedDatabaseId, MemberId>>()
+        /** Why promoting is refused, if it is. */
+        var promoteRefusal: String? = null
+
+        override fun recordRecreation(database: NamedDatabaseId, message: String, failed: Boolean) {
+            recorded += Triple(database, message, failed)
+        }
+
+        override fun promote(database: NamedDatabaseId, server: MemberId) {
+            promoteRefusal?.let { throw AllocationException(it) }
+            promoted += database to server
+        }
+    }
+
+    /**
+     * What the seeders report: this member's own reports, the others' as set, and the checksums
+     * their seeds tell.
+     */
+    private inner class FakeSeeds : RecreationSeeds {
+        val reports = mutableMapOf<MemberId, Map<UUID, Seed?>>()
+        val checksums = mutableMapOf<MemberId, Map<Long, Int?>>()
+        val asked = mutableListOf<Pair<MemberId, List<Long>>>()
+        var refreshes = 0
+
+        override fun reported(member: MemberId): Map<UUID, Seed?>? =
+            if (member == self) reconciler.seedReports else reports[member]
+
+        override fun refresh() {
+            refreshes++
+        }
+
+        override fun checksums(
+            member: MemberId,
+            database: NamedDatabaseId,
+            appendIndexes: List<Long>,
+        ): Map<Long, Int?> {
+            asked += member to appendIndexes
+            val known = checksums[member] ?: throw IOException("$member does not answer")
+            return appendIndexes.associateWith { known[it] }
+        }
     }
 
     /**
@@ -1097,6 +1414,14 @@ class DatabaseReconcilerTest {
             keptSeeds.remove(name)
         }
 
+        /** What the seeds kept hold, by name; [KEPT] if not set. */
+        val seedStates = mutableMapOf<String, Seed?>()
+
+        override fun seedState(name: String): Seed? {
+            check(name in keptSeeds) { "$name is no seed" }
+            return if (name in seedStates) seedStates[name] else KEPT
+        }
+
         override fun deleteStore(name: String) {
             check(registered.keys.none { it.name() == name }) { "$name is registered" }
             stored.remove(name)
@@ -1132,7 +1457,7 @@ class DatabaseReconcilerTest {
         override fun copy(source: HostPort, id: NamedDatabaseId, mode: CopyMode) {
             copyAttempts += source
             if (source in unreachable) throw IOException("$source is unreachable")
-            check(id.name() !in stored) { "${id.name()} has files" }
+            check(id.name() !in stored || id.name() in keptSeeds) { "${id.name()} has files" }
             stored[id.name()] = true
             copies += source to id
             if (mode == CopyMode.SECONDARY) marks += id.databaseId().uuid()
@@ -1141,5 +1466,8 @@ class DatabaseReconcilerTest {
 
     private companion object {
         const val DEFAULT = "neo4j"
+
+        /** What a kept seed holds unless a test says otherwise. */
+        val KEPT = Seed(appendIndex = 10, lastTransaction = 7, checksum = 111, storeId = "1/2")
     }
 }
