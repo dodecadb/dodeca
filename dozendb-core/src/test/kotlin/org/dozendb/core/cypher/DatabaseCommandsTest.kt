@@ -132,16 +132,37 @@ class DatabaseCommandsTest {
         val option = catchThrowable {
             server.administer(
                 "CREATE DATABASE films OPTIONS \$options",
-                mapOf("options" to mapOf("seedCredentials" to "user;secret")),
+                mapOf("options" to mapOf("txLogEnrichment" to "FULL")),
             )
         }
         assertThat(option)
             .hasMessage(
-                "$failed: unsupported option(s) 'seedCredentials'. DozenDB supports " +
+                "$failed: unsupported option(s) 'txLogEnrichment'. DozenDB supports " +
                     "'existingData', 'seedURI', 'existingDataSeedServer', " +
                     "'existingDataSeedInstance', 'storeFormat'."
             )
         assertThat(gqlStatusesOf(option)).contains("22N04")
+        // Neo4j Enterprise's S3SeedProvider took credentials in the command.
+        val credentials = catchThrowable {
+            server.administer(
+                "CREATE DATABASE films OPTIONS \$options",
+                mapOf(
+                    "options" to
+                        mapOf(
+                            "seedURI" to "s3://bucket/films.backup",
+                            "seedConfig" to "region=eu-west-1",
+                            "seedCredentials" to "key;secret",
+                        )
+                ),
+            )
+        }
+        assertThat(credentials)
+            .hasMessageStartingWith(
+                "$failed: unsupported option(s) 'seedConfig', 'seedCredentials', which Neo4j " +
+                    "Enterprise's deprecated S3SeedProvider takes. DozenDB reads seeds in cloud " +
+                    "storage with each cloud's own credentials"
+            )
+        assertThat(gqlStatusesOf(credentials)).contains("22N04")
         val notAMap = catchThrowable {
             server.administer(
                 "CREATE DATABASE films OPTIONS \$options",

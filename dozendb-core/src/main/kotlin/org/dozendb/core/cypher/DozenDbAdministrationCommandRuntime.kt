@@ -686,6 +686,19 @@ private class DatabaseCommands(
         val failed = "Failed to create the specified database '$name'"
         val keys = options.keySet().toList()
         val unsupported = keys.filter { key -> SUPPORTED_OPTIONS.none { it.equals(key, true) } }
+        val credentials = unsupported.filter { key ->
+            SEED_CREDENTIALS.any { it.equals(key, true) }
+        }
+        if (credentials.isNotEmpty()) {
+            throw InvalidArgumentException(
+                GqlHelper.getGql42001_22N04(credentials.first(), "option", SUPPORTED_OPTIONS),
+                "$failed: unsupported option(s) ${credentials.sorted().joinToString { "'$it'" }}, which " +
+                    "Neo4j Enterprise's deprecated S3SeedProvider takes. DozenDB reads seeds in " +
+                    "cloud storage with each cloud's own credentials, which every server that " +
+                    "reads the seed needs: for S3, the AWS SDK's environment variables, " +
+                    "~/.aws/credentials or the instance's role.",
+            )
+        }
         if (unsupported.isNotEmpty()) {
             throw InvalidArgumentException(
                 GqlHelper.getGql42001_22N04(unsupported.first(), "option", SUPPORTED_OPTIONS),
@@ -1305,5 +1318,10 @@ private class DatabaseCommands(
                 `ExistingSeedInstanceOption$`.`MODULE$`.KEY(),
                 `StoreFormatOption$`.`MODULE$`.KEY(),
             )
+
+        /**
+         * The options of Neo4j Enterprise's S3SeedProvider, refused with a message of their own.
+         */
+        val SEED_CREDENTIALS = listOf("seedConfig", "seedCredentials")
     }
 }
