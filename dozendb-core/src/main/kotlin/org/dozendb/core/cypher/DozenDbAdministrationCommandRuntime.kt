@@ -22,6 +22,8 @@
  * START, STOP and DROP DATABASE take the name of a local alias for its database.
  * 2026-10-26: CREATE DATABASE takes TOPOLOGY and places the database on servers; ALTER DATABASE
  * sets its topology and access.
+ * 2026-11-09: CREATE DATABASE takes storeFormat and existingDataSeedInstance, warning of the
+ * deprecated ones.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -83,8 +85,10 @@ import org.neo4j.cypher.internal.logical.plans.StartDatabase
 import org.neo4j.cypher.internal.logical.plans.StopDatabase
 import org.neo4j.cypher.internal.logical.plans.WaitForCompletion
 import org.neo4j.cypher.internal.optionsmap.`ExistingDataOption$`
+import org.neo4j.cypher.internal.optionsmap.`ExistingSeedInstanceOption$`
 import org.neo4j.cypher.internal.optionsmap.`ExistingSeedServerOption$`
 import org.neo4j.cypher.internal.optionsmap.`SeedURIOption$`
+import org.neo4j.cypher.internal.optionsmap.`StoreFormatOption$`
 import org.neo4j.cypher.internal.optionsmap.StringOptionValidator
 import org.neo4j.cypher.internal.procs.ActionMapper
 import org.neo4j.cypher.internal.procs.AuthorizationAndPredicateExecutionPlan
@@ -95,6 +99,9 @@ import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.QueryHandlerResult
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
+import org.neo4j.cypher.internal.util.DeprecatedOptionInOptionMap
+import org.neo4j.cypher.internal.util.DeprecatedStoreFormat
+import org.neo4j.cypher.internal.util.InternalNotification
 import org.neo4j.dbms.api.DatabaseAliasExistsException
 import org.neo4j.dbms.api.DatabaseLimitReachedException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
@@ -123,6 +130,7 @@ import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.query.TransactionalContext
+import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.values.storable.IntegralValue
 import org.neo4j.values.storable.LongValue
 import org.neo4j.values.storable.TextValue
@@ -138,6 +146,8 @@ import scala.Option
 import scala.PartialFunction
 import scala.Tuple2
 import scala.collection.immutable.Seq
+import scala.collection.immutable.Set
+import scala.collection.immutable.`Set$`
 import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
 import scala.util.Left
@@ -368,10 +378,12 @@ private class DatabaseCommands(
                 source,
             )
         val version = context.runtimeContext().cypherVersion()
-        val seed =
-            Function2<Transaction, MapValue, MapValue> { tx, params ->
+        val creating =
+            Function2<Transaction, MapValue, Tuple2<MapValue, Set<InternalNotification>>> {
+                tx,
+                params ->
                 val database = show(databaseName, params)
-                val seed = seedOptions(plan, database, params, version)
+                val creation = creationOptions(plan, database, params, version)
                 val placed =
                     placed(database, "create") {
                         val requested =
@@ -383,14 +395,18 @@ private class DatabaseCommands(
                             NormalizedDatabaseName(database).name(),
                             requested?.primaries,
                             requested?.secondaries,
-                            seed.server?.let(UUID::fromString),
+                            creation.server?.let(UUID::fromString),
                         )
                     }
                 params
-                    .updatedWith(SEED_URI, seed.uri?.let(Values::utf8Value) ?: Values.NO_VALUE)
+                    .updatedWith(SEED_URI, creation.uri?.let(Values::utf8Value) ?: Values.NO_VALUE)
                     .updatedWith(
                         SEEDING_SERVERS,
-                        seed.server?.let { Values.stringArray(it) } ?: Values.NO_VALUE,
+                        creation.server?.let { Values.stringArray(it) } ?: Values.NO_VALUE,
+                    )
+                    .updatedWith(
+                        STORE_FORMAT,
+                        creation.storeFormat?.let(Values::utf8Value) ?: Values.NO_VALUE,
                     )
                     .updatedWith(
                         HOSTS,
@@ -410,6 +426,7 @@ private class DatabaseCommands(
                     )
                     .updatedWith(PRIMARIES, Values.longValue(placed.primaries.toLong()))
                     .updatedWith(SECONDARIES, Values.longValue(placed.secondaries.toLong()))
+                    .let { Tuple2(it, creation.warnings) }
             }
         return updating(
             "CreateDatabase",
@@ -425,6 +442,8 @@ private class DatabaseCommands(
                 database.${TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY} = ${parameter(SEED_URI)},
                 database.${TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY} =
                     ${parameter(SEEDING_SERVERS)},
+                database.${TopologyGraphDbmsModel.DATABASE_STORE_FORMAT_NEW_DB_PROPERTY} =
+                    ${parameter(STORE_FORMAT)},
                 database.${TopologyGraphDbmsModel.DATABASE_PRIMARIES_PROPERTY} = ${parameter(PRIMARIES)},
                 database.${TopologyGraphDbmsModel.DATABASE_SECONDARIES_PROPERTY} = ${parameter(SECONDARIES)}
             WITH database
@@ -463,7 +482,7 @@ private class DatabaseCommands(
                 }
             ),
             free,
-            transformer().convert(name.nameConverter()).convert(seed),
+            transformer().convert(name.nameConverter()).validate(creating),
         )
     }
 
@@ -649,20 +668,21 @@ private class DatabaseCommands(
         }
 
     /**
-     * The seed URI of the database [name] that [plan] creates, null for none, from its options,
-     * which it checks: DozenDB takes `existingData`, `seedURI` and, with clustering,
-     * `existingDataSeedServer`, and refuses every other option rather than ignore it. Ignoring one
-     * such as a seed would create an empty database instead of the expected data.
+     * What the options of [plan] ask of the database [name] it creates, which it checks: DozenDB
+     * takes `existingData`, `seedURI`, `storeFormat` and, with clustering, `existingDataSeedServer`
+     * or its deprecated name `existingDataSeedInstance`, and refuses every other option rather than
+     * ignore it. Ignoring one such as a seed would create an empty database instead of the expected
+     * data.
      */
     @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for the refusals of seeds.
-    private fun seedOptions(
+    private fun creationOptions(
         plan: CreateDatabase,
         name: String,
         params: MapValue,
         version: CypherVersion,
-    ): Seed {
+    ): Creation {
         val options = evaluate(plan.options(), params, version)
-        if (options.isEmpty) return Seed(null, null)
+        if (options.isEmpty) return Creation(null, null, null, emptyList())
         val failed = "Failed to create the specified database '$name'"
         val keys = options.keySet().toList()
         val unsupported = keys.filter { key -> SUPPORTED_OPTIONS.none { it.equals(key, true) } }
@@ -675,8 +695,21 @@ private class DatabaseCommands(
         }
         val existingData = find(`ExistingDataOption$`.`MODULE$`, options) != null
         val seedUri = find(`SeedURIOption$`.`MODULE$`, options)
-        val seedServer = find(`ExistingSeedServerOption$`.`MODULE$`, options)
-        if (plan.ifExistsDo() is `IfExistsReplace$`) {
+        val seedServers =
+            listOf(`ExistingSeedServerOption$`.`MODULE$`, `ExistingSeedInstanceOption$`.`MODULE$`)
+                .mapNotNull { option -> find(option, options)?.let { option.KEY() to it } }
+        if (seedServers.size > 1) {
+            throw InvalidArgumentException(
+                "$failed: existingDataSeedInstance is the deprecated name of " +
+                    "existingDataSeedServer. Give existingDataSeedServer alone."
+            )
+        }
+        val (seedKey, seedServer) = seedServers.singleOrNull() ?: (null to null)
+        val storeFormat = find(`StoreFormatOption$`.`MODULE$`, options)
+        if (
+            plan.ifExistsDo() is `IfExistsReplace$` &&
+                (existingData || seedUri != null || seedServer != null)
+        ) {
             throw InvalidArgumentException(
                 "$failed: OR REPLACE cannot be combined with existingData, seedURI or " +
                     "existingDataSeedServer. Drop the database first."
@@ -686,9 +719,8 @@ private class DatabaseCommands(
         if (seedServer != null) {
             if (!clustered) {
                 throw InvalidArgumentException(
-                    "$failed: existingDataSeedServer needs clustering. Without it, restore the " +
-                        "database with 'neo4j-admin database restore' and create it without " +
-                        "options."
+                    "$failed: $seedKey needs clustering. Without it, restore the database with " +
+                        "'neo4j-admin database restore' and create it without options."
                 )
             }
             try {
@@ -732,11 +764,41 @@ private class DatabaseCommands(
                         "database restore' puts them, or a seedURI. There are no files."
                 )
         }
-        return Seed(seedUri, seedServer?.let { UUID.fromString(it).toString() })
+        val warnings =
+            listOfNotNull(
+                (seedKey == `ExistingSeedInstanceOption$`.`MODULE$`.KEY())
+                    .takeIf { it }
+                    ?.let {
+                        DeprecatedOptionInOptionMap(
+                            `ExistingSeedInstanceOption$`.`MODULE$`.KEY(),
+                            `ExistingSeedServerOption$`.`MODULE$`.KEY(),
+                        )
+                    },
+                storeFormat
+                    ?.takeIf { StorageEngineFactory.isFormatDeprecated(it) }
+                    ?.let { DeprecatedStoreFormat(it) },
+            )
+        return Creation(
+            seedUri,
+            seedServer?.let { UUID.fromString(it).toString() },
+            storeFormat,
+            warnings,
+        )
     }
 
-    /** What a database is created from: a [uri], read by the [server] if named. */
-    private class Seed(val uri: String?, val server: String?)
+    /**
+     * What a database is created from: a seed [uri], read by the [server] if named, or else a new
+     * store, in the [storeFormat] if asked for; and the [warnings] the options deserve.
+     */
+    private class Creation(
+        val uri: String?,
+        val server: String?,
+        val storeFormat: String?,
+        warnings: List<InternalNotification>,
+    ) {
+        val warnings: Set<InternalNotification> =
+            warnings.fold(`Set$`.`MODULE$`.empty()) { set, warning -> set.incl(warning) }
+    }
 
     /** The value of [option] in [options], checked as Neo4j checks it; null if absent. */
     private fun find(option: StringOptionValidator, options: MapValue): String? =
@@ -1222,6 +1284,9 @@ private class DatabaseCommands(
         /** The parameter of the servers a clustered database is created on first: one. */
         const val SEEDING_SERVERS = "__dozendb_seedingServers"
 
+        /** The parameter of the store format a new database's store is created in. */
+        const val STORE_FORMAT = "__dozendb_storeFormat"
+
         /** The parameter of the servers a new database is placed on, by id. */
         const val HOSTS = "__dozendb_hosts"
 
@@ -1238,6 +1303,8 @@ private class DatabaseCommands(
                 `ExistingDataOption$`.`MODULE$`.KEY(),
                 `SeedURIOption$`.`MODULE$`.KEY(),
                 `ExistingSeedServerOption$`.`MODULE$`.KEY(),
+                `ExistingSeedInstanceOption$`.`MODULE$`.KEY(),
+                `StoreFormatOption$`.`MODULE$`.KEY(),
             )
     }
 }

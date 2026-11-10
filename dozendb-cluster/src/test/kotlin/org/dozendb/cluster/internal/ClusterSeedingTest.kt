@@ -22,7 +22,7 @@ import org.neo4j.dbms.identity.ServerIdentity
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import picocli.CommandLine
 
-/** CREATE DATABASE ... OPTIONS {seedURI | existingDataSeedServer} in a cluster. */
+/** CREATE DATABASE ... OPTIONS {seedURI | existingDataSeedServer | storeFormat} in a cluster. */
 class ClusterSeedingTest {
     // Kept when a test fails, for the members' logs.
     @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path
@@ -174,6 +174,69 @@ class ClusterSeedingTest {
     }
 
     @Test
+    fun `the member that creates a new database creates its store in the format asked for`() {
+        val cluster = cluster()
+
+        val waited =
+            cluster.administer("CREATE DATABASE films OPTIONS {storeFormat: 'standard'} WAIT")
+
+        assertThat(waited.map { it["success"] }).describedAs("$waited").containsOnly(true)
+        for (member in cluster.members) {
+            val stores =
+                member.database("system").executeTransactionally(
+                    "SHOW DATABASE films YIELD store",
+                    emptyMap(),
+                ) {
+                    it.asSequence().mapNotNull { row -> row["store"] as String? }.toList()
+                }
+            assertThat(stores).describedAs("$member").isNotEmpty.allMatch {
+                it.contains("standard")
+            }
+        }
+    }
+
+    @Test
+    fun `takes the seeding server by its deprecated option name too, with a warning`() {
+        val cluster = cluster()
+        val id = seederId(cluster.members.last())
+
+        val warnings =
+            cluster.awaitLeader("system").database("system").executeTransactionally(
+                "CREATE DATABASE films OPTIONS {existingData: 'use', " +
+                    "existingDataSeedInstance: '$id'}",
+                emptyMap(),
+            ) { result ->
+                result.forEachRemaining {}
+                result.gqlStatusObjects
+                    .filter { it.gqlStatus().startsWith("01") }
+                    .map { it.gqlStatus() to it.statusDescription() }
+            }
+
+        assertThat(warnings)
+            .singleElement()
+            .satisfies({
+                assertThat(it.first).isEqualTo("01N01")
+                assertThat(it.second)
+                    .contains(
+                        "existingDataSeedInstance is deprecated. It is replaced by existingDataSeedServer."
+                    )
+            })
+        // The server named restored nothing to create the database from, which it says.
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(
+                        cluster.administer("SHOW DATABASE films YIELD statusMessage").map {
+                            it["statusMessage"] as String
+                        }
+                    )
+                    .anyMatch {
+                        it.contains("from the store restored on this server: there is none")
+                    }
+            }
+    }
+
+    @Test
     fun `refuses seeds it cannot use, when the database is created`() {
         val cluster = cluster()
         val failed = "Failed to create the specified database 'films'"
@@ -183,6 +246,17 @@ class ClusterSeedingTest {
                 catchThrowable {
                     cluster.administer(
                         "CREATE DATABASE films OPTIONS {existingDataSeedServer: '$stranger'}"
+                    )
+                }
+            )
+            .hasMessage(
+                "$failed: server $stranger is not an enabled server of this cluster: SHOW " +
+                    "SERVERS lists the servers."
+            )
+        assertThat(
+                catchThrowable {
+                    cluster.administer(
+                        "CREATE DATABASE films OPTIONS {existingDataSeedInstance: '$stranger'}"
                     )
                 }
             )

@@ -124,6 +124,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     override fun createDatabaseContextProvider(
         globalModule: GlobalModule
     ): DatabaseContextProvider<*> {
+        val idCache = MapCachingDatabaseIdRepository()
+        val repository = DatabaseRepository<StandaloneDatabaseContext>(idCache)
         val contextFactory =
             DozenDbDatabaseContextFactory(
                 globalModule,
@@ -136,9 +138,12 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 createCommitProcessFactory(),
                 this,
                 hosting,
-            )
-        val idCache = MapCachingDatabaseIdRepository()
-        val repository = DatabaseRepository<StandaloneDatabaseContext>(idCache)
+            ) {
+                StoreFormats.requested(
+                    { repository.getSystemDatabaseContext().databaseFacade() },
+                    it,
+                )
+            }
         val rootDatabaseIdRepository =
             AbstractEditionModule.tryResolveOrCreate(
                 DatabaseIdRepository::class.java,

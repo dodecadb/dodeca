@@ -8,6 +8,7 @@
  * Modifications Copyright (c) DozenDB
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbDatabaseContextFactory, with optional
  * hosting on Raft.
+ * 2026-11-09: creates a new store in the format CREATE DATABASE asked for.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -19,6 +20,7 @@ import java.util.Optional
 import org.dozendb.core.constraints.DozenDbConstraintSemantics
 import org.dozendb.core.cypher.DozenDbCypherEngineProvider
 import org.neo4j.configuration.DatabaseConfig
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.database.AbstractDatabaseContextFactory
 import org.neo4j.dbms.database.DefaultDatabaseContextFactoryComponents
 import org.neo4j.dbms.database.StandaloneDatabaseContext
@@ -51,6 +53,9 @@ import org.neo4j.storageengine.api.StorageEngineFactory
  * With [hosting], every database gets the hosting's mode, lease service and commit process, and ID
  * generators that reuse freed IDs only if the hosting allows it from the start. Without it, every
  * value is Neo4j Community's.
+ *
+ * A database without a store yet gets one in the format [newStoreFormat] names for it, if any,
+ * instead of `db.format`.
  */
 internal class DozenDbDatabaseContextFactory(
     globalModule: GlobalModule,
@@ -63,6 +68,7 @@ internal class DozenDbDatabaseContextFactory(
     private val commitProcessFactory: TransactionalProcessFactory,
     private val components: DefaultDatabaseContextFactoryComponents,
     private val hosting: DatabaseHosting?,
+    private val newStoreFormat: (NamedDatabaseId) -> String?,
 ) :
     AbstractDatabaseContextFactory<StandaloneDatabaseContext, Optional<*>>(
         globalModule,
@@ -73,7 +79,13 @@ internal class DozenDbDatabaseContextFactory(
         namedDatabaseId: NamedDatabaseId,
         ignored: Optional<*>,
     ): StandaloneDatabaseContext {
-        val databaseConfig = DatabaseConfig(globalModule.globalConfig)
+        val storeExists = storeExists(namedDatabaseId)
+        val format = if (storeExists) null else newStoreFormat(namedDatabaseId)
+        val databaseConfig =
+            DatabaseConfig(
+                format?.let { mapOf(GraphDatabaseSettings.db_format to it) } ?: emptyMap(),
+                globalModule.globalConfig,
+            )
         val contextFactory = createContextFactory(databaseConfig, namedDatabaseId)
         val idContext =
             idContextFactory.createIdContext(
@@ -82,12 +94,7 @@ internal class DozenDbDatabaseContextFactory(
                 databaseConfig,
                 hosting?.reusesFreedIdsAtStart ?: true,
             )
-        val hosted =
-            hosting?.prepare(
-                namedDatabaseId,
-                idContext.idGeneratorFactory,
-                storeExists(namedDatabaseId),
-            )
+        val hosted = hosting?.prepare(namedDatabaseId, idContext.idGeneratorFactory, storeExists)
         lateinit var database: Database
         val creationContext =
             ModularDatabaseCreationContext(

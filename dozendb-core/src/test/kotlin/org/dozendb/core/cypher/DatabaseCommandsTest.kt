@@ -132,13 +132,14 @@ class DatabaseCommandsTest {
         val option = catchThrowable {
             server.administer(
                 "CREATE DATABASE films OPTIONS \$options",
-                mapOf("options" to mapOf("storeFormat" to "block")),
+                mapOf("options" to mapOf("seedCredentials" to "user;secret")),
             )
         }
         assertThat(option)
             .hasMessage(
-                "$failed: unsupported option(s) 'storeFormat'. DozenDB supports 'existingData', " +
-                    "'seedURI', 'existingDataSeedServer'."
+                "$failed: unsupported option(s) 'seedCredentials'. DozenDB supports " +
+                    "'existingData', 'seedURI', 'existingDataSeedServer', " +
+                    "'existingDataSeedInstance', 'storeFormat'."
             )
         assertThat(gqlStatusesOf(option)).contains("22N04")
         val notAMap = catchThrowable {
@@ -174,6 +175,74 @@ class DatabaseCommandsTest {
             mapOf("options" to emptyMap<String, Any>()),
         )
         assertThat(server.names()).contains("films", "books")
+    }
+
+    /** The warnings of [cypher] on `system`: their GQL statuses and descriptions. */
+    private fun StandaloneServer.warnings(cypher: String): List<Pair<String, String>> =
+        database(StandaloneServer.SYSTEM).executeTransactionally(cypher, emptyMap()) { result ->
+            result.forEachRemaining {}
+            result.gqlStatusObjects
+                .filter { it.gqlStatus().startsWith("01") }
+                .map { it.gqlStatus() to it.statusDescription() }
+        }
+
+    private fun StandaloneServer.stores(): Map<String, String> =
+        rows("SHOW DATABASES YIELD name, store", StandaloneServer.SYSTEM).associate {
+            it["name"] as String to it["store"] as String
+        }
+
+    @Test
+    fun `creates a database in the store format asked for, warning of a deprecated one`() {
+        val server = start()
+
+        val standard = server.warnings("CREATE DATABASE films OPTIONS {storeFormat: 'standard'}")
+        val aligned = server.warnings("CREATE DATABASE books OPTIONS {storeFormat: 'aligned'}")
+        server.administer("CREATE OR REPLACE DATABASE series OPTIONS {storeFormat: 'standard'}")
+
+        assertThat(standard)
+            .singleElement()
+            .satisfies({
+                assertThat(it.first).isEqualTo("01N00")
+                assertThat(it.second).contains("The targeted store format: standard is deprecated.")
+            })
+        assertThat(aligned).isEmpty()
+        assertThat(server.stores()["films"]).contains("standard")
+        assertThat(server.stores()["books"]).contains("aligned")
+        assertThat(server.stores()["series"]).contains("standard")
+        server.restart()
+        assertThat(server.stores()["films"]).contains("standard")
+        val block = server.failure("CREATE DATABASE comics OPTIONS {storeFormat: 'block'}")
+        assertThat(block).hasMessageContaining("storeFormat").hasMessageContaining("'block'")
+        assertThat(server.names()).doesNotContain("comics")
+    }
+
+    @Test
+    fun `takes a seeding server by its deprecated option name, which needs clustering, not both`() {
+        val server = start()
+
+        val error =
+            server.failure(
+                "CREATE DATABASE films OPTIONS {existingData: 'use', " +
+                    "existingDataSeedInstance: '6c0a1b1e-0000-4000-8000-000000000000'}"
+            )
+
+        assertThat(error)
+            .hasMessageStartingWith(
+                "Failed to create the specified database 'films': existingDataSeedInstance " +
+                    "needs clustering."
+            )
+        assertThat(
+                server.failure(
+                    "CREATE DATABASE films OPTIONS {existingData: 'use', " +
+                        "existingDataSeedServer: '6c0a1b1e-0000-4000-8000-000000000000', " +
+                        "existingDataSeedInstance: '6c0a1b1e-0000-4000-8000-000000000000'}"
+                )
+            )
+            .hasMessage(
+                "Failed to create the specified database 'films': existingDataSeedInstance is " +
+                    "the deprecated name of existingDataSeedServer. Give existingDataSeedServer " +
+                    "alone."
+            )
     }
 
     @Test

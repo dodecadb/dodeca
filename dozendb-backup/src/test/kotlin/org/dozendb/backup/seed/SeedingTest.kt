@@ -98,6 +98,15 @@ class SeedingTest {
             assertThat(waited["success"]).describedAs("$waited").isEqualTo(true)
             assertThat(CommunityServer.summary(server.database(name))).isEqualTo(expected)
         }
+        // As Neo4j Enterprise documents, a seed keeps its store format.
+        server.administer(
+            "CREATE DATABASE series OPTIONS {existingData: 'use', seedURI: '${backup.toUri()}', " +
+                "storeFormat: 'standard'} WAIT"
+        )
+        assertThat(
+                server.rows("SHOW DATABASE series YIELD store", StandaloneServer.SYSTEM).single()
+            )
+            .containsEntry("store", "record-aligned-1.1")
         server.administer("STOP DATABASE films WAIT")
         assertThat(server.consistent("films")).describedAs("consistent").isTrue
         // Nothing is left of the seeding.
@@ -146,7 +155,8 @@ class SeedingTest {
             )
             .hasMessage(
                 "$failed: unsupported option(s) 'seedCredentials'. DozenDB supports " +
-                    "'existingData', 'seedURI', 'existingDataSeedServer'."
+                    "'existingData', 'seedURI', 'existingDataSeedServer', " +
+                    "'existingDataSeedInstance', 'storeFormat'."
             )
         assertThat(server.failure("CREATE DATABASE films OPTIONS {existingData: 'reuse'}"))
             .hasMessageContaining("existingData")

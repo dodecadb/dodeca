@@ -82,12 +82,20 @@ Neo4j's messages and status codes, such as
 places the database on servers (see [Servers](#servers)), and
 `ALTER DATABASE ... SET ACCESS` makes it read-only or writable again.
 
+- **`storeFormat`** creates a new database's store in `aligned` or `standard`,
+  as in Enterprise, with a deprecation warning for `standard`; `block` and
+  `high_limit` fail, naming the formats there are. A database created from a
+  seed or from files in place keeps their format. With clustering, the server
+  that creates the store creates it in that format, and the others copy it.
+- **`existingDataSeedInstance`**, the deprecated name of
+  `existingDataSeedServer`, works as that option, with a deprecation warning.
+  Given both, the command fails.
 - **Not supported:** `CREATE COMPOSITE DATABASE`, `DROP DATABASE ... DUMP
   DATA`, `ALTER DATABASE ... SET OPTION`, and `CREATE DATABASE ... OPTIONS`
-  with an option other than `existingData`, `seedURI` and, with clustering,
-  `existingDataSeedServer`: `existingDataSeedInstance`, its deprecated name,
-  `seedConfig`, `seedCredentials`, `storeFormat`, `txLogEnrichment` or a
-  misspelt key. Each fails with an error.
+  with an option other than `existingData`, `seedURI`, `storeFormat` and,
+  with clustering, `existingDataSeedServer` or `existingDataSeedInstance`:
+  `seedConfig`, `seedCredentials`, `txLogEnrichment` or a misspelt key. Each
+  fails with an error.
 - **`dbms.max_databases`** counts every database, online or offline, as in
   Enterprise, and `system` too, which Enterprise's documentation leaves open.
 - **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
@@ -719,7 +727,7 @@ error, and their procedures do not exist.
   the auth cache settings and `dbms.security.clearAuthCache`.
 - **Change data capture**: `txLogEnrichment`, `db.cdc.*` and `cdc.*`.
 - **The `block` and `high_limit` store formats.** As Neo4j Community, DozenDB
-  reads only the `aligned` and `standard` formats.
+  reads and creates only the `aligned` and `standard` formats.
 - **The pipelined and parallel runtimes.** A query that asks for one runs on
   Neo4j Community's slotted runtime with a notification, as in Neo4j
   Community, or fails with `dbms.cypher.hints_error=true`. Neo4j Community
