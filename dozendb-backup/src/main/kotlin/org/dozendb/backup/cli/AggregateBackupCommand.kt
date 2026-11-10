@@ -13,7 +13,9 @@ import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.Converters.DatabaseNamePatternConverter
 import org.neo4j.cli.ExecutionContext
+import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.configuration.helpers.DatabaseNamePattern
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import picocli.CommandLine.Command
 import picocli.CommandLine.Help.Visibility.ALWAYS
@@ -49,10 +51,16 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
         description =
             [
                 "Accepts either a path to a single artifact file or a folder containing backup " +
-                    "artifacts. When a file is supplied, the <database> parameter should be omitted."
+                    "artifacts, local or in cloud storage, as s3://<bucket>/<folder>/, " +
+                    "gs://<bucket>/<folder>/ or azb://<storage account>/<container>/<folder>/, " +
+                    "which needs --temp-path. When a file is supplied, the <database> parameter " +
+                    "should be omitted."
             ],
     )
+    private lateinit var fromPathOption: String
+
     private lateinit var fromPath: Path
+    private lateinit var fs: FileSystemAbstraction
 
     @Option(
         names = ["--keep-old-backup"],
@@ -69,8 +77,9 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
         paramLabel = "<path>",
         description =
             [
-                "Provide a path to a temporary empty directory for storing backup files until the " +
-                    "command is completed. The files will be deleted once the command is finished."
+                "Provide a path to a local temporary empty directory for storing backup files " +
+                    "until the command is completed. The files will be deleted once the command is " +
+                    "finished. The default is the backups' folder, which must be local then."
             ],
     )
     private var tempPath: Path? = null
@@ -78,13 +87,33 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
     override fun commandConfigName(): Optional<String> = Optional.of("database-aggregate-backup")
 
     override fun execute() {
-        val fs = ctx.fs()
+        val config = createPrefilledConfigBuilder().build()
+        commandLogProvider(ctx.out(), verbose).use { logProvider ->
+            SchemeFileSystemAbstraction(ctx.fs(), config, logProvider).use { fs ->
+                this.fs = fs
+                fromPath = CommandPaths.resolve(fs, fromPathOption, "--from-path")
+                if (CommandPaths.isCloud(fromPath) && tempPath == null) {
+                    throw CommandFailedException(
+                        "--from-path ${CommandPaths.display(fromPath)} is in cloud storage: give " +
+                            "--temp-path, a local directory for the aggregated database before " +
+                            "it is uploaded"
+                    )
+                }
+                AdminResources(fs, config, logProvider).use { resources ->
+                    for ((chain, directory) in chains()) aggregate(chain, directory, resources)
+                }
+            }
+        }
+    }
+
+    /** The chains to aggregate, and the folder each is in. */
+    private fun chains(): List<Pair<ArtifactChain, Path>> {
         val directory = if (fs.isDirectory(fromPath)) fromPath else fromPath.toAbsolutePath().parent
         val chains =
             try {
                 val found = ArtifactChains.find(listOf(directory), fs)
                 found.unreadable.forEach { (file, why) ->
-                    ctx.err().println("Skipping $file: $why")
+                    ctx.err().println("Skipping ${CommandPaths.display(file)}: $why")
                 }
                 if (fs.isDirectory(fromPath)) {
                     val pattern =
@@ -99,7 +128,8 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
                             .filterKeys(pattern::matches)
                     if (byName.isEmpty()) {
                         throw CommandFailedException(
-                            "No backups of '${pattern.databaseName}' in $fromPath"
+                            "No backups of '${pattern.databaseName}' in " +
+                                CommandPaths.display(fromPath)
                         )
                     }
                     byName.values.map { ArtifactChains.select(it, null) }
@@ -119,21 +149,16 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
             } catch (e: IOException) {
                 throw CommandFailedException("${e.message}", e)
             }
-        val config = createPrefilledConfigBuilder().build()
-        commandLogProvider(ctx.out(), verbose).use { logProvider ->
-            AdminResources(fs, config, logProvider).use { resources ->
-                for (chain in chains) aggregate(chain, directory, resources)
-            }
-        }
+        return chains.map { it to directory }
     }
 
     private fun aggregate(chain: ArtifactChain, directory: Path, resources: AdminResources) {
-        val fs = ctx.fs()
         val name = chain.full.header.databaseName
         if (chain.differentials.isEmpty()) {
             ctx.out()
                 .println(
-                    "The latest backup of '$name' is a full backup already: ${chain.full.path}"
+                    "The latest backup of '$name' is a full backup already: " +
+                        CommandPaths.display(chain.full.path)
                 )
             return
         }
@@ -185,7 +210,8 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
             ctx.out()
                 .println(
                     "Aggregated the chain of ${chain.artifacts.size} backups of '$name' into " +
-                        "$aggregate${if (keepOld) "" else "; the chain was removed"}."
+                        CommandPaths.display(aggregate) +
+                        "${if (keepOld) "" else "; the chain was removed"}."
                 )
         } finally {
             fs.deleteRecursively(temporary)

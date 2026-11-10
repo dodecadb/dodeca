@@ -16,15 +16,18 @@ import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.Converters.DatabaseNameConverter
 import org.neo4j.cli.ExecutionContext
+import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.commandline.dbms.LockChecker
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.identity.AbstractIdentityModule
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.locker.FileLockException
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.database.NormalizedDatabaseName
+import org.neo4j.logging.InternalLogProvider
 import org.neo4j.storageengine.api.StorageEngineFactory
 import picocli.CommandLine.Command
 import picocli.CommandLine.Help.Visibility.ALWAYS
@@ -62,15 +65,16 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
         description =
             [
                 "A single path or a comma-separated list of paths pointing to a backup artifact " +
-                    "file or a folder of them. A folder restores the latest chain of each database " +
-                    "in it. A file restores the chain ending at it, found in its folder."
+                    "file or a folder of them, local or in cloud storage, as " +
+                    "s3://<bucket>/<folder>/, gs://<bucket>/<folder>/ or azb://<storage " +
+                    "account>/<container>/<folder>/. A folder restores the latest chain of each " +
+                    "database in it. A file restores the chain ending at it, found in its folder."
             ],
     )
     private lateinit var fromPath: String
 
-    private val fromPaths: List<Path> by lazy {
-        fromPath.split(',').filter { it.isNotBlank() }.map { Path.of(it.trim()) }
-    }
+    private lateinit var fromPaths: List<Path>
+    private lateinit var fs: FileSystemAbstraction
 
     @Option(
         names = ["--restore-until"],
@@ -126,7 +130,8 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
         description =
             [
                 "Accepted as by Neo4j Enterprise, and not used: the database is prepared next " +
-                    "to its final directories."
+                    "to its final directories, and backups in cloud storage are read as they are " +
+                    "restored."
             ],
     )
     private var tempPath: Path? = null
@@ -141,7 +146,21 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                 throw CommandFailedException("Invalid --restore-until: ${e.message}", e)
             }
         }
-        val fs = ctx.fs()
+        val config = config()
+        commandLogProvider(ctx.out(), verbose).use { logProvider ->
+            SchemeFileSystemAbstraction(ctx.fs(), config, logProvider).use { fs ->
+                this.fs = fs
+                fromPaths =
+                    fromPath
+                        .split(',')
+                        .filter { it.isNotBlank() }
+                        .map { CommandPaths.resolve(fs, it, "--from-path") }
+                restoreAll(until, config, logProvider)
+            }
+        }
+    }
+
+    private fun restoreAll(until: RestorePoint?, config: Config, logProvider: InternalLogProvider) {
         val singleFile = fromPaths.size == 1 && !fs.isDirectory(fromPaths[0])
         if (database != null && !singleFile) {
             throw CommandFailedException(
@@ -153,7 +172,6 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                 "--to-path-data and --to-path-txn can be given only with a single --from-path"
             )
         }
-        val config = config()
         val clustered = config.get(DozenDbSettings.clusterEnabled)
         if (clustered && overwrite) {
             throw CommandFailedException(
@@ -163,19 +181,17 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
         }
         val restores = restores(until)
         val failures = mutableListOf<Pair<String, Exception>>()
-        commandLogProvider(ctx.out(), verbose).use { logProvider ->
-            AdminResources(fs, config, logProvider).use { resources ->
-                for ((name, chain) in restores) {
-                    try {
-                        if (clustered) {
-                            stage(name, chain, until, config, resources.preparer())
-                        } else {
-                            restore(name, chain, until, config, resources.preparer())
-                        }
-                    } catch (e: Exception) {
-                        ctx.err().println("Failed to restore database '$name': ${e.message}")
-                        failures += name to e
+        AdminResources(fs, config, logProvider).use { resources ->
+            for ((name, chain) in restores) {
+                try {
+                    if (clustered) {
+                        stage(name, chain, until, config, resources.preparer())
+                    } else {
+                        restore(name, chain, until, config, resources.preparer())
                     }
+                } catch (e: Exception) {
+                    ctx.err().println("Failed to restore database '$name': ${e.message}")
+                    failures += name to e
                 }
             }
         }
@@ -200,7 +216,6 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
 
     /** The database each chain restores, by its name after the restore. */
     private fun restores(until: RestorePoint?): List<Pair<String, ArtifactChain>> {
-        val fs = ctx.fs()
         val restores = mutableListOf<Pair<String, ArtifactChain>>()
         for (path in fromPaths) {
             val chains =
@@ -233,16 +248,18 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
             }
         }
         if (restores.isEmpty()) {
-            throw CommandFailedException("No backups found in ${fromPaths.joinToString()}")
+            throw CommandFailedException(
+                "No backups found in ${fromPaths.joinToString { CommandPaths.display(it) }}"
+            )
         }
         return restores
     }
 
     private fun find(paths: List<Path>) =
-        ArtifactChains.find(paths, ctx.fs())
+        ArtifactChains.find(paths, fs)
             .also { found ->
                 found.unreadable.forEach { (path, why) ->
-                    ctx.err().println("Skipping $path: $why")
+                    ctx.err().println("Skipping ${CommandPaths.display(path)}: $why")
                 }
             }
             .artifacts
@@ -254,7 +271,6 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
         config: Config,
         preparer: StorePreparer,
     ) {
-        val fs = ctx.fs()
         val layout = Neo4jLayout.of(config)
         val target = layout.databaseLayout(name)
         if (StorageEngineFactory.selectStorageEngine(fs, target).isPresent) {
@@ -302,7 +318,6 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                 .resolve("scripts")
                 .resolve(name)
                 .resolve(METADATA_SCRIPT)
-        val fs = ctx.fs()
         fs.mkdirs(file.parent)
         fs.openAsOutputStream(file, false).use { it.write(script.toByteArray(Charsets.UTF_8)) }
         ctx.out()
@@ -327,7 +342,6 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                     "from this server"
             )
         }
-        val fs = ctx.fs()
         val layout = Neo4jLayout.of(config)
         val placement = StorePlacement(fs, layout)
         val staged = placement.stage(name, StorePlacement.RESTORED)
@@ -368,7 +382,8 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                 else -> " and $count differential backups"
             }
         val committed = TIME.format(Instant.ofEpochMilli(last.commitTimestamp()).atOffset(UTC))
-        return "from ${chain.full.path}$differentials, up to transaction ${last.id()}, committed " +
+        return "from ${CommandPaths.display(chain.full.path)}$differentials, up to transaction " +
+            "${last.id()}, committed " +
             "at $committed UTC"
     }
 

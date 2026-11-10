@@ -45,6 +45,30 @@
       <type>test-jar</type>
       <scope>test</scope>
     </dependency>
+    <!-- The cloud in memory, through the cloud providers, without the clouds' SDKs. -->
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-cloud</artifactId>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-cloud</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>*</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
     <!-- TestCertificates in the consensus-api test-jar uses it. -->
     <dependency>
       <groupId>org.bouncycastle</groupId>

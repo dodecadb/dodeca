@@ -22,11 +22,13 @@ import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.Converters.DatabaseNamePatternConverter
 import org.neo4j.cli.ExecutionContext
+import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.DatabaseNamePattern
 import org.neo4j.dbms.archive.backup.BackupMetadataV2
 import org.neo4j.io.ByteUnit
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.kernel.database.NormalizedDatabaseName
@@ -91,11 +93,16 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         paramLabel = "<path>",
         description =
             [
-                "Directory to place the backups in. It must exist. A differential backup " +
-                    "continues the latest backup of the database there."
+                "Directory to place the backups in: a local one, which must exist, or a folder " +
+                    "in cloud storage, as s3://<bucket>/<folder>/, gs://<bucket>/<folder>/ or " +
+                    "azb://<storage account>/<container>/<folder>/, which needs --temp-path. A " +
+                    "differential backup continues the latest backup of the database there."
             ],
     )
+    private lateinit var toPathOption: String
+
     private lateinit var toPath: Path
+    private lateinit var fs: FileSystemAbstraction
 
     @Option(
         names = ["--type"],
@@ -181,8 +188,8 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         paramLabel = "<path>",
         description =
             [
-                "Directory for temporary files, such as the copy of a database before it is " +
-                    "recovered. The default is --to-path."
+                "Local directory for temporary files, such as the copy of a database before it " +
+                    "is recovered. The default is --to-path, which must be local then."
             ],
     )
     private var tempPath: Path? = null
@@ -193,11 +200,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     private class Discontinued(message: String) : Exception(message)
 
     override fun execute() {
-        val fs = ctx.fs()
-        if (!fs.isDirectory(toPath)) {
-            throw CommandFailedException("--to-path $toPath is not an existing directory")
-        }
-        if (tempPath?.let(fs::isDirectory) == false) {
+        if (tempPath?.let(ctx.fs()::isDirectory) == false) {
             throw CommandFailedException("--temp-path $tempPath is not an existing directory")
         }
         val servers =
@@ -211,17 +214,22 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         var serversFailed = false
         val failed = mutableListOf<String>()
         commandLogProvider(ctx.out(), verbose).use { logProvider ->
-            val client =
-                try {
-                    BackupClient(fs, BackupTls.client(config, policies(config, logProvider)))
-                } catch (e: Exception) {
-                    throw CommandFailedException("Invalid TLS configuration: ${e.message}", e)
-                }
-            val names = names(client, servers) { serversFailed = true }
-            AdminResources(fs, config, logProvider).use { resources ->
-                for (name in names) {
-                    if (!backUp(name, client, servers, resources) { serversFailed = true }) {
-                        failed += name
+            SchemeFileSystemAbstraction(ctx.fs(), config, logProvider).use { fs ->
+                this.fs = fs
+                toPath = CommandPaths.resolve(fs, toPathOption, "--to-path")
+                checkToPath()
+                val client =
+                    try {
+                        BackupClient(fs, BackupTls.client(config, policies(config, logProvider)))
+                    } catch (e: Exception) {
+                        throw CommandFailedException("Invalid TLS configuration: ${e.message}", e)
+                    }
+                val names = names(client, servers) { serversFailed = true }
+                AdminResources(fs, config, logProvider).use { resources ->
+                    for (name in names) {
+                        if (!backUp(name, client, servers, resources) { serversFailed = true }) {
+                            failed += name
+                        }
                     }
                 }
             }
@@ -234,6 +242,34 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         if (serversFailed) {
             throw CommandFailedException(
                 "Every database was backed up, but some servers failed, as reported above"
+            )
+        }
+    }
+
+    /**
+     * A local --to-path must be an existing directory. In cloud storage, folders always exist, so
+     * the folder is listed instead, which checks the credentials before a backup is taken; the copy
+     * of a database is then made in --temp-path.
+     */
+    private fun checkToPath() {
+        if (!CommandPaths.isCloud(toPath)) {
+            if (!fs.isDirectory(toPath)) {
+                throw CommandFailedException("--to-path $toPath is not an existing directory")
+            }
+            return
+        }
+        if (tempPath == null) {
+            throw CommandFailedException(
+                "--to-path ${CommandPaths.display(toPath)} is in cloud storage: give --temp-path, " +
+                    "a local directory for the copy of a database before it is uploaded"
+            )
+        }
+        try {
+            fs.listFiles(toPath)
+        } catch (e: IOException) {
+            throw CommandFailedException(
+                "Cannot list --to-path ${CommandPaths.display(toPath)}: ${e.message}",
+                e,
             )
         }
     }
@@ -308,7 +344,8 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         if (type == Type.DIFF && latest == null) {
             ctx.err()
                 .println(
-                    "Could not back up database '$name': there is no backup of it in $toPath to " +
+                    "Could not back up database '$name': there is no backup of it in " +
+                        "${CommandPaths.display(toPath)} to " +
                         "continue; take a full backup first"
                 )
             return false
@@ -342,8 +379,10 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
 
     /** The latest backup of [name] in --to-path, which a differential one continues. */
     private fun latest(name: String): Artifact? {
-        val found = ArtifactChains.find(listOf(toPath), ctx.fs())
-        found.unreadable.forEach { (file, why) -> ctx.err().println("Skipping $file: $why") }
+        val found = ArtifactChains.find(listOf(toPath), fs)
+        found.unreadable.forEach { (file, why) ->
+            ctx.err().println("Skipping ${CommandPaths.display(file)}: $why")
+        }
         val artifacts = found.artifacts.filter { it.header.databaseName == name }
         if (artifacts.none { !it.header.empty }) return null
         return ArtifactChains.select(artifacts, null).last
@@ -377,7 +416,6 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         script: String?,
     ) {
         val base = latest.header
-        val fs = ctx.fs()
         val readers = StorageEngineFactory.defaultStorageEngine().commandReaderFactory()
         val written =
             try {
@@ -428,7 +466,10 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                             "${header.highestAppendIndex}, the last committed at"
                 "a differential backup of $transactions ${format(header.lastCommitTime!!)}"
             }
-        ctx.out().println("Backed up database '$name' from $server to $file: $what.")
+        ctx.out()
+            .println(
+                "Backed up database '$name' from $server to ${CommandPaths.display(file)}: $what."
+            )
     }
 
     private fun full(
@@ -438,7 +479,6 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         resources: AdminResources,
         script: String?,
     ) {
-        val fs = ctx.fs()
         val staging = fs.createTempDirectory(temporaryDirectory(), ".dozendb-backup-")
         var succeeded = false
         try {
@@ -485,7 +525,8 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             succeeded = true
             ctx.out()
                 .println(
-                    "Backed up database '$name' from $server to $file: a full backup up to " +
+                    "Backed up database '$name' from $server to ${CommandPaths.display(file)}: " +
+                        "a full backup up to " +
                         "transaction ${last.id()}, committed at ${format(header.lastCommitTime!!)}."
                 )
         } finally {

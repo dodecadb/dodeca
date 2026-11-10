@@ -11,6 +11,8 @@ import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.Converters.DatabaseNameConverter
 import org.neo4j.cli.ExecutionContext
+import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import picocli.CommandLine.Command
 import picocli.CommandLine.Help.Visibility.ALWAYS
@@ -33,10 +35,15 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
         paramLabel = "<backup-path>",
         description =
             [
-                "Path denoting either a directory where backups are stored or a single backup to inspect."
+                "Path denoting either a directory where backups are stored or a single backup to " +
+                    "inspect, local or in cloud storage, as s3://<bucket>/<folder>/, " +
+                    "gs://<bucket>/<folder>/ or azb://<storage account>/<container>/<folder>/."
             ],
     )
+    private lateinit var pathOption: String
+
     private lateinit var path: Path
+    private lateinit var fs: FileSystemAbstraction
 
     @Option(
         names = ["--latest-backup"],
@@ -86,14 +93,26 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
     override fun commandConfigName(): Optional<String> = Optional.of("backup-inspect")
 
     override fun execute() {
-        val fs = ctx.fs()
+        val config = createPrefilledConfigBuilder().build()
+        commandLogProvider(ctx.out(), verbose).use { logProvider ->
+            SchemeFileSystemAbstraction(ctx.fs(), config, logProvider).use { fs ->
+                this.fs = fs
+                path = CommandPaths.resolve(fs, pathOption, "<backup-path>")
+                inspect()
+            }
+        }
+    }
+
+    private fun inspect() {
         val found =
             try {
                 ArtifactChains.find(listOf(path), fs)
             } catch (e: IOException) {
                 throw CommandFailedException("${e.message}", e)
             }
-        found.unreadable.forEach { (file, why) -> ctx.err().println("Skipping $file: $why") }
+        found.unreadable.forEach { (file, why) ->
+            ctx.err().println("Skipping ${CommandPaths.display(file)}: $why")
+        }
         val name = database?.name()
         val named = found.artifacts.filter { name == null || it.header.databaseName == name }
         val rows =
@@ -127,11 +146,11 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
      * first. A backup named alone continues the backups in its folder.
      */
     private fun chain(artifacts: List<Artifact>): List<Artifact> {
-        val fs = ctx.fs()
         val names = artifacts.map { it.header.databaseName }.toSet()
         if (names.size > 1) {
             throw CommandFailedException(
-                "$path holds backups of several databases: name one with --database"
+                "${CommandPaths.display(path)} holds backups of several databases: name one with " +
+                    "--database"
             )
         }
         return try {

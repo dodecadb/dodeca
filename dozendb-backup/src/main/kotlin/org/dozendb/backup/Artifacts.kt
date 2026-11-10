@@ -10,6 +10,7 @@ import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import org.dozendb.core.store.CommittedTransaction
+import org.neo4j.cloud.storage.StoragePath
 import org.neo4j.dbms.archive.Dumper
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
@@ -40,9 +41,11 @@ object Artifacts {
             .first { !fs.fileExists(it) }
 
     /**
-     * Writes a new backup of [database] taken at [time] into [directory] with [write], which must
-     * close the stream it gets: under a hidden temporary name until it is complete and synced, then
-     * under its own ([newFile]), which it returns. What was written is deleted if [write] fails.
+     * Writes a new backup of [database] taken at [time] into [directory], local or in cloud
+     * storage, with [write], which must close the stream it gets: under a hidden temporary name
+     * until it is complete and synced, then under its own ([newFile]), which it returns. What was
+     * written is deleted if [write] fails. In cloud storage, the new name is a copy within the
+     * cloud.
      */
     fun writeNew(
         directory: Path,
@@ -54,7 +57,9 @@ object Artifacts {
         val partial = directory.resolve(".$database-${UUID.randomUUID()}$EXTENSION.partial")
         try {
             write(fs.openAsOutputStream(partial, false))
-            fs.write(partial).use { it.force(true) }
+            // An object in cloud storage is stored once its stream closes; opening it again would
+            // replace it.
+            if (partial !is StoragePath) fs.write(partial).use { it.force(true) }
             val file = newFile(directory, database, time, fs)
             fs.renameFile(partial, file, StandardCopyOption.ATOMIC_MOVE)
             return file
