@@ -320,15 +320,15 @@ class DisasterRecoveryIT {
         write(members, "films", "UNWIND range(1, 50) AS i CREATE (:Film {i: -i})")
         awaitCount(members, "films", "Film", 250)
         val recreate = "CALL dbms.cluster.recreateDatabase('films', {seedURI: 'file://$backup'})"
-        // Only users who may create and drop databases recreate them.
-        write(
+        // Only users who may create and drop databases recreate them. A GRANT that changes nothing
+        // succeeds on every member that has the privilege already: run each on one member only.
+        administer(
             members,
-            "system",
             "CREATE USER bob SET PASSWORD 'a long password' CHANGE NOT REQUIRED",
         )
-        write(members, "system", "CREATE ROLE creator")
-        write(members, "system", "GRANT CREATE DATABASE ON DBMS TO creator")
-        write(members, "system", "GRANT ROLE creator TO bob")
+        administer(members, "CREATE ROLE creator")
+        administer(members, "GRANT CREATE DATABASE ON DBMS TO creator")
+        administer(members, "GRANT ROLE creator TO bob")
         await withPollInterval
             Duration.ofSeconds(1) atMost
             Duration.ofMinutes(1) untilAsserted
