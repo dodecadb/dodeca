@@ -43,6 +43,7 @@ end its own way.
 | Server-side routing | Same | [Clustering](#clustering) |
 | Cluster status endpoints of the HTTP server | Same, with differences | [Clustering](#clustering) |
 | Checking connectivity between members | Same, with differences | [Clustering](#clustering) |
+| Protocols between members (`dbms.cluster.protocols`) | Same, with differences | [Clustering](#clustering) |
 | Replication status checks | Same, with differences | [Clustering](#clustering) |
 | Servers, topologies and secondaries | Same, with differences | [Servers](#servers) |
 | Leadership balancing and priority tags | Same | [Leadership balancing](#leadership-balancing) |
@@ -52,7 +53,7 @@ end its own way.
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing the default database | Same | [Databases](#databases) |
-| Quarantine and recreating databases | Not supported | [Not supported](#not-supported) |
+| Disaster recovery: `unbind-system-db`, recreating databases, quarantine | Same, with differences | [Disaster recovery](#disaster-recovery) |
 | Routing policies (the load balancing plugin) | Not supported | [Not supported](#not-supported) |
 | Change data capture | Not supported | [Not supported](#not-supported) |
 | `block` and `high_limit` store formats | Not supported | [Not supported](#not-supported) |
@@ -145,7 +146,9 @@ places the database on servers (see [Servers](#servers)), and
   which may be started again or dropped. Where Enterprise's documentation is
   silent, DozenDB refuses aliases and `system`, and naming the default
   database changes nothing. The default database cannot be dropped or
-  replaced. `STOP DATABASE` and `START DATABASE` apply to it; stopped, it
+  replaced, but `dbms.cluster.recreateDatabase` recreates it under a new id
+  as any other database (see [Disaster recovery](#disaster-recovery)).
+  `STOP DATABASE` and `START DATABASE` apply to it; stopped, it
   stays stopped when the server restarts, after starting briefly with it
   without clustering.
 - **Commands take effect once their transaction commits**, on every database
@@ -153,13 +156,12 @@ places the database on servers (see [Servers](#servers)), and
   database that failed to start is started again by `STOP DATABASE` and
   `START DATABASE`. On shutdown, `system` stops after every other database.
 - **Failed databases show as `offline`**, with why in `statusMessage`, as
-  Enterprise documents a database that is not running because of a problem.
-  This includes a database that failed while running, such as after a panic
-  on a full disk, which Enterprise puts in quarantine (`quarantined`, until
-  `dbms.quarantineDatabase` takes it out). DozenDB has no quarantine: the
-  database shows as `online` again once restarted, with `STOP DATABASE` and
-  `START DATABASE` or by restarting the server. Neo4j Community shows a
-  database that failed while running as `online`, although it serves nothing.
+  Enterprise documents a database that is not running because of a problem,
+  such as one that failed to start. A database that fails while running, such
+  as after a panic on a full disk, is put in quarantine, as in Enterprise:
+  `quarantined`, until `dbms.quarantineDatabase` lifts it (see
+  [Disaster recovery](#disaster-recovery)). Neo4j Community shows a database
+  that failed while running as `online`, although it serves nothing.
 - **`server.panic.shutdown_on_panic`** ends the server's process, with status
   1, once a database panics, as in Enterprise, so that a process manager
   starts it again. It is false by default; Enterprise's documentation makes it
@@ -526,10 +528,11 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   files applied up to a higher Raft index than its group reached there, as
   after copying another database's or cluster's files into place while it was
   down, checks the group's entry at that index against the files' last
-  transaction, once the group's log reaches it. If they differ, the database
-  fails on that member with a message saying how to recover: delete the files
-  there and restart the member, which then copies the database. Files applied
-  up to an index the group already reached on that member are not checked.
+  transaction, once the group's log reaches it. If they differ, the copy on
+  that member is put in quarantine with a message saying how to recover:
+  delete the files there and restart the member, which then copies the
+  database, and lift the quarantine. Files applied up to an index the group
+  already reached on that member are not checked.
   Create databases from other files with a seed instead.
 - **Stopped databases.** A member whose replicated database stops, for example
   after a panic, keeps taking part in the database's Raft group but no longer
@@ -699,6 +702,43 @@ Enterprise is not promised. The differences:
   `dbms.ssl.policy.backup.enabled` set explicitly, `true` or `false`, since
   the backup port has no other authentication.
 
+## Disaster recovery
+
+A cluster that lost a majority of its servers recovers as Enterprise's
+disaster recovery guide shows, with the same commands; see
+`OPERATOR_GUIDE.md`, "Disaster recovery":
+
+- **`neo4j-admin dbms unbind-system-db`**, with `--archive-cluster-state` and
+  `--archive-path`, removes a stopped server's Raft state of `system` only and
+  prints its last committed transaction. The servers left, unbound, re-form
+  `system` from `dbms.dozendb.cluster.initial_members`, where Enterprise uses
+  its discovery settings: DozenDB picks the copy with the latest transaction,
+  so dumping and loading `system` is not needed, and there is no
+  `dbms.cluster.minimum_initial_system_primaries_count`. The re-formed group
+  has a new id, kept in each server's membership record. The lost servers stay
+  servers, `Unavailable`, to cordon, deallocate and drop. One that comes back
+  with its old state is refused once it reaches the recovered cluster; one
+  that reaches only other lost servers cannot tell, so they must be kept from
+  starting. A lost server rejoins as the same server once unbound from
+  `system` and added with `dozendb.cluster.addMember`.
+- **`dbms.cluster.recreateDatabase`** takes Enterprise's options and status
+  messages. The recreated database gets a new id, as when it is dropped and
+  created again: element ids change, and bookmarks of the old database are not
+  waited for. Privileges on it are kept. A seeder that does not answer is
+  waited for, with a status message naming it; a recreation that failed waits
+  to be recreated again. Seeders whose stores fall behind the latest one pull
+  the transactions they lack from it; one whose history differs is copied.
+  The procedure exists only on cluster members, as the other
+  `dbms.cluster.*` procedures; on a standalone server, drop the database and
+  create it from a seed.
+- **`dbms.quarantineDatabase`** and copies that fail while running behave as in
+  Enterprise. Quarantines are kept in `data/quarantine`, a file of DozenDB's
+  own (`FORMATS.md`); that of `system` lasts until the server restarts.
+- **`dbms.cluster.protocols`** lists DozenDB's protocols (`FORMATS.md`), not
+  Enterprise's: `raft`, `probe` and `bulk` with the bulk transfers it carried.
+  A leader lists its outbound Raft connections to the members it replicates
+  to that answered lately.
+
 ## Metrics and logs
 
 DozenDB reports metrics and writes the query log and the security log as
@@ -817,12 +857,6 @@ error, and their procedures do not exist.
   Neo4j Community's slotted runtime with a notification, as in Neo4j
   Community, or fails with `dbms.cypher.hints_error=true`. Neo4j Community
   declares `server.cypher.parallel.worker_limit`, which has no effect.
-- **Disaster recovery and protocol checks**: quarantine
-  (`dbms.quarantineDatabase`), `dbms.cluster.recreateDatabase`,
-  `dbms.cluster.protocols` and `neo4j-admin dbms unbind-system-db`.
-  `OPERATOR_GUIDE.md`
-  describes how a DozenDB cluster recovers, and "Lost databases" under
-  [Running a cluster](#running-a-cluster) how to rebuild a member.
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
   policies and `dbms.routing.load_balancing.shuffle_enabled`.
 - **Store copy and incremental import**: `neo4j-admin database copy`,

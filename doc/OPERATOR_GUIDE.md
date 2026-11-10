@@ -170,18 +170,18 @@ hostname verification, its certificate must name the new address.
 ### A database that failed on one member
 
 A member that cannot apply a transaction of a database, for instance because
-its disk failed, stops its copy of that database; the other members go on as
-long as a majority of them hold theirs. `SHOW DATABASES` then lists the copy on
-that member as `offline`, with the error as `statusMessage`, and drivers are
-sent to the other members for that database. The member's `debug.log` has the
-error, and the leader logs `Failed appendEntries` for that member, saying that
-the group is closed on it, once every 5 seconds.
+its disk failed, puts its copy of that database in quarantine, as Neo4j
+Enterprise does; the other members go on as long as a majority of them hold
+theirs. `SHOW DATABASES` then lists the copy on that member as `quarantined`,
+with the error and the call that lifts the quarantine as `statusMessage`, and
+drivers are sent to the other members for that database. The member's
+`debug.log` has the error.
 
-Once the cause is repaired, run `STOP DATABASE` and then `START DATABASE`: the
-member starts its copy again from its local state, and catches up with the
-others. Both commands act on every server the database is placed on, so the
-database is unavailable in between. Restarting the member repairs the copy as
-well, along with its other databases.
+Once the cause is repaired, lift the quarantine on that member:
+`CALL dbms.quarantineDatabase('<database>', false)`. The member starts its
+copy again from its local state, and catches up with the others. Neither a
+restart nor `START DATABASE` starts a copy in quarantine (see
+[Quarantine](#quarantine)).
 
 ## Servers
 
@@ -1090,6 +1090,167 @@ database, `system` included, taken with `"*"`:
 Users, roles, privileges, the default numbers of copies and whether each
 database is online come with `system`.
 
+## Disaster recovery
+
+A cluster recovers by itself from the loss of a minority of its servers: the
+others go on, and replacements copy what they need (see
+[Replacing a failed member](#replacing-a-failed-member)). When a majority of
+the servers is lost for good, the Raft groups that lost their majority take
+no more writes: that of `system`, so that administration fails, and that of
+every database with a majority of its primaries on the lost servers. Recover
+as Neo4j Enterprise's disaster recovery guide does, in three steps: the
+`system` database, then the servers, then the databases. When every server is
+lost, recreate the cluster from backups instead (see
+[Recovering a whole cluster](#recovering-a-whole-cluster)).
+
+Keep the lost servers from starting until the recovery is done: a lost server
+that comes back with its old state and reaches only other lost servers may
+form a majority of an old group with them again. One that reaches a server of
+the recovered cluster is refused (see [Lost servers](#lost-servers)).
+
+### Recovering the system database
+
+1. Stop every server left.
+2. On each of them, remove its Raft state of `system`, keeping its store and
+   its other databases:
+
+   ```
+   neo4j-admin dbms unbind-system-db --archive-cluster-state=true --archive-path=<directory>
+   ```
+
+   It writes the state it removes to
+   `unbound_system_cluster_state.<time>.zip` in `<directory>` when asked,
+   refuses while the server runs, and prints the server's id and the last
+   transaction of its `system` store (`lastCommittedTransaction`). A run cut
+   short can run again.
+3. Set `dbms.dozendb.cluster.initial_members` on each server left to the
+   servers left and any new servers that are to replace lost ones, and start
+   them all, the new ones with empty data directories.
+
+The servers re-form `system` once they reach each other: the server whose
+`system` holds the latest transaction, then the one with the lowest id, starts
+a new Raft group of `system` from its store, and the others copy `system` from
+it and join that group. The new group has an id of its own, kept in each
+server's membership record (`FORMATS.md`), so that lost servers cannot take
+part in it. A server left that was not unbound, servers whose `system` comes
+from another cluster, and servers without any refuse to re-form, with a
+message. Users, roles, privileges, servers and databases come with `system`;
+what the lost servers had committed to it that no server left holds is lost.
+
+`SHOW SERVERS` then lists the lost servers as `Unavailable`, still hosting
+what they hosted, and `CALL dbms.cluster.statusCheck([])` shows which
+databases replicate.
+
+### Lost servers
+
+Cordon each lost server, so that nothing new is placed on it:
+`CALL dbms.cluster.cordonServer('<id>')`. Recreate the databases that lost
+their majority (see [Recreating a database](#recreating-a-database)), then
+deallocate the lost servers, so that the databases that kept their majority
+get their copies back on other servers (`DEALLOCATE DATABASES FROM SERVER
+'<id>'`), and drop them once `SHOW SERVERS` shows them `Deallocated`:
+`DROP SERVER '<id>'`.
+
+A lost server that comes back with its old state is refused once it reaches a
+server of the recovered cluster, with a message: its Raft group of `system` is
+stale. To bring it back as the same server, with its databases, before it is
+dropped: run `neo4j-admin dbms unbind-system-db` on it, set its
+`dbms.dozendb.cluster.initial_members` to servers of the cluster, start it,
+and add it with `CALL dozendb.cluster.addMember('<its Raft address>')` on the
+leader of `system`. To bring it back as a new server, unbind it with
+`neo4j-admin server unbind` instead (see [Unbinding a server](#unbinding-a-server)).
+
+### Recreating a database
+
+```
+CALL dbms.cluster.recreateDatabase('<database>', {
+  seedingServers: ['<id>', ...], seedURI: '<uri>', primaries: <n>, secondaries: <n>
+})
+```
+
+recreates a database, as one that lost a majority of its primaries, from a
+seed, keeping its name, aliases, access, options, store format, whether it is
+the default database, and every privilege on it. It runs on the leader of
+`system`, needs the privileges `CREATE DATABASE` and `DROP DATABASE`, and
+takes Neo4j Enterprise's options:
+
+- `seedingServers`: the servers whose stores the database is recreated from,
+  by id; the latest of their stores seeds it. An empty list takes every
+  enabled server that hosts a copy, primaries first, and is refused while a
+  server that hosts a copy does not answer and is not cordoned. Each seeder
+  hosts a copy of the recreated database, so there may be no more seeders than
+  copies.
+- `seedURI`: a backup or a dump to recreate the database from, read as
+  `CREATE DATABASE` reads one (see
+  [Creating a database from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
+  With `seedingServers`, which must then be empty, it seeds the database only
+  when none of the seeders holds a store.
+- `primaries` and `secondaries`: the new topology; `secondaries` needs
+  `primaries`, and `primaries` alone means no secondaries. Without them the
+  topology stays.
+
+It is refused without a seed, for `system` (see
+[Recovering the system database](#recovering-the-system-database)), for an
+alias, and when a seeder's copy is in quarantine. The database may be online
+or offline; it is started.
+
+The recreated database has a new id: Neo4j sees one database dropped and one
+created under the same name, so element ids change, and bookmarks of the old
+database are not waited for. Every server stops its old copy and removes its
+Raft group, which needs no leader, and the database is placed anew, its
+seeders first.
+
+From seeders, each seeder keeps its old store as a seed and reports it. Once
+all of them reported, the leader of `system` names the creator: the seeder
+whose last transaction has the latest append index, then the one with the
+lowest id. The seeds must have the same store id, and each other seeder's
+last transaction the same checksum as the creator's transaction at its append
+index; one the creator's transaction logs no longer hold cannot be checked.
+The creator starts the database from its store. The other seeders start
+theirs as secondaries, pull the transactions they lack from it and then join
+the database's group, or are copied if their history differs; the other
+servers copy the database.
+
+`SHOW DATABASES` shows, as the `statusMessage` of the copies that do not run,
+what the recreation waits for, such as `Waiting for seeder <id> to report its
+store.` while a seeder is down, and why it failed, with Neo4j Enterprise's
+messages:
+
+- `Seeders <id> and <id> have different checksums for transaction <id>. All
+  seeders must have the same checksum for the same append index.`
+- `Seeders <id> and <id> have incompatible storeIds. All seeders must have
+  compatible storeIds.`
+- `No store found on any of the seeders <id>, ...`
+
+A recreation that failed stays as it is: recreate the database again, from
+other seeders or from a seed URI, or drop it.
+
+### Quarantine
+
+```
+CALL dbms.quarantineDatabase('<database>', true, '<reason>')
+CALL dbms.quarantineDatabase('<database>', false)
+```
+
+puts the copy of a database on the server it runs on in quarantine, or lifts
+the quarantine, as in Neo4j Enterprise, and returns `databaseName`,
+`quarantined` and `result`. It needs an administrator and acts on the server
+it runs on only: connect to that server with `bolt://`. A copy in quarantine
+is stopped on that server and stays stopped: neither `START DATABASE` nor a
+restart starts it until the quarantine is lifted, while the other servers
+follow commands as usual. A primary in quarantine hands its leadership over
+and keeps taking part in the database's Raft group. `SHOW DATABASES` shows the
+copy `quarantined`, with the role `unknown` and the message
+`By <user> at <time>: <reason>` (`No reason given` without one), and routing
+leaves it out. Lifting the quarantine brings the copy to the state the system
+graph asks of it: it starts and catches up with the others.
+
+A copy that fails while running, as after a panic on a full disk, is put in
+quarantine by the server (`By the server at ...`), with the failure and the
+call that lifts it. Quarantines are kept across restarts in `data/quarantine`,
+a line per copy; deleting a line of the stopped server lifts that quarantine.
+The quarantine of `system` lasts until the server restarts, as in Enterprise.
+
 ## Roles and privileges
 
 Roles and privileges work as Neo4j Enterprise's operations manual describes,
@@ -1431,6 +1592,23 @@ row:
 
 `serverName` is the server's name, or its id if it has none, and `address` its
 Bolt address. Each other member asked may take the timeout again to answer.
+
+### Connections between members
+
+```cypher
+CALL dbms.cluster.protocols()
+```
+
+lists, as in Neo4j Enterprise, a row for each connection between the server it
+runs on and another member that is open now, and for each protocol the
+connection carried: `orientation` (`inbound` or `outbound`), `remoteAddress`,
+`applicationProtocol`, `applicationProtocolVersion`, and `modifierProtocols`,
+`TLS` for an encrypted connection and empty otherwise. The protocols are
+DozenDB's own (`FORMATS.md`): `raft` for Raft's messages, at the version of
+the replicated transactions; `probe`; and `bulk`, with a row for each bulk
+transfer the connection carried, such as `dozendb.storeCopy`. A leader lists
+its outbound Raft connections to the members it replicates to that answered
+lately. It needs no administrator.
 
 ### Query log
 
