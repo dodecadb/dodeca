@@ -87,6 +87,15 @@ class DozenDbSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "Whether the server's process ends, with status 1, once a database panics, so that a " +
+                "process manager starts it again; otherwise only the database fails. Named like " +
+                "Neo4j Enterprise's setting."
+        )
+        val shutdownOnPanic: Setting<Boolean> =
+            newBuilder("server.panic.shutdown_on_panic", BOOL, false).build()
+
+        @JvmField
+        @field:Description(
             "The tags of this server, as SHOW SERVERS shows them, used by " +
                 "db.cluster.raft.leader_transfer.priority_tag. They are taken when the server is " +
                 "enabled, at the cluster's first start or by ENABLE SERVER; after that, ALTER " +

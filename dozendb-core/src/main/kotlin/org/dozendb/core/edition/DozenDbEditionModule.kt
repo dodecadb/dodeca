@@ -168,6 +168,18 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalModule.globalLife.add(
             CommunityKernelPanicListener(globalModule.databaseEventListeners, repository)
         )
+        globalModule.databaseEventListeners.registerDatabaseEventListener(
+            ShutdownOnPanic(
+                globalModule.globalConfig,
+                globalModule.logService.getUserLog(ShutdownOnPanic::class.java),
+                AbstractEditionModule.tryResolveOrCreate(
+                    ServerExit::class.java,
+                    globalModule.externalDependencyResolver,
+                ) {
+                    ServerExit.PROCESS
+                },
+            )
+        )
         val manager =
             DatabaseManager(
                 repository,

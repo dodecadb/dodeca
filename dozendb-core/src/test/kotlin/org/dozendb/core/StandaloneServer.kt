@@ -31,6 +31,8 @@ class StandaloneServer(
     private val databaseEventListeners: List<DatabaseEventListener> = emptyList(),
     /** The file system the DBMS runs on, if not Neo4j's default one. */
     private val fileSystem: FileSystemAbstraction? = null,
+    /** Dependencies the DBMS takes instead of making its own. */
+    private val dependencies: List<Any> = emptyList(),
 ) : AutoCloseable {
     val home: Path = Files.createDirectories(root.resolve("server"))
 
@@ -47,11 +49,12 @@ class StandaloneServer(
                     false,
                     GraphDatabaseDependencies.newDependencies()
                         .databaseEventListeners(databaseEventListeners)
-                        .apply {
-                            fileSystem?.let {
-                                dependencies(Dependencies().apply { satisfyDependency(it) })
+                        .dependencies(
+                            Dependencies().apply {
+                                fileSystem?.let(::satisfyDependency)
+                                dependencies.forEach(::satisfyDependency)
                             }
-                        },
+                        ),
                 )
     }
 

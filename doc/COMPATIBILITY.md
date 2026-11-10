@@ -158,6 +158,10 @@ places the database on servers (see [Servers](#servers)), and
   database shows as `online` again once restarted, with `STOP DATABASE` and
   `START DATABASE` or by restarting the server. Neo4j Community shows a
   database that failed while running as `online`, although it serves nothing.
+- **`server.panic.shutdown_on_panic`** ends the server's process, with status
+  1, once a database panics, as in Enterprise, so that a process manager
+  starts it again. It is false by default; Enterprise's documentation makes it
+  true on Kubernetes, which DozenDB does not tell apart: set it there.
 
 ## Constraints
 
@@ -802,9 +806,6 @@ error, and their procedures do not exist.
   [Running a cluster](#running-a-cluster) how to rebuild a member.
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
   policies and `dbms.routing.load_balancing.shuffle_enabled`.
-- **Shutting the server down on a panic**
-  (`server.panic.shutdown_on_panic`): a database that panics fails on its
-  own, see [Databases](#databases).
 - **Store copy and incremental import**: `neo4j-admin database copy`,
   `neo4j-admin database import incremental`, and resuming a stopped import.
   `neo4j-admin` lacks them, as in Neo4j Community.

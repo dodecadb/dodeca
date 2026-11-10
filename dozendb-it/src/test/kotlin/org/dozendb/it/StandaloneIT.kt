@@ -29,6 +29,7 @@ import org.testcontainers.lifecycle.Startables
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class StandaloneIT {
+
     private val community =
         DozenDbContainer(DozenDbContainer.communityImage, "community").withHttp()
     private val dozenDb =
@@ -118,6 +119,43 @@ class StandaloneIT {
             )
         assertThat(dozenDb.rows("SHOW SERVERS YIELD tags", "system").single()["tags"])
             .isEqualTo(listOf("eu"))
+    }
+
+    @Test
+    fun `ends the server once a database panics, with server panic shutdown_on_panic`() {
+        DozenDbContainer(DozenDbContainer.dozenDbImage, "panicking")
+            .withEnv("NEO4J_server_panic_shutdown__on__panic", "true")
+            // Transaction logs on a small disk, which a large write fills: the append fails.
+            .withTmpFs(mapOf("/data/transactions" to "rw,size=8m,mode=1777"))
+            .withEnv("NEO4J_db_tx__log_preallocate", "false")
+            .withEnv("NEO4J_db_tx__log_rotation_size", "1M")
+            .use { server ->
+                server.start()
+
+                assertThat(
+                        server.run(
+                            "UNWIND range(1, 20000) AS i CREATE (:Big {text: i + '$PADDING'})"
+                        )
+                    )
+                    .isInstanceOf(Outcome.Failed::class.java)
+
+                val docker = DockerClientFactory.instance().client()
+                await atMost
+                    Duration.ofMinutes(2) untilAsserted
+                    {
+                        assertThat(
+                                docker.inspectContainerCmd(server.containerId).exec().state.running
+                            )
+                            .isFalse()
+                    }
+                assertThat(docker.inspectContainerCmd(server.containerId).exec().state.exitCodeLong)
+                    .isEqualTo(1L)
+                assertThat(server.logs)
+                    .contains(
+                        "Database neo4j panicked: shutting the server down, as " +
+                            "server.panic.shutdown_on_panic is true."
+                    )
+            }
     }
 
     @Test
@@ -240,6 +278,7 @@ class StandaloneIT {
                 "dbms.security.keystore.path",
                 "dbms.security.keystore.password",
                 "dbms.security.key.name",
+                "server.panic.shutdown_on_panic",
             )
     }
 
@@ -548,6 +587,9 @@ class StandaloneIT {
     }
 
     private companion object {
+        /** About a kilobyte of text, to fill a disk with few rows. */
+        val PADDING = "x".repeat(1000)
+
         /** Run last: they leave the servers' databases different. */
         const val ADDITIONS = Int.MAX_VALUE
     }
