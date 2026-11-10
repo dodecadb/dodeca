@@ -83,8 +83,9 @@ class Allocator(servers: Collection<Host>, databases: Collection<Placed>) {
     /**
      * Places the new database [name] on [primaries] servers and [secondaries] others, [first] among
      * the primaries if given, as a server named to seed it, then those of [prefer] that can host
-     * it, as servers that already hold its store. With [bestEffort], as many primaries as can be
-     * placed, at least one, then as many secondaries as can be.
+     * it, as servers that already hold its store. Each of [required] hosts a copy, a primary if it
+     * can, by the order of [prefer], as servers whose stores seed it. With [bestEffort], as many
+     * primaries as can be placed, at least one, then as many secondaries as can be.
      */
     fun place(
         name: String,
@@ -93,6 +94,7 @@ class Allocator(servers: Collection<Host>, databases: Collection<Placed>) {
         first: UUID? = null,
         prefer: List<UUID> = emptyList(),
         bestEffort: Boolean = false,
+        required: Set<UUID> = emptySet(),
     ): Map<UUID, CopyMode> {
         require(primaries >= 1) { "a database needs at least one primary" }
         require(secondaries >= 0) { "a negative number of secondaries" }
@@ -107,6 +109,22 @@ class Allocator(servers: Collection<Host>, databases: Collection<Placed>) {
                 )
             }
         }
+        for (id in required.sorted()) {
+            val server =
+                servers[id] ?: throw AllocationException("server $id is not an enabled server")
+            if (CopyMode.entries.none { canHost(server, name, it) }) {
+                throw AllocationException(
+                    "server ${server.record.name} cannot host '$name' " +
+                        "(${why(server, name, CopyMode.PRIMARY)})"
+                )
+            }
+        }
+        if (required.size > primaries + secondaries) {
+            throw AllocationException(
+                "${required.size} servers cannot all host '$name', which has " +
+                    "${primaries + secondaries} copies"
+            )
+        }
         val placed = Placed(name, primaries, secondaries)
         val copies =
             assign(
@@ -116,11 +134,51 @@ class Allocator(servers: Collection<Host>, databases: Collection<Placed>) {
                 first = first,
                 prefer = prefer,
                 bestEffort = bestEffort,
+                required = required,
                 short = { mode -> unsatisfiable(placed, mode, primaries, secondaries) },
             )
         databases[name] =
             Placed(name, count(copies, CopyMode.PRIMARY), count(copies, CopyMode.SECONDARY))
                 .copy(copies = copies)
+        return copies
+    }
+
+    /**
+     * Makes [server], which hosts a secondary of [database], host a primary of it instead: a
+     * primary turns secondary, so that every server keeps its copy and the numbers stay. Nothing
+     * changes if it hosts a primary already.
+     */
+    fun promote(database: String, server: UUID): Map<UUID, CopyMode> {
+        val placed = placed(database)
+        val mode =
+            placed.copies[server]
+                ?: throw AllocationException("server $server does not host '$database'")
+        if (mode == CopyMode.PRIMARY) return placed.copies
+        val host = servers[server] ?: throw AllocationException("server $server is not enabled")
+        if (!canHost(host, database, CopyMode.PRIMARY)) {
+            throw AllocationException(
+                "server ${host.record.name} cannot host a primary of '$database' " +
+                    "(${why(host, database, CopyMode.PRIMARY)})"
+            )
+        }
+        val primaries = placed.copies.values.count { it == CopyMode.PRIMARY }
+        val secondaries = placed.copies.size - primaries
+        val copies =
+            assign(
+                placed,
+                primaries,
+                secondaries,
+                first = server,
+                required = placed.copies.keys,
+                banned = servers.keys - placed.copies.keys,
+                short = {
+                    AllocationException(
+                        "no primary of '$database' can turn secondary for server " +
+                            "${host.record.name} to host a primary"
+                    )
+                },
+            )
+        databases[database] = placed.copy(copies = copies)
         return copies
     }
 
@@ -281,10 +339,10 @@ class Allocator(servers: Collection<Host>, databases: Collection<Placed>) {
      * stays costs nothing, one that changes mode on its server little, a new one, which needs the
      * database copied there, most; [first] must be a primary, and [prefer] costs less than a new
      * copy. Within a cost, copies stay on servers by [keptCopies] and come to servers by
-     * [newCopies], primaries before secondaries. Copies that [drop] lets go do not stay, and the
-     * servers [banned] take none. [short] is thrown, with the mode that does not fit, if no
-     * placement exists; with [bestEffort], the most primaries that fit, at least one, then the most
-     * secondaries.
+     * [newCopies], primaries before secondaries. Copies that [drop] lets go do not stay, the
+     * servers [banned] take none, and each of [required] takes one. [short] is thrown, with the
+     * mode that does not fit, if no placement exists; with [bestEffort], the most primaries that
+     * fit, at least one, then the most secondaries.
      *
      * A server at a time decides, over every number of copies of each mode placed so far, so that
      * the least costly placement is found exactly (a dynamic programme over the servers by id).
@@ -298,6 +356,7 @@ class Allocator(servers: Collection<Host>, databases: Collection<Placed>) {
         first: UUID? = null,
         prefer: List<UUID> = emptyList(),
         bestEffort: Boolean = false,
+        required: Set<UUID> = emptySet(),
         short: (CopyMode) -> AllocationException,
     ): Map<UUID, CopyMode> {
         val name = placed.name
@@ -369,7 +428,7 @@ class Allocator(servers: Collection<Host>, databases: Collection<Placed>) {
                             chose[i + 1][a2][b2] = mode
                         }
                     }
-                    if (id != first) reach(a, b, 0, null)
+                    if (id != first && id !in required) reach(a, b, 0, null)
                     if (primary != null && a < primaries) reach(a + 1, b, primary, CopyMode.PRIMARY)
                     if (secondary != null && b < secondaries) {
                         reach(a, b + 1, secondary, CopyMode.SECONDARY)

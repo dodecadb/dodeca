@@ -101,6 +101,78 @@ class AllocatorTest {
     }
 
     @Test
+    fun `required servers each host a copy, primaries first by preference`() {
+        // Server 0 hosts the fewest, so it would take a copy first.
+        val allocator = Allocator(hosts(5), listOf(Placed("films", 1, copies = primaries(4))))
+        val seeders = listOf(ids[4], ids[3], ids[2])
+
+        val copies = allocator.place("books", 2, 1, prefer = seeders, required = seeders.toSet())
+
+        assertThat(copies).isEqualTo(primaries(4, 3) + secondaries(2))
+        val secondaryOnly = constrained(3, InstanceModeConstraint.SECONDARY)
+        assertThat(
+                Allocator(hosts(3) + secondaryOnly, emptyList())
+                    .place("music", 1, 1, prefer = listOf(ids[3]), required = on(3))
+            )
+            .isEqualTo(primaries(0) + secondaries(3))
+        assertThat(catchThrowable { allocator.place("music", 1, 1, required = on(0, 1, 2)) })
+            .isInstanceOf(AllocationException::class.java)
+            .hasMessage("3 servers cannot all host 'music', which has 2 copies")
+        val cordoned = host(1, status = InstanceStatus.CORDONED)
+        assertThat(
+                catchThrowable {
+                    Allocator(listOf(host(0), cordoned), emptyList())
+                        .place("music", 2, required = on(1))
+                }
+            )
+            .hasMessage("server server-1 cannot host 'music' (it is cordoned)")
+        assertThat(allocator.copies("music")).describedAs("failed, unchanged").isEmpty()
+    }
+
+    @Test
+    fun `promoting a secondary turns a primary secondary, every copy staying`() {
+        val allocator =
+            Allocator(
+                hosts(5),
+                listOf(Placed("films", 2, 2, copies = primaries(0, 1) + secondaries(2, 3))),
+            )
+
+        val copies = allocator.promote("films", ids[3])
+
+        assertThat(copies.keys).containsExactlyInAnyOrder(ids[0], ids[1], ids[2], ids[3])
+        assertThat(copies[ids[3]]).isEqualTo(PRIMARY)
+        assertThat(copies[ids[2]]).isEqualTo(SECONDARY)
+        assertThat(copies.values.count { it == PRIMARY }).isEqualTo(2)
+        assertThat(allocator.copies("films")).isEqualTo(copies)
+        assertThat(allocator.promote("films", ids[3]))
+            .describedAs("a primary already")
+            .isEqualTo(copies)
+    }
+
+    @Test
+    fun `promoting is refused where the server or the primaries cannot change mode`() {
+        val secondaryOnly = constrained(1, InstanceModeConstraint.SECONDARY)
+        val placed = listOf(Placed("films", 1, 1, copies = primaries(0) + secondaries(1)))
+
+        assertThat(
+                catchThrowable {
+                    Allocator(listOf(host(0), secondaryOnly), placed).promote("films", ids[1])
+                }
+            )
+            .isInstanceOf(AllocationException::class.java)
+            .hasMessageStartingWith("server server-1 cannot host a primary of 'films'")
+        val primaryOnly = constrained(0, InstanceModeConstraint.PRIMARY)
+        val allocator = Allocator(listOf(primaryOnly, host(1)), placed)
+        assertThat(catchThrowable { allocator.promote("films", ids[1]) })
+            .hasMessage(
+                "no primary of 'films' can turn secondary for server server-1 to host a primary"
+            )
+        assertThat(allocator.copies("films")).describedAs("unchanged").isEqualTo(placed[0].copies)
+        assertThat(catchThrowable { allocator.promote("films", ids[2]) })
+            .hasMessageContaining("does not host 'films'")
+    }
+
+    @Test
     fun `more copies go where new ones go, fewer leave cordoned servers first`() {
         val servers =
             listOf(host(0), host(1, InstanceStatus.CORDONED), host(2), host(3, available = false))
