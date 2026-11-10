@@ -49,6 +49,13 @@ internal class Neo4jSystemGraph(
             return null
         }
         val status = node.getProperty(TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY, null)
+        val seeders =
+            (node.getProperty(TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY, null)
+                    as? Array<*>)
+                ?.mapNotNull {
+                    (it as? String)?.let { id -> runCatching { MemberId.parse(id) }.getOrNull() }
+                }
+                .orEmpty()
         return DesiredDatabase(
             DatabaseIdFactory.from(name, UUID.fromString(uuid)),
             online = status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
@@ -56,11 +63,8 @@ internal class Neo4jSystemGraph(
             seedUri =
                 node.getProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, null)
                     as? String,
-            designatedSeeder =
-                (node.getProperty(TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY, null)
-                        as? Array<*>)
-                    ?.firstOrNull()
-                    ?.let { MemberId.parse(it as String) },
+            designatedSeeder = seeders.firstOrNull(),
+            seeders = seeders.toSet(),
             hosts = Placements.hosts(node, CopyMode.PRIMARY).mapTo(HashSet(), ::MemberId),
             secondaries = Placements.hosts(node, CopyMode.SECONDARY).mapTo(HashSet(), ::MemberId),
             created = created(node),

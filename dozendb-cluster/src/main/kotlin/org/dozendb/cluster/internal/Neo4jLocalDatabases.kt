@@ -30,6 +30,8 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * @property entryTerm the term of a database's log entry, as the leader of its group tells it.
  * @property seed tells a database's group that this member holds its state up to a snapshot.
  * @property quarantines the copies of databases in quarantine on this member.
+ * @property detachOnStart has the store of a database detach from the Raft group it was replicated
+ *   in as the database starts next.
  */
 internal class Neo4jLocalDatabases(
     private val manager: DatabaseManager,
@@ -43,6 +45,7 @@ internal class Neo4jLocalDatabases(
     private val seed: (DatabaseRef, Snapshot) -> Unit,
     private val quarantines: Quarantines,
     private val groups: DatabaseGroups = DatabaseGroups(),
+    private val detachOnStart: (String) -> Unit = {},
 ) : LocalDatabases {
     override fun registered(): Map<NamedDatabaseId, LocalDatabase> =
         repository.registeredDatabases().mapValues { (id, context) ->
@@ -84,14 +87,23 @@ internal class Neo4jLocalDatabases(
 
     override fun start(id: NamedDatabaseId, seed: StoreSeed?) {
         replication.replica(id)?.handOverOnStop = true
+        // Recorded first: a store the old group's Raft indexes are in may start only detached.
+        if (seed == StoreSeed.Kept) detachOnStart(id.name())
         manager.startDatabase(
             id,
             when (seed) {
-                null -> null
+                null,
+                StoreSeed.Kept -> null
                 is StoreSeed.Uri -> DatabaseManager.Seed.Uri(seed.uri, seeder)
                 StoreSeed.Restored -> DatabaseManager.Seed.Restored
             },
         )
+        if (
+            seed == StoreSeed.Kept &&
+                repository.getDatabaseContext(id).map { it.database().isStarted }.orElse(false)
+        ) {
+            stores.unmarkSeed(id.name())
+        }
     }
 
     override fun stop(id: NamedDatabaseId) {
@@ -110,6 +122,21 @@ internal class Neo4jLocalDatabases(
         replication.remove(id)
         secondaries.remove(id)
     }
+
+    override fun seeds(): Map<String, UUID> = stores.seeds()
+
+    override fun keepAsSeed(id: NamedDatabaseId, recreated: UUID) {
+        replication.replica(id)?.handOverOnStop = false
+        // Marked before its group goes: a store with neither counts as a leftover.
+        stores.markSeed(id.name(), recreated)
+        manager.releaseDatabase(id)
+        replication.remove(id)
+        secondaries.remove(id)
+    }
+
+    override fun markSeed(name: String, recreated: UUID) = stores.markSeed(name, recreated)
+
+    override fun unmarkSeed(name: String) = stores.unmarkSeed(name)
 
     override fun deleteStore(name: String) = stores.delete(name)
 

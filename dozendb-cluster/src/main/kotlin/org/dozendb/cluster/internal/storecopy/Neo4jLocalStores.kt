@@ -176,6 +176,15 @@ internal class Neo4jLocalStores(
     /** Whether the store of [name] is complete: present and not left half-moved. */
     fun complete(name: String): Boolean = !incomplete(name) && storageExists(name)
 
+    /** The databases whose stores here are marked seeds, with the ids they seed. */
+    fun seeds(): Map<String, UUID> = placement.seeds()
+
+    /** Marks the store of [name] the seed of the database [recreated] (see [StorePlacement]). */
+    fun markSeed(name: String, recreated: UUID) = placement.markSeed(name, recreated)
+
+    /** Takes the seed mark off the store of [name]. */
+    fun unmarkSeed(name: String) = placement.unmarkSeed(name)
+
     /** Deletes the files of the database [name], which must not be running. */
     fun delete(name: String) {
         require(name !in databaseNames) { "database $name is needed to form a cluster" }

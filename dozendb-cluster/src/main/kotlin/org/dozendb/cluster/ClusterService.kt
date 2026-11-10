@@ -152,6 +152,14 @@ class ClusterService(
     fun mustDetach(database: String): Boolean = database in record?.storesToDetach.orEmpty()
 
     /**
+     * Records that the store of [database] refers to a Raft group it came from, which it detaches
+     * from as it starts next, as a database recreated from it does.
+     */
+    fun detachOnStart(database: String) {
+        remember { it.copy(storesToDetach = it.storesToDetach + database) }
+    }
+
+    /**
      * Records that the store of [database] no longer refers to a Raft group it came from; for
      * `system` re-formed here, that re-forming it is done.
      */

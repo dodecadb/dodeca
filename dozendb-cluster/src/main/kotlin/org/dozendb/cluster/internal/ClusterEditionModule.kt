@@ -1088,6 +1088,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     consensus::seed,
                     quarantines,
                     groups,
+                    detachOnStart = { cluster.detachOnStart(it) },
                 ),
                 memberId,
                 defaultDatabase,

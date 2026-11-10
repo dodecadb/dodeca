@@ -50,23 +50,32 @@ internal constructor(
     fun recreate(name: String, options: Map<String, Any?>): UUID {
         val failed = "Could not recreate database '$name'"
         val asked = RecreateOptions.parse(options, failed)
-        if (asked.seedingServers != null) {
+        if (asked.seedingServers != null && asked.seedingServers.size != 1) {
             throw InvalidArgumentException(
-                "$failed: recreating a database from the stores of its servers is not supported " +
-                    "yet. Give ${RecreateOptions.SEED_URI} alone, a backup or dump to recreate it " +
-                    "from."
+                "$failed: recreating a database from the stores of several of its servers, or of " +
+                    "every one, is not supported yet. Name one server in " +
+                    "${RecreateOptions.SEEDING_SERVERS}, or give ${RecreateOptions.SEED_URI} alone."
             )
         }
-        val uri = checkNotNull(asked.seedUri)
-        val seeder =
-            seeder()
-                ?: throw InvalidArgumentException(
-                    "$failed: this server cannot recreate databases from seeds."
-                )
-        try {
-            seeder.check(uri)
-        } catch (e: IllegalArgumentException) {
-            throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
+        val seedingServer =
+            asked.seedingServers?.single()?.let {
+                runCatching { UUID.fromString(it) }.getOrNull()
+                    ?: throw InvalidArgumentException(
+                        "$failed: '$it' in ${RecreateOptions.SEEDING_SERVERS} is not a server id."
+                    )
+            }
+        val uri = asked.seedUri
+        if (uri != null) {
+            val seeder =
+                seeder()
+                    ?: throw InvalidArgumentException(
+                        "$failed: this server cannot recreate databases from seeds."
+                    )
+            try {
+                seeder.check(uri)
+            } catch (e: IllegalArgumentException) {
+                throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
+            }
         }
         check(leading()) {
             "$failed: this member does not lead the system database; run it on the one that does."
@@ -86,8 +95,19 @@ internal constructor(
                     ZonedDateTime.now(),
                 )
                 Neo4jSystemGraph.forgetCreation(node)
-                node.setProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, uri)
-                node.removeProperty(TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY)
+                if (uri != null) {
+                    node.setProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, uri)
+                } else {
+                    node.removeProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY)
+                }
+                if (seedingServer != null) {
+                    node.setProperty(
+                        TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY,
+                        arrayOf("$seedingServer"),
+                    )
+                } else {
+                    node.removeProperty(TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY)
+                }
                 node.setProperty(
                     TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY,
                     TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
@@ -97,7 +117,7 @@ internal constructor(
                 val secondaries =
                     asked.secondaries ?: Placements.secondaries(node) ?: current.secondaries
                 try {
-                    placement.replace(tx, normalized, primaries, secondaries)
+                    placement.replace(tx, normalized, primaries, secondaries, seedingServer)
                 } catch (e: AllocationException) {
                     throw InvalidArgumentException("$failed: ${e.message}.", e)
                 }

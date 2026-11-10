@@ -141,6 +141,52 @@ class RecreateDatabaseTest {
     }
 
     @Test
+    fun `a database that lost a majority of its primaries is recreated from the store of the one left`() {
+        val cluster =
+            ClusterHarness(root, 5, settings = mapOf(ClusterSettings.defaultPrimaries to 3)).also {
+                harness = it
+            }
+        cluster.members.drop(3).forEach {
+            it.settings = mapOf(DozenDbSettings.initialServerDeniedDatabases to listOf(FILMS))
+        }
+        cluster.start()
+        val hosts = cluster.members.take(3)
+        cluster.write(FILMS, 3, hosts)
+        cluster.awaitFilms(hosts, 3)
+        val survivor = hosts[2]
+        val lostIds = hosts.take(2).map { it.serverId }
+        hosts.take(2).forEach { it.stop() }
+        val left = cluster.members.drop(2)
+        for (id in lostIds) {
+            cluster.administer("CALL dbms.cluster.cordonServer('$id')", among = left)
+        }
+        cluster.members.drop(3).forEach {
+            cluster.administer(
+                "ALTER SERVER '${it.serverId}' SET OPTIONS {deniedDatabases: []}",
+                among = left,
+            )
+        }
+        val old = survivor.databaseId(FILMS)
+
+        cluster.administer(
+            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: ['${survivor.serverId}']})",
+            among = left,
+        )
+
+        // Its store, as it was, on every server left, under a new id.
+        cluster.awaitFilms(left, 3)
+        assertThat(left.map { it.databaseId(FILMS) }).doesNotContain(old)
+        cluster.write(FILMS, 2, left)
+        cluster.awaitFilms(left, 5)
+        left.forEach { it.stop() }
+        for (member in left) {
+            assertThat(member.checkConsistency(FILMS).isSuccessful)
+                .describedAs("$member consistent")
+                .isTrue
+        }
+    }
+
+    @Test
     fun `recreating refuses unknown databases and options, and other options than Enterprise's`() {
         val cluster = ClusterHarness(root, 1).also { harness = it }
         cluster.start()
@@ -164,6 +210,9 @@ class RecreateDatabaseTest {
         assertThat(refusal(FILMS, "{seedURI: '$seed', secondaries: 1}")).contains("needs primaries")
         assertThat(refusal(FILMS, "{seedURI: '$seed', primaries: 12}")).contains("not 1 to 11")
         assertThat(refusal(FILMS, "{seedingServers: []}")).contains("not supported yet")
+        assertThat(refusal(FILMS, "{seedingServers: ['abc']}")).contains("is not a server id")
+        assertThat(refusal(FILMS, "{seedingServers: ['${UUID.randomUUID()}']}"))
+            .contains("is not an enabled server")
         assertThat(refusal("system", "{seedURI: '$seed'}")).contains("unbind-system-db")
         assertThat(refusal("movies", "{seedURI: '$seed'}")).contains("it is an alias")
         assertThat(refusal("series", "{seedURI: '$seed'}")).contains("it does not exist")
@@ -176,7 +225,7 @@ class RecreateDatabaseTest {
         count: Int,
         among: List<ClusterHarness.Member> = members,
     ) {
-        administer("CREATE DATABASE $database IF NOT EXISTS WAIT", among = among)
+        administer("CREATE DATABASE $database IF NOT EXISTS WAIT")
         awaitLeader(database) { among }
             .database(database)
             .executeTransactionally("UNWIND range(1, $count) AS i CREATE (:Film {i: i})")

@@ -1,7 +1,9 @@
 package org.dozendb.core.store
 
+import java.nio.ByteBuffer
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.UUID
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -78,13 +80,65 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
     /** Whether the files of database [name] were left half-moved. */
     fun incomplete(name: String): Boolean = fs.fileExists(marker(name))
 
-    /** Deletes the files of database [name], which must not be running, and its marker. */
+    /**
+     * Deletes the files of database [name], which must not be running, its marker, and its seed
+     * mark.
+     */
     fun delete(name: String) {
         val target = layout.databaseLayout(name)
         fs.deleteRecursively(target.databaseDirectory())
         fs.deleteRecursively(target.transactionLogsDirectory)
         fs.deleteFile(marker(name))
+        unmarkSeed(name)
     }
+
+    /**
+     * Marks the store of database [name] in place the seed of the database with the id [id], which
+     * `dbms.cluster.recreateDatabase` recreated from it: it is kept, not deleted, when its own
+     * database goes. Written to a file of its own, then moved over the mark, so that a mark is
+     * whole or absent.
+     */
+    fun markSeed(name: String, id: UUID) {
+        val mark = seedMark(name)
+        val written = mark.resolveSibling("${mark.fileName}.tmp")
+        fs.mkdirs(mark.parent)
+        fs.write(written).use { it.write(ByteBuffer.wrap("$id\n".toByteArray())) }
+        fs.renameFile(
+            written,
+            mark,
+            StandardCopyOption.ATOMIC_MOVE,
+            StandardCopyOption.REPLACE_EXISTING,
+        )
+    }
+
+    /** The id of the database whose seed the store of database [name] is, if it is marked one. */
+    fun seedOf(name: String): UUID? {
+        val mark = seedMark(name)
+        if (!fs.fileExists(mark)) return null
+        val text =
+            fs.openAsInputStream(mark).use { String(it.readAllBytes(), Charsets.UTF_8) }.trim()
+        return runCatching { UUID.fromString(text) }.getOrNull()
+    }
+
+    /** The names of the databases whose stores are marked seeds, with the ids they seed. */
+    fun seeds(): Map<String, UUID> {
+        val directory = layout.databasesDirectory()
+        if (!fs.isDirectory(directory)) return emptyMap()
+        return fs.listFiles(directory)
+            .mapNotNull { it.fileName.toString().takeIf { name -> name.startsWith(SEED_PREFIX) } }
+            .map { it.removePrefix(SEED_PREFIX) }
+            .filterNot { it.endsWith(".tmp") }
+            .mapNotNull { name -> seedOf(name)?.let { name to it } }
+            .toMap()
+    }
+
+    /** Takes the seed mark off the store of database [name], if it has one. */
+    fun unmarkSeed(name: String) {
+        fs.deleteFile(seedMark(name))
+    }
+
+    private fun seedMark(name: String): Path =
+        layout.databasesDirectory().resolve(SEED_PREFIX + name)
 
     /** The name of the marker of database [name], if [fileName] is one. */
     fun markedDatabase(fileName: String): String? =
@@ -115,5 +169,6 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
         const val RESTORED = "seed"
 
         private const val MARKER_PREFIX = ".dozendb-incomplete-"
+        private const val SEED_PREFIX = ".dozendb-seedmark-"
     }
 }

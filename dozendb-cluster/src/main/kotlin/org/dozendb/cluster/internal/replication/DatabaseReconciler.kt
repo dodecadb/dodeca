@@ -24,6 +24,11 @@ internal data class DesiredDatabase(
     val seedUri: String? = null,
     /** The member to name its creator, which may hold its restored store; null for any. */
     val designatedSeeder: MemberId? = null,
+    /**
+     * The members whose stores a database recreated by `dbms.cluster.recreateDatabase` is recreated
+     * from, `seeding_servers`; [designatedSeeder] is the first.
+     */
+    val seeders: Set<MemberId> = setOfNotNull(designatedSeeder),
     /** The servers that host its primaries; none while it is not placed yet. */
     val hosts: Set<MemberId> = emptySet(),
     /** The servers that host its secondaries. */
@@ -43,6 +48,12 @@ internal sealed interface StoreSeed {
 
     /** The store `neo4j-admin database restore` prepared on this member. */
     data object Restored : StoreSeed
+
+    /**
+     * The store of the database it was recreated from, kept in place on this member as its seed,
+     * which detaches from that database's Raft group as it starts.
+     */
+    data object Kept : StoreSeed
 }
 
 /** The replicated system graph, as far as databases are concerned. */
@@ -144,6 +155,24 @@ internal interface LocalDatabases {
 
     /** Stops [id] and deletes its store and its Raft group. */
     fun drop(id: NamedDatabaseId)
+
+    /**
+     * The databases whose stores here are kept as the seeds of databases that
+     * `dbms.cluster.recreateDatabase` recreated from them, by name, with the ids they seed.
+     */
+    fun seeds(): Map<String, UUID>
+
+    /**
+     * Keeps the store of [id], whose database is gone, as the seed of [recreated], recreated from
+     * it: stops and unregisters [id], deletes its Raft group, keeps its files, marked a seed.
+     */
+    fun keepAsSeed(id: NamedDatabaseId, recreated: UUID)
+
+    /** Marks the store of [name], which no database registered here has, a seed of [recreated]. */
+    fun markSeed(name: String, recreated: UUID)
+
+    /** Takes the seed mark off the store of [name], which its database runs from now. */
+    fun unmarkSeed(name: String)
 
     /** Deletes the files of the database [name], which is not registered. */
     fun deleteStore(name: String)
@@ -349,6 +378,15 @@ internal class DatabaseReconciler(
     private sealed interface Deletion {
         data class Database(val id: NamedDatabaseId) : Deletion
 
+        /** The database [id] goes, its store kept as the seed of [recreated]. */
+        data class Seed(val id: NamedDatabaseId, val recreated: UUID) : Deletion
+
+        /** The store of [name], which no database here has, becomes the seed of [recreated]. */
+        data class MarkSeed(val name: String, val recreated: UUID) : Deletion
+
+        /** The seed mark of [name] goes: its database runs from the store. */
+        data class Unmark(val name: String) : Deletion
+
         data class Store(val name: String) : Deletion
 
         data class Group(val id: UUID) : Deletion
@@ -368,22 +406,46 @@ internal class DatabaseReconciler(
                 database?.id != it &&
                 (it.name() != defaultDatabase || database?.recreatedFrom == it.uuid)
         }
-        // The files of system and the default database are kept, to form a cluster from; see
-        // create for those of the default database that need replacing.
-        val stores =
-            databases.stored().filter { name ->
-                val database = wanted[name]
-                name != SYSTEM.name() &&
-                    name != defaultDatabase &&
-                    registered.none { it.name() == name } &&
-                    (database == null || (database.online && !trusted(database.id)))
+        val seeds = databases.seeds()
+        // A seed is kept while it seeds the database of its name, and a store that no database
+        // here has becomes one if it may.
+        val (seeding, leftovers) =
+            databases
+                .stored()
+                .filter { name ->
+                    val database = wanted[name]
+                    name != SYSTEM.name() &&
+                        registered.none { it.name() == name } &&
+                        (database == null || (database.online && !trusted(database.id))) &&
+                        (name != defaultDatabase || database?.recreatedFrom != null)
+                }
+                .filterNot { name ->
+                    wanted[name]?.let { seeds[name] == it.id.uuid && seeds(it) } == true
+                }
+                .partition { name ->
+                    val database = wanted[name]
+                    database != null &&
+                        seeds(database) &&
+                        databases.complete(name) &&
+                        name !in seeds
+                }
+        val unmarked =
+            seeds.keys.filter { name ->
+                registered.any { it.name() == name && trusted(it) } &&
+                    wanted[name]?.id?.uuid == seeds[name]
             }
         val known = desired.map { it.id.uuid }.toSet() + registered.map { it.uuid }
         val groups = databases.groups() - SYSTEM.uuid - known
         val marks = databases.secondaries() - known
         val quarantines = databases.quarantined() - SYSTEM.uuid - known
-        return dropped.map { Deletion.Database(it) } +
-            stores.map { Deletion.Store(it) } +
+        return dropped.map { id ->
+            val recreated = wanted[id.name()]?.takeIf { it.recreatedFrom == id.uuid && seeds(it) }
+            if (recreated != null) Deletion.Seed(id, recreated.id.uuid) else Deletion.Database(id)
+        } +
+            seeding.map { Deletion.MarkSeed(it, checkNotNull(wanted[it]).id.uuid) } +
+            unmarked.map { Deletion.Unmark(it) } +
+            // The default database's files are replaced by a copy instead (see create).
+            leftovers.filter { it != defaultDatabase }.map { Deletion.Store(it) } +
             groups.map { Deletion.Group(it) } +
             marks.map { Deletion.Mark(it) } +
             quarantines.map { Deletion.Quarantine(it) }
@@ -398,6 +460,24 @@ internal class DatabaseReconciler(
                 log.info("Dropping database %s, which the system graph lacks", deletion.id)
                 databases.drop(deletion.id)
             }
+            is Deletion.Seed -> {
+                if (databases.catchingUp(deletion.id)) return false
+                log.info(
+                    "Keeping the store of database %s as the seed of %s, recreated from it",
+                    deletion.id,
+                    deletion.recreated,
+                )
+                databases.keepAsSeed(deletion.id, deletion.recreated)
+            }
+            is Deletion.MarkSeed -> {
+                log.info(
+                    "Keeping the files of database %s as the seed of %s, recreated from it",
+                    deletion.name,
+                    deletion.recreated,
+                )
+                databases.markSeed(deletion.name, deletion.recreated)
+            }
+            is Deletion.Unmark -> databases.unmarkSeed(deletion.name)
             is Deletion.Store -> {
                 log.info("Deleting the leftover files of database %s", deletion.name)
                 databases.deleteStore(deletion.name)
@@ -593,7 +673,14 @@ internal class DatabaseReconciler(
             // A leftover, deleted once the system graph is confirmed current. The default
             // database's files are kept instead, and replaced by a copy, as when this member
             // stopped while it started a copy, before its group ran here.
-            if (id.name() in databases.stored() && id.name() != defaultDatabase) return false
+            // A kept seed stays, for its creator to create the database from, once named.
+            if (
+                id.name() in databases.stored() &&
+                    id.name() != defaultDatabase &&
+                    !(seeded(database) && (database.creator == null || database.creator == self))
+            ) {
+                return false
+            }
             if (!provideStore(database, mode)) return false
         }
         log.info("Creating %s %s", if (mode == CopyMode.PRIMARY) "database" else "secondary", id)
@@ -604,10 +691,23 @@ internal class DatabaseReconciler(
         return true
     }
 
+    /**
+     * Whether this member keeps its store of the database [database] was recreated from as its
+     * seed: as one of its seeders, until its store was created, by its creator from its own seed.
+     * The others are kept as long, should the recreation be tried again.
+     */
+    private fun seeds(database: DesiredDatabase): Boolean =
+        database.recreatedFrom != null && self in database.seeders && !database.created
+
+    /** Whether this member holds a kept seed of [database]. */
+    private fun seeded(database: DesiredDatabase): Boolean =
+        databases.seeds()[database.id.name()] == database.id.uuid
+
     /** What this member creates the store of [database] from: only as its creator. */
     private fun seed(database: DesiredDatabase): StoreSeed? =
         when {
             database.creator != self -> null
+            seeded(database) -> StoreSeed.Kept
             database.seedUri != null -> StoreSeed.Uri(database.seedUri)
             database.designatedSeeder == self -> StoreSeed.Restored
             else -> null

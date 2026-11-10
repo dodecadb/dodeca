@@ -77,13 +77,20 @@ internal class ClusterPlacement(
     /**
      * Places the database [name] anew on [primaries] and [secondaries] servers, as a new database,
      * as when it is recreated: its copies go where the allocator puts a new one's, on servers that
-     * answer first, whatever servers they were on.
+     * answer first, whatever servers they were on, [first] among the primaries if given.
      */
-    fun replace(tx: Transaction, name: String, primaries: Int, secondaries: Int): Placement {
+    fun replace(
+        tx: Transaction,
+        name: String,
+        primaries: Int,
+        secondaries: Int,
+        first: UUID? = null,
+    ): Placement {
         prepare(tx)
         val node = checkNotNull(Placements.database(tx, name)) { "there is no database '$name'" }
         Placements.place(tx, node, emptyMap(), primaries, secondaries)
-        val copies = Placements.allocator(tx, available).place(name, primaries, secondaries)
+        val copies =
+            Placements.allocator(tx, available).place(name, primaries, secondaries, first = first)
         Placements.place(tx, node, copies, primaries, secondaries)
         return Placement(copies, primaries, secondaries)
     }

@@ -464,6 +464,106 @@ class DatabaseReconcilerTest {
         assertThat(local.dropped).contains(running)
     }
 
+    /** [films] recreated from [old], with [seeders]. */
+    private fun recreated(
+        old: NamedDatabaseId,
+        seeders: Set<MemberId> = setOf(self),
+        creator: MemberId? = null,
+        created: Boolean = false,
+    ): DesiredDatabase =
+        desired(database(old.name()), creator = creator, created = created)
+            .copy(
+                recreatedFrom = old.databaseId().uuid(),
+                seeders = seeders,
+                designatedSeeder = seeders.firstOrNull(),
+            )
+
+    @Test
+    fun `a seeder keeps the store of the old copy of a recreated database as its seed`() {
+        local.add(films, started = true)
+        val new = recreated(films)
+        graph.databases = listOf(new)
+
+        reconciler.reconcile()
+
+        assertThat(local.dropped).isEmpty()
+        assertThat(local.registered.keys).noneMatch { it.name() == films.name() }
+        assertThat(local.keptSeeds).containsExactly(entry(films.name(), new.id.databaseId().uuid()))
+        assertThat(local.groups).doesNotContain(films.databaseId().uuid())
+    }
+
+    @Test
+    fun `a member that seeds no recreated database drops its old copy`() {
+        local.add(films, started = true)
+        graph.databases = listOf(recreated(films, seeders = setOf(creator), creator = creator))
+
+        reconciler.reconcile()
+
+        assertThat(local.dropped).containsExactly(films)
+        assertThat(local.keptSeeds).isEmpty()
+    }
+
+    @Test
+    fun `the creator of a recreated database creates it from its kept seed`() {
+        local.add(films, started = true)
+        val new = recreated(films)
+        graph.databases = listOf(new)
+        reconciler.reconcile()
+
+        graph.databases = listOf(new.copy(creator = self))
+        reconciler.reconcile()
+
+        assertThat(local.registered).containsEntry(new.id, LocalDatabase(true, false))
+        assertThat(local.seeds).containsEntry(new.id, StoreSeed.Kept)
+        assertThat(local.copies).isEmpty()
+        assertThat(local.deletedStores).isEmpty()
+    }
+
+    @Test
+    fun `a seeder that leads system names the creator of the database recreated from its seed`() {
+        local.add(films, started = true)
+        graph.leading = true
+        val new = recreated(films)
+        graph.databases = listOf(new)
+
+        reconciler.reconcile()
+
+        assertThat(local.keptSeeds).containsKey(films.name())
+        assertThat(graph.named).containsExactly(new.id to self)
+    }
+
+    @Test
+    fun `a store the old copy left becomes a seed of the recreated database`() {
+        // As after a restart: the old database is not registered any more.
+        local.stored[films.name()] = true
+        val new = recreated(films)
+        graph.databases = listOf(new)
+
+        reconciler.reconcile()
+
+        assertThat(local.keptSeeds).containsExactly(entry(films.name(), new.id.databaseId().uuid()))
+        assertThat(local.deletedStores).isEmpty()
+    }
+
+    @Test
+    fun `a seeder that is not the creator keeps its seed until the database was created, then copies it`() {
+        local.add(films, started = true)
+        val new = recreated(films, seeders = setOf(creator, self), creator = creator)
+        graph.databases = listOf(new)
+
+        reconciler.reconcile()
+
+        assertThat(local.keptSeeds).containsKey(films.name())
+        assertThat(local.copies).isEmpty()
+
+        graph.databases = listOf(new.copy(created = true))
+        reconciler.reconcile()
+
+        assertThat(local.deletedStores).containsExactly(films.name())
+        assertThat(local.copies.map { it.second }).containsExactly(new.id)
+        assertThat(local.keptSeeds).isEmpty()
+    }
+
     @Test
     fun `a member the default database is placed on copies it from its creator`() {
         val default = database(DEFAULT)
@@ -976,9 +1076,31 @@ class DatabaseReconcilerTest {
             dropped += id
         }
 
+        /** The kept seeds, by name, with the ids they seed. */
+        val keptSeeds = mutableMapOf<String, UUID>()
+
+        override fun seeds(): Map<String, UUID> = keptSeeds.toMap()
+
+        override fun keepAsSeed(id: NamedDatabaseId, recreated: UUID) {
+            registered.remove(id)
+            groups.remove(id.databaseId().uuid())
+            marks.remove(id.databaseId().uuid())
+            keptSeeds[id.name()] = recreated
+        }
+
+        override fun markSeed(name: String, recreated: UUID) {
+            check(stored[name] == true) { "$name has no complete store" }
+            keptSeeds[name] = recreated
+        }
+
+        override fun unmarkSeed(name: String) {
+            keptSeeds.remove(name)
+        }
+
         override fun deleteStore(name: String) {
             check(registered.keys.none { it.name() == name }) { "$name is registered" }
             stored.remove(name)
+            keptSeeds.remove(name)
             deletedStores += name
         }
 
