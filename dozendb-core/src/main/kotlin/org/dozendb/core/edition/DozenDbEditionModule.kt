@@ -19,6 +19,7 @@ package org.dozendb.core.edition
 import java.util.UUID
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.SettingsProcedures
+import org.dozendb.core.checkpoint.CheckpointIoControllerService
 import org.dozendb.core.logging.QueryLog
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.monitoring.MetricsService
@@ -79,7 +80,6 @@ import org.neo4j.kernel.database.MapCachingDatabaseReferenceRepository
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.database.SystemGraphDatabaseIdRepository
 import org.neo4j.kernel.database.SystemGraphDatabaseReferenceRepository
-import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.log4j.LoggerTarget
@@ -147,7 +147,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 indexMonitorFactory,
                 AbstractEditionModule.createIdContextFactory(globalModule),
                 DeviceMapper.UNKNOWN_MAPPER,
-                CommunityIOControllerService(),
+                CheckpointIoControllerService(globalModule.jobScheduler),
                 createCommitProcessFactory(),
                 this,
                 hosting,

@@ -1,6 +1,7 @@
 package org.dozendb.core.store
 
 import java.time.Duration
+import org.dozendb.core.checkpoint.CheckpointIoController
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.impl.store.DefaultStoreSnapshotFactory
@@ -18,11 +19,17 @@ import org.neo4j.storageengine.api.TransactionIdStore
 object StoreSnapshots {
     private const val POLL_MILLIS = 5L
 
-    /** Takes a snapshot of [database], to close once its files are sent. */
+    /**
+     * Takes a snapshot of [database], to close once its files are sent. Its checkpoint, or the one
+     * under way, goes without the I/O limit.
+     */
     fun take(database: Database, fs: FileSystemAbstraction): StoreSnapshot =
-        DefaultStoreSnapshotFactory(database, fs).createStoreSnapshot().orElseThrow {
-            IllegalStateException("database ${database.namedDatabaseId.name()} is unavailable")
-        }
+        CheckpointIoController.unlimited(database.ioController) {
+                DefaultStoreSnapshotFactory(database, fs).createStoreSnapshot()
+            }
+            .orElseThrow {
+                IllegalStateException("database ${database.namedDatabaseId.name()} is unavailable")
+            }
 
     /** Writes the files of [snapshot] but the transaction logs to [archive]. */
     fun writeStoreFiles(snapshot: StoreSnapshot, database: Database, archive: StoreArchive.Writer) {

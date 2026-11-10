@@ -3,6 +3,7 @@ package org.dozendb.core.monitoring
 import java.io.IOException
 import java.time.ZoneId
 import java.util.stream.Stream
+import org.dozendb.core.checkpoint.CheckpointIoController
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.database.DatabaseContext
@@ -14,6 +15,7 @@ import org.neo4j.internal.kernel.api.security.UserSegment
 import org.neo4j.io.ByteUnit
 import org.neo4j.kernel.api.KernelTransactionHandle
 import org.neo4j.kernel.api.procedure.SystemProcedure
+import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.api.KernelTransactions
@@ -47,11 +49,17 @@ class MonitoringProcedures {
     )
     @Procedure(name = "db.checkpoint", mode = Mode.DBMS)
     fun checkpoint(): Stream<CheckpointResult> {
-        val checkPointer =
-            checkNotNull(graph).dependencyResolver.resolveDependency(CheckPointer::class.java)
+        val dependencies = checkNotNull(graph).dependencyResolver
+        val checkPointer = dependencies.resolveDependency(CheckPointer::class.java)
+        val database = dependencies.resolveDependency(Database::class.java)
         val result =
             try {
-                checkPointer.tryCheckPoint(SimpleTriggerInfo("Call to db.checkpoint() procedure"))
+                // As Enterprise's, without the I/O limit, also for the checkpoint under way.
+                CheckpointIoController.unlimited(database.ioController) {
+                    checkPointer.tryCheckPoint(
+                        SimpleTriggerInfo("Call to db.checkpoint() procedure")
+                    )
+                }
                 CheckpointResult(true, "Checkpoint completed.")
             } catch (e: IOException) {
                 CheckpointResult(false, "Checkpoint failed: ${e.message}")

@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import org.dozendb.consensus.LogEntry
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.ReplicatedStateMachine
+import org.dozendb.core.checkpoint.CheckpointIoController
 import org.neo4j.common.Subject
 import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.kernel.database.Database
@@ -54,6 +55,7 @@ internal class DatabaseStateMachine(
     private val transactionIdStore = resolver.resolveDependency(TransactionIdStore::class.java)
     private val storageEngine = resolver.resolveDependency(StorageEngine::class.java)
     private val checkPointer = resolver.resolveDependency(CheckPointer::class.java)
+    private val ioController = database.ioController
     private val commandReaders = database.storageEngineFactory.commandReaderFactory()
     private val contexts = database.cursorContextFactory
     private val commitments = TransactionCommitmentFactory(transactionIdStore)
@@ -113,7 +115,9 @@ internal class DatabaseStateMachine(
                 )
             }
         }
-        checkPointer.forceCheckPoint(SimpleTriggerInfo("Start of a new Raft group"))
+        CheckpointIoController.unlimited(ioController) {
+            checkPointer.forceCheckPoint(SimpleTriggerInfo("Start of a new Raft group"))
+        }
         return last.consensusIndex()
     }
 

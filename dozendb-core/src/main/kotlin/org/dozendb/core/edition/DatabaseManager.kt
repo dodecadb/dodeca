@@ -11,7 +11,7 @@
  * the system database last and drops databases without a checkpoint.
  * 2026-11-09: starts a database again when Neo4j's file watcher failed to start it because a
  * directory entry went meanwhile.
- * 2026-11-10: starts no database in quarantine.
+ * 2026-11-10: starts no database in quarantine; stops databases without the checkpoint I/O limit.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -21,6 +21,7 @@ package org.dozendb.core.edition
 
 import java.nio.file.NoSuchFileException
 import java.util.Optional
+import org.dozendb.core.checkpoint.CheckpointIoController
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.dbms.api.DatabaseManagementException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
@@ -204,7 +205,9 @@ class DatabaseManager(
         context.clearFailure()
         try {
             log.info("Stopping '%s'.", id)
-            context.database().stop()
+            // Stopping waits for the background checkpoint under way, if any.
+            val database = context.database()
+            CheckpointIoController.unlimited(database.ioController) { database.stop() }
             log.info("Stopped '%s' successfully.", id)
             counts.increaseStopCount()
         } catch (e: Throwable) {
