@@ -43,6 +43,7 @@ end its own way.
 | Server-side routing | Same | [Clustering](#clustering) |
 | Cluster status endpoints of the HTTP server | Same, with differences | [Clustering](#clustering) |
 | Checking connectivity between members | Same, with differences | [Clustering](#clustering) |
+| Replication status checks | Same, with differences | [Clustering](#clustering) |
 | Servers, topologies and secondaries | Same, with differences | [Servers](#servers) |
 | Leadership balancing and priority tags | Same | [Leadership balancing](#leadership-balancing) |
 | Online backup and restore | Same, with differences | [Backup and restore](#backup-and-restore) |
@@ -51,7 +52,7 @@ end its own way.
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing the default database | Same | [Databases](#databases) |
-| Quarantine, recreating databases and cluster status checks | Not supported | [Not supported](#not-supported) |
+| Quarantine and recreating databases | Not supported | [Not supported](#not-supported) |
 | Routing policies (the load balancing plugin) | Not supported | [Not supported](#not-supported) |
 | Change data capture | Not supported | [Not supported](#not-supported) |
 | `block` and `high_limit` store formats | Not supported | [Not supported](#not-supported) |
@@ -471,6 +472,17 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   one check: whether the member there answers as itself. `INTRA_BOLT` is the
   routing connector, which takes forwarded writes, so only members with TLS
   between them check it, logging in as the user who calls the procedure.
+- **Status checks.** `dbms.cluster.statusCheck` replicates a status check
+  entry in each database, as in Enterprise, and gives each primary's part in
+  it. The entry is a transaction without changes, which every member skips:
+  nothing is committed. A primary is `APPLYING` once it applied the entry
+  within the timeout, `REPLICATING` when its log holds the entry but its
+  database did not apply it, as while the database is stopped or failed on
+  it, and `UNAVAILABLE` otherwise. `replicationSuccessful` tells whether a
+  majority committed the entry within the timeout. The signature shows the
+  timeout's default as `1000`, where Enterprise's shows `null`: both wait
+  1000 milliseconds, also when given `null`. Each other member asked may take
+  as long again to answer.
 - **ID reuse.** IDs freed while a member is a follower are reused only after a
   restart, as in Enterprise's clustering.
 - **Durability (single fsync).** A commit to a replicated database is
@@ -805,9 +817,9 @@ error, and their procedures do not exist.
   Neo4j Community's slotted runtime with a notification, as in Neo4j
   Community, or fails with `dbms.cypher.hints_error=true`. Neo4j Community
   declares `server.cypher.parallel.worker_limit`, which has no effect.
-- **Disaster recovery and cluster checks**: quarantine
+- **Disaster recovery and protocol checks**: quarantine
   (`dbms.quarantineDatabase`), `dbms.cluster.recreateDatabase`,
-  `dbms.cluster.statusCheck`, `dbms.cluster.protocols` and `neo4j-admin dbms unbind-system-db`.
+  `dbms.cluster.protocols` and `neo4j-admin dbms unbind-system-db`.
   `OPERATOR_GUIDE.md`
   describes how a DozenDB cluster recovers, and "Lost databases" under
   [Running a cluster](#running-a-cluster) how to rebuild a member.

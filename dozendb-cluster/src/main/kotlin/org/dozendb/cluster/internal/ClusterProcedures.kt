@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import java.time.Duration
 import java.util.UUID
 import java.util.stream.Stream
 import org.dozendb.cluster.ClusterService
@@ -33,6 +34,8 @@ class ClusterProcedures {
     @JvmField @Context var secondaries: SecondaryReplication? = null
 
     @JvmField @Context var connectivity: ConnectivityChecks? = null
+
+    @JvmField @Context var statusChecks: StatusChecks? = null
 
     @JvmField @Context var securityContext: SecurityContext? = null
 
@@ -435,6 +438,61 @@ class ClusterProcedures {
             }
     }
 
+    @Admin
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.statusCheck", mode = Mode.DBMS)
+    @Description(
+        "Replicates a status check entry in each database named, or in every database this " +
+            "server hosts as a primary if the list is empty, and reports which primaries apply " +
+            "it within the timeout, 1000 milliseconds by default or if null."
+    )
+    fun statusCheck(
+        @Name("databases") databases: List<String>,
+        // Neo4j takes no null default for an INTEGER, which Enterprise declares.
+        @Name(value = "timeoutMilliseconds", defaultValue = "$DEFAULT_STATUS_CHECK_TIMEOUT")
+        timeoutMilliseconds: Long?,
+    ): Stream<StatusCheckRow> {
+        val timeout = timeoutMilliseconds ?: DEFAULT_STATUS_CHECK_TIMEOUT
+        if (timeout <= 0) {
+            throw ProcedureFailure(
+                "'timeoutMilliseconds' must be positive, not $timeout",
+                IllegalArgumentException("$timeout"),
+            )
+        }
+        return checkNotNull(statusChecks) { "DozenDB clustering is not running" }
+            .check(databases, Duration.ofMillis(timeout))
+            .stream()
+            .map {
+                StatusCheckRow(
+                    database = it.database,
+                    serverId = it.serverId.toString(),
+                    serverName = it.serverName,
+                    address = it.address,
+                    replicationSuccessful = it.replicationSuccessful,
+                    memberStatus = it.memberStatus?.name,
+                    recognisedLeader = it.recognisedLeader?.toString(),
+                    recognisedLeaderTerm = it.recognisedLeaderTerm,
+                    requester = it.requester,
+                    error = it.error,
+                )
+            }
+    }
+
+    /** A row of `dbms.cluster.statusCheck`, in Neo4j Enterprise's columns. */
+    @JvmRecord
+    data class StatusCheckRow(
+        val database: String,
+        val serverId: String,
+        val serverName: String,
+        val address: String?,
+        val replicationSuccessful: Boolean,
+        val memberStatus: String?,
+        val recognisedLeader: String?,
+        val recognisedLeaderTerm: Long?,
+        val requester: Boolean,
+        val error: String?,
+    )
+
     /** A row of `dbms.cluster.checkConnectivity`, in Neo4j Enterprise's columns. */
     @JvmRecord
     data class ConnectivityRow(
@@ -446,6 +504,11 @@ class ClusterProcedures {
         val `port-address`: String,
         val result: String,
     )
+
+    private companion object {
+        /** The milliseconds a status check waits by default, as in Enterprise. */
+        const val DEFAULT_STATUS_CHECK_TIMEOUT = 1000L
+    }
 
     private fun requireCluster(): ClusterService =
         checkNotNull(cluster) { "DozenDB clustering is not running" }

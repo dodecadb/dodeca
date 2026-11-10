@@ -1406,6 +1406,32 @@ of one server. All checks run at once, each waiting up to its timeout for a
 member that does not answer: 5 seconds for the Raft port, and
 `dbms.routing.driver.connection.connect_timeout` for the routing connector.
 
+### Checking replication
+
+An administrator checks whether databases replicate, and which of their
+primaries keep up, as in Neo4j Enterprise:
+
+```cypher
+CALL dbms.cluster.statusCheck([])
+CALL dbms.cluster.statusCheck(['neo4j'], 500)
+```
+
+The leader of each database named, or of each database the server hosts as a
+primary if the list is empty, replicates a status check entry, which every
+member skips: nothing is committed. Each primary of the database then gets a
+row:
+
+| Column | Meaning |
+|---|---|
+| `replicationSuccessful` | Whether a majority committed the entry within the timeout, 1000 milliseconds unless given; the same in every row of the database. It is false without a leader or a majority. |
+| `memberStatus` | `APPLYING` if the primary applied the entry within the timeout; `REPLICATING` if its log holds the entry but its database did not apply it, as while the database is stopped or failed there; else `UNAVAILABLE`, as when it did not answer or lacks the entry. Only `APPLYING` primaries add to the database's fault tolerance. |
+| `recognisedLeader`, `recognisedLeaderTerm` | The leader and term the primary knows. When primaries know different leaders, the one with the highest term leads. |
+| `requester` | True for the server that runs the procedure. |
+| `error` | Why the entry was not replicated, why the primary did not answer, or that the server does not host a database named as a primary. |
+
+`serverName` is the server's name, or its id if it has none, and `address` its
+Bolt address. Each other member asked may take the timeout again to answer.
+
 ### Query log
 
 Every member writes `logs/query.log`, as `conf/server-logs.xml` configures it:

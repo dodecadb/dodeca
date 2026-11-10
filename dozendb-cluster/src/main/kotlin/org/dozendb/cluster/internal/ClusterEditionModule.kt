@@ -86,6 +86,7 @@ import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
+import org.dozendb.core.servers.ServerRecord
 import org.dozendb.core.servers.ServerRecords
 import org.dozendb.core.servers.Servers
 import org.dozendb.core.servers.UpstreamRules
@@ -155,6 +156,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val locations: DatabaseLocations
     private val consensus: ConsensusLog
     private val clusterServers: ClusterServers
+
+    /** `dbms.cluster.statusCheck`, which also answers other members' parts in it. */
+    private val statusChecks: StatusChecks
     private val membership: MembershipReconciler
     private val balancer: LeaderBalancer
     private val announcer: LeaderAnnouncer
@@ -581,6 +585,22 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             )
         globalModule.globalDependencies.satisfyDependency(cluster)
         globalModule.globalDependencies.satisfyDependency(statuses)
+        statusChecks =
+            StatusChecks(
+                cluster,
+                consensus,
+                { database ->
+                    replication
+                        .running()
+                        .firstOrNull { it.ref.id == database.id }
+                        ?.replicateStatusCheck()
+                        ?: throw ConsensusUnavailableException(
+                            "Database '${database.name}' does not run on server ${consensus.self.id}."
+                        )
+                },
+                ::serverRecords,
+            )
+        consensus.registerBulkSource(StatusCheckProtocol.NAME, statusChecks)
         globalModule.databaseEventListeners.registerDatabaseEventListener(
             object : DatabaseEventListenerAdapter() {
                 override fun databaseStart(eventContext: DatabaseEventContext) {
@@ -1696,23 +1716,21 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             { SecondaryReplication { name, pause -> secondaries.toggle(name, pause) } },
             true,
         )
-        val connectivity =
-            ConnectivityChecks(
-                cluster,
-                {
-                    databaseRepository.getSystemDatabaseContext().databaseFacade().beginTx().use {
-                        ServerRecords.records(it)
-                    }
-                },
-                { remoteTransactions },
-            )
+        val connectivity = ConnectivityChecks(cluster, ::serverRecords, { remoteTransactions })
         globalProcedures.registerComponent(
             ConnectivityChecks::class.java,
             { connectivity },
             true,
         )
+        globalProcedures.registerComponent(StatusChecks::class.java, { statusChecks }, true)
         globalProcedures.registerProcedure(ClusterProcedures::class.java)
     }
+
+    /** The records of the servers in the system graph, by server id. */
+    private fun serverRecords(): Map<UUID, ServerRecord> =
+        databaseRepository.getSystemDatabaseContext().databaseFacade().beginTx().use {
+            ServerRecords.records(it)
+        }
 
     private companion object {
         /** The databases this member holds as secondaries, next to its membership file. */

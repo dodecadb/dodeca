@@ -7,10 +7,12 @@ import org.neo4j.common.Subject
 import org.neo4j.io.fs.ByteBufferReadableChannel
 import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.kernel.KernelVersion
+import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
 import org.neo4j.storageengine.api.CommandBatch
 import org.neo4j.storageengine.api.CommandReaderFactory
 import org.neo4j.storageengine.api.StorageCommand
+import org.neo4j.storageengine.api.TransactionIdStore
 
 /**
  * The payload of a replicated transaction: the kernel's commands in Neo4j's own log serialization
@@ -19,6 +21,9 @@ import org.neo4j.storageengine.api.StorageCommand
  * Format version 1: `byte format, byte kind, byte kernelVersion, long timeStarted, long
  * latestCommittedTxWhenStarted, long timeCommitted, int leaseId, subject, int commandCount,
  * commands`. A subject is a kind byte, followed by the UTF-8 user name for [SUBJECT_USER].
+ *
+ * A status check ([statusCheck]) is a transaction without commands under no lease, which every
+ * member skips as it skips any entry whose lease is not the entry's term.
  */
 internal object TransactionEnvelope {
     private const val FORMAT: Byte = 1
@@ -47,6 +52,26 @@ internal object TransactionEnvelope {
         }
         channel.close()
         return buffer.toByteArray()
+    }
+
+    /**
+     * An entry for `dbms.cluster.statusCheck` to replicate, which members of every version apply
+     * without committing anything: its lease, [LeaseService.NO_LEASE], is never an entry's term.
+     */
+    fun statusCheck(kernelVersion: KernelVersion): ByteArray {
+        val now = System.currentTimeMillis()
+        return encode(
+            CompleteCommandBatch(
+                emptyList(),
+                TransactionIdStore.UNKNOWN_CONSENSUS_INDEX,
+                now,
+                TransactionIdStore.BASE_TX_ID,
+                now,
+                LeaseService.NO_LEASE,
+                kernelVersion,
+                Subject.SYSTEM,
+            )
+        )
     }
 
     /** Decodes a transaction, which takes [consensusIndex] as the index of its log entry. */

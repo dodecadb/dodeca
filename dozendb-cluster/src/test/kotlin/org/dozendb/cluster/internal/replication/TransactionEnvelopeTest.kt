@@ -15,6 +15,8 @@ import org.neo4j.configuration.connectors.HttpConnector
 import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.api.DatabaseManagementServiceBuilder
 import org.neo4j.io.fs.OutputStreamWritableChannel
+import org.neo4j.kernel.KernelVersionProvider
+import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.transaction.CommittedCommandBatchRepresentation
 import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
 import org.neo4j.kernel.internal.GraphDatabaseAPI
@@ -106,6 +108,24 @@ class TransactionEnvelopeTest {
             assertThat(decodedCommands.map(::bytes))
                 .containsExactlyElementsOf(originalCommands.map(::bytes))
         }
+    }
+
+    @Test
+    fun `a status check is a transaction without commands under no lease`() {
+        val resolver = database.dependencyResolver
+        val readers =
+            resolver
+                .resolveDependency(org.neo4j.storageengine.api.StorageEngineFactory::class.java)
+                .commandReaderFactory()
+        val version = resolver.resolveDependency(KernelVersionProvider::class.java).kernelVersion()
+
+        val decoded =
+            TransactionEnvelope.decode(TransactionEnvelope.statusCheck(version), 7, readers)
+
+        // As every version decodes it: members skip an entry whose lease is not its term.
+        assertThat(decoded.commandCount()).isZero()
+        assertThat(decoded.leaseId).isEqualTo(LeaseService.NO_LEASE)
+        assertThat(decoded.kernelVersion()).isEqualTo(version)
     }
 
     @Test

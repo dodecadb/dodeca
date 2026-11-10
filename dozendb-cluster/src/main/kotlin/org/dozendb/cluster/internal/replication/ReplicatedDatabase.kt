@@ -21,6 +21,7 @@ import org.dozendb.core.edition.HostedDatabase
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
 import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.internal.kernel.api.exceptions.TransactionFailureException
+import org.neo4j.kernel.KernelVersionProvider
 import org.neo4j.kernel.api.KernelTransactionHandle
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.Database
@@ -324,6 +325,20 @@ internal class ReplicatedDatabase(
             )
         }
     }
+
+    /**
+     * Replicates a status check of `dbms.cluster.statusCheck` ([TransactionEnvelope.statusCheck]),
+     * which every member applies without committing anything. Only on the leader.
+     */
+    suspend fun replicateStatusCheck(): CommitResult =
+        consensus.submit(
+            ref,
+            TransactionEnvelope.statusCheck(
+                database.dependencyResolver
+                    .resolveDependency(KernelVersionProvider::class.java)
+                    .kernelVersion()
+            ),
+        )
 
     /** Replicates a kernel transaction and returns the append index of its local apply. */
     fun replicate(batch: CommandBatch): Long {
