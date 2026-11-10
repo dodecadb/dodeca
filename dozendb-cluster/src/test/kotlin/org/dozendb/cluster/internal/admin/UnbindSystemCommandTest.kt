@@ -1,0 +1,131 @@
+package org.dozendb.cluster.internal.admin
+
+import java.io.ByteArrayOutputStream
+import java.io.InputStream
+import java.io.PrintStream
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.ServiceLoader
+import java.util.zip.ZipFile
+import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.cluster.DatabaseGroups
+import org.dozendb.cluster.MembershipFile
+import org.dozendb.cluster.internal.ClusterHarness
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.CleanupMode
+import org.junit.jupiter.api.io.TempDir
+import org.neo4j.cli.CommandProvider
+import org.neo4j.cli.CommandType
+import org.neo4j.cli.ExecutionContext
+import org.neo4j.io.fs.DefaultFileSystemAbstraction
+import org.neo4j.storageengine.api.TransactionIdStore
+import picocli.CommandLine
+
+/**
+ * `neo4j-admin dbms unbind-system-db` as Neo4j Enterprise documents it: removes the server's Raft
+ * state of `system` only, archived if asked, and keeps its store, whose last transaction it prints.
+ */
+class UnbindSystemCommandTest {
+    // Kept when a test fails, for the members' logs.
+    @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path
+    private var harness: ClusterHarness? = null
+
+    @AfterEach
+    fun stop() {
+        harness?.close()
+    }
+
+    private class Result(val exitCode: Int, val out: String, val err: String) {
+        override fun toString() = "exit code $exitCode\n$out\n$err"
+    }
+
+    /** Runs `neo4j-admin dbms unbind-system-db` for the server in [home]. */
+    private fun unbind(home: Path, vararg arguments: String): Result {
+        val out = ByteArrayOutputStream()
+        val err = ByteArrayOutputStream()
+        val context =
+            ExecutionContext(
+                home,
+                home.resolve("conf"),
+                PrintStream(out, true),
+                PrintStream(err, true),
+                InputStream.nullInputStream(),
+                DefaultFileSystemAbstraction(),
+            )
+        val exitCode = CommandLine(UnbindSystemCommand(context)).execute(*arguments)
+        return Result(exitCode, out.toString(), err.toString())
+    }
+
+    @Test
+    fun `removes the Raft state of system only, archived, and tells its last transaction`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        cluster.awaitLeader().database().executeTransactionally("CREATE (:Film)")
+        val member = cluster.members[2]
+        val neo4j = member.database().databaseId().databaseId().uuid().toString()
+        member.database("system").executeTransactionally("CALL db.checkpoint()")
+        val last =
+            member
+                .database("system")
+                .dependencyResolver
+                .resolveDependency(TransactionIdStore::class.java)
+                .lastCommittedTransactionId
+        val serverId = member.serverId
+        member.stop()
+        val raft = member.home.resolve("data/raft")
+        val archives = Files.createDirectories(root.resolve("archives"))
+
+        val result = unbind(member.home, "--archive-cluster-state=true", "--archive-path=$archives")
+
+        assertThat(result.exitCode).describedAs("$result").isZero
+        assertThat(result.out).contains(serverId).contains("lastCommittedTransaction $last")
+        assertThat(raft.resolve(SYSTEM_GROUP)).doesNotExist()
+        assertThat(raft.resolve(neo4j)).isDirectory()
+        assertThat(member.home.resolve("data/databases/system")).isDirectory()
+        assertThat(member.home.resolve("data/server_id")).exists()
+        val record = MembershipFile(raft.resolve(MembershipFile.FILE_NAME)).read()!!
+        assertThat(record.systemUnbound).isTrue()
+        assertThat(record.memberId?.uuid?.toString()).isEqualTo(serverId)
+        val archive = Files.list(archives).use { it.toList() }.single()
+        assertThat(archive.fileName.toString())
+            .matches("unbound_system_cluster_state\\.\\d{12}\\.zip")
+        ZipFile(archive.toFile()).use { zip ->
+            val names = zip.entries().asSequence().map { it.name }.toList()
+            assertThat(names).contains("raft/membership")
+            assertThat(names).anySatisfy { assertThat(it).startsWith("raft/$SYSTEM_GROUP/") }
+            assertThat(names).noneSatisfy { assertThat(it).startsWith("raft/$neo4j/") }
+        }
+
+        // A run cut short is run again.
+        assertThat(unbind(member.home).exitCode).isZero
+    }
+
+    @Test
+    fun `refuses while the server runs, and without cluster state`() {
+        val cluster = ClusterHarness(root, 1).also { harness = it }
+        cluster.start()
+
+        val running = unbind(cluster.members[0].home)
+
+        assertThat(running.exitCode).describedAs("$running").isNotZero
+        assertThat(running.err).contains("shut it down first")
+        assertThat(cluster.members[0].home.resolve("data/raft/$SYSTEM_GROUP")).isDirectory()
+
+        val none = unbind(Files.createDirectories(root.resolve("standalone")))
+
+        assertThat(none.exitCode).describedAs("$none").isNotZero
+        assertThat(none.err).contains("there is nothing to unbind")
+    }
+
+    @Test
+    fun `is a command of neo4j-admin dbms`() {
+        assertThat(ServiceLoader.load(CommandProvider::class.java).map { it.commandType() })
+            .contains(CommandType.UNBIND_SYSTEM)
+        assertThat(CommandType.UNBIND_SYSTEM.commandGroup.name).isEqualTo("DBMS")
+    }
+
+    private companion object {
+        val SYSTEM_GROUP = DatabaseGroups.SYSTEM_DATABASE.toString()
+    }
+}

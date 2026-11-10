@@ -173,6 +173,12 @@ class ClusterService(
         // Written before DozenDB kept the owner: it is this member's.
         if (record?.memberId == null && record != null) remember { it }
         val firstStart = record == null
+        if (record?.systemUnbound == true) {
+            throw ClusterFormationException(
+                "neo4j-admin dbms unbind-system-db removed the cluster state of the system " +
+                    "database on this server, which this version cannot re-form yet."
+            )
+        }
         requireSupported(formatLevel, "as this member last saw it")
         if (systemMode == CopyMode.SECONDARY) {
             formation.refuseInitialSecondary(SYSTEM_DATABASE_MODE_SETTING)

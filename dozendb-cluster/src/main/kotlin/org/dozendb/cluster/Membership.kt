@@ -36,6 +36,8 @@ enum class MemberState {
  *   record written before DozenDB kept it.
  * @property systemGroup the id of the Raft group of `system`, once a recovery re-formed it under an
  *   id of its own; null for the id of the database, as before (see [DatabaseGroups]).
+ * @property systemUnbound whether `neo4j-admin dbms unbind-system-db` removed this member's Raft
+ *   state of `system`, which it re-forms or rejoins when it starts.
  */
 data class MembershipRecord(
     val state: MemberState,
@@ -44,6 +46,7 @@ data class MembershipRecord(
     val storesToDetach: Set<String> = emptySet(),
     val memberId: MemberId? = null,
     val systemGroup: UUID? = null,
+    val systemUnbound: Boolean = false,
 )
 
 /** Keeps this member's [MembershipRecord]. */
@@ -101,6 +104,10 @@ class MembershipFile(private val path: Path) : MembershipStore {
                     throw IOException("$path: invalid system group $it", e)
                 }
             }
+        val systemUnbound =
+            fields[SYSTEM_UNBOUND]?.let {
+                it.toBooleanStrictOrNull() ?: throw IOException("$path: invalid systemUnbound $it")
+            } ?: false
         return MembershipRecord(
             state,
             formation,
@@ -108,6 +115,7 @@ class MembershipFile(private val path: Path) : MembershipStore {
             storesToDetach,
             memberId,
             systemGroup,
+            systemUnbound,
         )
     }
 
@@ -120,6 +128,7 @@ class MembershipFile(private val path: Path) : MembershipStore {
             appendLine("$STORES_TO_DETACH=${record.storesToDetach.sorted().joinToString(",")}")
             record.memberId?.let { appendLine("$MEMBER_ID=$it") }
             record.systemGroup?.let { appendLine("$SYSTEM_GROUP=$it") }
+            if (record.systemUnbound) appendLine("$SYSTEM_UNBOUND=true")
         }
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         Files.createDirectories(path.parent)
@@ -155,5 +164,6 @@ class MembershipFile(private val path: Path) : MembershipStore {
         private const val STORES_TO_DETACH = "storesToDetach"
         private const val MEMBER_ID = "memberId"
         private const val SYSTEM_GROUP = "systemGroup"
+        private const val SYSTEM_UNBOUND = "systemUnbound"
     }
 }
