@@ -53,8 +53,9 @@ internal constructor(
     }
 
     override fun maybeLimitIO(recentlyCompletedIOs: Int, flushEvent: FileFlushEvent) {
-        if (!isEnabled) return
+        // Read once: the setting may change to none meanwhile.
         val limit = limit
+        if (!limited(limit)) return
         val start = clock.nanos()
         val (until, generation) =
             synchronized(this) {
@@ -80,10 +81,12 @@ internal constructor(
 
     override fun reportIO(completedIOs: Int) {}
 
-    override fun configuredLimit(): Long = if (isEnabled) limit.toLong() else -1
+    override fun configuredLimit(): Long = limit.let { if (limited(it)) it.toLong() else -1 }
 
     /** Whether the calling thread's flushes are limited now. */
-    override fun isEnabled() = limit > 0 && lifts == 0 && background()
+    override fun isEnabled() = limited(limit)
+
+    private fun limited(limit: Int) = limit > 0 && lifts == 0 && background()
 
     /**
      * Lifts the limit until the returned lift is closed: while someone waits for a checkpoint. A

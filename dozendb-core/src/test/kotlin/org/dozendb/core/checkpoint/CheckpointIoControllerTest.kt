@@ -128,6 +128,23 @@ class CheckpointIoControllerTest {
     }
 
     @Test
+    fun `a limit removed while a flush asks keeps that flush at the limit it read`() {
+        val config = config(10)
+        // The setting changes to none just as the flush asks whether it is limited.
+        val controller =
+            controller(10, config) {
+                config.setDynamic(GraphDatabaseSettings.check_point_iops_limit, 0, "test")
+                true
+            }
+
+        // Two I/Os at 10 a second, one beyond the burst; then none.
+        repeat(2) { controller.maybeLimitIO(2, Flush()) }
+
+        assertThat(parks).containsExactly(TimeUnit.MILLISECONDS.toNanos(100))
+        assertThat(controller.configuredLimit()).isEqualTo(-1)
+    }
+
+    @Test
     fun `only the background checkpoints' threads are limited`() {
         var background = false
         val controller = controller(10, background = { background })
