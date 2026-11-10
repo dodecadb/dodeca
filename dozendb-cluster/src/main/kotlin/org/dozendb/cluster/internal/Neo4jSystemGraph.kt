@@ -338,6 +338,19 @@ internal class Neo4jSystemGraph(
             node.setProperty(CREATED_PROPERTY, true)
         }
 
+        /**
+         * Forgets the creator, the initial members and the creation of the store of the database
+         * [node], as for a database created anew under another id.
+         */
+        fun forgetCreation(node: Node) {
+            node.removeProperty(CREATOR_PROPERTY)
+            node.removeProperty(INITIAL_MEMBERS_PROPERTY)
+            node.removeProperty(CREATED_PROPERTY)
+        }
+
+        /** The property that names the id a recreated database had before. */
+        const val RECREATED_FROM_PROPERTY = "dozendb_recreated_from"
+
         private const val INITIAL_MEMBERS_PROPERTY = "dozendb_initial_members"
         private const val FORMAT_LEVEL_PROPERTY = "dozendb_format_level"
         private val DOZENDB_LABEL: Label = Label.label("DozenDB")

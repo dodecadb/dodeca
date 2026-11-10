@@ -1,10 +1,12 @@
 package org.dozendb.core.security
 
 import java.util.UUID
+import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Entity
 import org.neo4j.graphdb.Label
 import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.RelationshipType
+import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.internal.kernel.api.security.PropertyRule
@@ -69,6 +71,27 @@ object PrivilegeRecords {
     /** The [KEY] of [privilege] of the role with the id [roleId]. */
     fun key(roleId: String, privilege: Privilege): String =
         key(roleId, privilege.access, properties(privilege))
+
+    /**
+     * Makes the privileges on the database with the id [from] privileges on the one with the id
+     * [to], as when a database is recreated under a new id, which keeps its privileges; returns how
+     * many it changed.
+     */
+    fun retarget(tx: Transaction, from: UUID, to: UUID): Int {
+        val nodes =
+            tx.findNodes(PRIVILEGE, SCOPE, ONE_DATABASE).use { found ->
+                found.asSequence().filter { it.getProperty(DATABASE, null) == "$from" }.toList()
+            }
+        for (node in nodes) {
+            node.setProperty(DATABASE, "$to")
+            val granting =
+                node.getRelationships(Direction.INCOMING, GRANTED, DENIED).use { it.single() }
+            val access = if (granting.isType(GRANTED)) Access.GRANTED else Access.DENIED
+            val roleId = granting.startNode.getProperty(ROLE_ID) as String
+            node.setProperty(KEY, key(roleId, read(node, access)))
+        }
+        return nodes.size
+    }
 
     /** The privilege [entity] holds, given with [access]; fails if it is not one. */
     fun read(entity: Entity, access: Access): Privilege {

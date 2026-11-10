@@ -35,6 +35,7 @@ import org.dozendb.cluster.internal.leadership.LeaderAnnouncer
 import org.dozendb.cluster.internal.leadership.LeaderBalancer
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
 import org.dozendb.cluster.internal.reads.ReadConsistencyException
+import org.dozendb.cluster.internal.recreation.DatabaseRecreation
 import org.dozendb.cluster.internal.replication.CatchUp
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.DatabaseReconciler
@@ -211,6 +212,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private lateinit var reconciler: DatabaseReconciler
     private lateinit var servers: ServerReconciler
     private lateinit var administration: ServerAdministration
+    private lateinit var recreation: DatabaseRecreation
 
     /** The id of the default database as the system graph has it, read once `system` runs. */
     @Volatile private var clusterId: UUID? = null
@@ -1141,6 +1143,19 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     ),
                 autoEnable = globalModule.globalConfig.get(ClusterSettings.autoEnableFreeServers),
             )
+        recreation =
+            DatabaseRecreation(
+                { repository.getSystemDatabaseContext().databaseFacade() },
+                { block -> replication.readingSystem(block) },
+                leading = { replication.systemWritable },
+                placement = clusterPlacement(),
+                defaults =
+                    Placements.Defaults(
+                        globalModule.globalConfig.get(ClusterSettings.defaultPrimaries),
+                        globalModule.globalConfig.get(ClusterSettings.defaultSecondaries),
+                    ),
+                seeder = ::seeder,
+            )
         cluster.onRemoved = {
             reconciler.request()
             // As a removed member's system group stops: it learns of no change any more.
@@ -1476,7 +1491,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /** Where the copies of databases go: on the servers the allocator chooses. */
-    override fun placement(): DatabasePlacement =
+    override fun placement(): DatabasePlacement = clusterPlacement()
+
+    private fun clusterPlacement(): ClusterPlacement =
         ClusterPlacement(
             refresh = {
                 try {
@@ -1788,6 +1805,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         globalProcedures.registerComponent(
             ServerAdministration::class.java,
             { administration },
+            true,
+        )
+        globalProcedures.registerComponent(
+            DatabaseRecreation::class.java,
+            { recreation },
             true,
         )
         globalProcedures.registerComponent(

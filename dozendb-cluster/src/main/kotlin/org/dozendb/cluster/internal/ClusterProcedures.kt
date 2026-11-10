@@ -7,10 +7,17 @@ import org.dozendb.cluster.ClusterService
 import org.dozendb.cluster.MembershipChangeException
 import org.dozendb.cluster.UpgradeException
 import org.dozendb.cluster.displayName
+import org.dozendb.cluster.internal.recreation.DatabaseRecreation
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
+import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlStatusInfoCodes
+import org.neo4j.graphdb.security.AuthorizationViolationException
+import org.neo4j.internal.kernel.api.security.AdminActionOnResource
+import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.internal.kernel.api.security.SecurityContext
+import org.neo4j.internal.kernel.api.security.Segment
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.api.procedure.SystemProcedure
 import org.neo4j.procedure.Admin
@@ -36,6 +43,8 @@ class ClusterProcedures {
     @JvmField @Context var connectivity: ConnectivityChecks? = null
 
     @JvmField @Context var statusChecks: StatusChecks? = null
+
+    @JvmField @Context var recreation: DatabaseRecreation? = null
 
     @JvmField @Context var securityContext: SecurityContext? = null
 
@@ -178,6 +187,52 @@ class ClusterProcedures {
                 config.autoEnable,
             )
         )
+    }
+
+    @SystemProcedure
+    @Procedure(name = "dbms.cluster.recreateDatabase", mode = Mode.WRITE)
+    @Description(
+        "Recreates a database, as one that lost a majority of its primaries, from a seed: a " +
+            "backup or dump (seedURI), or the stores of its servers (seedingServers). Options " +
+            "primaries and secondaries give it a new topology. It keeps its name, aliases, " +
+            "options and privileges, and gets a new id. Needs the CREATE DATABASE and DROP " +
+            "DATABASE privileges. Runs on the leader of the system database, as Neo4j " +
+            "Enterprise's procedure of the same name; SHOW DATABASES shows its progress."
+    )
+    fun recreateDatabase(
+        @Name("database") database: String,
+        @Name(value = "options", defaultValue = "{}") options: Map<String, Any?>,
+    ) {
+        val context = securityContext
+        if (context != null) {
+            val allowed =
+                listOf(PrivilegeAction.CREATE_DATABASE, PrivilegeAction.DROP_DATABASE).all {
+                    context
+                        .allowsAdminAction(
+                            AdminActionOnResource(
+                                it,
+                                AdminActionOnResource.DatabaseScope.ALL,
+                                Segment.ALL,
+                            )
+                        )
+                        .allowsAccess()
+                }
+            if (!allowed) {
+                throw AuthorizationViolationException(
+                    ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42NFF)
+                        .build(),
+                    "Permission denied for recreating database '$database': it needs the " +
+                        "CREATE DATABASE and DROP DATABASE privileges.",
+                    Status.Security.Forbidden,
+                )
+            }
+        }
+        val recreation = checkNotNull(recreation) { "the databases are not known yet" }
+        try {
+            recreation.recreate(database, options)
+        } catch (e: IllegalStateException) {
+            throw ProcedureFailure(e.message.orEmpty(), e)
+        }
     }
 
     @Admin
