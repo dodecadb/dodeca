@@ -4,6 +4,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.LongAdder
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.GroupProgress
@@ -23,6 +24,7 @@ import org.neo4j.kernel.database.AbstractDatabase
 internal class ClusterMetrics(
     private val consensus: ConsensusLog,
     private val servers: () -> List<Member>,
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : MetricsContributor {
     /** What this member counts of one database, from when it started. */
     class Counters {
@@ -67,7 +69,7 @@ internal class ClusterMetrics(
 
     override fun database(database: AbstractDatabase, metrics: MetricRegistry.MetricGroup) {
         val id = database.namedDatabaseId
-        val ref = DatabaseRef(id.name(), id.databaseId().uuid())
+        val ref = groups.of(id)
         val progress = RecentProgress(consensus, ref)
         fun gauge(name: String, description: String, read: (GroupProgress) -> Number?) =
             metrics.gauge("cluster.raft.$name", description) { progress.get()?.let(read) }

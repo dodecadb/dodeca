@@ -12,6 +12,7 @@ import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.BackupSettings
 import org.dozendb.cluster.ClusterService
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.MemberState
 import org.dozendb.cluster.internal.durability.withSingleFsync
 import org.dozendb.cluster.internal.leadership.BalancingStrategy
@@ -68,6 +69,8 @@ internal class ClusterHarness(
     private val fileSystem: ((Member) -> FileSystemAbstraction)? = null,
     private val settings: Map<Setting<*>, Any> = emptyMap(),
     val authority: TestAuthority? = TestAuthority(),
+    /** The id of the Raft group of `system` on every member, if not the database's own. */
+    private val systemGroup: UUID? = null,
     private val tuning: ConsensusTuning? = null,
 ) : AutoCloseable {
     inner class Member(val index: Int) {
@@ -114,6 +117,7 @@ internal class ClusterHarness(
             check(dbms == null) { "member $index is running" }
             val given = Dependencies()
             tuning?.let { given.satisfyDependency(it) }
+            systemGroup?.let { given.satisfyDependency(DatabaseGroups(it)) }
             fileSystem?.let { given.satisfyDependency(it(this)) }
             val config = config()
             dbms =

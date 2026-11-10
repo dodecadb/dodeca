@@ -5,6 +5,7 @@ import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.assertj.core.api.Assertions.catchThrowable
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
@@ -37,6 +38,7 @@ import org.neo4j.router.transaction.RoutingInfo
 class ForwardingLocationsTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val films = DatabaseRef("films", UUID(0, 7))
     private val filmsId: NamedDatabaseId = DatabaseIdFactory.from(films.name, films.id)
     private val books: NamedDatabaseId = DatabaseIdFactory.from("books", UUID(0, 8))
@@ -82,7 +84,7 @@ class ForwardingLocationsTest {
         val directory =
             MemberDirectory(
                 member,
-                system,
+                groups,
                 { null },
                 { null },
                 { emptyList() },

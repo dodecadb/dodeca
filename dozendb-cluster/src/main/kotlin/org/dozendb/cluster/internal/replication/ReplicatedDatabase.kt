@@ -7,7 +7,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlinx.coroutines.runBlocking
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.internal.ClusterMetrics
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.consensus.CommitResult
 import org.dozendb.consensus.ConsensusLog
@@ -53,6 +55,7 @@ import org.neo4j.storageengine.api.CommandBatch
  * @property counts where its replications are counted, for metrics.
  * @property afterGroupChange runs after the status of the database's group changed here: its role,
  *   leader or members, or Ratis stopped it.
+ * @property groups the groups of the databases: the database's [ref] names its group.
  */
 internal class ReplicatedDatabase(
     val namedDatabaseId: NamedDatabaseId,
@@ -70,8 +73,11 @@ internal class ReplicatedDatabase(
     private val notLeaderMessage: (MemberId?) -> String,
     private val counts: ClusterMetrics.Counters = ClusterMetrics.Counters(),
     private val afterGroupChange: () -> Unit = {},
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : HostedDatabase {
-    val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+    /** The database's Raft group. */
+    val ref: DatabaseRef
+        get() = groups.of(namedDatabaseId)
 
     override val hostedOnMode: HostedOnMode = HostedOnMode.RAFT
 

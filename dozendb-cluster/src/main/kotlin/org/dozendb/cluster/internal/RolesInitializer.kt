@@ -6,6 +6,7 @@ import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.Role
@@ -26,7 +27,7 @@ import org.neo4j.logging.InternalLog
  */
 internal class RolesInitializer(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val groups: DatabaseGroups,
     private val system: () -> GraphDatabaseService,
     private val reading: (() -> SystemGraphComponent.Status) -> SystemGraphComponent.Status,
     private val component: SystemGraphComponent,
@@ -34,6 +35,10 @@ internal class RolesInitializer(
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
 ) : AutoCloseable {
+    /** The group of `system` (see [DatabaseGroups]). */
+    private val systemDatabase: DatabaseRef
+        get() = groups.system
+
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "dozendb-roles").apply { isDaemon = true }

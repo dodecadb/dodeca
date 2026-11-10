@@ -3,6 +3,8 @@ package org.dozendb.cluster.internal.forwarding
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import org.dozendb.cluster.DatabaseGroups
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.DatabaseRef
@@ -71,6 +73,7 @@ internal class ForwardingLocations(
     private val leaderWait: Duration,
     private val log: InternalLog,
     private val readsOnPrimaries: Boolean = true,
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) {
     /** The member each database's writes went to last, to log changes. */
     private val targets = ConcurrentHashMap<UUID, HostPort>()
@@ -109,7 +112,7 @@ internal class ForwardingLocations(
         val here = hosted(id)
         if (here && !(routes && writes)) return local
         if (!routes) throw notHosted(name)
-        val ref = DatabaseRef(id.name(), id.databaseId().uuid())
+        val ref = groups.of(id)
         val member =
             if (writes) awaitLeader(ref) ?: throw FabricException.noLeaderAddress(name)
             else host(ref) ?: throw noHost(name)
@@ -188,7 +191,7 @@ internal class ForwardingLocations(
         for (transaction in transactions) {
             if (!transaction.write) continue
             val id = transaction.databaseId
-            val ref = DatabaseRef(id.name(), id.databaseId().uuid())
+            val ref = groups.of(id)
             val leader = locations.of(ref)?.leader
             if (leader == null) {
                 stillLeaderless += ref.id

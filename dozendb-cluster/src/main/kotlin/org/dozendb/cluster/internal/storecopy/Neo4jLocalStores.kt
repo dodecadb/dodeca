@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal.storecopy
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.LocalStores
 import org.dozendb.cluster.internal.replication.StagedCopy
 import org.dozendb.cluster.internal.secondaries.StagedStore
@@ -39,6 +40,7 @@ internal class Neo4jLocalStores(
     private val log: InternalLog,
     private val received: (String) -> Unit = {},
     private val seed: (DatabaseRef, Snapshot) -> Unit,
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : LocalStores {
     private val placement = StorePlacement(fs, layout)
     private val copying = ConcurrentHashMap<String, UUID>()
@@ -119,12 +121,13 @@ internal class Neo4jLocalStores(
         return StagedStore { moveIntoPlace(staged) }
     }
 
-    /** The ids of the databases that [copyNew] copies now, by name. */
+    /** The ids of the groups of the databases that [copyNew] copies now, by name. */
     fun copying(): Map<String, UUID> = HashMap(copying)
 
     private fun leaveSeed(copy: Staged) {
         val snapshot = copy.snapshot ?: return
-        seed(DatabaseRef(copy.name, copy.summary.databaseId), snapshot)
+        // The source names the database by its Neo4j id.
+        seed(groups.of(copy.name, copy.summary.databaseId), snapshot)
     }
 
     /** Names of the databases with files on this member, complete or not. */

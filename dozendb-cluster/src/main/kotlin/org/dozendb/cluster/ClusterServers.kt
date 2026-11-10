@@ -24,12 +24,16 @@ import org.dozendb.consensus.MemberId
  */
 class ClusterServers(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val groups: DatabaseGroups,
     private val recorded: () -> List<Member> = { emptyList() },
     private val pullsSystem: () -> Boolean = { false },
     private val reportedVoters: () -> GroupMembership? = { null },
     private val reportedLeader: () -> MemberId? = { null },
 ) {
+    /** The group of `system` (see [DatabaseGroups]). */
+    private val systemDatabase: DatabaseRef
+        get() = groups.system
+
     @Volatile private var secondaries: List<Member> = emptyList()
     private val stale = AtomicBoolean(true)
 

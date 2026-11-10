@@ -9,6 +9,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.dozendb.cluster.ClusterFormation
 import org.dozendb.cluster.ClusterServers
 import org.dozendb.cluster.ClusterService
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.FormatLevelStore
 import org.dozendb.cluster.FormatLevels
@@ -164,11 +165,34 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val balancer: LeaderBalancer
     private val announcer: LeaderAnnouncer
     private val memberId = MemberId(identityModule.serverId().uuid())
-    private val systemDatabase =
-        DatabaseRef(
-            NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.name(),
-            NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid(),
-        )
+    /**
+     * The Raft groups of the databases on this member, `system`'s as its membership record keeps
+     * it; a record that cannot be read fails the cluster service's start instead. Tests may give
+     * their own.
+     */
+    private val groups: DatabaseGroups =
+        AbstractEditionModule.tryResolveOrCreate(
+            DatabaseGroups::class.java,
+            globalModule.externalDependencyResolver,
+        ) {
+            DatabaseGroups(
+                runCatching {
+                    MembershipFile(
+                            globalModule.globalConfig
+                                .get(ClusterSettings.raftDirectory)
+                                .resolve(MembershipFile.FILE_NAME)
+                        )
+                        .read()
+                        ?.systemGroup
+                }
+                    .getOrNull() ?: DatabaseGroups.SYSTEM_DATABASE
+            )
+        }
+
+    /** The group of `system`. */
+    private val systemDatabase: DatabaseRef
+        get() = groups.system
+
     private val localStores: Neo4jLocalStores
 
     /** The TLS between members, or null for plaintext. */
@@ -234,6 +258,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.FORMAT_LEVEL to cluster.formatLevel.toString(),
                 MemberMetadata.SYSTEM_DATABASE_MODE to
                     config.get(ClusterSettings.systemDatabaseMode).name,
+                MemberMetadata.SYSTEM_GROUP to groups.systemGroup.toString(),
             ) +
                 InitialServerOptions.report(ServerOptions.initial(config)) +
                 listOfNotNull(
@@ -292,7 +317,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         clusterServers =
             ClusterServers(
                 consensus,
-                systemDatabase,
+                groups,
                 // Not while `system` starts or is replaced by a copy, which takes a while: the
                 // servers are then as last read.
                 recorded = {
@@ -314,7 +339,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 reportedLeader = { locations.of(systemDatabase)?.leader },
             )
-        val metrics = ClusterMetrics(consensus, clusterServers::all)
+        val metrics = ClusterMetrics(consensus, clusterServers::all, groups)
         globalModule.globalDependencies.satisfyDependency(metrics)
         stores =
             Neo4jLocalStores(
@@ -325,6 +350,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 logService.getInternalLog(Neo4jLocalStores::class.java),
                 received = { name -> metrics.of(name).copiesReceived.increment() },
                 seed = consensus::seed,
+                groups = groups,
             )
         localStores = stores
         val catchUp =
@@ -338,7 +364,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         replicationService =
             ReplicationService(
                 consensus,
-                systemDatabase,
+                groups,
                 defaultDatabase,
                 catchUp,
                 logService.internalLogProvider,
@@ -431,13 +457,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     if (id.isSystemDatabase) replicationService.replacingSystem(replace)
                     else replace()
                 },
+                groups = groups,
             )
         clusterHosting = ClusterHosting(replicationService, secondaries)
         // Before Neo4j creates `system`, which it does before the cluster service starts.
         pullsSystem =
             systemDatabase.id !in consensus.localGroups() &&
                 (config.get(ClusterSettings.systemDatabaseMode) == CopyMode.SECONDARY ||
-                    systemDatabase.id in secondaries.marked())
+                    DatabaseGroups.SYSTEM_DATABASE in secondaries.marked())
         if (pullsSystem) {
             clusterHosting.host(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID, CopyMode.SECONDARY)
         }
@@ -470,6 +497,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 log = logService.getInternalLog(StoreCopySource::class.java),
                 served = { name -> metrics.of(name).copiesServed.increment() },
+                groups = groups,
             ),
         )
         consensus.registerBulkSource(EntryTermProtocol.NAME, EntryTermSource(consensus))
@@ -490,6 +518,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 logService.getInternalLog(PullSource::class.java),
                 served = { name -> metrics.of(name).pullsServed.increment() },
+                groups = groups,
             ),
         )
         globalModule.databaseEventListeners.registerDatabaseEventListener(replication)
@@ -498,7 +527,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         directory =
             MemberDirectory(
                 consensus,
-                systemDatabase,
+                groups,
                 ::boltHostPort,
                 ::routingHostPort,
                 ::reportedStates,
@@ -530,9 +559,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 {
                     if (systemRunsHere()) {
                         mapOf(systemDatabase to emptySet<MemberId>()) +
-                            systemGraph.databases().associate {
-                                DatabaseRef(it.id.name(), it.id.databaseId().uuid()) to it.hosts
-                            }
+                            systemGraph.databases().associate { groups.of(it.id) to it.hosts }
                     } else {
                         replicationService.created().associateWith { emptySet() }
                     }
@@ -561,7 +588,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         cluster =
             ClusterService(
                 consensus,
-                systemDatabase,
+                groups,
                 formation,
                 stores,
                 MembershipFile(
@@ -625,12 +652,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         membership =
             MembershipReconciler(
                 consensus,
-                systemDatabase,
-                {
-                    systemGraph.databases().associate {
-                        DatabaseRef(it.id.name(), it.id.databaseId().uuid()) to it.hosts
-                    }
-                },
+                groups,
+                { systemGraph.databases().associate { groups.of(it.id) to it.hosts } },
                 logService.getInternalLog(MembershipReconciler::class.java),
                 systemRunning = ::systemRunsHere,
                 systemSecondaries = clusterServers::secondaries,
@@ -674,7 +697,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         object : SystemHosting {
             override val pulls: Boolean = pullsSystem
 
-            override fun pulled(): Boolean = systemDatabase.id in secondaries.marked()
+            override fun pulled(): Boolean = DatabaseGroups.SYSTEM_DATABASE in secondaries.marked()
 
             override fun copyPulled(source: HostPort) =
                 secondaries.copy(source, NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
@@ -852,10 +875,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /**
-     * This member's databases as it reports them to the others: those it copies from another
-     * member, new ones or to catch up, as being copied; new ones that run before their group as
-     * starting, or as failed if their group could not start; whether it knows their leaders; and
-     * the mode it hosts each in.
+     * This member's databases as it reports them to the others, by the ids of their groups (see
+     * [DatabaseGroups]): those it copies from another member, new ones or to catch up, as being
+     * copied; new ones that run before their group as starting, or as failed if their group could
+     * not start; whether it knows their leaders; and the mode it hosts each in.
      */
     private fun reportedStates(): List<DatabaseState> {
         val catchingUp = replication.catchingUp() + secondaries.catchingUp()
@@ -878,6 +901,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         it.name in starting -> it.copy(status = DatabaseState.Status.STARTING)
                         else -> it
                     }.copy(
+                        id = groups.groupOf(it.id),
                         leaderKnown = it.name in led,
                         mode = clusterHosting.mode(it.name),
                         paused = secondaries.paused(it.name),
@@ -914,7 +938,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         return replication
             .created()
             .map { it.id }
-            .filter { checker.isReadOnlyLocally(DatabaseIdFactory.from(it)) }
+            .filter { checker.isReadOnlyLocally(DatabaseIdFactory.from(groups.databaseOf(it))) }
             .toSet()
     }
 
@@ -928,11 +952,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             }
             .toMap()
 
-    /** The id of the last transaction committed to each database that runs on this member. */
+    /**
+     * The id of the last transaction committed to each database that runs on this member, by the id
+     * of its group.
+     */
     private fun lastCommittedHere(): Map<UUID, Long> =
         transactionIdStoresHere().mapValues { it.value.lastCommittedTransactionId }
 
-    /** The transaction id store of each database that runs on this member. */
+    /** The transaction id store of each database that runs on this member, by its group's id. */
     private fun transactionIdStoresHere(): Map<UUID, TransactionIdStore> =
         databaseRepository
             .registeredDatabases()
@@ -941,7 +968,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 val dependencies = context.dependencies()
                 if (!dependencies.containsDependency(TransactionIdStore::class.java))
                     return@mapNotNull null
-                id.databaseId().uuid() to
+                groups.groupOf(id.databaseId().uuid()) to
                     dependencies.resolveDependency(TransactionIdStore::class.java)
             }
             .toMap()
@@ -983,7 +1010,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             val running = state.status == DatabaseState.Status.ONLINE
             DatabaseClusterStatus(
                 name = state.name,
-                id = state.id,
+                id = groups.databaseOf(state.id),
                 core = core,
                 running = running,
                 writable = running && group?.role == Role.Leader && state.id !in readOnly,
@@ -1018,7 +1045,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         ClusterTopologyInfoService(
             super.createTopologyInfoService(databaseContextProvider),
             consensus,
-            systemDatabase,
+            groups,
             directory,
             locations,
             directory::reported,
@@ -1051,6 +1078,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     ::entryTerm,
                     consensus::seed,
                     quarantines,
+                    groups,
                 ),
                 memberId,
                 defaultDatabase,
@@ -1068,7 +1096,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         servers =
             ServerReconciler(
                 consensus,
-                systemDatabase,
+                groups,
                 { repository.getSystemDatabaseContext().databaseFacade() },
                 { block -> replication.readingSystem(block) },
                 leading = { replication.systemWritable },
@@ -1172,7 +1200,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             } catch (_: ConsensusUnavailableException) {
                 // What the members reported last.
             }
-            locations.of(DatabaseRef(id.name(), id.databaseId().uuid()))?.voters?.let {
+            locations.of(groups.of(id))?.voters?.let {
                 return it
             }
         }
@@ -1190,10 +1218,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         val databases = systemGraph.adopt(consensus.self) { localStores.complete(it) }
         // A store counts only together with its group.
         for (id in databases) {
-            consensus.joinGroup(
-                DatabaseRef(id.name(), id.databaseId().uuid()),
-                listOf(consensus.self),
-            )
+            consensus.joinGroup(groups.of(id), listOf(consensus.self))
         }
         globalModule.logService
             .getUserLog(ClusterService::class.java)
@@ -1212,7 +1237,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         roles =
             RolesInitializer(
                     consensus,
-                    systemDatabase,
+                    groups,
                     { databaseRepository.getSystemDatabaseContext().databaseFacade() },
                     replication::readingSystem,
                     securityComponent,
@@ -1227,7 +1252,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
      */
     private fun copySources(database: DesiredDatabase): List<HostPort> {
         val id = database.id
-        val voters = locations.of(DatabaseRef(id.name(), id.databaseId().uuid()))?.voters.orEmpty()
+        val voters = locations.of(groups.of(id))?.voters.orEmpty()
         val hosts = clusterServers.all().filter { it.id in database.hosts }
         return (voters + hosts)
             .distinctBy { it.id }
@@ -1444,7 +1469,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ),
             holders = { name ->
                 val id = systemGraph.databaseId(name)
-                id?.let { locations.of(DatabaseRef(name, it))?.voters?.map { m -> m.id.uuid } }
+                id?.let { locations.of(groups.of(name, it))?.voters?.map { m -> m.id.uuid } }
                     .orEmpty()
             },
         )
@@ -1551,6 +1576,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 singleAddress,
                 singleAddress,
                 config.get(ClusterSettings.readsOnPrimaries),
+                groups,
             )
         return DefaultRoutingService(
             logProvider,
@@ -1559,9 +1585,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 locations,
                 directory,
                 ROUTING_REFRESH_WAIT,
-            ) {
-                quarantines.of(it) != null
-            },
+                quarantined = { quarantines.of(it) != null },
+                groups = groups,
+            ),
             routing,
             routing,
             clientRoutingDomainChecker,
@@ -1655,6 +1681,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 electionTimeout,
                 logs.getLog(ForwardingLocations::class.java),
                 config.get(ClusterSettings.readsOnPrimaries),
+                groups,
             )
         globalModule.globalLife.add(
             ForwardingWatch(forwarding, remote, electionTimeout.multipliedBy(2))

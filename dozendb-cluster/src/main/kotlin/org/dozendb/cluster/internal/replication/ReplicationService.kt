@@ -11,7 +11,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.write
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.internal.ClusterMetrics
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
@@ -37,7 +39,7 @@ import org.neo4j.logging.InternalLogProvider
  */
 internal class ReplicationService(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val groups: DatabaseGroups,
     private val defaultDatabaseName: String,
     private val catchUp: CatchUp,
     private val logProvider: InternalLogProvider,
@@ -48,6 +50,10 @@ internal class ReplicationService(
     private val notLeader: (String, MemberId?) -> String,
     private val metrics: ClusterMetrics? = null,
 ) : DatabaseEventListenerAdapter(), DatabaseHosting {
+    /** The group of `system` (see [DatabaseGroups]). */
+    private val systemDatabase: DatabaseRef
+        get() = groups.system
+
     /** See [ReplicatedDatabase]. */
     override val reusesFreedIdsAtStart: Boolean = false
 
@@ -178,9 +184,7 @@ internal class ReplicationService(
      */
     fun release(namedDatabaseId: NamedDatabaseId) {
         replica(namedDatabaseId)?.let { databases.remove(namedDatabaseId.name(), it) }
-        consensus.removeGroup(
-            DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
-        )
+        consensus.removeGroup(groups.of(namedDatabaseId))
     }
 
     /** Deletes the Raft group [id] here, whose database was dropped. */
@@ -208,7 +212,7 @@ internal class ReplicationService(
      * it was removed or knows voters without itself, null while the group does not run here.
      */
     fun votes(namedDatabaseId: NamedDatabaseId): Boolean? {
-        val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+        val ref = groups.of(namedDatabaseId)
         val membership =
             try {
                 consensus.membership(ref)
@@ -220,7 +224,7 @@ internal class ReplicationService(
 
     /** Whether the group of [namedDatabaseId] stopped here, as this member is not a member. */
     fun left(namedDatabaseId: NamedDatabaseId): Boolean {
-        val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+        val ref = groups.of(namedDatabaseId)
         return try {
             consensus.membership(ref).removed
         } catch (_: ConsensusUnavailableException) {
@@ -262,6 +266,7 @@ internal class ReplicationService(
                 notLeaderMessage = { leader -> notLeader(namedDatabaseId.name(), leader) },
                 counts = metrics?.of(namedDatabaseId.name()) ?: ClusterMetrics.Counters(),
                 afterGroupChange = { afterGroupChange() },
+                groups = groups,
             )
         databases[namedDatabaseId.name()] = replica
         return replica

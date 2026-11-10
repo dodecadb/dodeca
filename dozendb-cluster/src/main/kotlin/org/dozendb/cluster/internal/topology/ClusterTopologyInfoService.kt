@@ -6,10 +6,12 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
 import org.dozendb.cluster.internal.InitialServerOptions
 import org.dozendb.cluster.internal.SystemSecondaryRecords
+import org.dozendb.cluster.internal.of
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -47,13 +49,17 @@ import org.neo4j.kernel.database.NamedDatabaseId
 internal class ClusterTopologyInfoService(
     private val community: TopologyInfoService,
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val groups: DatabaseGroups,
     private val directory: MemberDirectory,
     private val locations: DatabaseLocations,
     private val report: (MemberId) -> Map<String, String>?,
     private val probeDeadline: Duration = Duration.ofSeconds(1),
-    private val voters: () -> List<Member> = { consensus.members(systemDatabase) },
+    private val voters: () -> List<Member> = { consensus.members(groups.system) },
 ) : TopologyInfoService {
+    /** The group of `system` (see [DatabaseGroups]). */
+    private val systemDatabase: DatabaseRef
+        get() = groups.system
+
     /**
      * A server for each server of the cluster, a member of `system` or a system secondary that
      * [transaction] reads: Enabled with its record, Free without one, except that every member
@@ -222,7 +228,7 @@ internal class ClusterTopologyInfoService(
             HashSet()
         ) { own ->
             val id = own.namedDatabaseId()
-            val database = DatabaseRef(id.name(), id.databaseId().uuid())
+            val database = groups.of(id)
             val location = locations.of(database)
             val placed = placed(transaction, id.name())
             DatabaseRows.rows(

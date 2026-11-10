@@ -7,6 +7,8 @@ import java.io.IOException
 import java.io.OutputStream
 import java.time.Duration
 import java.util.UUID
+import org.dozendb.cluster.DatabaseGroups
+import org.dozendb.cluster.internal.of
 import org.dozendb.consensus.BulkSource
 import org.dozendb.consensus.Snapshot
 import org.dozendb.core.store.StoreArchive
@@ -50,6 +52,7 @@ internal class StoreCopySource(
     private val log: InternalLog,
     private val maximumWait: Duration = Duration.ofSeconds(10),
     private val served: (String) -> Unit = {},
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : BulkSource {
     override fun serve(request: ByteArray, out: OutputStream) {
         val (name, id, minimumIndex) = decodeRequest(request)
@@ -88,7 +91,9 @@ internal class StoreCopySource(
         served(name)
     }
 
-    /** The database [name], with the id [id] if one is given, once it replicates here. */
+    /**
+     * The database [name], whose group has the id [id] if one is given, once it replicates here.
+     */
     private fun awaitReplicating(name: String, id: UUID?, deadline: Long): Database {
         while (true) {
             val database =
@@ -97,7 +102,7 @@ internal class StoreCopySource(
             val refusal =
                 when {
                     database == null -> "there is no database $name here"
-                    id != null && namedDatabaseId?.databaseId()?.uuid() != id ->
+                    id != null && groups.of(namedDatabaseId!!).id != id ->
                         "database $name is $namedDatabaseId here, not the requested $id"
                     !database.isStarted || !replicating(database.namedDatabaseId) ->
                         "database $name is not replicating here"

@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal
 
 import java.util.UUID
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.internal.replication.EntryTerm
 import org.dozendb.cluster.internal.replication.LocalDatabase
 import org.dozendb.cluster.internal.replication.LocalDatabases
@@ -41,6 +42,7 @@ internal class Neo4jLocalDatabases(
     private val entryTerm: (DatabaseRef, Long) -> EntryTerm,
     private val seed: (DatabaseRef, Snapshot) -> Unit,
     private val quarantines: Quarantines,
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : LocalDatabases {
     override fun registered(): Map<NamedDatabaseId, LocalDatabase> =
         repository.registeredDatabases().mapValues { (id, context) ->
@@ -56,7 +58,9 @@ internal class Neo4jLocalDatabases(
 
     override fun complete(name: String): Boolean = stores.complete(name)
 
-    override fun groups(): Set<UUID> = replication.localGroups()
+    // By the ids of their databases: `system`'s group may have one of its own.
+    override fun groups(): Set<UUID> =
+        replication.localGroups().mapTo(HashSet(), groups::databaseOf)
 
     override fun secondaries(): Set<UUID> = secondaries.marked()
 
@@ -109,7 +113,7 @@ internal class Neo4jLocalDatabases(
 
     override fun deleteStore(name: String) = stores.delete(name)
 
-    override fun removeGroup(id: UUID) = replication.removeGroup(id)
+    override fun removeGroup(id: UUID) = replication.removeGroup(groups.groupOf(id))
 
     override fun unmark(id: UUID) = secondaries.unmark(id)
 
@@ -134,7 +138,7 @@ internal class Neo4jLocalDatabases(
      * from its first entry, or asks for a copy if its leader no longer holds that.
      */
     private fun toPrimary(id: NamedDatabaseId): ModeSwitch {
-        val ref = DatabaseRef(id.name(), id.databaseId().uuid())
+        val ref = groups.of(id)
         // It pulls no more meanwhile, so that its last transaction stays its last.
         val last = secondaries.stopPulling(id) ?: return ModeSwitch.NEEDS_COPY
         val index = last.consensusIndex()
@@ -154,8 +158,7 @@ internal class Neo4jLocalDatabases(
         // Reported in its mode while copied.
         hosting.host(id, mode)
         when (mode) {
-            CopyMode.PRIMARY ->
-                stores.copyNew(source, DatabaseRef(id.name(), id.databaseId().uuid()))
+            CopyMode.PRIMARY -> stores.copyNew(source, groups.of(id))
             CopyMode.SECONDARY -> secondaries.copy(source, id)
         }
     }

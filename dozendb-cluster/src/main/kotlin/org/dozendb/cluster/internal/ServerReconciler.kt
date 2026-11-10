@@ -10,6 +10,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -63,7 +64,7 @@ import org.neo4j.logging.InternalLog
  */
 class ServerReconciler(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val groups: DatabaseGroups,
     private val system: () -> GraphDatabaseService,
     private val reading: (() -> Unit) -> Unit,
     private val leading: () -> Boolean,
@@ -78,6 +79,10 @@ class ServerReconciler(
     private val retryDelay: Duration = Duration.ofSeconds(1),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
 ) : AutoCloseable {
+    /** The group of `system` (see [DatabaseGroups]). */
+    private val systemDatabase: DatabaseRef
+        get() = groups.system
+
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "dozendb-servers").apply { isDaemon = true }
@@ -327,7 +332,7 @@ class ServerReconciler(
         for (database in Placements.placed(tx).filter { it.copies.isEmpty() }) {
             val node = Placements.database(tx, database.name) ?: continue
             val ref =
-                DatabaseRef(
+                groups.of(
                     database.name,
                     UUID.fromString(
                         node.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY) as String

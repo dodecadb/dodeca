@@ -3,7 +3,9 @@ package org.dozendb.cluster.internal.secondaries
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 import kotlin.math.max
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.internal.ClusterMetrics
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.replication.ClusterLeaseService
 import org.dozendb.cluster.internal.replication.CommitFailure
 import org.dozendb.cluster.internal.replication.ForeignStoreException
@@ -52,6 +54,8 @@ import org.neo4j.storageengine.api.cursor.StoreCursors
  *
  * @property counts the database's metrics, of the pulls among them.
  * @property afterApply runs after each chain of pulled transactions is applied.
+ * @property groups the groups of the databases: the database's [ref] names its group, whose members
+ *   it pulls from.
  */
 internal class SecondaryDatabase(
     val namedDatabaseId: NamedDatabaseId,
@@ -60,8 +64,10 @@ internal class SecondaryDatabase(
     private val counts: ClusterMetrics.Counters,
     private val log: InternalLog,
     private val afterApply: () -> Unit = {},
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : HostedDatabase {
-    val ref = DatabaseRef(namedDatabaseId.name(), namedDatabaseId.databaseId().uuid())
+    val ref: DatabaseRef
+        get() = groups.of(namedDatabaseId)
 
     override val hostedOnMode: HostedOnMode = HostedOnMode.REPLICA
 

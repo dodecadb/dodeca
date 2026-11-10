@@ -11,7 +11,9 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.internal.ClusterMetrics
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.reads.ReadConsistencyException
 import org.dozendb.cluster.internal.replication.DatabaseControl
 import org.dozendb.cluster.internal.replication.ForeignStoreException
@@ -80,6 +82,7 @@ internal class Secondaries(
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val afterApply: (NamedDatabaseId) -> Unit = {},
     private val replacing: (NamedDatabaseId, () -> Unit) -> Unit = { _, replace -> replace() },
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : DatabaseEventListenerAdapter() {
     private val log = logProvider.getLog(Secondaries::class.java)
     private val databases = ConcurrentHashMap<String, Puller>()
@@ -108,6 +111,7 @@ internal class Secondaries(
                 metrics.of(id.name()),
                 logProvider.getLog(SecondaryDatabase::class.java),
                 afterApply = { afterApply(id) },
+                groups = groups,
             )
         databases[id.name()] = Puller(secondary)
         return secondary
@@ -588,6 +592,9 @@ internal class Secondaries(
         copier.shutdownNow()
     }
 
+    /** The group of the database [id]. */
+    private fun ref(id: NamedDatabaseId): DatabaseRef = groups.of(id)
+
     private companion object {
         /** How much a pull carries: the transactions until the one that reaches it. */
         const val PULL_BYTES = 4 shl 20
@@ -600,7 +607,5 @@ internal class Secondaries(
 
         /** How soon a secondary pulls again while reads wait for what it lacks. */
         val WANTED_RETRY: Duration = Duration.ofMillis(50)
-
-        fun ref(id: NamedDatabaseId) = DatabaseRef(id.name(), id.databaseId().uuid())
     }
 }

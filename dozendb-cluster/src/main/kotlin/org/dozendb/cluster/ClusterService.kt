@@ -91,7 +91,7 @@ class ServerIdChangedException(message: String) : RuntimeException(message)
  */
 class ClusterService(
     private val consensus: ConsensusLog,
-    val systemDatabase: DatabaseRef,
+    val groups: DatabaseGroups,
     private val formation: ClusterFormation,
     private val stores: LocalStores,
     private val membershipStore: MembershipStore,
@@ -102,11 +102,15 @@ class ClusterService(
     val formatLevels: FormatLevels = FormatLevels.SUPPORTED,
     private val formatLevelStore: FormatLevelStore? = null,
     private val upgradeConfirmation: Duration = Duration.ofSeconds(30),
-    private val servers: ClusterServers = ClusterServers(consensus, systemDatabase),
+    private val servers: ClusterServers = ClusterServers(consensus, groups),
     private val systemMode: CopyMode = CopyMode.PRIMARY,
     private val systemHosting: SystemHosting? = null,
     private val unresolvedRetry: Duration = Duration.ofSeconds(15),
 ) {
+    /** The group of `system` (see [DatabaseGroups]). */
+    val systemDatabase: DatabaseRef
+        get() = groups.system
+
     private var statusListener: AutoCloseable? = null
     private val levelRefresh: ExecutorService = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "dozendb-format-level").apply { isDaemon = true }

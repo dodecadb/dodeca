@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal
 import java.io.ByteArrayOutputStream
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.WaitingLook
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.fake.InMemoryConsensus
@@ -13,6 +14,7 @@ import org.neo4j.logging.log4j.Log4jLogProvider
 class ServerReconcilerTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val leader = consensus.newMember()
 
     @Test
@@ -25,7 +27,7 @@ class ServerReconcilerTest {
         val reconciler =
             ServerReconciler(
                 leader,
-                system,
+                groups,
                 { error("The look reads nothing") },
                 { look.read() },
                 leading = { true },

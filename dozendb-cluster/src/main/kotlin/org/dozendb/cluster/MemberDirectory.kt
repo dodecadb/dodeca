@@ -45,7 +45,7 @@ import org.neo4j.logging.Log
  */
 class MemberDirectory(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val databaseGroups: DatabaseGroups,
     private val selfBoltAddress: () -> HostPort?,
     private val selfRoutingAddress: () -> HostPort?,
     private val selfDatabases: () -> List<DatabaseState>,
@@ -55,9 +55,13 @@ class MemberDirectory(
     private val selfLastCommitted: () -> Map<UUID, Long> = { emptyMap() },
     private val selfReport: () -> Map<String, String> = { emptyMap() },
     private val demandDeadline: Duration = Duration.ofSeconds(1),
-    private val servers: () -> List<Member> = { consensus.members(systemDatabase) },
+    private val servers: () -> List<Member> = { consensus.members(databaseGroups.system) },
     private val bootstrap: () -> List<HostPort> = { emptyList() },
 ) {
+    /** The group of `system` (see [DatabaseGroups]). */
+    private val systemDatabase: DatabaseRef
+        get() = databaseGroups.system
+
     private val addresses = ConcurrentHashMap<MemberId, HostPort>()
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
     private val groups = ConcurrentHashMap<MemberId, Map<UUID, List<Member>>>()

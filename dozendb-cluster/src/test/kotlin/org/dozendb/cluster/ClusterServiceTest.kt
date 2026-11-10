@@ -21,6 +21,7 @@ import org.neo4j.logging.NullLog
 class ClusterServiceTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val metadata =
         mapOf(MemberMetadata.NEO4J_VERSION to "5.26.27", MemberMetadata.STORES_READY to "true")
     private val logs = List(3) { consensus.newMember(metadata = metadata) }
@@ -94,7 +95,7 @@ class ClusterServiceTest {
     ) =
         ClusterService(
             logs[index],
-            system,
+            groups,
             ClusterFormation(logs[index], addresses, "5.26.27", log, sleep = {}),
             localStores,
             memberships[index],
@@ -111,7 +112,7 @@ class ClusterServiceTest {
         val secondary =
             ClusterService(
                 logs[0],
-                system,
+                groups,
                 ClusterFormation(logs[0], addresses, "5.26.27", log, sleep = {}),
                 stores[0],
                 memberships[0],
@@ -161,7 +162,7 @@ class ClusterServiceTest {
         val service =
             ClusterService(
                 alone,
-                system,
+                groups,
                 ClusterFormation(alone, listOf(alone.self.raftAddress), "5.26.27", log, sleep = {}),
                 FakeStores(),
                 InMemoryMembershipStore(),
@@ -281,7 +282,7 @@ class ClusterServiceTest {
         val joiningLog = consensus.newMember(metadata = joiningMetadata)
         ClusterService(
                 joiningLog,
-                system,
+                groups,
                 ClusterFormation(joiningLog, addresses, "5.26.27", log, sleep = {}),
                 FakeStores(),
                 InMemoryMembershipStore(),
@@ -308,7 +309,7 @@ class ClusterServiceTest {
         val joining =
             ClusterService(
                 joiningLog,
-                system,
+                groups,
                 ClusterFormation(joiningLog, addresses, "5.26.27", log, sleep = {}),
                 stores,
                 store,
@@ -442,7 +443,7 @@ class ClusterServiceTest {
         val joining =
             ClusterService(
                 joiningLog,
-                system,
+                groups,
                 ClusterFormation(joiningLog, addresses, "5.26.27", log, sleep = {}),
                 FakeStores(),
                 InMemoryMembershipStore(),
@@ -467,7 +468,7 @@ class ClusterServiceTest {
             logs.indices.map { index ->
                 ClusterService(
                     logs[index],
-                    system,
+                    groups,
                     ClusterFormation(
                         logs[index],
                         addresses,
@@ -668,7 +669,7 @@ class ClusterServiceTest {
         val service =
             ClusterService(
                 logs[0],
-                system,
+                groups,
                 ClusterFormation(logs[0], addresses, "5.26.27", log, sleep = {}),
                 FakeStores(existed = true),
                 InMemoryMembershipStore(),

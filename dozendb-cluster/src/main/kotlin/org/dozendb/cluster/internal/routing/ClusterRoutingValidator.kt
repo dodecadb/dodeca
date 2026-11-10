@@ -2,7 +2,9 @@ package org.dozendb.cluster.internal.routing
 
 import java.time.Duration
 import java.util.UUID
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.MemberDirectory
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.topology.DatabaseLocations
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.core.edition.DatabaseState
@@ -25,6 +27,7 @@ internal class ClusterRoutingValidator(
     private val directory: MemberDirectory,
     private val refreshWait: Duration,
     private val quarantined: (UUID) -> Boolean = { false },
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : RoutingTableServiceValidator {
     private val community = LocalRoutingTableServiceValidator(local)
 
@@ -42,7 +45,7 @@ internal class ClusterRoutingValidator(
         if (local.isPresent(reference) && !quarantined(id.databaseId().uuid())) {
             return here(reference)
         }
-        val database = DatabaseRef(id.name(), id.databaseId().uuid())
+        val database = groups.of(id)
         if (running(database)) return
         // What the members reported last may be from before it started, as right after CREATE
         // DATABASE ... WAIT returned.

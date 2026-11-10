@@ -3,6 +3,7 @@ package org.dozendb.cluster.internal.topology
 import java.time.Duration
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
@@ -19,6 +20,7 @@ import org.neo4j.logging.NullLog
 class DatabaseLocationsTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val films = DatabaseRef("films", UUID.randomUUID())
 
     /** A member that hosts only `system`, and three that host films too, the first leading it. */
@@ -70,7 +72,7 @@ class DatabaseLocationsTest {
         val directory =
             MemberDirectory(
                 member,
-                system,
+                groups,
                 { null },
                 { null },
                 { emptyList() },

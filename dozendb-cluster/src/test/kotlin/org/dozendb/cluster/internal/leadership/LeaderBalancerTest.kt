@@ -5,6 +5,7 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.DatabaseStatesCodec
 import org.dozendb.cluster.MemberDirectory
 import org.dozendb.cluster.MemberMetadata
@@ -24,6 +25,7 @@ import org.neo4j.logging.log4j.Log4jLogProvider
 class LeaderBalancerTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val films = DatabaseRef("films", UUID.randomUUID())
     private val members =
         List(3) {
@@ -43,7 +45,7 @@ class LeaderBalancerTest {
     private val directory =
         MemberDirectory(
             leader,
-            system,
+            groups,
             { null },
             { null },
             { emptyList() },

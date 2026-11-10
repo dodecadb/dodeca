@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Test
 class ClusterServersTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val logs = List(3) { consensus.newMember() }
     private val secondary = Member(MemberId(UUID(9, 9)), HostPort("secondary", 7000))
 
@@ -29,7 +30,7 @@ class ClusterServersTest {
 
     @Test
     fun `the servers are the voters of system, then the system secondaries`() {
-        val servers = ClusterServers(logs[0], system, recorded = { listOf(secondary) })
+        val servers = ClusterServers(logs[0], groups, recorded = { listOf(secondary) })
 
         assertThat(servers.all())
             .containsExactly(*(logs.map { it.self } + secondary).toTypedArray())
@@ -38,7 +39,7 @@ class ClusterServersTest {
 
     @Test
     fun `a server that both votes and is recorded a secondary counts once, as a voter`() {
-        val servers = ClusterServers(logs[0], system, recorded = { listOf(logs[2].self) })
+        val servers = ClusterServers(logs[0], groups, recorded = { listOf(logs[2].self) })
 
         assertThat(servers.all()).containsExactly(*logs.map { it.self }.toTypedArray())
     }
@@ -50,7 +51,7 @@ class ClusterServersTest {
         val servers =
             ClusterServers(
                 logs[0],
-                system,
+                groups,
                 recorded = {
                     reads.incrementAndGet()
                     recorded
@@ -72,7 +73,7 @@ class ClusterServersTest {
         val servers =
             ClusterServers(
                 logs[0],
-                system,
+                groups,
                 recorded = {
                     check(readable) { "system is not running" }
                     listOf(secondary)
@@ -94,7 +95,7 @@ class ClusterServersTest {
         val servers =
             ClusterServers(
                 outside,
-                system,
+                groups,
                 recorded = { listOf(outside.self) },
                 pullsSystem = { true },
                 reportedVoters = { reported },

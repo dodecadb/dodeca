@@ -2,9 +2,10 @@ package org.dozendb.cluster.internal.routing
 
 import java.time.Duration
 import org.dozendb.cluster.ClusterRouting
+import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.MemberDirectory
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.topology.DatabaseLocations
-import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.routing.ClientSideRoutingTableProvider
@@ -32,13 +33,14 @@ internal class ClusterRoutingTableProvider(
     private val local: ClientSideRoutingTableProvider,
     private val serverSide: ServerSideRoutingTableProvider,
     private val readsOnPrimaries: Boolean = true,
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : ClientSideRoutingTableProvider, ServerSideRoutingTableProvider {
     override fun getRoutingResultForClientSideRouting(
         databaseReference: DatabaseReferenceImpl.Internal,
         routingContext: MapValue,
     ): RoutingResult {
         val id = databaseReference.databaseId()
-        val database = DatabaseRef(id.name(), id.databaseId().uuid())
+        val database = groups.of(id)
         val location =
             locations.of(database)?.takeIf { it.local || it.leader != null }
                 ?: run {

@@ -64,7 +64,7 @@ import org.neo4j.logging.Log
  */
 class MembershipReconciler(
     private val consensus: ConsensusLog,
-    private val systemDatabase: DatabaseRef,
+    private val groups: DatabaseGroups,
     private val databases: () -> Map<DatabaseRef, Set<MemberId>>,
     private val log: Log,
     private val changeTimeout: Duration = Duration.ofMinutes(10),
@@ -76,6 +76,10 @@ class MembershipReconciler(
     private val nanoTime: () -> Long = System::nanoTime,
     private val systemSecondaries: () -> List<Member> = { emptyList() },
 ) : AutoCloseable {
+    /** The group of `system` (see [DatabaseGroups]). */
+    private val systemDatabase: DatabaseRef
+        get() = groups.system
+
     private val scheduler: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
             Thread(runnable, "dozendb-membership").apply { isDaemon = true }

@@ -66,6 +66,12 @@ object MemberMetadata {
      */
     const val SYSTEM_ID = "dozendb.systemId"
 
+    /**
+     * The id of the Raft group of `system` on the member (see [DatabaseGroups]): the database's id,
+     * unless a recovery re-formed the group under an id of its own.
+     */
+    const val SYSTEM_GROUP = "dozendb.systemGroup"
+
     /** The databases on the member and their states, for WAIT; see [DatabaseStatesCodec]. */
     const val DATABASES = "dozendb.databases"
 

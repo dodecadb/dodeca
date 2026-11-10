@@ -83,6 +83,20 @@ class MembershipFileTest {
     }
 
     @Test
+    fun `the record keeps the group of system once re-formed, which older records lack`() {
+        val group = UUID.randomUUID()
+        file.write(MembershipRecord(MemberState.MEMBER, systemGroup = group))
+
+        assertThat(file.read()!!.systemGroup).isEqualTo(group)
+
+        file.write(MembershipRecord(MemberState.MEMBER))
+
+        assertThat(file.read()!!.systemGroup).isNull()
+        assertThat(Files.readString(directory.resolve("raft").resolve("membership")))
+            .doesNotContain("systemGroup")
+    }
+
+    @Test
     fun `a damaged record is reported`() {
         Files.createDirectories(directory.resolve("raft"))
         Files.writeString(

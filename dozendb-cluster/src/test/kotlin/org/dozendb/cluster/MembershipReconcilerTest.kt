@@ -22,6 +22,7 @@ import org.neo4j.logging.log4j.Log4jLogProvider
 class MembershipReconcilerTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val films = DatabaseRef("films", UUID.randomUUID())
     private val logs = List(3) { consensus.newMember() }
     private val initial = logs.map { it.self }
@@ -38,7 +39,7 @@ class MembershipReconcilerTest {
     ) =
         MembershipReconciler(
             member,
-            system,
+            groups,
             { mapOf(films to member.members(system).map { it.id }.filter(hosts).toSet()) },
             log,
             changes = { it.run() },
@@ -128,7 +129,7 @@ class MembershipReconcilerTest {
     private fun shrinking(now: () -> Long) =
         MembershipReconciler(
             leader,
-            system,
+            groups,
             { mapOf(films to setOf(leader.self.id)) },
             NullLog.getInstance(),
             changes = { it.run() },

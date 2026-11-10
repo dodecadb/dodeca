@@ -29,6 +29,7 @@ import org.neo4j.logging.NullLog
 class MemberDirectoryTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
+    private val groups = DatabaseGroups()
     private val logs =
         List(3) { index ->
             consensus.newMember(
@@ -44,7 +45,7 @@ class MemberDirectoryTest {
     private val directory =
         MemberDirectory(
             logs[0],
-            system,
+            groups,
             { HostPort("self", 7687) },
             { HostPort("self", 7688) },
             { selfDatabases },
@@ -75,7 +76,7 @@ class MemberDirectoryTest {
         val bootstrapping =
             MemberDirectory(
                     outside,
-                    system,
+                    groups,
                     { null },
                     { null },
                     { emptyList() },
@@ -427,7 +428,7 @@ class MemberDirectoryTest {
     private fun directory(demandDeadline: Duration) =
         MemberDirectory(
                 logs[0],
-                system,
+                groups,
                 { HostPort("self", 7687) },
                 { HostPort("self", 7688) },
                 { selfDatabases },

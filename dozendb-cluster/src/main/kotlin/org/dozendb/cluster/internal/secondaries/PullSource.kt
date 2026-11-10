@@ -1,6 +1,8 @@
 package org.dozendb.cluster.internal.secondaries
 
 import java.io.OutputStream
+import org.dozendb.cluster.DatabaseGroups
+import org.dozendb.cluster.internal.of
 import org.dozendb.cluster.internal.secondaries.PullProtocol.Status
 import org.dozendb.consensus.BulkSource
 import org.dozendb.core.store.CommittedTransactions
@@ -21,6 +23,7 @@ internal class PullSource(
     private val databases: () -> DatabaseContextProvider<*>,
     private val log: InternalLog,
     private val served: (String) -> Unit = {},
+    private val groups: DatabaseGroups = DatabaseGroups(),
 ) : BulkSource {
     override fun serve(request: ByteArray, out: OutputStream) {
         val pull = PullProtocol.decode(request)
@@ -29,7 +32,7 @@ internal class PullSource(
         val refusal =
             when {
                 database == null -> "there is no database $name here"
-                database.namedDatabaseId.databaseId().uuid() != pull.database.id ->
+                groups.of(database.namedDatabaseId).id != pull.database.id ->
                     "database $name is ${database.namedDatabaseId} here, not ${pull.database.id}"
                 !database.isStarted -> "database $name is not running here"
                 else -> null
