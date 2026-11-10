@@ -29,9 +29,9 @@ import org.neo4j.scheduler.JobMonitoringParams
 
 /**
  * The metrics of this DBMS, reported through the exporters the settings enable: CSV files,
- * Prometheus and JMX. A database's metrics are registered when it starts and removed when it stops,
- * is dropped or panics, as Neo4j Enterprise documents: "Database metrics are only available during
- * the lifetime of the database".
+ * Graphite, Prometheus and JMX. A database's metrics are registered when it starts and removed when
+ * it stops, is dropped or panics, as Neo4j Enterprise documents: "Database metrics are only
+ * available during the lifetime of the database".
  *
  * Added to the global life before the databases start, so it sees every database start.
  */
@@ -76,7 +76,19 @@ private constructor(
             null
         }
 
-    private var csvJob: JobHandle<*>? = null
+    private val graphite: GraphiteReporter? =
+        if (config.get(MetricsSettings.graphiteEnabled)) {
+            GraphiteReporter(
+                registry,
+                config.get(MetricsSettings.graphiteServer),
+                globalModule.globalClock,
+                log,
+            )
+        } else {
+            null
+        }
+
+    private val jobs = mutableListOf<JobHandle<*>>()
 
     private val queries = QueryMetrics()
     private var dbms: MetricRegistry.MetricGroup? = null
@@ -119,37 +131,46 @@ private constructor(
         for (contributor in contributors()) contributor.dbms(dbms)
         jmx?.start()
         prometheus?.start()
-        csvJob = csv?.let { csv ->
+        csv?.let {
             schedule(
                 Group.METRICS_CSV_WRITE,
                 "Writes the metrics to CSV files",
                 MetricsSettings.csvInterval,
-                csv::report,
+                it::report,
+            )
+        }
+        graphite?.let {
+            schedule(
+                Group.METRICS_GRAPHITE_WRITE,
+                "Sends the metrics to Graphite",
+                MetricsSettings.graphiteInterval,
+                it::report,
             )
         }
     }
 
-    /** Runs [report] every [interval] on Neo4j's thread group [group] for it. */
+    /** Runs [report] every [interval] on Neo4j's thread group [group] for it, until stopped. */
     private fun schedule(
         group: Group,
         description: String,
         interval: Setting<Duration>,
         report: () -> Unit,
-    ): JobHandle<*> {
+    ) {
         val millis = config.get(interval).toMillis()
-        return globalModule.jobScheduler.scheduleRecurring(
-            group,
-            JobMonitoringParams.systemJob(description),
-            report,
-            millis,
-            millis,
-            TimeUnit.MILLISECONDS,
-        )
+        jobs +=
+            globalModule.jobScheduler.scheduleRecurring(
+                group,
+                JobMonitoringParams.systemJob(description),
+                report,
+                millis,
+                millis,
+                TimeUnit.MILLISECONDS,
+            )
     }
 
     override fun stop() {
-        csvJob?.cancel()
-        csvJob = null
+        jobs.forEach(JobHandle<*>::cancel)
+        jobs.clear()
         prometheus?.stop()
         jmx?.stop()
         listeners.forEach(globalModule.globalMonitors::removeMonitorListener)
@@ -236,6 +257,7 @@ private constructor(
             val config = globalModule.globalConfig
             val exported =
                 config.get(MetricsSettings.csvEnabled) ||
+                    config.get(MetricsSettings.graphiteEnabled) ||
                     config.get(MetricsSettings.jmxEnabled) ||
                     config.get(MetricsSettings.prometheusEnabled)
             return if (config.get(MetricsSettings.enabled) && exported) {

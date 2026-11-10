@@ -920,7 +920,6 @@ error, and their procedures do not exist.
   `db.memory.pagecache.warmup.*`, which have no effect.
 - **Shared query caches**: `server.memory.query_cache.sharing_enabled` and
   `shared_cache_num_entries`.
-- **Graphite metrics** (`server.metrics.graphite.*`).
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,
   `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
   `server.backup.exec_connector.*` and

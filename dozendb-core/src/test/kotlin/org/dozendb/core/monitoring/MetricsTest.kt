@@ -2,6 +2,8 @@ package org.dozendb.core.monitoring
 
 import java.io.ByteArrayInputStream
 import java.lang.management.ManagementFactory
+import java.net.InetAddress
+import java.net.ServerSocket
 import java.nio.file.Path
 import java.time.Duration
 import java.util.zip.GZIPInputStream
@@ -175,10 +177,37 @@ class MetricsTest {
     }
 
     @Test
-    fun `Enterprise's Graphite settings are refused, not ignored`() {
-        val setting = "server.metrics.graphite.enabled"
-        assertThatThrownBy { Config.newBuilder().setRaw(mapOf(setting to "true")).build() }
-            .hasMessageContaining("Unrecognized setting")
-            .hasMessageContaining(setting)
+    fun `Enterprise's Graphite settings have Enterprise's defaults`() {
+        val config =
+            Config.defaults(GraphDatabaseSettings.default_listen_address, SocketAddress("10.0.0.1"))
+
+        assertThat(config.get(MetricsSettings.graphiteEnabled)).isFalse()
+        assertThat(config.get(MetricsSettings.graphiteServer))
+            .isEqualTo(SocketAddress("10.0.0.1", 2003))
+        assertThat(config.get(MetricsSettings.graphiteInterval)).isEqualTo(Duration.ofSeconds(30))
+    }
+
+    @Test
+    fun `sends the metrics to Graphite every interval`() {
+        ServerSocket(0, 50, InetAddress.getLoopbackAddress()).use { graphite ->
+            graphite.soTimeout = 30_000
+            server(
+                    MetricsSettings.graphiteEnabled to true,
+                    MetricsSettings.graphiteServer to
+                        SocketAddress(graphite.inetAddress.hostAddress, graphite.localPort),
+                    MetricsSettings.graphiteInterval to Duration.ofMillis(100),
+                )
+                .use { server ->
+                    server.start()
+
+                    repeat(2) {
+                        val lines =
+                            graphite.accept().use {
+                                it.getInputStream().bufferedReader().readLines()
+                            }
+                        assertThat(lines).anyMatch { it.startsWith("neo4j.dbms.vm.heap.used ") }
+                    }
+                }
+        }
     }
 }

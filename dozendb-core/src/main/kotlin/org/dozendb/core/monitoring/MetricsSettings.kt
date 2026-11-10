@@ -24,8 +24,8 @@ import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 
 /**
- * Neo4j Enterprise's metrics settings, with Enterprise's names and defaults, for the exporters
- * DozenDB implements: CSV files, Prometheus and JMX. Registered in `META-INF/services`.
+ * Neo4j Enterprise's metrics settings, with Enterprise's names and defaults, for its exporters: CSV
+ * files, Graphite, Prometheus and JMX. Registered in `META-INF/services`.
  */
 class MetricsSettings : SettingsDeclaration {
     companion object {
@@ -137,6 +137,32 @@ class MetricsSettings : SettingsDeclaration {
             newBuilder("server.directories.metrics", PATH, Path.of("metrics"))
                 .setDependency(GraphDatabaseSettings.neo4j_home)
                 .immutable()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "Sends the metrics to Graphite at server.metrics.graphite.server every " +
+                "server.metrics.graphite.interval, in Graphite's plaintext protocol over TCP."
+        )
+        val graphiteEnabled: Setting<Boolean> =
+            newBuilder("server.metrics.graphite.enabled", BOOL, false).build()
+
+        @JvmField
+        @field:Description(
+            "The address of the Graphite server. A port without a host uses " +
+                "server.default_listen_address. The JVM caches the address a host name " +
+                "resolves to, as `networkaddress.cache.ttl` says."
+        )
+        val graphiteServer: Setting<SocketAddress> =
+            newBuilder("server.metrics.graphite.server", SOCKET_ADDRESS, SocketAddress(2003))
+                .setDependency(GraphDatabaseSettings.default_listen_address)
+                .build()
+
+        @JvmField
+        @field:Description("How often the metrics are sent to Graphite.")
+        val graphiteInterval: Setting<Duration> =
+            newBuilder("server.metrics.graphite.interval", DURATION, Duration.ofSeconds(30))
+                .addConstraint(min(Duration.ofMillis(1)))
                 .build()
 
         @JvmField
