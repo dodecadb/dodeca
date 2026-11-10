@@ -761,6 +761,9 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   scheduler, the groups that run jobs, and the latest runs that failed. Where
   Enterprise's documentation says nothing, job ids are `job-<number>`, and times
   are shown in `db.temporal.timezone`, as Neo4j's other procedures show them.
+  `dbms.listPools` lists the member's memory pools, and in them the pools of
+  the databases the user may see in `SHOW DATABASES`; a pool without a limit
+  has `Unlimited` free and in total.
 
 ## Not supported
 
@@ -814,8 +817,7 @@ error, and their procedures do not exist.
   (`dbms.integrations.cloud_storage.*`).
 - **CSV and Graphite metrics** (`server.metrics.csv.*`,
   `server.metrics.graphite.*`, `server.directories.metrics`).
-- **Monitoring procedures**: `dbms.listPools`, `db.listLocks`,
-  and `dbms.listActiveLocks`.
+- **Monitoring procedures**: `db.listLocks` and `dbms.listActiveLocks`.
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,
   `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
   `server.backup.exec_connector.*` and

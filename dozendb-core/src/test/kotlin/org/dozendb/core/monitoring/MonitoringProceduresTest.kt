@@ -11,6 +11,11 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.common.Subject
+import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.driver.AuthTokens
+import org.neo4j.driver.GraphDatabase
+import org.neo4j.driver.SessionConfig
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.scheduler.Group
 import org.neo4j.scheduler.JobMonitoringParams
@@ -50,6 +55,69 @@ class MonitoringProceduresTest {
         assertThat(server.rows("CALL db.checkpoint() YIELD success", SYSTEM))
             .describedAs("on system")
             .containsExactly(mapOf("success" to true))
+    }
+
+    @Test
+    fun `dbms listPools lists the memory pools and the pools of each database`() {
+        server.administer("CREATE DATABASE films WAIT")
+
+        val rows = server.rows("CALL dbms.listPools()", SYSTEM)
+
+        val pools = rows.map { it["pool"] to it["databaseName"] }
+        assertThat(pools)
+            .contains("Transaction" to "", "Transaction" to "neo4j", "Transaction" to "films")
+        for (row in rows) {
+            assertThat(row.keys)
+                .containsExactlyInAnyOrder(
+                    "pool",
+                    "databaseName",
+                    "heapMemoryUsed",
+                    "heapMemoryUsedBytes",
+                    "nativeMemoryUsed",
+                    "nativeMemoryUsedBytes",
+                    "freeMemory",
+                    "freeMemoryBytes",
+                    "totalPoolMemory",
+                    "totalPoolMemoryBytes",
+                )
+            assertThat(row.values).allMatch { it is String }
+            assertThat(row["heapMemoryUsedBytes"] as String)
+                .describedAs("$row")
+                .containsOnlyDigits()
+        }
+    }
+
+    @Test
+    fun `dbms listPools shows a user the pools of the databases the user may see`() {
+        server.close()
+        server =
+            StandaloneServer(
+                    root.resolve("secured"),
+                    mapOf(
+                        GraphDatabaseSettings.auth_enabled to true,
+                        BoltConnector.enabled to true,
+                    ),
+                )
+                .also { it.start() }
+        server.administer("CREATE DATABASE films WAIT")
+        server.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+
+        val pools =
+            GraphDatabase.driver(
+                    "bolt://${server.boltAddress()}",
+                    AuthTokens.basic("alice", "alice-secret-1"),
+                )
+                .use { driver ->
+                    driver.session(SessionConfig.forDatabase(SYSTEM)).use { session ->
+                        session.run("CALL dbms.listPools()").list {
+                            it["pool"].asString() to it["databaseName"].asString()
+                        }
+                    }
+                }
+
+        // The role PUBLIC gives access to the default database only.
+        assertThat(pools).contains("Transaction" to "", "Transaction" to "neo4j")
+        assertThat(pools.map { it.second }).doesNotContain("films")
     }
 
     private val scheduler: JobScheduler

@@ -179,6 +179,7 @@ class StandaloneIT {
                 "dbms.scheduler.jobs",
                 "dbms.scheduler.groups",
                 "dbms.scheduler.failedJobs",
+                "dbms.listPools",
                 "dbms.setDefaultDatabase",
             )
         assertThat(names(dozenDb, "SHOW FUNCTIONS YIELD name"))
