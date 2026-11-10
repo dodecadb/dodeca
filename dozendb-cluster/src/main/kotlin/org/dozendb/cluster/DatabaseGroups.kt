@@ -15,10 +15,13 @@ import org.dozendb.consensus.DatabaseRef
  * and store copies, which name databases, and in Raft groups and leaders, which name groups.
  */
 class DatabaseGroups(systemGroup: UUID = SYSTEM_DATABASE) {
-    /** The id of the group of `system`. */
+    /**
+     * The id of the group of `system`. Set by the cluster service while it starts, before `system`
+     * does, as this member re-forms the group or joins a group that re-formed it.
+     */
     @Volatile
     var systemGroup: UUID = systemGroup
-        private set
+        internal set
 
     /** The group of `system`. */
     val system: DatabaseRef

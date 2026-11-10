@@ -72,6 +72,26 @@ object MemberMetadata {
      */
     const val SYSTEM_GROUP = "dozendb.systemGroup"
 
+    /**
+     * The id of the member's store of `system` ([StoreState.storeId]), read before `system` starts
+     * and after a copy replaced it: the copies of one cluster's `system` share it, so that it tells
+     * a cluster whose `system` group was re-formed from another cluster.
+     */
+    const val SYSTEM_STORE = "dozendb.systemStore"
+
+    /**
+     * "true" while the member waits to re-form `system`, or to join a group that re-formed it,
+     * after `neo4j-admin dbms unbind-system-db` removed its Raft state of it. Its [SYSTEM_GROUP] is
+     * then the group it was unbound from.
+     */
+    const val SYSTEM_UNBOUND = "dozendb.systemUnbound"
+
+    /**
+     * While [SYSTEM_UNBOUND], the id of the last transaction of the member's store of `system`: the
+     * member with the latest store re-forms `system` from it.
+     */
+    const val SYSTEM_LAST_TRANSACTION = "dozendb.systemLastTransaction"
+
     /** The databases on the member and their states, for WAIT; see [DatabaseStatesCodec]. */
     const val DATABASES = "dozendb.databases"
 
@@ -136,6 +156,14 @@ object MemberMetadata {
 
         fun next(): String = "$run/${last.incrementAndGet()}"
     }
+
+    /**
+     * The group of `system` a member reports ([SYSTEM_GROUP]): the database's id if it reports
+     * none, as members of versions before re-forming.
+     */
+    fun systemGroup(report: Map<String, String>): UUID =
+        report[SYSTEM_GROUP]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            ?: DatabaseGroups.SYSTEM_DATABASE
 
     /** The items of a list reported separated by commas. */
     fun splitList(value: String): List<String> = value.split(',').filter { it.isNotEmpty() }

@@ -20,6 +20,7 @@ import org.dozendb.consensus.Snapshot
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.HttpConnector
@@ -28,8 +29,12 @@ import org.neo4j.dbms.api.DatabaseManagementServiceBuilder
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
+import org.neo4j.io.pagecache.impl.muninn.StandalonePageCacheFactory
+import org.neo4j.io.pagecache.tracing.PageCacheTracer
+import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.neo4j.logging.NullLog
+import org.neo4j.storageengine.api.TransactionIdStore
 
 /** Copies the databases of a running standalone DBMS while it writes, and starts the copies. */
 class StoreCopyTest {
@@ -41,10 +46,15 @@ class StoreCopyTest {
             GraphDatabaseSettings.DEFAULT_DATABASE_NAME,
         )
     private val services = mutableListOf<DatabaseManagementService>()
+    private val scheduler = JobSchedulerFactory.createInitialisedScheduler()
+    private val pageCache =
+        StandalonePageCacheFactory.createPageCache(fs, scheduler, PageCacheTracer.NULL)
 
     @AfterEach
     fun stop() {
         services.forEach { it.shutdown() }
+        pageCache.close()
+        scheduler.close()
     }
 
     private fun dbms(home: Path): DatabaseManagementService =
@@ -82,6 +92,8 @@ class StoreCopyTest {
         Neo4jLocalStores(
             fs,
             Neo4jLayout.of(home),
+            pageCache,
+            Config.defaults(),
             names,
             transfer,
             NullLog.getInstance(),
@@ -141,6 +153,36 @@ class StoreCopyTest {
 
     private fun GraphDatabaseAPI.ref(): DatabaseRef =
         DatabaseRef(databaseName(), databaseId().databaseId().uuid())
+
+    @Test
+    fun `a copy keeps the store id of its source and its last transaction`() {
+        val source = dbms(root.resolve("source"))
+        source.neo4j().executeTransactionally("CREATE (:Film {title: 'Heat'})")
+        val target = root.resolve("target")
+        stores(target, InProcessTransfer(copySource(source.neo4j()))).copyFrom(SOURCE, names)
+        val last =
+            source
+                .neo4j()
+                .dependencyResolver
+                .resolveDependency(TransactionIdStore::class.java)
+                .lastCommittedTransactionId
+        source.shutdown()
+        services.clear()
+
+        val original =
+            stores(root.resolve("source")).storeState(GraphDatabaseSettings.DEFAULT_DATABASE_NAME)
+        val copy = stores(target).storeState(GraphDatabaseSettings.DEFAULT_DATABASE_NAME)
+
+        assertThat(copy).isEqualTo(original)
+        assertThat(copy?.lastTransaction).isEqualTo(last)
+        assertThat(stores(target).storeState(GraphDatabaseSettings.SYSTEM_DATABASE_NAME)?.storeId)
+            .isNotEqualTo(copy?.storeId)
+        assertThat(
+                stores(root.resolve("empty"))
+                    .storeState(GraphDatabaseSettings.DEFAULT_DATABASE_NAME)
+            )
+            .isNull()
+    }
 
     @Test
     fun `a half-moved database is missing and the member counts as having none`() {

@@ -2,6 +2,7 @@ package org.dozendb.cluster
 
 import java.net.UnknownHostException
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
@@ -150,9 +151,54 @@ class ClusterService(
      */
     fun mustDetach(database: String): Boolean = database in record?.storesToDetach.orEmpty()
 
-    /** Records that the store of [database] no longer refers to a Raft group it came from. */
+    /**
+     * Records that the store of [database] no longer refers to a Raft group it came from; for
+     * `system` re-formed here, that re-forming it is done.
+     */
     fun detached(database: String) {
-        remember { it.copy(storesToDetach = it.storesToDetach - database) }
+        remember {
+            it.copy(
+                storesToDetach = it.storesToDetach - database,
+                systemUnbound = it.systemUnbound && database != systemDatabase.name,
+            )
+        }
+    }
+
+    /**
+     * The members this member re-formed `system` with, from its store as `neo4j-admin dbms
+     * unbind-system-db` left it, until it detached that store from the old group; null otherwise.
+     * The databases whose stores a member brought to the cluster it formed become the new cluster's
+     * as they detach ([mustDetach]); a re-formed `system`'s system graph is the cluster's already.
+     */
+    val reformedWith: List<Member>?
+        get() = record?.takeIf { it.systemUnbound }?.formation
+
+    /** This member's store of `system`, as read before it started and after a copy replaced it. */
+    @Volatile private var systemStore: StoreState? = null
+
+    /**
+     * Whether this member waits to re-form `system`, or to join the group that re-formed it, as
+     * `neo4j-admin dbms unbind-system-db` removed its Raft state of it.
+     */
+    @Volatile private var unbound = false
+
+    /**
+     * What this member reports about its copy of `system`: [MemberMetadata.SYSTEM_STORE], and while
+     * it is [unbound], [MemberMetadata.SYSTEM_UNBOUND] and
+     * [MemberMetadata.SYSTEM_LAST_TRANSACTION].
+     */
+    fun systemReport(): Map<String, String> {
+        val store = systemStore
+        return listOfNotNull(
+                store?.let { MemberMetadata.SYSTEM_STORE to it.storeId },
+                (MemberMetadata.SYSTEM_UNBOUND to "true").takeIf { unbound },
+                store
+                    ?.takeIf { unbound }
+                    ?.let {
+                        MemberMetadata.SYSTEM_LAST_TRANSACTION to it.lastTransaction.toString()
+                    },
+            )
+            .toMap()
     }
 
     /** The cluster's format level, as this member last saw it. */
@@ -173,16 +219,14 @@ class ClusterService(
         // Written before DozenDB kept the owner: it is this member's.
         if (record?.memberId == null && record != null) remember { it }
         val firstStart = record == null
-        if (record?.systemUnbound == true) {
-            throw ClusterFormationException(
-                "neo4j-admin dbms unbind-system-db removed the cluster state of the system " +
-                    "database on this server, which this version cannot re-form yet."
-            )
-        }
         requireSupported(formatLevel, "as this member last saw it")
         if (systemMode == CopyMode.SECONDARY) {
             formation.refuseInitialSecondary(SYSTEM_DATABASE_MODE_SETTING)
         }
+        systemStore = readSystemStore()
+        // Until it runs a group that re-formed `system`, which it may have started before a
+        // restart.
+        unbound = record?.systemUnbound == true && systemDatabase.id !in consensus.localGroups()
         consensus.start()
         val hosting = systemHosting
         if (hosting != null && hosting.pulls) {
@@ -190,14 +234,21 @@ class ClusterService(
             return
         }
         val joined =
-            if (systemDatabase.id in consensus.localGroups()) {
-                userLog.info("Rejoining the cluster from local Raft state")
-                checkRejoin()
-                if (systemMode == CopyMode.SECONDARY) logOtherMode(CopyMode.PRIMARY)
-                null
-            } else {
-                formation.awaitFormation(systemDatabase.id).also { found ->
+            when {
+                unbound -> reform()
+                systemDatabase.id in consensus.localGroups() -> {
+                    userLog.info("Rejoining the cluster from local Raft state")
+                    checkRejoin()
+                    if (systemMode == CopyMode.SECONDARY) logOtherMode(CopyMode.PRIMARY)
+                    null
+                }
+                else -> {
+                    // A member without a record joins the group the others report.
+                    val found =
+                        formation.awaitFormation(systemDatabase.id, joinAny = record == null)
+                    groups.systemGroup = found.group
                     remember {
+                        val group = found.group.takeIf { g -> g != DatabaseGroups.SYSTEM_DATABASE }
                         if (found.members.any { member -> member.id == self.id }) {
                             it.copy(
                                 state = MemberState.MEMBER,
@@ -208,11 +259,13 @@ class ClusterService(
                                 storesToDetach =
                                     if (firstStart && stores.existed) stores.present().toSet()
                                     else it.storesToDetach,
+                                systemGroup = group,
                             )
                         } else {
-                            it.copy(state = MemberState.JOINING)
+                            it.copy(state = MemberState.JOINING, systemGroup = group)
                         }
                     }
+                    found
                 }
             }
         // Only `system`: the other databases are copied by the servers they are placed on, once
@@ -223,9 +276,10 @@ class ClusterService(
             if (source != null && source.id == consensus.self.id) {
                 userLog.info("This member creates the databases of the new cluster")
             } else {
-                copyStores(source, "databases ${missing.joinToString()}") {
+                copyStores(source, "databases ${missing.joinToString()}", systemDatabase.id) {
                     stores.copyFrom(it, missing)
                 }
+                systemStore = readSystemStore()
             }
         }
         val roleLogger = RoleChangeLogger(userLog)
@@ -250,6 +304,74 @@ class ClusterService(
     }
 
     /**
+     * This member's store of `system` as its files have it, while `system` does not run; null
+     * without one, or if it cannot be read, which is logged: only recovering `system` needs it.
+     */
+    private fun readSystemStore(): StoreState? =
+        try {
+            stores.storeState(systemDatabase.name)
+        } catch (e: Exception) {
+            userLog.warn("Reading the store of the system database here failed: %s", e.toString())
+            null
+        }
+
+    /**
+     * Re-forms `system` with the other initial members, or joins the group that re-formed it, as
+     * `neo4j-admin dbms unbind-system-db` removed this member's Raft state of it (see
+     * [ClusterFormation]). The member with the latest store of `system` starts the new group from
+     * it and detaches its store from the old group as `system` starts; the others replace their
+     * store with a copy from a member of the new group. A member that is not one of the group's
+     * members, as one rebinding to a cluster recovered without it, waits to be added, under its id
+     * of before: its records and the copies placed on it stand.
+     */
+    private fun reform(): Formation {
+        val old = systemDatabase.id
+        userLog.info(
+            "neo4j-admin dbms unbind-system-db removed the Raft state of the system database on " +
+                "this server: it re-forms the system database with the servers of %s, or joins " +
+                "the Raft group that re-formed it",
+            MemberMetadata.INITIAL_MEMBERS_SETTING,
+        )
+        val found = formation.awaitFormation(old, unbound = true, storeId = systemStore?.storeId)
+        groups.systemGroup = found.group
+        if (found.reforms) {
+            // Before recording the group, so that a restart before then re-forms it again, under
+            // the same id, without losing the group it was unbound from.
+            consensus.joinGroup(systemDatabase, found.members)
+            remember {
+                it.copy(
+                    state = MemberState.MEMBER,
+                    formation = found.members,
+                    systemGroup = found.group,
+                    // Unbound until detached, which also tells that its stores are not adopted.
+                    storesToDetach = it.storesToDetach + systemDatabase.name,
+                )
+            }
+        } else {
+            copyStores(null, "the system database of the re-formed cluster", found.group) {
+                stores.copyFrom(it, listOf(systemDatabase.name))
+            }
+            systemStore = readSystemStore()
+            val member = found.members.any { it.id == self.id }
+            remember {
+                it.copy(
+                    state = if (member) MemberState.MEMBER else MemberState.JOINING,
+                    formation = if (member) found.members else it.formation,
+                    systemGroup = found.group,
+                    systemUnbound = false,
+                )
+            }
+        }
+        unbound = false
+        userLog.info(
+            "The system database runs in the Raft group %s now, which replaces the group %s",
+            found.group,
+            old,
+        )
+        return found
+    }
+
+    /**
      * Starts this member as a system secondary, which pulls `system` instead of voting in its
      * group. Without a secondary's store of `system`, it first waits until the initial members have
      * formed the cluster, which a secondary never does, and copies `system` from a member that runs
@@ -257,11 +379,20 @@ class ClusterService(
      */
     private fun startPulling(hosting: SystemHosting) {
         if (!hosting.pulled()) {
-            formation.awaitFormation(systemDatabase.id, form = false)
-            if (record == null) remember { it }
-            copyStores(null, "the system database, to pull it as a secondary") {
+            val found =
+                formation.awaitFormation(systemDatabase.id, form = false, joinAny = record == null)
+            groups.systemGroup = found.group
+            remember {
+                it.copy(
+                    systemGroup = found.group.takeIf { g -> g != DatabaseGroups.SYSTEM_DATABASE }
+                )
+            }
+            copyStores(null, "the system database, to pull it as a secondary", found.group) {
                 hosting.copyPulled(it)
             }
+            systemStore = readSystemStore()
+        } else if (unbound) {
+            followReformed()
         }
         pullsSystem = true
         if (state == MemberState.REMOVED) userLog.error(REMOVED_MESSAGE)
@@ -277,6 +408,37 @@ class ClusterService(
             )
         }
         directory?.start()
+    }
+
+    /**
+     * Finds the group that re-formed `system`, as this system secondary was unbound from it with
+     * `neo4j-admin dbms unbind-system-db`, as the other servers were, and pulls from that group's
+     * members from now on, from the store it has: a store ahead of theirs fails as diverged and is
+     * copied again.
+     */
+    private fun followReformed() {
+        val old = systemDatabase.id
+        userLog.info(
+            "neo4j-admin dbms unbind-system-db unbound this system secondary from the Raft group " +
+                "of the system database: it waits for the servers of %s to re-form it",
+            MemberMetadata.INITIAL_MEMBERS_SETTING,
+        )
+        val found =
+            formation.awaitFormation(
+                old,
+                form = false,
+                unbound = true,
+                storeId = systemStore?.storeId,
+            )
+        groups.systemGroup = found.group
+        remember { it.copy(systemGroup = found.group, systemUnbound = false) }
+        unbound = false
+        userLog.info(
+            "This system secondary pulls the system database from the Raft group %s now, which " +
+                "replaces the group %s",
+            found.group,
+            old,
+        )
     }
 
     /**
@@ -509,9 +671,32 @@ class ClusterService(
                         "Neo4j, shut down every member first."
                 )
             }
+            refuseRecoveredWithout(peer)
             val level = peer.metadata[MemberMetadata.FORMAT_LEVEL]?.toIntOrNull() ?: continue
             requireSupported(level, "as member ${peer.member} reports")
         }
+    }
+
+    /**
+     * Refuses to rejoin when [peer] runs `system` in another group, re-formed from a copy of the
+     * same `system`: the cluster recovered `system` without this member, whose group of it is
+     * stale.
+     */
+    private fun refuseRecoveredWithout(peer: PeerInfo) {
+        val group = MemberMetadata.systemGroup(peer.metadata)
+        val store = peer.metadata[MemberMetadata.SYSTEM_STORE] ?: return
+        if (group == systemDatabase.id || group !in peer.groups) return
+        if (store != systemStore?.storeId) return
+        throw ClusterFormationException(
+            "Server ${peer.member} runs the system database in the Raft group $group, re-formed " +
+                "from a copy of this server's: the cluster recovered its system database without " +
+                "this server, whose Raft group of it, ${systemDatabase.id}, is stale. To rejoin " +
+                "the cluster as the same server, with its databases, run neo4j-admin dbms " +
+                "unbind-system-db, set ${MemberMetadata.INITIAL_MEMBERS_SETTING} to servers of " +
+                "the cluster, start it and add it with CALL dozendb.cluster.addMember('" +
+                "${self.raftAddress}') on the leader of the system database. To join as a new " +
+                "server instead, run neo4j-admin server unbind."
+        )
     }
 
     private fun requireSupported(level: Int, source: String) {
@@ -702,12 +887,17 @@ class ClusterService(
     }
 
     /**
-     * Copies [what] from [source], or any initial member that serves its databases, with [copy],
-     * until a copy succeeds.
+     * Copies [what] from [source], or any initial member that serves its databases, of the group of
+     * `system` [group] if given, with [copy], until a copy succeeds.
      */
-    private fun copyStores(source: Member?, what: String, copy: (HostPort) -> Unit) {
+    private fun copyStores(
+        source: Member?,
+        what: String,
+        group: UUID? = null,
+        copy: (HostPort) -> Unit,
+    ) {
         while (true) {
-            val address = formation.awaitStoreSource(source)
+            val address = formation.awaitStoreSource(source, group)
             userLog.info("Copying %s from %s", what, address)
             try {
                 copy(address)

@@ -71,12 +71,15 @@ data class ServerOptions(
  * or had when it first recorded servers, are recorded, and whose `auto_enable_free_servers` flag
  * tells whether servers that join are enabled at once. A dropped server's node is a
  * `RemovedInstance` with the time it was removed, and DozenDB's `dozendb_raft_address` while it may
- * still answer there.
+ * still answer there. DozenDB's `dozendb_lost` flag marks the record of a server that the cluster
+ * re-formed `system` without, after `neo4j-admin dbms unbind-system-db`: it stays a server until it
+ * rejoins, or DROP SERVER drops it.
  */
 object ServerRecords {
     private val INSTANCE = TopologyGraphDbmsModel.INSTANCE_LABEL
     private val REMOVED = TopologyGraphDbmsModel.REMOVED_INSTANCE_LABEL
     private const val ADDRESS = "dozendb_raft_address"
+    private const val LOST = "dozendb_lost"
     private val SETTINGS = TopologyGraphDbmsModel.TOPOLOGY_GRAPH_CONFIG_LABEL
     private const val INITIAL_ENABLED =
         TopologyGraphDbmsModel.TOPOLOGY_GRAPH_CONFIG_INITIAL_INSTANCES_ENABLED_FLAG
@@ -188,6 +191,33 @@ object ServerRecords {
             TopologyGraphDbmsModel.INSTANCE_DENIED_DATABASES_PROPERTY,
             options.deniedDatabases.toTypedArray(),
         )
+    }
+
+    /**
+     * Marks the records of the servers [ids] lost: `system` was re-formed without them, yet they
+     * stay servers, with the databases placed on them.
+     */
+    fun markLost(tx: Transaction, ids: Collection<UUID>) {
+        for (id in ids) {
+            tx.findNode(INSTANCE, TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id")
+                ?.setProperty(LOST, true)
+        }
+    }
+
+    /** The ids of the recorded servers marked lost. */
+    fun lost(tx: Transaction): Set<UUID> =
+        tx.findNodes(INSTANCE).use { nodes ->
+            nodes
+                .asSequence()
+                .filter { it.getProperty(LOST, false) == true }
+                .mapNotNull(::id)
+                .toSet()
+        }
+
+    /** Takes the lost mark off the record of the server [id], which is a member again. */
+    fun found(tx: Transaction, id: UUID) {
+        tx.findNode(INSTANCE, TopologyGraphDbmsModel.INSTANCE_UUID_PROPERTY, "$id")
+            ?.removeProperty(LOST)
     }
 
     /** Deletes the record of the server [id], if there is one, with the databases placed on it. */

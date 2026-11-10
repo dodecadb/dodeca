@@ -98,6 +98,26 @@ class MembershipReconcilerTest {
     }
 
     @Test
+    fun `a lost server keeps its place in the groups of the databases placed on it`() {
+        formCluster()
+        val lost = logs[2].self
+        // As after `system` was re-formed without it: no server of the cluster, but still placed.
+        changeCluster { leader.removeMember(system, lost.id, TIMEOUT) }
+        val reconciler =
+            MembershipReconciler(
+                leader,
+                groups,
+                { mapOf(films to initial.map { it.id }.toSet()) },
+                NullLog.getInstance(),
+                changes = { it.run() },
+                lostServers = { setOf(lost.id) },
+            )
+
+        assertThat(reconciler.reconcile()).describedAs("nothing to do").isFalse()
+        assertThat(leader.members(films)).containsExactlyElementsOf(initial)
+    }
+
+    @Test
     fun `a system leader that hosts no database changes groups that do not run on it`() {
         val free = logs[0]
         val hosting = logs.drop(1).map { it.self }

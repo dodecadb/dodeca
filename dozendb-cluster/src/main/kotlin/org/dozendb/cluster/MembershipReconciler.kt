@@ -44,6 +44,10 @@ import org.neo4j.logging.Log
  * then brings it up to date before it votes. A group always keeps one voter. A database not placed
  * yet keeps its voters.
  *
+ * A lost server, which `system` was re-formed without, keeps its place in the groups of the
+ * databases placed on it, as the members of the cluster do, until DEALLOCATE moves them off it:
+ * removing it would leave groups that lost their majority smaller still once they had it back.
+ *
  * The group's leader is removed last, once it has handed the leadership over to a member the
  * database is placed on, as its leader balancer does (see `LeaderMoves.leaving`), so that the group
  * need not elect a leader; if it still leads after [handOverGrace], it is removed anyway.
@@ -61,6 +65,8 @@ import org.neo4j.logging.Log
  *   this member may lead `system` before.
  * @property systemSecondaries the system secondaries, servers of the cluster that pull `system`
  *   instead of voting in it, which databases can be placed on as on any server.
+ * @property lostServers the servers that `system` was re-formed without, as the system graph marks
+ *   them.
  */
 class MembershipReconciler(
     private val consensus: ConsensusLog,
@@ -75,6 +81,7 @@ class MembershipReconciler(
     private val handOverGrace: Duration = Duration.ofSeconds(30),
     private val nanoTime: () -> Long = System::nanoTime,
     private val systemSecondaries: () -> List<Member> = { emptyList() },
+    private val lostServers: () -> Set<MemberId> = { emptySet() },
 ) : AutoCloseable {
     /** The group of `system` (see [DatabaseGroups]). */
     private val systemDatabase: DatabaseRef
@@ -158,6 +165,7 @@ class MembershipReconciler(
         val reports = groupsReported(servers).toMutableMap()
         var again = false
         val databases = databases()
+        val lost = lostServers()
         handOvers.keys.retainAll(databases.keys.map { it.id }.toSet())
         overdue.retainAll(handOvers.keys)
         for ((group, placed) in databases) {
@@ -170,7 +178,8 @@ class MembershipReconciler(
                 continue
             }
             val leader = leader(group, voters, reports)
-            val change = nextChange(hosting, voters, leader) { runs(it, group, reports) }
+            val kept = placed.intersect(lost)
+            val change = nextChange(hosting, kept, voters, leader) { runs(it, group, reports) }
             if (change !is Change.Remove || change.member.id != leader) {
                 handOvers -= group.id
                 overdue -= group.id
@@ -310,17 +319,20 @@ class MembershipReconciler(
     /**
      * The next change of a group with [voters] towards [hosting], the members it is placed on: one
      * of them that does not vote is added, those that [runs] it first; once they all vote, one that
-     * is not among them is removed, its [leader] last.
+     * is not among them nor [kept], the lost servers it is placed on, is removed, its [leader]
+     * last.
      */
     private fun nextChange(
         hosting: List<Member>,
+        kept: Set<MemberId>,
         voters: List<Member>,
         leader: MemberId?,
         runs: (Member) -> Boolean,
     ): Change? {
         val hostingIds = hosting.map { it.id }.toSet()
         val groupIds = voters.map { it.id }.toSet()
-        val extra = voters.filter { it.id !in hostingIds }.sortedBy { it.id == leader }
+        val extra =
+            voters.filter { it.id !in hostingIds && it.id !in kept }.sortedBy { it.id == leader }
         val missing = hosting.filter { it.id !in groupIds }
         return when {
             missing.isNotEmpty() -> Change.Add(missing.firstOrNull(runs) ?: missing.first())

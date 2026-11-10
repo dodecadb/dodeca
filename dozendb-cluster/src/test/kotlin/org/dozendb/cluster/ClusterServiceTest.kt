@@ -73,6 +73,8 @@ class ClusterServiceTest {
 
         override fun present(): List<String> = ALL_DATABASES - missing().toSet() + others
 
+        override fun storeState(database: String): StoreState? = null
+
         override fun copyFrom(source: HostPort, databases: List<String>) {
             if (failures > 0) {
                 failures--

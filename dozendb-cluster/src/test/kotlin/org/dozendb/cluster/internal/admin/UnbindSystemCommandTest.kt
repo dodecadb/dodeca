@@ -1,8 +1,5 @@
 package org.dozendb.cluster.internal.admin
 
-import java.io.ByteArrayOutputStream
-import java.io.InputStream
-import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.ServiceLoader
@@ -17,10 +14,7 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.cli.CommandProvider
 import org.neo4j.cli.CommandType
-import org.neo4j.cli.ExecutionContext
-import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.storageengine.api.TransactionIdStore
-import picocli.CommandLine
 
 /**
  * `neo4j-admin dbms unbind-system-db` as Neo4j Enterprise documents it: removes the server's Raft
@@ -34,27 +28,6 @@ class UnbindSystemCommandTest {
     @AfterEach
     fun stop() {
         harness?.close()
-    }
-
-    private class Result(val exitCode: Int, val out: String, val err: String) {
-        override fun toString() = "exit code $exitCode\n$out\n$err"
-    }
-
-    /** Runs `neo4j-admin dbms unbind-system-db` for the server in [home]. */
-    private fun unbind(home: Path, vararg arguments: String): Result {
-        val out = ByteArrayOutputStream()
-        val err = ByteArrayOutputStream()
-        val context =
-            ExecutionContext(
-                home,
-                home.resolve("conf"),
-                PrintStream(out, true),
-                PrintStream(err, true),
-                InputStream.nullInputStream(),
-                DefaultFileSystemAbstraction(),
-            )
-        val exitCode = CommandLine(UnbindSystemCommand(context)).execute(*arguments)
-        return Result(exitCode, out.toString(), err.toString())
     }
 
     @Test
@@ -76,7 +49,8 @@ class UnbindSystemCommandTest {
         val raft = member.home.resolve("data/raft")
         val archives = Files.createDirectories(root.resolve("archives"))
 
-        val result = unbind(member.home, "--archive-cluster-state=true", "--archive-path=$archives")
+        val result =
+            unbindSystemDb(member.home, "--archive-cluster-state=true", "--archive-path=$archives")
 
         assertThat(result.exitCode).describedAs("$result").isZero
         assertThat(result.out).contains(serverId).contains("lastCommittedTransaction $last")
@@ -98,7 +72,7 @@ class UnbindSystemCommandTest {
         }
 
         // A run cut short is run again.
-        assertThat(unbind(member.home).exitCode).isZero
+        assertThat(unbindSystemDb(member.home).exitCode).isZero
     }
 
     @Test
@@ -106,13 +80,13 @@ class UnbindSystemCommandTest {
         val cluster = ClusterHarness(root, 1).also { harness = it }
         cluster.start()
 
-        val running = unbind(cluster.members[0].home)
+        val running = unbindSystemDb(cluster.members[0].home)
 
         assertThat(running.exitCode).describedAs("$running").isNotZero
         assertThat(running.err).contains("shut it down first")
         assertThat(cluster.members[0].home.resolve("data/raft/$SYSTEM_GROUP")).isDirectory()
 
-        val none = unbind(Files.createDirectories(root.resolve("standalone")))
+        val none = unbindSystemDb(Files.createDirectories(root.resolve("standalone")))
 
         assertThat(none.exitCode).describedAs("$none").isNotZero
         assertThat(none.err).contains("there is nothing to unbind")

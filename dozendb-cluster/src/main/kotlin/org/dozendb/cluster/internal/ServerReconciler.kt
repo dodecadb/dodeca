@@ -37,7 +37,9 @@ import org.neo4j.logging.InternalLog
  *   new cluster and one formed before DozenDB recorded servers alike.
  * - Afterwards, a member that joins is Free until ENABLE SERVER records it, or at once while
  *   `auto_enable_free_servers` is set.
- * - The record of a server that left the cluster is deleted, with the databases placed on it.
+ * - The record of a server that left the cluster is deleted, with the databases placed on it. A
+ *   server marked lost, as `system` was re-formed without it, has not left: it stays a server until
+ *   DROP SERVER drops it, and loses the mark once it is a member again.
  * - A server that DROP SERVER dropped is removed from `system` (see [remove]), and is never enabled
  *   again. Once it left, it is asked whether it still answers where it was, as SHOW SERVERS shows
  *   it Dropped while it does; its address is forgotten once it no longer does.
@@ -195,6 +197,11 @@ class ServerReconciler(
                     ServerRecords.delete(tx, id)
                     changed = true
                 }
+                for (id in ServerRecords.lost(tx).intersect(voters.map { it.uuid }.toSet())) {
+                    log.info("Lost server %s is a member of the cluster again", id)
+                    ServerRecords.found(tx, id)
+                    changed = true
+                }
                 for (server in gone) {
                     log.info(
                         "Dropped server %s no longer answers at %s",
@@ -231,9 +238,15 @@ class ServerReconciler(
         return again
     }
 
-    /** The servers: the members of `system`, [voters], and the system secondaries [tx] reads. */
+    /**
+     * The servers: the members of `system`, [voters], and the system secondaries and lost servers
+     * [tx] reads.
+     */
     private fun servers(voters: List<MemberId>, tx: Transaction): List<MemberId> =
-        (voters + SystemSecondaryRecords.all(tx).map { it.id }).distinct()
+        (voters +
+                SystemSecondaryRecords.all(tx).map { it.id } +
+                ServerRecords.lost(tx).map(::MemberId))
+            .distinct()
 
     /** Whether the dropped [server] answers at its address, as itself. */
     private fun answers(server: DroppedServer): Boolean {

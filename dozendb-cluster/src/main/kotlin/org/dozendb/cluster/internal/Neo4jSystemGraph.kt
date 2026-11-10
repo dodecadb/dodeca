@@ -134,6 +134,29 @@ internal class Neo4jSystemGraph(
             databases.sortedBy { it.name() }
         }
 
+    /**
+     * Marks the servers the system graph records lost that are neither among [members], the members
+     * `system` was re-formed with, nor system secondaries, and returns them: they stay servers,
+     * with the databases placed on them, until they rejoin or DROP SERVER drops them. Only for the
+     * member that re-forms `system` from its store, before `system` replicates, so that every copy
+     * holds the marks.
+     */
+    fun recordLost(members: Collection<Member>): List<UUID> =
+        system().beginTx().use { tx ->
+            val kept =
+                members.map { it.id.uuid }.toSet() +
+                    SystemSecondaryRecords.all(tx).map { it.id.uuid }
+            val lost = (ServerRecords.records(tx).keys - kept).sorted()
+            ServerRecords.markLost(tx, lost)
+            tx.commit()
+            lost
+        }
+
+    /** The servers marked lost, which `system` was re-formed without (see [recordLost]). */
+    fun lostServers(): Set<MemberId> = replication.readingSystem {
+        system().beginTx().use { tx -> ServerRecords.lost(tx).mapTo(HashSet(), ::MemberId) }
+    }
+
     override fun formatLevel(): Int = replication.readingSystem {
         system().beginTx().use { tx ->
             tx.findNodes(DOZENDB_LABEL).use { nodes ->

@@ -260,6 +260,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     config.get(ClusterSettings.systemDatabaseMode).name,
                 MemberMetadata.SYSTEM_GROUP to groups.systemGroup.toString(),
             ) +
+                cluster.systemReport() +
                 InitialServerOptions.report(ServerOptions.initial(config)) +
                 listOfNotNull(
                     boltHostPort()?.let { MemberMetadata.BOLT_ADDRESS to it.toString() },
@@ -345,6 +346,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             Neo4jLocalStores(
                 globalModule.fileSystem,
                 globalModule.neo4jLayout,
+                globalModule.pageCache,
+                config,
                 listOf(systemDatabase.name, defaultDatabase),
                 consensus,
                 logService.getInternalLog(Neo4jLocalStores::class.java),
@@ -372,7 +375,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 mustDetach = { cluster.mustDetach(it) },
                 detached = { cluster.detached(it) },
                 notLeader = ::notLeaderMessage,
-                adoptDatabases = ::adoptStores,
+                adoptDatabases = {
+                    val reformed = cluster.reformedWith
+                    if (reformed == null) adoptStores() else recordLost(reformed)
+                },
                 metrics = metrics,
             )
         replication = replicationService
@@ -657,6 +663,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 logService.getInternalLog(MembershipReconciler::class.java),
                 systemRunning = ::systemRunsHere,
                 systemSecondaries = clusterServers::secondaries,
+                lostServers = { systemGraph.lostServers() },
             )
         globalModule.globalLife.add(
             object : LifecycleAdapter() {
@@ -1227,6 +1234,24 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     "until the system leader places them, and the servers they are placed on copy " +
                     "them",
                 databases.joinToString { it.name() },
+            )
+    }
+
+    /**
+     * Marks the servers that `system` was re-formed without lost, as the member that re-formed it
+     * from its store, in a local transaction before `system` replicates (see
+     * [Neo4jSystemGraph.recordLost]).
+     */
+    private fun recordLost(members: List<Member>) {
+        val lost = systemGraph.recordLost(members)
+        globalModule.logService
+            .getUserLog(ClusterService::class.java)
+            .info(
+                "This member re-formed the system database with %s. The servers it records " +
+                    "besides them and its secondaries are lost: %s. They stay servers, with the " +
+                    "databases placed on them, until they rejoin or DROP SERVER drops them.",
+                members,
+                lost.ifEmpty { "none" },
             )
     }
 

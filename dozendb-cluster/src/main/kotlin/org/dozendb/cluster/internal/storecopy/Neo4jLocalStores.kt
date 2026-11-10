@@ -5,6 +5,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.LocalStores
+import org.dozendb.cluster.StoreState
 import org.dozendb.cluster.internal.replication.StagedCopy
 import org.dozendb.cluster.internal.secondaries.StagedStore
 import org.dozendb.consensus.BulkTransfer
@@ -13,10 +14,16 @@ import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Snapshot
 import org.dozendb.core.store.StoreArchive
 import org.dozendb.core.store.StorePlacement
+import org.neo4j.configuration.Config
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
+import org.neo4j.io.pagecache.PageCache
+import org.neo4j.io.pagecache.context.CursorContext
+import org.neo4j.kernel.database.DatabaseTracers
+import org.neo4j.kernel.recovery.LogTailExtractor
 import org.neo4j.logging.InternalLog
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.StorageEngineFactory
 
 /**
@@ -35,6 +42,8 @@ import org.neo4j.storageengine.api.StorageEngineFactory
 internal class Neo4jLocalStores(
     private val fs: FileSystemAbstraction,
     private val layout: Neo4jLayout,
+    private val pageCache: PageCache,
+    private val config: Config,
     private val databaseNames: List<String>,
     private val transfer: BulkTransfer,
     private val log: InternalLog,
@@ -63,6 +72,20 @@ internal class Neo4jLocalStores(
             .filter { fs.isDirectory(it) }
             .map { it.fileName.toString() }
             .filterNot { it.startsWith(".") }
+    }
+
+    override fun storeState(database: String): StoreState? {
+        if (!complete(database)) return null
+        val databaseLayout = layout.databaseLayout(database)
+        val engine =
+            StorageEngineFactory.selectStorageEngine(fs, databaseLayout).orElse(null) ?: return null
+        val storeId =
+            engine.retrieveStoreId(fs, databaseLayout, pageCache, CursorContext.NULL_CONTEXT)
+        val last =
+            LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
+                .getTailMetadata(databaseLayout, EmptyMemoryTracker.INSTANCE)
+                .lastCommittedTransaction
+        return StoreState("${storeId.creationTime}/${storeId.random}", last.id())
     }
 
     override fun copyFrom(source: HostPort, databases: List<String>) {
