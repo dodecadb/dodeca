@@ -24,6 +24,7 @@ Under development. Not ready for production use.
 |---|---|
 | `consensus-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
+| `neo4j-server-stubs/` | The signatures of the Neo4j web server classes that `dozendb-cluster` extends, to compile against: Neo4j does not publish the `neo4j-server` jar to Maven Central. Never packaged; Neo4j's own classes run. |
 | `dozendb-core/` | What DozenDB adds to Neo4j Community on every server, clustered or not: the edition module, database management, administration commands, constraints and settings. |
 | `dozendb-backup/` | Online backup and restore, clustered or not: `neo4j-admin database backup`, `database restore`, `database aggregate-backup` and `backup inspect`, with Neo4j's `.backup` artifacts, full and differential. |
 | `dozendb-cluster/` | Clustering on top of `dozendb-core`: commit interception, routing, reads, snapshots and membership. |

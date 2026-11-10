@@ -21,6 +21,7 @@
   <modules>
     <module>consensus-api</module>
     <module>consensus-ratis</module>
+    <module>neo4j-server-stubs</module>
     <module>dozendb-core</module>
     <module>dozendb-backup</module>
     <module>dozendb-cluster</module>
@@ -114,6 +115,17 @@
         <groupId>org.neo4j</groupId>
         <artifactId>neo4j</artifactId>
         <version>${neo4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.dozendb</groupId>
+        <artifactId>neo4j-server-stubs</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <!-- The JAX-RS API of the Jersey that Neo4j 5.26 ships in lib/. -->
+      <dependency>
+        <groupId>jakarta.ws.rs</groupId>
+        <artifactId>jakarta.ws.rs-api</artifactId>
+        <version>2.1.6</version>
       </dependency>
       <dependency>
         <groupId>org.slf4j</groupId>

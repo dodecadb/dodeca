@@ -1,5 +1,6 @@
 package org.dozendb.it
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import java.time.Duration
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
@@ -41,6 +42,12 @@ class RoutingIT {
             .clusterMember(aliases.map { "$it:7700" })
             .boltOnHostPort(boltPorts[index])
             .withHttp()
+            .apply {
+                // A load balancer that cannot log in asks this one.
+                if (alias == "core3") {
+                    withEnv("NEO4J_dbms_security_cluster__status__auth__enabled", "false")
+                }
+            }
     }
     private val running = members.toMutableList()
     private lateinit var driver: Driver
@@ -306,6 +313,80 @@ class RoutingIT {
 
     @Test
     @Order(7)
+    fun `cluster status endpoints tell load balancers where to write and read`() {
+        val ids = members.associateWith { it.memberId() }
+        val json = ObjectMapper()
+
+        // Again if the leader moves meanwhile, or a member does not know it yet.
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                val leader = awaitLeader()
+                for (member in members) {
+                    clusterStatusMatches(member, leader, ids, json)
+                }
+            }
+        val core1 = members.first { it.alias == "core1" }
+        assertThat(core1.get("/db/neo4j/cluster/available", authenticated = false).statusCode())
+            .describedAs("without credentials, by default")
+            .isEqualTo(401)
+        val core3 = members.first { it.alias == "core3" }
+        assertThat(core3.get("/db/neo4j/cluster/available", authenticated = false).statusCode())
+            .describedAs("without credentials, where cluster_status_auth_enabled=false")
+            .isEqualTo(200)
+        assertThat(core3.get("/dbms/cluster/status", authenticated = false).statusCode())
+            .isEqualTo(200)
+    }
+
+    /** Asserts what the cluster status endpoints of [member] say, [leader] leading `neo4j`. */
+    private fun clusterStatusMatches(
+        member: DozenDbContainer,
+        leader: DozenDbContainer,
+        ids: Map<DozenDbContainer, String>,
+        json: ObjectMapper,
+    ) {
+        val leads = member == leader
+        val answers =
+            listOf("writable", "read-only", "available").associateWith {
+                member.get("/db/neo4j/cluster/$it").let { r -> r.statusCode() to r.body() }
+            }
+        assertThat(answers)
+            .describedAs(member.alias)
+            .isEqualTo(
+                mapOf(
+                    "writable" to if (leads) 200 to "true" else 404 to "false",
+                    "read-only" to if (leads) 404 to "false" else 200 to "true",
+                    "available" to (200 to "true"),
+                )
+            )
+        val status = member.get("/db/neo4j/cluster/status")
+        assertThat(status.statusCode()).describedAs(member.alias).isEqualTo(200)
+        assertThat(status.headers().firstValue("Content-Type")).hasValueSatisfying {
+            assertThat(it).startsWith("application/json")
+        }
+        val fields = json.readTree(status.body())
+        assertThat(fields["core"].asBoolean()).isTrue
+        assertThat(fields["memberId"].asText()).isEqualTo(ids.getValue(member))
+        assertThat(fields["leader"].asText()).isEqualTo(ids.getValue(leader))
+        assertThat(fields["votingMembers"].map { it.asText() })
+            .containsExactlyInAnyOrderElementsOf(ids.values)
+        assertThat(fields["participatingInRaftGroup"].asBoolean()).isTrue
+        assertThat(fields["isHealthy"].asBoolean()).isTrue
+        assertThat(fields["lastAppliedRaftIndex"].asLong()).isPositive
+        val all = json.readTree(member.get("/dbms/cluster/status").body())
+        assertThat(all.map { it["databaseName"].asText() })
+            .describedAs(member.alias)
+            .containsExactlyInAnyOrder("system", "neo4j")
+        assertThat(
+                all.single { it["databaseName"].asText() == "neo4j" }["databaseStatus"]["memberId"]
+                    .asText()
+            )
+            .isEqualTo(ids.getValue(member))
+        assertThat(member.get("/db/nothing/cluster/available").statusCode()).isEqualTo(404)
+    }
+
+    @Test
+    @Order(8)
     fun `writes continue on a new leader soon after the leader dies`() {
         val leader = awaitLeader()
         val acknowledged = mutableListOf<Int>()

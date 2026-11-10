@@ -37,6 +37,17 @@
       <artifactId>neo4j</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Neo4j's web server, in lib/ at runtime, for the cluster status endpoints. -->
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>neo4j-server-stubs</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>jakarta.ws.rs</groupId>
+      <artifactId>jakarta.ws.rs-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
 
     <dependency>
       <groupId>org.dozendb</groupId>

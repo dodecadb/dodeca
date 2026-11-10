@@ -155,6 +155,7 @@ class StandaloneIT {
                 "dbms.routing.reads_on_writers_enabled",
                 "dbms.dozendb.routing.forward_bolt_writes",
                 "dbms.routing.reads_on_primaries_enabled",
+                "dbms.security.cluster_status_auth_enabled",
                 "dbms.dozendb.reads.default_consistency",
                 "server.dozendb.cluster.listen_address",
                 "server.dozendb.cluster.advertised_address",

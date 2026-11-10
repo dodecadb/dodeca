@@ -189,6 +189,24 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         return this
     }
 
+    /** Gets [path] of Neo4j's HTTP server, as `neo4j` if [authenticated]. */
+    fun get(path: String, authenticated: Boolean = true): HttpResponse<String> =
+        http.send(
+            HttpRequest.newBuilder(URI("http://$host:${getMappedPort(HTTP_PORT)}$path"))
+                .apply {
+                    if (authenticated) {
+                        header(
+                            "Authorization",
+                            "Basic " +
+                                Base64.getEncoder().encodeToString("neo4j:$PASSWORD".toByteArray()),
+                        )
+                    }
+                }
+                .GET()
+                .build(),
+            BodyHandlers.ofString(),
+        )
+
     /** Posts [json] to [path] of Neo4j's HTTP API as `neo4j`. */
     fun post(path: String, json: String): HttpResponse<String> =
         http.send(

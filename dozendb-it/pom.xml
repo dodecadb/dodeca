@@ -55,6 +55,13 @@
       <version>${neo4j-java-driver.version}</version>
       <scope>test</scope>
     </dependency>
+    <!-- Reads JSON answers of the HTTP server; the version Neo4j ships in lib/. -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.21.1</version>
+      <scope>test</scope>
+    </dependency>
     <dependency>
       <groupId>org.awaitility</groupId>
       <artifactId>awaitility-kotlin</artifactId>

@@ -41,6 +41,7 @@ end its own way.
 | Local and remote database aliases | Same | [Database aliases](#database-aliases) |
 | Clustering: replication, failover, routing | Own design, same for clients | [Clustering](#clustering) |
 | Server-side routing | Same | [Clustering](#clustering) |
+| Cluster status endpoints of the HTTP server | Same, with differences | [Clustering](#clustering) |
 | Servers, topologies and secondaries | Same, with differences | [Servers](#servers) |
 | Leadership balancing and priority tags | Same | [Leadership balancing](#leadership-balancing) |
 | Online backup and restore | Same, with differences | [Backup and restore](#backup-and-restore) |
@@ -49,7 +50,6 @@ end its own way.
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing the default database | Same | [Databases](#databases) |
 | Quarantine, recreating databases and cluster status checks | Not supported | [Not supported](#not-supported) |
-| Cluster status endpoints of the HTTP server | Not supported | [Not supported](#not-supported) |
 | Routing policies (the load balancing plugin) | Not supported | [Not supported](#not-supported) |
 | Change data capture | Not supported | [Not supported](#not-supported) |
 | `block` and `high_limit` store formats | Not supported | [Not supported](#not-supported) |
@@ -381,6 +381,22 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   counted from the copy with the newest transaction; a member that does not
   answer shows neither. A standalone server shows one row, as Neo4j Community
   does.
+- **Cluster status endpoints** of the HTTP server tell load balancers where
+  to send writes and reads, as in Enterprise:
+  `/db/<database>/cluster/writable` answers `true` with 200 OK on the member
+  that leads the database, `read-only` on the other members that run it, and
+  `available` on every member that runs it; otherwise each answers `false`
+  with 404 Not Found. `/db/<database>/cluster/status` and
+  `/dbms/cluster/status` give Enterprise's JSON, without
+  `millisSinceLastLeaderMessage` and the deprecated `raftCommandsPerSecond`.
+  On a secondary, `lastAppliedRaftIndex` is the Raft index of the last
+  transaction it pulled. Enterprise's documentation names the health field of
+  `/dbms/cluster/status` both `healthy` and `isHealthy`: DozenDB gives both.
+  As in Enterprise, the endpoints need a login unless
+  `dbms.security.cluster_status_auth_enabled` is `false`, and
+  `server.http_enabled_modules` turns them off without
+  `ENTERPRISE_MANAGEMENT_ENDPOINTS`. A server with clustering disabled has
+  none: they answer 404. See `OPERATOR_GUIDE.md`, "Cluster status endpoints".
 - **Linearizable reads**, DozenDB's own, are requested per transaction with
   the metadata key `dozendb.consistency` set to `linearizable`, or for every
   transaction with `dbms.dozendb.reads.default_consistency`. They apply to
@@ -751,9 +767,6 @@ error, and their procedures do not exist.
   Community, and none of DozenDB's cluster state. `OPERATOR_GUIDE.md`
   describes how a DozenDB cluster recovers, and "Lost databases" under
   [Running a cluster](#running-a-cluster) how to rebuild a member.
-- **Cluster status endpoints of the HTTP server**, such as
-  `/db/<database>/cluster/available` and `/dbms/cluster/status`, and
-  `dbms.security.cluster_status_auth_enabled`. The paths answer 404.
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
   policies and `dbms.routing.load_balancing.shuffle_enabled`.
 - **Shutting the server down on a panic**

@@ -27,6 +27,9 @@ import org.dozendb.cluster.internal.forwarding.ForwardingWatch
 import org.dozendb.cluster.internal.forwarding.MemberSsl
 import org.dozendb.cluster.internal.forwarding.RemoteTransactions
 import org.dozendb.cluster.internal.forwarding.RoutingBoltDatabases
+import org.dozendb.cluster.internal.http.ClusterNeoWebServer
+import org.dozendb.cluster.internal.http.ClusterStatuses
+import org.dozendb.cluster.internal.http.DatabaseClusterStatus
 import org.dozendb.cluster.internal.leadership.LeaderAnnouncer
 import org.dozendb.cluster.internal.leadership.LeaderBalancer
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
@@ -87,10 +90,13 @@ import org.dozendb.core.servers.Servers
 import org.dozendb.core.servers.UpstreamRules
 import org.dozendb.core.servers.UpstreamSelection
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
+import org.neo4j.bolt.tx.TransactionManager
+import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
+import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DefaultSystemGraphInitializer
 import org.neo4j.dbms.database.SystemGraphInitializer
@@ -117,8 +123,11 @@ import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.NamedDatabaseId
+import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.Version
+import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.logging.InternalLogProvider
 import org.neo4j.router.transaction.DatabaseTransactionFactory
 import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
 import org.neo4j.storageengine.api.TransactionIdStore
@@ -179,6 +188,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     /** The system graph's [Neo4jSystemGraph.systemId], read once `system` runs. */
     @Volatile private var systemId: Long? = null
     private var roles: RolesInitializer? = null
+
+    /** What the cluster status endpoints of the HTTP server report. */
+    private val statuses = ClusterStatuses(::clusterStatuses)
 
     init {
         val config = globalModule.globalConfig
@@ -562,6 +574,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 systemHosting = systemHosting(),
             )
         globalModule.globalDependencies.satisfyDependency(cluster)
+        globalModule.globalDependencies.satisfyDependency(statuses)
         globalModule.databaseEventListeners.registerDatabaseEventListener(
             object : DatabaseEventListenerAdapter() {
                 override fun databaseStart(eventContext: DatabaseEventContext) {
@@ -890,6 +903,10 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     /** The id of the last transaction committed to each database that runs on this member. */
     private fun lastCommittedHere(): Map<UUID, Long> =
+        transactionIdStoresHere().mapValues { it.value.lastCommittedTransactionId }
+
+    /** The transaction id store of each database that runs on this member. */
+    private fun transactionIdStoresHere(): Map<UUID, TransactionIdStore> =
         databaseRepository
             .registeredDatabases()
             .filterValues { it.database().isStarted }
@@ -898,11 +915,67 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 if (!dependencies.containsDependency(TransactionIdStore::class.java))
                     return@mapNotNull null
                 id.databaseId().uuid() to
-                    dependencies
-                        .resolveDependency(TransactionIdStore::class.java)
-                        .lastCommittedTransactionId
+                    dependencies.resolveDependency(TransactionIdStore::class.java)
             }
             .toMap()
+
+    /** Community's web server, with Neo4j Enterprise's cluster status endpoints. */
+    override fun createWebServer(
+        managementService: DatabaseManagementService,
+        transactionManager: TransactionManager,
+        globalDependencies: Dependencies,
+        config: Config,
+        userLogProvider: InternalLogProvider,
+        dbmsInfo: DbmsInfo,
+    ): Lifecycle =
+        ClusterNeoWebServer(
+            managementService,
+            transactionManager,
+            globalDependencies,
+            config,
+            userLogProvider,
+            dbmsInfo,
+            globalModule.memoryPools,
+            globalModule.globalMonitors,
+            globalModule.globalClock,
+            statuses,
+        )
+
+    /**
+     * The databases this member hosts, as the cluster status endpoints report them: a primary as
+     * its Raft group has it, a secondary as it learned from the primaries.
+     */
+    private fun clusterStatuses(): List<DatabaseClusterStatus> {
+        val readOnly = readOnlyHere()
+        val pulled = lastPulledHere()
+        return reportedStates().map { state ->
+            val database = DatabaseRef(state.name, state.id)
+            val core = state.mode == CopyMode.PRIMARY
+            val group = if (core) runCatching { consensus.status(database) }.getOrNull() else null
+            val location = locations.of(database)
+            val running = state.status == DatabaseState.Status.ONLINE
+            DatabaseClusterStatus(
+                name = state.name,
+                id = state.id,
+                core = core,
+                running = running,
+                writable = running && group?.role == Role.Leader && state.id !in readOnly,
+                lastAppliedRaftIndex = group?.appliedIndex ?: pulled[state.id] ?: 0,
+                participatingInRaftGroup =
+                    core && location?.local == true && location.leader != null,
+                votingMembers = location?.voters.orEmpty().map { it.id.toString() },
+                healthy = state.status != DatabaseState.Status.FAILED,
+                memberId = memberId.toString(),
+                leader = (group?.leader ?: location?.leader)?.toString(),
+            )
+        }
+    }
+
+    /** The Raft index of the last transaction of each database that runs on this member. */
+    private fun lastPulledHere(): Map<UUID, Long> =
+        transactionIdStoresHere().mapValues {
+            it.value.lastCommittedTransaction.consensusIndex().coerceAtLeast(0)
+        }
 
     /** SHOW DATABASES with a row for each member a database runs on, as Neo4j Enterprise has. */
     override fun createTopologyInfoService(

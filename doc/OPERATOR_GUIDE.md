@@ -1286,6 +1286,40 @@ The server reports `neo4j.dbms.dozendb.cluster.members`, the cluster's servers
 as the member knows them: the primaries of `system` and the servers that host
 it as a secondary.
 
+### Cluster status endpoints
+
+Load balancers, and health checks such as Kubernetes probes, ask a member's
+HTTP server (`server.http.listen_address`, port 7474) about a database, as
+they ask Neo4j Enterprise's:
+
+| Path | Answers `true` with 200 OK, else `false` with 404 Not Found |
+|---|---|
+| `/db/<database>/cluster/writable` | On the member that leads the database, while it takes writes there. |
+| `/db/<database>/cluster/read-only` | On the other members that run it, secondaries included. |
+| `/db/<database>/cluster/available` | On every member that runs it. |
+
+`/db/<database>/cluster/status` gives the member's view of the database as
+JSON, and `/dbms/cluster/status` that of every database the member hosts, as
+`databaseName`, `databaseUuid` and `databaseStatus`:
+
+```json
+{"core":true,"lastAppliedRaftIndex":42,"participatingInRaftGroup":true,
+ "votingMembers":["0c9a3e44-6c1e-4f5e-9d2b-3b1f0a7e2c11","5f0d2a9b-8e47-4c39-a1d6-7e3b9c2f4d58","b7e14c62-3d95-4a08-8f2e-6a5c1d9b0e37"],
+ "isHealthy":true,"memberId":"0c9a3e44-6c1e-4f5e-9d2b-3b1f0a7e2c11",
+ "leader":"5f0d2a9b-8e47-4c39-a1d6-7e3b9c2f4d58"}
+```
+
+`core` is false on a secondary, which does not take part in the database's
+Raft group (`participatingInRaftGroup`); its `lastAppliedRaftIndex` is the
+Raft index of the last transaction it pulled. `leader` is missing while the
+member knows no leader, and `isHealthy` is false once the database failed on
+the member. A database the member does not host answers 404 on every path.
+
+The endpoints need a login, as the rest of the HTTP API does, unless
+`dbms.security.cluster_status_auth_enabled=false` is set, for load balancers
+that cannot log in. They are off when `server.http_enabled_modules` does not
+name `ENTERPRISE_MANAGEMENT_ENDPOINTS`.
+
 ### Query log
 
 Every member writes `logs/query.log`, as `conf/server-logs.xml` configures it:

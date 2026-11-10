@@ -158,6 +158,15 @@ class ClusterSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "Whether the cluster status endpoints of the HTTP server, /db/<database>/cluster/... " +
+                "and /dbms/cluster/status, need a login when dbms.security.auth_enabled is true. " +
+                "Named like Neo4j Enterprise's setting."
+        )
+        val clusterStatusAuthEnabled: Setting<Boolean> =
+            newBuilder("dbms.security.cluster_status_auth_enabled", BOOL, true).build()
+
+        @JvmField
+        @field:Description(
             "Whether routing tables list the primaries that are not the writer as readers, or " +
                 "only the secondaries. Without secondaries that can read a database, its " +
                 "primaries are readers whatever this says. Server-side routing reads where " +
