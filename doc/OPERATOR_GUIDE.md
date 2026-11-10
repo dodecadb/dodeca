@@ -1542,6 +1542,48 @@ failures towards it are also in `debug.log`, at the level of
 `dbms.routing.driver.logging.level` unless the alias's driver settings set
 another.
 
+## Checkpoints
+
+A checkpoint writes the pages that transactions changed to the store files, so
+that recovery after a crash starts from it and transaction logs before it can be
+pruned. `db.checkpoint` chooses when a database checkpoints, on each member:
+
+| Policy | Checkpoints |
+|---|---|
+| `PERIODIC` (default) | Every `db.checkpoint.interval.time` (15 minutes) or `db.checkpoint.interval.tx` transactions (100,000), whichever comes first. |
+| `VOLUME` | Every `db.checkpoint.interval.volume` of transaction logs (250 MiB). |
+| `CONTINUOUS` | Whenever transactions were committed since the last checkpoint, checked every 100 ms: recovery replays little, and checkpoints write a steady trickle instead of bursts. |
+| `VOLUMETRIC` | When moving the checkpoint on would let `db.tx_log.rotation.retention_policy` delete logs, checked every 10 seconds: logs are kept as the retention policy says and no longer. With a policy that keeps every log, only backups, `db.checkpoint()` and stopping the database checkpoint. |
+
+On a cluster member, checkpoints also let the member take Raft snapshots and
+prune its Raft log (see "Raft log retention and catch-up" in
+`COMPATIBILITY.md`).
+
+`db.checkpoint.iops.limit` (default `600`, `-1` for none) caps the I/Os a
+second of each database's background checkpoints, those the policy starts, so
+that queries keep disk bandwidth for their reads. An I/O is mostly an 8 KiB
+write: 600 is about 5 MB/s. Checkpoints someone waits for are not limited:
+recovery's, a new database's first, a stopping database's last, those of
+backups and store copies, and `CALL db.checkpoint()`, which runs a checkpoint
+at once and waits for it. The limit is dynamic:
+
+```cypher
+CALL dbms.setConfigValue('db.checkpoint.iops.limit', '1200')
+```
+
+Each checkpoint logs its numbers in `debug.log`:
+
+```
+Checkpoint triggered by "Scheduled checkpoint for every 15 minutes threshold" @ txId: 4567, append index: 4567 checkpoint completed in 4s 312ms. Checkpoint flushed 2614 pages (0% of total available pages), in 2101 IOs. Checkpoint performed with IO limit: 600, paused in total 38 times( 3604 millis).
+```
+
+The metrics `check_point.duration`, `check_point.io_performed`,
+`check_point.limit_times` and `check_point.limit_millis` give the same for the
+last checkpoint of each database. A limit that is too low for the write load
+keeps checkpoints from completing, as pages are changed faster than they are
+written, and transaction logs from being pruned: when checkpoints take longer
+and longer, raise the limit or remove it.
+
 ## Monitoring
 
 DozenDB reports metrics, and writes the query log and the security log, as
@@ -1551,9 +1593,9 @@ on it: monitor every member.
 
 ### Metrics
 
-Metrics are on by default and reported over JMX. For Prometheus, enable the
-endpoint on every member, on an address Prometheus reaches (the default,
-`localhost:2004`, serves only the member's own host):
+Metrics are on by default, written to CSV files and reported over JMX. For
+Prometheus, enable the endpoint on every member, on an address Prometheus
+reaches (the default, `localhost:2004`, serves only the member's own host):
 
 ```
 server.metrics.prometheus.enabled=true
@@ -1572,6 +1614,15 @@ and `NEO4J_server_metrics_prometheus_endpoint=0.0.0.0:2004`, and publish port
 | `server.metrics.jmx.enabled` | `true` | MBeans in the domain `neo4j.metrics`, also read by `CALL dbms.queryJmx('neo4j.metrics:*')`. |
 | `server.metrics.prometheus.enabled` | `false` | |
 | `server.metrics.prometheus.endpoint` | `localhost:2004` | |
+| `server.metrics.csv.enabled` | `true` | See [CSV files](#csv-files). |
+| `server.metrics.csv.interval` | `30s` | |
+| `server.metrics.csv.rotation.size` | `10.00MiB` | `0` never rotates. |
+| `server.metrics.csv.rotation.keep_number` | `7` | |
+| `server.metrics.csv.rotation.compression` | `NONE` | `GZ` or `ZIP` compress rotated files. |
+| `server.directories.metrics` | `metrics` | Relative to the home directory. |
+| `server.metrics.graphite.enabled` | `false` | See [Graphite](#graphite). |
+| `server.metrics.graphite.server` | `:2003` | A port without a host uses `server.default_listen_address`. |
+| `server.metrics.graphite.interval` | `30s` | |
 
 Names are Neo4j Enterprise's: `neo4j.dbms.<name>` for the server and
 `neo4j.database.<database>.<name>` for each database, such as
@@ -1607,6 +1658,55 @@ With clustering, each member reports for each database, under
 The server reports `neo4j.dbms.dozendb.cluster.members`, the cluster's servers
 as the member knows them: the primaries of `system` and the servers that host
 it as a secondary.
+
+#### CSV files
+
+Every member writes a file per metric in `server.directories.metrics`, such as
+`metrics/neo4j.database.neo4j.check_point.events.csv`, and adds a line every
+`server.metrics.csv.interval`:
+
+```
+t,count
+1762812000,14
+1762812030,15
+```
+
+`t` is the time in seconds since 1970. Counters have a `count` column, gauges
+`value`, and histograms `count,max,mean,min,stddev,p50,p75,p95,p98,p99,p999`.
+A database's files grow while it runs. With the default filter a server writes
+some tens of files, each growing by about 100 bytes a line: at the default
+interval, a file reaches `rotation.size` after months. It is then renamed
+`<name>.csv.1` (compressed to `.gz` or `.zip` if configured), older ones become
+`.2` and on up to `rotation.keep_number`, and the oldest is deleted.
+
+In Neo4j's Docker image, files go to `/var/lib/neo4j/metrics` in the container.
+To keep them, mount a volume and point the setting at it, which Neo4j's image
+does on its own only for Enterprise:
+
+```
+docker run -v metrics:/metrics -e NEO4J_server_directories_metrics=/metrics ...
+```
+
+The directory must be writable by the `neo4j` user. A directory that cannot be
+written is logged once in `debug.log`, until writing works again. Set
+`server.metrics.csv.enabled=false` to write no files.
+
+#### Graphite
+
+```
+server.metrics.graphite.enabled=true
+server.metrics.graphite.server=graphite.example.com:2003
+```
+
+Every `server.metrics.graphite.interval`, each member connects to Graphite's
+plaintext port and sends its metrics: counters and gauges under their names,
+such as `neo4j.dbms.vm.heap.used`, and histograms as one series per column,
+such as `neo4j.database.neo4j.db.query.execution.latency.millis.p99`. Each
+member sends under the same names; to tell members apart, give each its own
+`server.metrics.prefix`, such as `neo4j.core1`. A Graphite server that cannot
+be reached is logged once in `debug.log`, until sending works again. The JVM
+caches the address a host name resolves to as its `networkaddress.cache.ttl`
+says.
 
 ### Cluster status endpoints
 

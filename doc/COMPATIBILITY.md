@@ -52,7 +52,8 @@ end its own way.
 | Leadership balancing and priority tags | Same | [Leadership balancing](#leadership-balancing) |
 | Online backup and restore | Same, with differences | [Backup and restore](#backup-and-restore) |
 | Cloud storage: Amazon S3, Google Cloud Storage, Azure Blob Storage | Same, with differences | [Cloud storage](#cloud-storage) |
-| Metrics | Same, with differences | [Metrics and logs](#metrics-and-logs) |
+| Metrics: CSV files, Graphite, Prometheus, JMX | Same, with differences | [Metrics and logs](#metrics-and-logs) |
+| Checkpoint policies and the checkpoint I/O limit | Same, with differences | [Checkpoints](#checkpoints) |
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
@@ -800,11 +801,32 @@ Enterprise's operations manual describes them; Neo4j Community declares the
 query log settings and ships the log files' configuration, but writes neither
 log. `OPERATOR_GUIDE.md` describes how to use them.
 
-- **Exporters:** Prometheus and JMX (domain `neo4j.metrics`). The CSV and
-  Graphite settings (`server.metrics.csv.*`, `server.metrics.graphite.*`) are
-  not declared, so a configuration that names them is refused at startup
-  with "Unrecognized setting" instead of being ignored. Neo4j Community
-  refuses the `server.metrics.*` settings the same way.
+- **Exporters:** CSV files, Graphite, Prometheus and JMX (domain
+  `neo4j.metrics`), with Enterprise's settings and defaults. Neo4j Community
+  refuses the `server.metrics.*` settings at startup with "Unrecognized
+  setting".
+- **CSV files are on by default**, as in Enterprise: a server moving from
+  Neo4j Community or from an earlier DozenDB starts writing a file per metric
+  in `server.directories.metrics` (`metrics` under the home directory),
+  growing by a line every `server.metrics.csv.interval` (30 s). Where
+  Enterprise's documentation says nothing: the header is `t` and then `count`
+  for counters, `value` for gauges, and for histograms Dropwizard's CSV
+  reporter's columns (`count,max,mean,min,stddev,p50,p75,p95,p98,p99,p999`);
+  `t` is in seconds since the epoch; a gauge that has no value at a report
+  gets no line; a database's files grow only while it runs. A file of
+  `rotation.size` or more is renamed `<name>.csv.1`, or `<name>.csv.1.gz` or
+  `.zip` as `rotation.compression` says, before its next line, the older ones
+  shifting up to `rotation.keep_number`; a ZIP archive holds one entry named
+  `<name>.csv`. A directory that cannot be written is logged once, until
+  writing succeeds again. Neo4j's Docker entrypoint uses a `/metrics` mount
+  only for Enterprise: set `server.directories.metrics=/metrics` with DozenDB.
+- **Graphite** gets Graphite's plaintext protocol over a new TCP connection
+  every `server.metrics.graphite.interval`: counters and gauges under their
+  names, histograms as `<name>.count`, `.max`, `.mean`, `.min`, `.stddev`,
+  `.p50`, `.p75`, `.p95`, `.p98`, `.p99` and `.p999`, `t` in seconds. Values
+  that are not finite numbers are left out. Connecting and writing time out
+  after 10 seconds; a server that cannot be reached is logged once, until
+  sending succeeds again.
 - **Names** are Enterprise's, `<prefix>.dbms.<name>` and
   `<prefix>.database.<database>.<name>`, with its settings and default filter.
   Metrics Enterprise does not have are named under a `dozendb` segment, such
@@ -875,7 +897,7 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   neither.
 - **Monitoring procedures**, as in Enterprise: `db.checkpoint` checkpoints the
   database it runs on, or waits for the checkpoint under way, on the member it
-  runs on. `dbms.scheduler.jobs`, `dbms.scheduler.groups` and
+  runs on, without the checkpoint I/O limit (see [Checkpoints](#checkpoints)). `dbms.scheduler.jobs`, `dbms.scheduler.groups` and
   `dbms.scheduler.failedJobs` list the jobs of the member's internal job
   scheduler, the groups that run jobs, and the latest runs that failed. Where
   Enterprise's documentation says nothing, job ids are `job-<number>`, and times
@@ -886,6 +908,40 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   the database it runs on, with their transactions as `SHOW TRANSACTIONS`
   names them, and `dbms.listActiveLocks` the locks of the transaction running
   a query, for a user who may see that transaction in `SHOW TRANSACTIONS`.
+
+## Checkpoints
+
+Neo4j Community accepts Enterprise's checkpoint settings, but runs the
+`CONTINUOUS` and `VOLUMETRIC` policies as `PERIODIC`, with a warning, and
+ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
+`OPERATOR_GUIDE.md` describes how to use them.
+
+- **`CONTINUOUS`** checks every 100 milliseconds and checkpoints whenever
+  transactions were appended since the last checkpoint.
+- **`VOLUMETRIC`** checks every 10 seconds and checkpoints when transactions
+  were appended since the last checkpoint and moving the checkpoint on would
+  let `db.tx_log.rotation.retention_policy` delete transaction logs. With a
+  retention policy that keeps every log (`keep_all`), it never checkpoints on
+  its own: only backups, `db.checkpoint()` and stopping the database do.
+- **The I/O limit is per database**: databases that checkpoint at once may
+  together write their limits added up. It counts I/Os as Neo4j's page cache
+  counts them for the checkpoint log line, lets a tenth of a second's worth go
+  at once, and is followed to best effort, as Enterprise says. Reads and
+  evictions are not counted.
+- **Only background checkpoints are limited**, those the policy triggers.
+  Checkpoints that someone waits for are not: recovery's, a new database's
+  first, a stopping database's last, those of backups and store copies, and
+  `db.checkpoint()`'s. When one of them waits for a background checkpoint under
+  way, that checkpoint completes without the limit, as Enterprise's
+  `db.checkpoint()` documents.
+- **A limit too low for the write load** keeps checkpoints from completing:
+  pages are dirtied faster than a checkpoint flushes them. Transaction logs,
+  and on a cluster member the Raft log, are then not pruned. `check_point.duration`
+  shows how long checkpoints take.
+- **Each database counts its own checkpoints**: the checkpoint log line and the
+  `check_point.*` metrics (pages, I/Os, the limit, pauses) count the flushes of
+  that database alone. Neo4j Community counts those of databases that
+  checkpoint at the same time together.
 
 ## Not supported
 
@@ -940,7 +996,8 @@ Neo4j Community of the pinned version, with the DozenDB jar in its `lib/`,
 starts on Neo4j Community's data directory as it is. Its first start creates
 the built-in roles and gives `admin` to one user (see
 [Roles and privileges](#roles-and-privileges)). Other changes the server
-shows: it writes the query log, at Neo4j's declared default `VERBOSE` (see
+shows: it writes the query log, at Neo4j's declared default `VERBOSE`, and
+metrics to CSV files in `metrics` under the home directory (see
 [Metrics and logs](#metrics-and-logs)); failed databases show as `offline`;
 `dbms.components()` reports the Enterprise edition; and the default database
 changes with `dbms.setDefaultDatabase`, no longer with
@@ -996,5 +1053,5 @@ Compared with DozerDB 5.26.27.0, as verified against the
   failed while running as `online`.
 - Label existence and relationship endpoint label constraints are refused,
   where DozerDB creates them and does not enforce them.
-- DozenDB writes the query log (see [Metrics and logs](#metrics-and-logs)),
-  and logs its version at startup instead of DozerDB's banner.
+- DozenDB writes the query log and metrics to CSV files (see
+  [Metrics and logs](#metrics-and-logs)), and logs its version at startup instead of DozerDB's banner.
