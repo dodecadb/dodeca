@@ -538,8 +538,9 @@ secondaries; secondaries, which pull transactions from upstreams; the settings
 `dbms.cluster.setAutomaticallyEnableFreeServers`,
 `dbms.setDefaultAllocationNumbers`, `dbms.showTopologyGraphConfig`,
 `dbms.cluster.secondaryReplicationDisable` and its deprecated name
-`dbms.cluster.readReplicaToggle`. See `OPERATOR_GUIDE.md`, "Servers",
-"Placing databases" and "Secondaries". Where DozenDB differs, or decides what
+`dbms.cluster.readReplicaToggle`; and `neo4j-admin server unbind`. See
+`OPERATOR_GUIDE.md`, "Servers", "Placing databases", "Secondaries" and
+"Unbinding a server". Where DozenDB differs, or decides what
 Enterprise does not document:
 
 - `ALTER DATABASE ... SET TOPOLOGY` without `SECONDARIES` keeps the number of
@@ -583,6 +584,15 @@ Enterprise does not document:
 - `DROP SERVER` also refuses a deallocating server that still votes in a
   database's Raft group, as the leader of `system` knows it, also while the
   server is down, so that a database whose only copy is there is not lost.
+- `neo4j-admin server unbind` removes the server's id and its cluster state,
+  archived with `--archive-cluster-state=true`, which needs `--archive-path`.
+  The files of the server's databases are kept, as in Enterprise, but moved to
+  `unbound/<time>/` next to their directories: the server, which starts as a
+  new one, copies the databases placed on it from the others and never serves
+  or deletes the old files. A server whose `data/server_id` was removed or
+  replaced otherwise, Neo4j Community's `neo4j-admin server unbind` included,
+  refuses to start until `neo4j-admin server unbind` is run, as under a new id
+  it would delete its databases.
 - A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
   a `Free` server votes in the Raft group of `system`, as every server does
   that hosts `system` as a primary. A server that hosts `system` as a
@@ -763,9 +773,7 @@ error, and their procedures do not exist.
   (`dbms.quarantineDatabase`), `dbms.cluster.recreateDatabase`,
   `dbms.cluster.statusCheck`, `dbms.cluster.checkConnectivity`,
   `dbms.cluster.protocols` and `neo4j-admin dbms unbind-system-db`.
-  `neo4j-admin server unbind` removes only the server's id, as in Neo4j
-  Community, and none of DozenDB's cluster state: the server then refuses to
-  start, saying how to start it under its id again. `OPERATOR_GUIDE.md`
+  `OPERATOR_GUIDE.md`
   describes how a DozenDB cluster recovers, and "Lost databases" under
   [Running a cluster](#running-a-cluster) how to rebuild a member.
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server

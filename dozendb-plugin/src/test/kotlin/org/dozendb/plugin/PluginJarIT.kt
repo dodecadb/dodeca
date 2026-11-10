@@ -73,6 +73,7 @@ class PluginJarIT {
                 "org.dozendb.backup.cli.RestoreCommandProvider",
                 "org.dozendb.backup.cli.InspectBackupCommandProvider",
                 "org.dozendb.backup.cli.AggregateBackupCommandProvider",
+                "org.dozendb.cluster.internal.admin.UnbindCommandProvider",
             )
         assertThat(services("org.neo4j.dbms.archive.CheckDatabase"))
             .containsExactly("org.dozendb.backup.cli.CheckBackup")

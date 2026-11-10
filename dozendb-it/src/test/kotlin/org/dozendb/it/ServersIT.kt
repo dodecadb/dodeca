@@ -1,6 +1,7 @@
 package org.dozendb.it
 
 import java.time.Duration
+import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
@@ -29,7 +30,8 @@ import org.testcontainers.lifecycle.Startables
  * The servers of a cluster, as Neo4j Enterprise shows and changes them: each initial member is an
  * enabled server with the tags of `initial.server.tags`, a server that joins stays Free and hosts
  * only `system` until ENABLE SERVER, then the databases placed on it, and the members with a
- * database's priority tag lead it.
+ * database's priority tag lead it. A server unbound with `neo4j-admin server unbind` rejoins as a
+ * new server.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
@@ -45,6 +47,9 @@ class ServersIT {
             "core4" to listOf("ap"),
         )
     private val boltPorts = aliases.associateWith { TestPorts.free() }
+
+    /** The data of core3, which is unbound while it is stopped. */
+    private val core3Data = "dozendb-it-${UUID.randomUUID().toString().take(8)}-core3"
     private val members = aliases.associateWith { alias ->
         DozenDbContainer(DozenDbContainer.dozenDbImage, alias)
             .inNetwork(network)
@@ -54,8 +59,10 @@ class ServersIT {
             .withEnv("NEO4J_initial_server_tags", tags.getValue(alias).joinToString(","))
             // Only core2 has the tag.
             .withEnv("NEO4J_db_cluster_raft_leader__transfer_priority__tag_neo4j", "us")
+            .apply { if (alias == "core3") withDataVolume(core3Data) }
     }
     private val started = CopyOnWriteArrayList<DozenDbContainer>()
+    private val admins = CopyOnWriteArrayList<AdminContainer>()
     private lateinit var driver: Driver
 
     @BeforeAll
@@ -82,6 +89,8 @@ class ServersIT {
             it.saveLogs(DozenDbContainer.logsDirectory.resolve(javaClass.simpleName))
             it.stop()
         }
+        admins.forEach { it.stop() }
+        DozenDbContainer.removeVolume(core3Data)
         network.close()
     }
 
@@ -196,6 +205,61 @@ class ServersIT {
                     }["role"]
             )
             .isEqualTo("LEADER")
+    }
+
+    @Test
+    @Order(4)
+    fun `a server unbound with neo4j-admin rejoins as a new server, which takes the old one's place`() {
+        val unbound = member("core3")
+        val old = unbound.memberId()
+        unbound.shutDown()
+        val admin =
+            AdminContainer(
+                    DozenDbContainer.dozenDbImage,
+                    "unbinder",
+                    network,
+                    mapOf(core3Data to "/data"),
+                )
+                .also {
+                    admins += it
+                    it.start()
+                }
+
+        val printed =
+            admin.adminOk(
+                "server",
+                "unbind",
+                "--archive-cluster-state=true",
+                "--archive-path=/data",
+            )
+
+        assertThat(printed).contains("Removed the cluster state of server $old")
+        assertThat(admin.shell("ls /data")).doesNotContain("server_id").doesNotContain("raft\n")
+        assertThat(admin.shell("ls /data/unbound/*/databases")).contains("neo4j", "system")
+        assertThat(admin.shell("ls /data")).containsPattern("unbound_cluster_state\\.\\d{12}\\.zip")
+        admin.shell("chown -R 7474:7474 /data")
+
+        unbound.restart()
+        // Refused while the new server still starts.
+        eventually {
+            member("core1").rows("CALL dozendb.cluster.addMember('core3:7700')", "system")
+        }
+        // Known as a member once added.
+        val id = unbound.memberId()
+        assertThat(id).isNotEqualTo(old)
+        eventually { assertThat(servers().getValue(id)["state"]).isEqualTo("Free") }
+        administer("ENABLE SERVER '$id'")
+        administer("DEALLOCATE DATABASES FROM SERVER '$old'")
+        eventually { assertThat(servers().getValue(old)["state"]).isEqualTo("Deallocated") }
+        administer("DROP SERVER '$old'")
+
+        eventually {
+            val servers = servers()
+            assertThat(servers.keys)
+                .containsExactlyInAnyOrderElementsOf(started.map { it.memberId() })
+            assertThat(servers.getValue(id)["hosting"]).isEqualTo(listOf("system", "neo4j"))
+            assertThat(unbound.rows("MATCH (n) RETURN count(n) AS c", "neo4j")).hasSize(1)
+        }
     }
 
     private companion object {

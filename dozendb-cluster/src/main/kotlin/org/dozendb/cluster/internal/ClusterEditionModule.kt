@@ -555,7 +555,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 systemDatabase,
                 formation,
                 stores,
-                MembershipFile(config.get(ClusterSettings.raftDirectory).resolve(MEMBERSHIP_FILE)),
+                MembershipFile(
+                    config.get(ClusterSettings.raftDirectory).resolve(MembershipFile.FILE_NAME)
+                ),
                 userLog,
                 metadata = metadata,
                 replicatedDatabases = { replication.running().map { it.ref } },
@@ -1686,9 +1688,6 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     private companion object {
-        /** This member's [org.dozendb.cluster.MembershipRecord], in the Raft directory. */
-        const val MEMBERSHIP_FILE = "membership"
-
         /** The databases this member holds as secondaries, next to its membership file. */
         const val SECONDARIES_FILE = "secondaries"
 

@@ -460,8 +460,9 @@ class ClusterService(
                 "Community's neo4j-admin server unbind does. Under the new id, the cluster would " +
                 "count neither this server's votes nor its databases, and the server would delete " +
                 "its databases. To start as server $owner again, put back data/server_id from a " +
-                "copy of the data directory. Before anything else, keep a copy of the data " +
-                "directory: it may hold the only copy of a database."
+                "copy of the data directory. To start as a new server, run neo4j-admin server " +
+                "unbind again: DozenDB's also removes the cluster state and sets the files of the " +
+                "databases aside, where they are kept."
         )
     }
 

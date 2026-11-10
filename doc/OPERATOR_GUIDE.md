@@ -118,6 +118,47 @@ placed where `DEALLOCATE` moved it, without a copy, and the failed server stays
 backup (see [Restoring a database](#restoring-a-database)). Databases with more
 than one primary avoid this (see [Raising the default](#raising-the-default)).
 
+### Unbinding a server
+
+`neo4j-admin server unbind` makes a server a new server of its cluster, as in
+Neo4j Enterprise: for troubleshooting one server, when replacing it is not an
+option. Until its old id is dropped, the cluster counts the old server as a
+member that is down, and bears one failure fewer. On the stopped server:
+
+```
+neo4j-admin server unbind --archive-cluster-state=true --archive-path=<directory>
+```
+
+It removes the server's id (`data/server_id`) and its cluster state
+(`data/raft`), which it first writes to
+`unbound_cluster_state.<time>.zip` in `<directory>` when asked, and moves the
+files of the server's databases to `data/unbound/<time>/databases` and
+`data/unbound/<time>/transactions`, where they stay until deleted. It refuses
+while the server runs, and prints the server's old id. Then:
+
+1. Start the server. It starts under a new id, copies `system` and waits to be
+   added, as a new member does (see [Adding a member](#adding-a-member)):
+   `CALL dozendb.cluster.addMember('<its Raft address>')` on a member, then
+   `ENABLE SERVER '<its new id>'`.
+2. Drop the old server: `DEALLOCATE DATABASES FROM SERVER '<old id>'`, then,
+   once `SHOW SERVERS` shows it `Deallocated`, `DROP SERVER '<old id>'`. Its
+   copies are made again on the other servers, which may include the new one,
+   from the copies they hold.
+
+A database whose only copy was on the server cannot be copied (see
+[Replacing a failed member](#replacing-a-failed-member)). Restore it from a
+backup, or from its files in `data/unbound/<time>/`: put its two directories
+back under `data/databases` and `data/transactions` of a stopped server
+without clustering, dump it with `neo4j-admin database dump`, and create the
+database from the dump (see
+[Creating a database from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
+
+A server whose `data/server_id` was removed or replaced otherwise, as Neo4j
+Community's `neo4j-admin server unbind` does, refuses to start: under a new
+id, the cluster would count neither its votes nor its databases, and it would
+delete them. Put back `data/server_id` from a copy of the data directory to
+start it as before, or unbind it as above.
+
 ### Changing an address
 
 A member's Raft address is part of its membership. To change it, drop the

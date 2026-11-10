@@ -123,13 +123,16 @@ class MembershipFile(private val path: Path) : MembershipStore {
         FileChannel.open(path.parent, StandardOpenOption.READ).use { it.force(true) }
     }
 
-    private companion object {
-        const val VERSION = "version"
-        const val CURRENT_VERSION = "1"
-        const val STATE = "state"
-        const val FORMATION = "formation"
-        const val FORMAT_LEVEL = "formatLevel"
-        const val STORES_TO_DETACH = "storesToDetach"
-        const val MEMBER_ID = "memberId"
+    companion object {
+        /** The name of a member's record, in its Raft directory. */
+        const val FILE_NAME = "membership"
+
+        private const val VERSION = "version"
+        private const val CURRENT_VERSION = "1"
+        private const val STATE = "state"
+        private const val FORMATION = "formation"
+        private const val FORMAT_LEVEL = "formatLevel"
+        private const val STORES_TO_DETACH = "storesToDetach"
+        private const val MEMBER_ID = "memberId"
     }
 }
