@@ -20,6 +20,9 @@ form, join or rejoin a cluster whose members run a different Neo4j version.
 | Test image | `neo4j:5.26.27-community` | Neo4j's official image: test baseline and installation target. `StandaloneIT` compares DozenDB, with clustering disabled, against it. |
 | Apache Ratis | 3.3.1 | Uses the already shaded `ratis-thirdparty` 1.1.0 for gRPC, Netty and protobuf. |
 | Kotlin | 2.4.21, kotlinx-coroutines 1.11.0 | Bundled and relocated to `org.dozendb.shaded`. |
+| AWS SDK for Java | 2.57.12 | S3, with Apache HttpClient 5. Bundled and relocated, as every cloud SDK and the libraries they use. |
+| Google Cloud Storage | 2.78.0 (`libraries-bom` 26.93.0) | Over HTTP: without its gRPC transport. |
+| Azure SDK | `azure-sdk-bom` 1.3.9: Storage Blob 12.36.0, Identity 1.18.7 | With the JDK's HTTP client. Uses the JNA that Neo4j ships. |
 | JDK | build 17, run 17 or 21 | Bytecode targets Java 17 like Neo4j 5.26. The test image runs Temurin 21. |
 
 ## At a glance
@@ -48,6 +51,7 @@ end its own way.
 | Servers, topologies and secondaries | Same, with differences | [Servers](#servers) |
 | Leadership balancing and priority tags | Same | [Leadership balancing](#leadership-balancing) |
 | Online backup and restore | Same, with differences | [Backup and restore](#backup-and-restore) |
+| Cloud storage: Amazon S3, Google Cloud Storage, Azure Blob Storage | Same, with differences | [Cloud storage](#cloud-storage) |
 | Metrics | Same, with differences | [Metrics and logs](#metrics-and-logs) |
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
@@ -117,11 +121,17 @@ places the database on servers (see [Servers](#servers)), and
   `statusMessage`; with clustering the members follow in the background.
 - **Creating a database from a seed**, `CREATE DATABASE ... OPTIONS
   {existingData: 'use', seedURI: '...'}`, works as in Enterprise with a dump or
-  a full backup as the seed. `dbms.databases.seed_from_uri_providers` enables
-  `FileSeedProvider` (`file:`) by default, where Enterprise enables its cloud
-  providers, and also takes `URLConnectionSeedProvider` (`http:`, `https:`,
-  `ftp:`). There are no cloud providers (`CloudSeedProvider`,
-  `S3SeedProvider`), and other names fail the server's start. A URI whose
+  a full backup as the seed, from a file, a URL or cloud storage (see
+  [Cloud storage](#cloud-storage)). `dbms.databases.seed_from_uri_providers`
+  enables `FileSeedProvider` (`file:`) and `CloudSeedProvider` (`s3:`, `gs:`,
+  `azb:`) by default, where Enterprise enables `S3SeedProvider` and
+  `CloudSeedProvider`, and also takes `S3SeedProvider` and
+  `URLConnectionSeedProvider` (`http:`, `https:`, `ftp:`); other names fail
+  the server's start. As a DozenDB extension, a seed read by
+  `FileSeedProvider` or `CloudSeedProvider` may also be a differential
+  backup, restored with the backups it continues in its folder, or a folder of
+  backups, whose latest chain is restored, as Enterprise documents for cloud
+  seeds. A URI whose
   scheme no enabled provider reads fails the command; a seed that cannot be
   read fails the database, which `WAIT` and `SHOW DATABASES` show, and the
   next start of the server tries it again.
@@ -688,19 +698,63 @@ file of DozenDB's own format, which Neo4j Community's `neo4j-admin database
 load` also loads as a dump when it is a full backup. Exchanging backups with
 Enterprise is not promised. The differences:
 
-- There are no cloud locations (`s3:`, `gs:`, `azb:`).
+- Backups go to, and are restored, inspected, checked and aggregated from,
+  cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
+  them where they are, as it restores them, and never needs `--temp-path`.
 - `--parallel-recovery` and `--inspect-path` are not supported.
 - The script that `--include-metadata` keeps, and `restore` writes to
   `data/scripts/<database>/restore_metadata.cypher`, is DozenDB's own.
 - `neo4j-admin backup inspect` without `--show-metadata` lists only the files.
 - Backup files are named in UTC.
-- `--temp-path` of `backup` defaults to `--to-path`, and `restore` accepts
-  `--temp-path` without using it.
+- `--temp-path` of `backup` and `aggregate-backup` defaults to the backups'
+  folder, which must then be local; with a folder in cloud storage, it must
+  be given. `restore` accepts `--temp-path` without using it.
 - A backup is not restored with another Neo4j kernel version than the one it
   was taken with.
 - Serving backups on an address that is not a loopback one needs
   `dbms.ssl.policy.backup.enabled` set explicitly, `true` or `false`, since
   the backup port has no other authentication.
+
+## Cloud storage
+
+Amazon S3 (`s3://<bucket>/<path>`), Google Cloud Storage
+(`gs://<bucket>/<path>`) and Azure Blob Storage
+(`azb://<storage account>/<container>/<path>`) work as in Enterprise for
+`neo4j-admin database dump`, `load`, `check` and `import full`, backups,
+restores, seeds and `LOAD CSV`, with each SDK's own credentials and the
+settings `dbms.integrations.cloud_storage.azb.blob_endpoint_suffix` and
+`dbms.integrations.cloud_storage.azb.authority_endpoint`; see
+`OPERATOR_GUIDE.md`, "Cloud storage". The SDKs come in DozenDB's jar,
+relocated, so that they never meet other copies on Neo4j's classpath. The
+differences:
+
+- `S3SeedProvider` is a name for `CloudSeedProvider` on `s3:` URIs; its
+  `seedConfig` and `seedCredentials` options fail `CREATE DATABASE`, which
+  tells to give the servers the AWS SDK's own credentials instead.
+- The default `dbms.databases.seed_from_uri_providers` is
+  `FileSeedProvider,CloudSeedProvider`; see [Databases](#databases).
+
+Where Enterprise's documentation says nothing, DozenDB's choices:
+
+- With an S3 endpoint set (`AWS_ENDPOINT_URL_S3` and the like), as for an
+  S3-compatible store, buckets are named in the path, and checksums are sent
+  only where S3 requires them. Without a region, S3 requests start in
+  us-east-1 and follow each bucket to its region.
+- `AZURE_STORAGE_CONNECTION_STRING`, Azure's own variable, is used instead of
+  the default Azure credentials when set, for the storage account it names.
+- Without Google credentials, requests go anonymous, as Google's SDK does,
+  which public buckets allow; refusals then say why there were none.
+- `LOAD CSV` from cloud URIs needs what `file:` URLs need:
+  `dbms.security.allow_csv_import_from_file_urls`, and `LOAD ON ALL DATA` for
+  users whose LOAD privilege is limited, since no CIDR range covers them.
+- A backup in cloud storage is written under a hidden name, then copied
+  within the cloud to its own, as a local one is renamed; an object appears
+  only once written whole. Restores and seeds read backups where they are.
+- Objects are written in parts that grow as they do, up to 1 GiB: S3 objects
+  of up to almost 4 TiB (S3 allows 5 TiB), Azure blobs of up to 19 TiB.
+- A copy of a whole object fetches 16 ranges at once: Neo4j's interface says
+  64, which takes up to 512 MiB of memory.
+- Azure copies blobs within a storage account only.
 
 ## Disaster recovery
 
@@ -871,8 +925,6 @@ error, and their procedures do not exist.
   periodically.
 - **Shared query caches**: `server.memory.query_cache.sharing_enabled` and
   `shared_cache_num_entries`.
-- **Cloud storage** for seeds, backups and `LOAD CSV`
-  (`dbms.integrations.cloud_storage.*`).
 - **CSV and Graphite metrics** (`server.metrics.csv.*`,
   `server.metrics.graphite.*`, `server.directories.metrics`).
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,

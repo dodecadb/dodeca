@@ -976,10 +976,15 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   another database of that name. `FULL` always takes a full backup.
 - Files are named `<database>-<yyyy-MM-ddTHH-mm-ss>.backup`, the time in UTC.
   A file appears only once the backup is complete and synced to disk.
+- `--to-path` may be a folder in cloud storage, such as
+  `s3://backups/films/` (see [Cloud storage](#cloud-storage)). Then
+  `--temp-path` must name a local directory, and the command lists the folder
+  before it backs anything up, so that missing credentials or a missing bucket
+  fail it at once.
 - A full backup's copy of the database is recovered and checked before it is
-  kept, in `--temp-path` (default: `--to-path`) with a page cache of
-  `--pagecache`. `--keep-failed=true` keeps the copy of a failed full backup
-  there.
+  kept, in `--temp-path` (default: `--to-path`, which must be local then) with
+  a page cache of `--pagecache`: it needs room for the database.
+  `--keep-failed=true` keeps the copy of a failed full backup there.
 - `--compress` (default `true`) compresses the artifacts.
 - `--include-metadata=all` (the default) keeps with each backup the Cypher that
   gives a DBMS back the users, roles and privileges of the database: `roles`
@@ -1002,7 +1007,12 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   chain of `neo4j` in a temporary directory and checks its consistency.
 - `neo4j-admin database aggregate-backup --from-path=/backups neo4j` turns the
   latest chain into one full backup; the backups after the chain still continue
-  it. `--keep-old-backup=true` keeps the chain's files.
+  it. `--keep-old-backup=true` keeps the chain's files. For a folder in cloud
+  storage, `--temp-path` must name a local directory with room for the
+  database.
+
+Each of these takes folders in cloud storage too, as `s3://backups/films/`;
+`check` then needs a local `--temp-path`, as Neo4j's check of dumps does.
 
 Each differential backup needs every backup of its chain. To keep backups for
 a while, delete whole chains, oldest first, or aggregate them first.
@@ -1017,7 +1027,9 @@ neo4j-admin database restore --from-path=/backups/films-2026-10-21T13-52-10.back
 
 - `--from-path` names a backup, which restores the chain ending at it, or a
   directory, which restores the latest chain of each database in it. Several
-  paths may be given, separated by commas.
+  paths may be given, separated by commas. Each may be in cloud storage, as
+  `s3://backups/films/`: the backups are read where they are, as they are
+  restored, without a local copy.
 - A name after the options restores a single backup under another name.
 - `--restore-until=123` stops before transaction 123, and
   `--restore-until="2026-10-21 13:00:00"` restores the transactions committed
@@ -1054,22 +1066,37 @@ member. Drop a database before restoring it under its old name.
 
 ### Creating a database from a backup or a dump
 
-`CREATE DATABASE` can create a database from a full backup, the last backup of
-a chain, or a dump made with `neo4j-admin database dump`:
+`CREATE DATABASE` can create a database from a dump made with `neo4j-admin
+database dump`, a full backup, a differential backup, with the backups before
+it in its folder, or a folder of backups, whose latest chain it restores:
 
 ```
 CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 'file:///backups/films-2026-10-21T13-52-10.backup'}
+CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 's3://backups/films/'}
 ```
+
+A folder of backups of several databases seeds the database of the same name.
 
 Without clustering the server reads the seed. In a cluster, one of the servers
 the database is placed on reads it and creates the database, and the others
 copy it from that server: the one that `existingDataSeedServer` names, which
 the database is placed on first, or else one the cluster chooses. That server
-must be able to read the seed. `dbms.databases.seed_from_uri_providers` lists
-the kinds of seed URIs servers read: `FileSeedProvider` (`file:`, the default)
-and `URLConnectionSeedProvider` (`http:`, `https:` and `ftp:`). A seed that
-cannot be read fails the database on that server, and `SHOW DATABASES` and
-`WAIT` say why.
+must be able to read the seed: for a seed in cloud storage, give every server
+credentials. `dbms.databases.seed_from_uri_providers` lists the kinds of seed
+URIs servers read, by default `FileSeedProvider,CloudSeedProvider`:
+
+- `FileSeedProvider`: `file:` URIs.
+- `CloudSeedProvider`: `s3:`, `gs:` and `azb:` URIs (see
+  [Cloud storage](#cloud-storage)).
+- `S3SeedProvider`: `s3:` URIs, read as `CloudSeedProvider` reads them. It is
+  Neo4j Enterprise's deprecated name, accepted so that its configurations
+  load; its `seedConfig` and `seedCredentials` options are refused, since the
+  AWS SDK's own credentials are used.
+- `URLConnectionSeedProvider`: `http:`, `https:` and `ftp:` URIs, a dump or a
+  full backup only, downloaded next to the database first.
+
+A seed that cannot be read fails the database on that server, and
+`SHOW DATABASES` and `WAIT` say why.
 
 ### Recovering a whole cluster
 
@@ -1089,6 +1116,97 @@ database, `system` included, taken with `"*"`:
 
 Users, roles, privileges, the default numbers of copies and whether each
 database is online come with `system`.
+
+## Cloud storage
+
+Backups, restores, dumps, loads, seeds, imports and `LOAD CSV` read and write
+Amazon S3, Google Cloud Storage and Azure Blob Storage, as in Neo4j Enterprise.
+The clouds' SDKs come in DozenDB's jar.
+
+### URIs
+
+- `s3://<bucket>/<path>`
+- `gs://<bucket>/<path>`
+- `azb://<storage account>/<container>/<path>`
+
+A path that ends with `/` names a folder. Folders are the prefixes of objects'
+names up to a `/`: they always exist, so there is nothing to create, and a
+folder named without its `/` works too where a folder is expected.
+
+### What reads and writes them
+
+- `neo4j-admin database dump --to-path`, `load --from-path`, `check
+  --from-path` (with a local `--temp-path`) and the files of `import full`.
+- `neo4j-admin database backup --to-path`, `restore --from-path`,
+  `aggregate-backup --from-path` and `neo4j-admin backup inspect`, as
+  [Backup and restore](#backup-and-restore) describes.
+- `CREATE DATABASE ... OPTIONS {seedURI: ...}`, with `CloudSeedProvider`
+  enabled, as it is by default.
+- `LOAD CSV FROM 's3://...'`, which needs what `file:` URLs need:
+  `dbms.security.allow_csv_import_from_file_urls` (`true` by default), and for
+  users whose LOAD privilege is limited, `LOAD ON ALL DATA`.
+
+### Credentials
+
+DozenDB takes no credentials of its own: each cloud's SDK finds them where it
+always does, in the environment of the server and of `neo4j-admin`, or in the
+files of the user they run as. Every server and every `neo4j-admin` that reads
+or writes cloud storage needs them; in a cluster, every server that may read a
+seed.
+
+- **Amazon S3**: the AWS SDK's default chain: `AWS_ACCESS_KEY_ID` and
+  `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`), the profiles of
+  `~/.aws/credentials` and `~/.aws/config` (`AWS_PROFILE`, single sign-on),
+  web identity (`AWS_WEB_IDENTITY_TOKEN_FILE` and `AWS_ROLE_ARN`, as on EKS),
+  and the role of the container or instance. The region comes from
+  `AWS_REGION`, the profile or the instance; without one, requests start in
+  us-east-1 and follow each bucket to its region.
+- **Google Cloud Storage**: Google's application default credentials:
+  `GOOGLE_APPLICATION_CREDENTIALS` naming a key file, `gcloud auth
+  application-default login`, or the instance's service account. Without
+  them, requests are anonymous, which only public buckets allow, and a refusal
+  says why no credentials were found.
+- **Azure Blob Storage**: the default Azure credentials: the environment
+  (`AZURE_CLIENT_ID`, `AZURE_TENANT_ID` and a secret or certificate), workload
+  identity, managed identity, or the Azure CLI's sign-in. When
+  `AZURE_STORAGE_CONNECTION_STRING` is set, it is used instead, for the
+  storage account it names only.
+  `dbms.integrations.cloud_storage.azb.blob_endpoint_suffix` (default
+  `blob.core.windows.net`) and
+  `dbms.integrations.cloud_storage.azb.authority_endpoint` (default: the
+  SDK's, Azure's public cloud) select another Azure cloud, as
+  `blob.core.usgovcloudapi.net` and `https://login.microsoftonline.us` for
+  Azure Government.
+
+With Docker, pass the variables with `-e`; for a service, set them in its
+environment, such as systemd's `Environment=`.
+
+### S3-compatible stores
+
+For a store that speaks S3's protocol, such as MinIO or Ceph, set its endpoint
+as the AWS SDK reads it: `AWS_ENDPOINT_URL_S3` (or `AWS_ENDPOINT_URL`, or
+`endpoint_url` in the profile). With an endpoint set, DozenDB names the bucket
+in the path (`https://<endpoint>/<bucket>/<key>`) and sends checksums only
+where S3 requires them, as such stores expect.
+
+For tests, `STORAGE_EMULATOR_HOST` points Google Cloud Storage at an emulator,
+without credentials, and a connection string reaches Azure's emulator,
+Azurite.
+
+### Transfers
+
+- Objects are read in ranges of 8 MiB, four ahead; the first 256 KiB come in
+  one request, so that reading a backup's header costs little. A copy of a
+  whole object fetches 16 ranges at once.
+- Objects are written in parts as they fill, sent four at once: parts of
+  8 MiB, twice as big every 1000 parts on S3 (every 5000 on Azure) up to 1 GiB,
+  which makes objects of up to almost 4 TiB on S3 and 19 TiB on Azure;
+  resumable uploads in chunks of 16 MiB on Google Cloud Storage, one at a
+  time. A writer holds at most 64 MiB of parts being sent, or one part if
+  bigger, and the part it fills.
+- An object appears only once it is written whole: an upload that fails
+  leaves none. Backups are written under a hidden name, then copied within
+  the cloud to their own, as locally they are renamed.
 
 ## Disaster recovery
 
