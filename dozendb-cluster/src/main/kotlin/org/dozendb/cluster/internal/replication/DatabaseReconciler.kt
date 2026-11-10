@@ -32,6 +32,8 @@ internal data class DesiredDatabase(
     val created: Boolean = false,
     /** Whether it is the default database. */
     val default: Boolean = false,
+    /** The id it had before `dbms.cluster.recreateDatabase` recreated it, if it did. */
+    val recreatedFrom: UUID? = null,
 )
 
 /** What the creator of a database creates its store from, instead of an empty one. */
@@ -211,9 +213,9 @@ internal interface LocalDatabases {
  * lack transactions this member already acted on.
  *
  * The default database is created, copied, started and stopped like any other; like without
- * clustering the reconciler never drops it. It is the one the system graph names, or while it names
- * none, as before a cluster formed, [initialDefault], the one `initial.dbms.default_database`
- * names.
+ * clustering the reconciler never drops it, unless `dbms.cluster.recreateDatabase` recreated it
+ * under another id. It is the one the system graph names, or while it names none, as before a
+ * cluster formed, [initialDefault], the one `initial.dbms.default_database` names.
  *
  * A member removed from the cluster stops its databases, `system` aside, and changes nothing else.
  *
@@ -359,8 +361,12 @@ internal class DatabaseReconciler(
     private fun deletions(desired: List<DesiredDatabase>): List<Deletion> {
         val wanted = desired.associateBy { it.id.name() }
         val registered = databases.registered().keys
+        // The default database stays, unless it was recreated under another id.
         val dropped = registered.filter {
-            !it.isSystemDatabase && it.name() != defaultDatabase && wanted[it.name()]?.id != it
+            val database = wanted[it.name()]
+            !it.isSystemDatabase &&
+                database?.id != it &&
+                (it.name() != defaultDatabase || database?.recreatedFrom == it.uuid)
         }
         // The files of system and the default database are kept, to form a cluster from; see
         // create for those of the default database that need replacing.

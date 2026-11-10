@@ -82,6 +82,26 @@ class RecreateDatabaseTest {
     }
 
     @Test
+    fun `the default database is recreated from a backup as any other`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        val leader = cluster.awaitLeader()
+        leader.database().executeTransactionally("UNWIND range(1, 3) AS i CREATE (:Film {i: i})")
+        val seed = cluster.backup(leader, DEFAULT)
+        leader.database().executeTransactionally("CREATE (:Film)")
+        val old = cluster.members[0].databaseId(DEFAULT)
+
+        cluster.administer(
+            "CALL dbms.cluster.recreateDatabase('$DEFAULT', {seedURI: '${seed.toUri()}'})"
+        )
+
+        cluster.awaitFilms(cluster.members, 3, DEFAULT)
+        assertThat(cluster.members.map { it.databaseId(DEFAULT) }).doesNotContain(old).hasSize(3)
+        cluster.awaitLeader().database().executeTransactionally("CREATE (:Film)")
+        cluster.awaitFilms(cluster.members, 4, DEFAULT)
+    }
+
+    @Test
     fun `a database that lost a majority of its primaries is recreated from a backup on the servers left`() {
         val cluster =
             ClusterHarness(root, 5, settings = mapOf(ClusterSettings.defaultPrimaries to 3)).also {
@@ -162,13 +182,17 @@ class RecreateDatabaseTest {
             .executeTransactionally("UNWIND range(1, $count) AS i CREATE (:Film {i: i})")
     }
 
-    /** Waits until each of [members] holds [count] films. */
-    private fun ClusterHarness.awaitFilms(members: List<ClusterHarness.Member>, count: Long) {
+    /** Waits until each of [members] holds [count] films in [database]. */
+    private fun ClusterHarness.awaitFilms(
+        members: List<ClusterHarness.Member>,
+        count: Long,
+        database: String = FILMS,
+    ) {
         await atMost
             AWAIT untilAsserted
             {
                 for (member in members) {
-                    assertThat(runCatching { member.count(FILMS) }.getOrNull())
+                    assertThat(runCatching { member.count(database) }.getOrNull())
                         .describedAs("$member")
                         .isEqualTo(count)
                 }
@@ -201,14 +225,17 @@ class RecreateDatabaseTest {
         awaitLeader(SYSTEM) { among }.database(SYSTEM).executeTransactionally(command)
     }
 
-    /** A full backup of [FILMS] from [member]. */
-    private fun ClusterHarness.backup(member: ClusterHarness.Member): Path {
+    /** A full backup of [database] from [member]. */
+    private fun ClusterHarness.backup(
+        member: ClusterHarness.Member,
+        database: String = FILMS,
+    ): Path {
         val backups = Files.createDirectories(root.resolve("backups"))
         val printed =
             admin(
                 Files.createDirectories(root.resolve("client")),
                 "--from=127.0.0.1:${member.backupPort()}",
-                FILMS,
+                database,
                 "--to-path=$backups",
                 "--type=FULL",
             )
@@ -236,5 +263,6 @@ class RecreateDatabaseTest {
     private companion object {
         const val SYSTEM = "system"
         const val FILMS = "films"
+        const val DEFAULT = ClusterHarness.DEFAULT_DATABASE
     }
 }

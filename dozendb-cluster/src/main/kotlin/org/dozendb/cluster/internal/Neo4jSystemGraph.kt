@@ -66,6 +66,10 @@ internal class Neo4jSystemGraph(
             created = created(node),
             default =
                 node.getProperty(TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY, false) == true,
+            recreatedFrom =
+                (node.getProperty(RECREATED_FROM_PROPERTY, null) as? String)?.let {
+                    runCatching { UUID.fromString(it) }.getOrNull()
+                },
         )
     }
 

@@ -448,6 +448,23 @@ class DatabaseReconcilerTest {
     }
 
     @Test
+    fun `the default database is dropped once recreated under another id`() {
+        val running = database(DEFAULT)
+        local.add(running, started = true)
+        val recreated = database(DEFAULT)
+        graph.databases =
+            listOf(
+                desired(recreated, creator = creator)
+                    .copy(recreatedFrom = running.databaseId().uuid())
+            )
+
+        reconciler.reconcile()
+
+        assertThat(local.registered.keys).doesNotContain(running)
+        assertThat(local.dropped).contains(running)
+    }
+
+    @Test
     fun `a member the default database is placed on copies it from its creator`() {
         val default = database(DEFAULT)
         graph.databases = listOf(desired(default, creator = creator))
