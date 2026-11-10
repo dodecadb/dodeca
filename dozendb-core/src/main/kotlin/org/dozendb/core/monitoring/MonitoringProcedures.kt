@@ -5,11 +5,19 @@ import java.time.ZoneId
 import java.util.stream.Stream
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.dbms.database.DatabaseContext
+import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.internal.kernel.api.security.AdminActionOnResource
+import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.internal.kernel.api.security.SecurityContext
+import org.neo4j.internal.kernel.api.security.UserSegment
 import org.neo4j.io.ByteUnit
+import org.neo4j.kernel.api.KernelTransactionHandle
 import org.neo4j.kernel.api.procedure.SystemProcedure
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.database.NormalizedDatabaseName
+import org.neo4j.kernel.impl.api.KernelTransactions
+import org.neo4j.kernel.impl.locking.LockManager
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
@@ -19,9 +27,12 @@ import org.neo4j.procedure.Admin
 import org.neo4j.procedure.Context
 import org.neo4j.procedure.Description
 import org.neo4j.procedure.Mode
+import org.neo4j.procedure.Name
 import org.neo4j.procedure.Procedure
 import org.neo4j.procedure.builtin.ProceduresTimeFormatHelper.formatInterval
 import org.neo4j.procedure.builtin.ProceduresTimeFormatHelper.formatTime
+import org.neo4j.procedure.builtin.QueryId
+import org.neo4j.procedure.builtin.TransactionId
 import org.neo4j.scheduler.JobScheduler
 
 /** Neo4j Enterprise's procedures for looking into a running server, as its manual lists them. */
@@ -203,6 +214,105 @@ class MonitoringProcedures {
             const val UNLIMITED = "Unlimited"
         }
     }
+
+    @Admin
+    @SystemProcedure
+    @Description("Lists the locks held in the database, with the transactions that hold them.")
+    @Procedure(name = "db.listLocks", mode = Mode.DBMS)
+    fun listLocks(): Stream<LockRow> {
+        val database = checkNotNull(graph)
+        val locks = mutableListOf<LockRow>()
+        database.dependencyResolver.resolveDependency(LockManager::class.java).accept {
+            mode,
+            type,
+            transaction,
+            resource,
+            _,
+            _,
+            _ ->
+            locks +=
+                LockRow(
+                    mode.name,
+                    type.name,
+                    resource,
+                    TransactionId.formatTransactionId(database.databaseName(), transaction),
+                )
+        }
+        return locks.stream()
+    }
+
+    /** A row of `db.listLocks`: the transaction as SHOW TRANSACTIONS names it. */
+    class LockRow(
+        @JvmField val mode: String,
+        @JvmField val resourceType: String,
+        @JvmField val resourceId: Long,
+        @JvmField val transactionId: String,
+    )
+
+    @SystemProcedure
+    @Description(
+        "Lists the locks granted to the transaction running the query with the given id, if the " +
+            "user may see the transaction."
+    )
+    @Procedure(name = "dbms.listActiveLocks", mode = Mode.DBMS)
+    fun listActiveLocks(@Name("queryId") queryId: String): Stream<ActiveLockRow> {
+        val id = QueryId.parse(queryId)
+        val contexts =
+            checkNotNull(graph)
+                .dependencyResolver
+                .resolveDependency(DatabaseContextProvider::class.java)
+                .registeredDatabases()
+                .values
+        val running =
+            contexts
+                .asSequence()
+                .filter { it.database().isStarted }
+                .flatMap { context ->
+                    val dependencies = context.dependencies()
+                    if (dependencies.containsDependency(KernelTransactions::class.java)) {
+                        val transactions =
+                            dependencies.resolveDependency(KernelTransactions::class.java)
+                        transactions.executingTransactions().map { context.databaseName() to it }
+                    } else {
+                        emptyList()
+                    }
+                }
+        val (database, handle) =
+            running.firstOrNull { (_, handle) ->
+                handle.executingQuery().map { it.internalQueryId() == id }.orElse(false)
+            } ?: return Stream.empty()
+        if (!visible(database, handle)) return Stream.empty()
+        return handle.activeLocks().stream().map {
+            ActiveLockRow(it.lockType().name, it.resourceType().name, it.resourceId())
+        }
+    }
+
+    /** A row of `dbms.listActiveLocks`. */
+    class ActiveLockRow(
+        @JvmField val mode: String,
+        @JvmField val resourceType: String,
+        @JvmField val resourceId: Long,
+    )
+
+    /**
+     * Whether the user may see [handle], a transaction in [database], as SHOW TRANSACTIONS does.
+     */
+    private fun visible(database: String, handle: KernelTransactionHandle): Boolean {
+        val security = checkNotNull(securityContext)
+        val user = handle.subject().executingUser()
+        if (security.subject().hasUsername(user)) return true
+        return security
+            .allowsAdminAction(
+                AdminActionOnResource(
+                    PrivilegeAction.SHOW_TRANSACTION,
+                    AdminActionOnResource.DatabaseScope(database),
+                    UserSegment(user),
+                )
+            )
+            .allowsAccess()
+    }
+
+    private fun DatabaseContext.databaseName(): String = database().namedDatabaseId.name()
 
     private fun scheduler(): JobScheduler =
         checkNotNull(graph).dependencyResolver.resolveDependency(JobScheduler::class.java)

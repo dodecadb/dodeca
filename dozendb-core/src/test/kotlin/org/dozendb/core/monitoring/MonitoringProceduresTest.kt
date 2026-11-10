@@ -1,9 +1,14 @@
 package org.dozendb.core.monitoring
 
 import java.nio.file.Path
+import java.time.Duration
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilNotNull
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.StandaloneServer.Companion.SYSTEM
 import org.junit.jupiter.api.AfterEach
@@ -16,6 +21,9 @@ import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
+import org.neo4j.graphdb.Label
+import org.neo4j.graphdb.Transaction
+import org.neo4j.kernel.impl.coreapi.InternalTransaction
 import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.scheduler.Group
 import org.neo4j.scheduler.JobMonitoringParams
@@ -118,6 +126,125 @@ class MonitoringProceduresTest {
         // The role PUBLIC gives access to the default database only.
         assertThat(pools).contains("Transaction" to "", "Transaction" to "neo4j")
         assertThat(pools.map { it.second }).doesNotContain("films")
+    }
+
+    /** The id SHOW TRANSACTIONS gives [tx], an open transaction of the default database. */
+    private fun transactionId(tx: Transaction): String =
+        "neo4j-transaction-${(tx as InternalTransaction).kernelTransaction().transactionSequenceNumber}"
+
+    @Test
+    fun `db listLocks lists the locks held in the database, with their transactions`() {
+        val film =
+            server.database().executeTransactionally(
+                "CREATE (f:Film) SET f.id = id(f) RETURN f.id AS id",
+                emptyMap(),
+            ) {
+                it.next()["id"] as Long
+            }
+        server.database().beginTx().use { holder ->
+            holder.acquireWriteLock(holder.findNode(Label.label("Film"), "id", film))
+
+            val locks = server.rows("CALL db.listLocks()")
+
+            assertThat(locks)
+                .contains(
+                    mapOf(
+                        "mode" to "EXCLUSIVE",
+                        "resourceType" to "NODE",
+                        "resourceId" to film,
+                        "transactionId" to transactionId(holder),
+                    )
+                )
+        }
+    }
+
+    /**
+     * Runs [check] with the id of a running query, of a transaction that holds the exclusive lock
+     * of a movie and waits for that of a film, and the movie's id.
+     */
+    private fun withWaitingQuery(check: (query: String, movie: Long) -> Unit) {
+        val (film, movie) =
+            server.database().executeTransactionally(
+                "CREATE (f:Film), (m:Movie) SET f.id = id(f) RETURN id(f) AS film, id(m) AS movie",
+                emptyMap(),
+            ) {
+                it.next().let { row -> row["film"] as Long to row["movie"] as Long }
+            }
+        val executor = Executors.newSingleThreadExecutor()
+        server.database().beginTx().use { holder ->
+            holder.acquireWriteLock(holder.findNode(Label.label("Film"), "id", film))
+            val waiting = executor.submit {
+                server.database().beginTx().use { tx ->
+                    tx.execute("MATCH (m:Movie) SET m.seen = true").close()
+                    tx.execute("MATCH (f:Film) SET f.seen = true").close()
+                    tx.commit()
+                }
+            }
+            try {
+                val query =
+                    await atMost
+                        Duration.ofSeconds(30) untilNotNull
+                        {
+                            server
+                                .rows(
+                                    "SHOW TRANSACTIONS YIELD currentQueryId, currentQuery " +
+                                        "WHERE currentQuery STARTS WITH 'MATCH (f:Film)' " +
+                                        "RETURN currentQueryId",
+                                    SYSTEM,
+                                )
+                                .singleOrNull()
+                                ?.get("currentQueryId") as String?
+                        }
+                check(query, movie)
+            } finally {
+                holder.rollback()
+                waiting.get()
+                executor.shutdown()
+            }
+        }
+    }
+
+    @Test
+    fun `dbms listActiveLocks lists the locks of the transaction running a query`() =
+        withWaitingQuery { query, movie ->
+            val locks = server.rows("CALL dbms.listActiveLocks('$query')", SYSTEM)
+
+            assertThat(locks)
+                .contains(
+                    mapOf("mode" to "EXCLUSIVE", "resourceType" to "NODE", "resourceId" to movie)
+                )
+            assertThat(server.rows("CALL dbms.listActiveLocks('query-999999')", SYSTEM)).isEmpty()
+        }
+
+    @Test
+    fun `dbms listActiveLocks shows only the transactions a user may see`() {
+        server.close()
+        server =
+            StandaloneServer(
+                    root.resolve("secured"),
+                    mapOf(
+                        GraphDatabaseSettings.auth_enabled to true,
+                        BoltConnector.enabled to true,
+                    ),
+                )
+                .also { it.start() }
+        server.administer("ALTER USER neo4j SET PASSWORD 'admin-secret-1' CHANGE NOT REQUIRED")
+        server.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
+        fun locks(user: String, password: String, query: String): List<Long> =
+            GraphDatabase.driver("bolt://${server.boltAddress()}", AuthTokens.basic(user, password))
+                .use { driver ->
+                    driver.session(SessionConfig.forDatabase(SYSTEM)).use { session ->
+                        session.run("CALL dbms.listActiveLocks('$query')").list {
+                            it["resourceId"].asLong()
+                        }
+                    }
+                }
+
+        withWaitingQuery { query, movie ->
+            // Not alice's own, and PUBLIC may not see other users' transactions.
+            assertThat(locks("alice", "alice-secret-1", query)).isEmpty()
+            assertThat(locks("neo4j", "admin-secret-1", query)).contains(movie)
+        }
     }
 
     private val scheduler: JobScheduler

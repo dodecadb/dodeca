@@ -47,6 +47,7 @@ end its own way.
 | Online backup and restore | Same, with differences | [Backup and restore](#backup-and-restore) |
 | Metrics | Same, with differences | [Metrics and logs](#metrics-and-logs) |
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
+| Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing the default database | Same | [Databases](#databases) |
 | Quarantine, recreating databases and cluster status checks | Not supported | [Not supported](#not-supported) |
@@ -763,7 +764,10 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   are shown in `db.temporal.timezone`, as Neo4j's other procedures show them.
   `dbms.listPools` lists the member's memory pools, and in them the pools of
   the databases the user may see in `SHOW DATABASES`; a pool without a limit
-  has `Unlimited` free and in total.
+  has `Unlimited` free and in total. `db.listLocks` lists the locks held in
+  the database it runs on, with their transactions as `SHOW TRANSACTIONS`
+  names them, and `dbms.listActiveLocks` the locks of the transaction running
+  a query, for a user who may see that transaction in `SHOW TRANSACTIONS`.
 
 ## Not supported
 
@@ -817,7 +821,6 @@ error, and their procedures do not exist.
   (`dbms.integrations.cloud_storage.*`).
 - **CSV and Graphite metrics** (`server.metrics.csv.*`,
   `server.metrics.graphite.*`, `server.directories.metrics`).
-- **Monitoring procedures**: `db.listLocks` and `dbms.listActiveLocks`.
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,
   `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
   `server.backup.exec_connector.*` and
