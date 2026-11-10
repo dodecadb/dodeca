@@ -1,0 +1,3 @@
+org.dozendb.cloud.S3StorageFactory
+org.dozendb.cloud.GcsStorageFactory
+org.dozendb.cloud.AzureStorageFactory
