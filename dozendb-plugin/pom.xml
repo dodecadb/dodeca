@@ -13,8 +13,8 @@
   <name>DozenDB plugin</name>
   <description>
     DozenDB's entry point, which starts it with or without clustering, and the single jar installed
-    into Neo4j's lib/: the DozenDB modules, Apache Ratis, and Kotlin and Dropwizard Metrics
-    relocated under org.dozendb.shaded.
+    into Neo4j's lib/: the DozenDB modules, Apache Ratis, and Kotlin, Dropwizard Metrics and the
+    cloud storage SDKs relocated under org.dozendb.shaded.
   </description>
 
   <dependencies>
@@ -26,11 +26,33 @@
       <groupId>org.dozendb</groupId>
       <artifactId>dozendb-backup</artifactId>
     </dependency>
-    <!-- On the Neo4j classpath at runtime. -->
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>dozendb-cloud</artifactId>
+    </dependency>
+    <!--
+      On the Neo4j classpath at runtime. Its copies of libraries that the cloud SDKs also use are
+      left out here, so that the jar bundles the SDKs' versions, relocated, rather than relying on
+      Neo4j's.
+    -->
     <dependency>
       <groupId>org.neo4j</groupId>
       <artifactId>neo4j</artifactId>
       <scope>provided</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>com.fasterxml.jackson.core</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>commons-codec</groupId>
+          <artifactId>commons-codec</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.projectreactor</groupId>
+          <artifactId>reactor-core</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
   </dependencies>
 
@@ -69,16 +91,40 @@
             <configuration>
               <outputFile>${dozendb.plugin.jar}</outputFile>
               <createDependencyReducedPom>false</createDependencyReducedPom>
-              <!-- Everything else (Neo4j, Scala, slf4j) is already in Neo4j's lib/. -->
+              <!--
+                Everything the plugin runs on (the Neo4j artifacts are provided and left out),
+                but what Neo4j already ships in lib/ (slf4j, Reactive Streams, JNA, whose native
+                libraries keep their names) and libraries of annotations only. Google's SDK
+                comes without its gRPC transport, which DozenDB does not use (it reads and writes
+                over HTTP), nor what only that transport needs: Conscrypt, xDS, the load
+                balancers, and its metrics export to Cloud Monitoring.
+              -->
               <artifactSet>
-                <includes>
-                  <include>org.dozendb:*</include>
-                  <include>org.apache.ratis:*</include>
-                  <include>org.jetbrains.kotlin:kotlin-stdlib</include>
-                  <include>org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm</include>
-                  <include>io.dropwizard.metrics:metrics-core</include>
-                  <include>io.dropwizard.metrics:metrics-jmx</include>
-                </includes>
+                <excludes>
+                  <exclude>org.slf4j:*</exclude>
+                  <exclude>org.reactivestreams:*</exclude>
+                  <exclude>net.java.dev.jna:jna</exclude>
+                  <exclude>org.jetbrains:annotations</exclude>
+                  <exclude>org.jetbrains.kotlinx:kotlinx-coroutines-core</exclude>
+                  <exclude>com.google.code.findbugs:jsr305</exclude>
+                  <exclude>com.google.android:annotations</exclude>
+                  <exclude>org.checkerframework:checker-qual</exclude>
+                  <exclude>org.jspecify:jspecify</exclude>
+                  <exclude>org.codehaus.mojo:animal-sniffer-annotations</exclude>
+                  <exclude>org.conscrypt:*</exclude>
+                  <exclude>dev.cel:*</exclude>
+                  <exclude>io.grpc:grpc-netty-shaded</exclude>
+                  <exclude>io.grpc:grpc-xds</exclude>
+                  <exclude>io.grpc:grpc-alts</exclude>
+                  <exclude>io.grpc:grpc-rls</exclude>
+                  <exclude>io.grpc:grpc-grpclb</exclude>
+                  <exclude>io.grpc:grpc-googleapis</exclude>
+                  <exclude>io.grpc:grpc-services</exclude>
+                  <exclude>com.google.cloud:google-cloud-monitoring</exclude>
+                  <exclude>com.google.api.grpc:proto-google-cloud-monitoring-v3</exclude>
+                  <exclude>com.google.cloud.opentelemetry:*</exclude>
+                  <exclude>io.opentelemetry.contrib:opentelemetry-gcp-resources</exclude>
+                </excludes>
               </artifactSet>
               <relocations>
                 <relocation>
@@ -93,13 +139,83 @@
                   <pattern>com.codahale.metrics</pattern>
                   <shadedPattern>org.dozendb.shaded.com.codahale.metrics</shadedPattern>
                 </relocation>
+                <!-- The cloud SDKs and every library they bring. -->
+                <relocation>
+                  <pattern>software.amazon</pattern>
+                  <shadedPattern>org.dozendb.shaded.software.amazon</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.azure</pattern>
+                  <shadedPattern>org.dozendb.shaded.com.azure</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.microsoft</pattern>
+                  <shadedPattern>org.dozendb.shaded.com.microsoft</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.google</pattern>
+                  <shadedPattern>org.dozendb.shaded.com.google</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.fasterxml</pattern>
+                  <shadedPattern>org.dozendb.shaded.com.fasterxml</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.ctc.wstx</pattern>
+                  <shadedPattern>org.dozendb.shaded.com.ctc.wstx</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.codehaus.stax2</pattern>
+                  <shadedPattern>org.dozendb.shaded.org.codehaus.stax2</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>reactor</pattern>
+                  <shadedPattern>org.dozendb.shaded.reactor</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.commons.codec</pattern>
+                  <shadedPattern>org.dozendb.shaded.org.apache.commons.codec</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.hc</pattern>
+                  <shadedPattern>org.dozendb.shaded.org.apache.hc</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.http</pattern>
+                  <shadedPattern>org.dozendb.shaded.org.apache.http</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.grpc</pattern>
+                  <shadedPattern>org.dozendb.shaded.io.grpc</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.opencensus</pattern>
+                  <shadedPattern>org.dozendb.shaded.io.opencensus</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.opentelemetry</pattern>
+                  <shadedPattern>org.dozendb.shaded.io.opentelemetry</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.perfmark</pattern>
+                  <shadedPattern>org.dozendb.shaded.io.perfmark</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.threeten</pattern>
+                  <shadedPattern>org.dozendb.shaded.org.threeten</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.sun.jna.platform</pattern>
+                  <shadedPattern>org.dozendb.shaded.com.sun.jna.platform</shadedPattern>
+                </relocation>
               </relocations>
               <filters>
                 <filter>
                   <artifact>*:*</artifact>
                   <excludes>
                     <exclude>module-info.class</exclude>
-                    <exclude>META-INF/versions/*/module-info.class</exclude>
+                    <!-- The jar is not a multi-release one: Java never loads these. -->
+                    <exclude>META-INF/versions/**</exclude>
                     <exclude>META-INF/*.SF</exclude>
                     <exclude>META-INF/*.DSA</exclude>
                     <exclude>META-INF/*.RSA</exclude>
@@ -108,6 +224,11 @@
                     <exclude>META-INF/proguard/**</exclude>
                     <exclude>META-INF/maven/**</exclude>
                     <exclude>META-INF/DEPENDENCIES</exclude>
+                    <!-- A jar index would hide the classes it does not list. -->
+                    <exclude>META-INF/INDEX.LIST</exclude>
+                    <exclude>META-INF/native-image/**</exclude>
+                    <!-- Protocol Buffers' sources, also in Ratis's. -->
+                    <exclude>**/*.proto</exclude>
                     <!-- Rebuilt by the ManifestResourceTransformer below. -->
                     <exclude>META-INF/MANIFEST.MF</exclude>
                   </excludes>
