@@ -95,8 +95,17 @@ class ClusterStatusesTest {
                             healthy = true,
                             memberId = member.serverId,
                             leader = leader.serverId,
+                            millisSinceLastLeaderMessage = status.millisSinceLastLeaderMessage,
                         )
                     )
+                val sinceLeader =
+                    assertThat(status.millisSinceLastLeaderMessage)
+                        .describedAs("$member: milliseconds since it heard from the leader")
+                when (member) {
+                    leader -> sinceLeader.isZero()
+                    secondary -> sinceLeader.isNull()
+                    else -> sinceLeader.isNotNull().isBetween(0, AWAIT_MILLIS)
+                }
                 assertThat(status.lastAppliedRaftIndex)
                     .describedAs("$member")
                     .isGreaterThanOrEqualTo(leader.lastTransactionIndex())
@@ -123,5 +132,8 @@ class ClusterStatusesTest {
     private companion object {
         const val SYSTEM = "system"
         const val FILMS = "films"
+
+        /** A follower hears from its leader several times a second. */
+        const val AWAIT_MILLIS = 5_000L
     }
 }

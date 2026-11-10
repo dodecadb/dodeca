@@ -373,6 +373,10 @@ class RoutingIT {
         assertThat(fields["participatingInRaftGroup"].asBoolean()).isTrue
         assertThat(fields["isHealthy"].asBoolean()).isTrue
         assertThat(fields["lastAppliedRaftIndex"].asLong()).isPositive
+        val sinceLeader =
+            assertThat(fields["millisSinceLastLeaderMessage"]?.asLong())
+                .describedAs("${member.alias}: milliseconds since it heard from the leader")
+        if (leads) sinceLeader.isZero() else sinceLeader.isBetween(0, 5_000)
         val all = json.readTree(member.get("/dbms/cluster/status").body())
         assertThat(all.map { it["databaseName"].asText() })
             .describedAs(member.alias)

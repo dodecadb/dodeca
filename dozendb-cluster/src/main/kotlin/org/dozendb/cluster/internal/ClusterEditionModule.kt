@@ -969,6 +969,13 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 healthy = state.status != DatabaseState.Status.FAILED,
                 memberId = memberId.toString(),
                 leader = (group?.leader ?: location?.leader)?.toString(),
+                millisSinceLastLeaderMessage =
+                    if (core) {
+                        runCatching { consensus.progress(database)?.sinceLeaderContactMillis }
+                            .getOrNull()
+                    } else {
+                        null
+                    },
             )
         }
     }

@@ -387,8 +387,8 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   that leads the database, `read-only` on the other members that run it, and
   `available` on every member that runs it; otherwise each answers `false`
   with 404 Not Found. `/db/<database>/cluster/status` and
-  `/dbms/cluster/status` give Enterprise's JSON, without
-  `millisSinceLastLeaderMessage` and the deprecated `raftCommandsPerSecond`.
+  `/dbms/cluster/status` give Enterprise's JSON, without the deprecated
+  `raftCommandsPerSecond`.
   On a secondary, `lastAppliedRaftIndex` is the Raft index of the last
   transaction it pulled. Enterprise's documentation names the health field of
   `/dbms/cluster/status` both `healthy` and `isHealthy`: DozenDB gives both.

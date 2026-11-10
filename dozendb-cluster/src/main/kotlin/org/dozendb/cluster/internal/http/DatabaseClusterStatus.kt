@@ -16,6 +16,8 @@ import java.util.UUID
  * @property healthy whether it did not fail here.
  * @property memberId this member's id.
  * @property leader the id of its leader, as this member knows it; null if unknown.
+ * @property millisSinceLastLeaderMessage for a primary, milliseconds since this member last heard
+ *   from the leader, 0 on the leader; null on a secondary, or while it knows no leader.
  */
 internal data class DatabaseClusterStatus(
     val name: String,
@@ -29,8 +31,12 @@ internal data class DatabaseClusterStatus(
     val healthy: Boolean,
     val memberId: String,
     val leader: String?,
+    val millisSinceLastLeaderMessage: Long?,
 ) {
-    /** Neo4j Enterprise's JSON of `/db/<database>/cluster/status`; the leader only if known. */
+    /**
+     * Neo4j Enterprise's JSON of `/db/<database>/cluster/status`, without its deprecated
+     * `raftCommandsPerSecond`; the optional fields only when known.
+     */
     fun json(): String = Json.obj(fields())
 
     /**
@@ -55,6 +61,7 @@ internal data class DatabaseClusterStatus(
             "isHealthy" to healthy.toString(),
             "memberId" to Json.string(memberId),
             leader?.let { "leader" to Json.string(it) },
+            millisSinceLastLeaderMessage?.let { "millisSinceLastLeaderMessage" to it.toString() },
         )
 }
 
