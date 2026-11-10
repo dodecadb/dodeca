@@ -10,14 +10,17 @@ import java.util.concurrent.ConcurrentSkipListMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Objects in memory, as a cloud keeps them, for tests: under the `s3` scheme, whose settings size
- * the reads, with parts of [part] bytes. Records what it is asked.
+ * Objects in memory, as a cloud keeps them, for tests: under [scheme], with parts of [part] bytes.
+ * Records what it is asked. Containers in [denied] refuse every request.
  */
-internal class MemoryStore(private val part: Int = 1024, override val uploadConcurrency: Int = 3) :
-    ObjectStore {
+internal class MemoryStore(
+    private val part: Int = 1024,
+    override val uploadConcurrency: Int = 3,
+    override val scheme: String = "s3",
+) : ObjectStore {
     class Stored(val data: ByteArray, val version: Int, val modified: Instant)
 
-    override val scheme = "s3"
+    val denied: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     /** By `<container>/<key>`. */
     val objects = ConcurrentSkipListMap<String, Stored>()
@@ -42,10 +45,18 @@ internal class MemoryStore(private val part: Int = 1024, override val uploadConc
 
     override fun locate(uri: URI) = Location.bucket(uri)
 
-    override fun head(container: String, key: String): ObjectInfo? =
-        objects["$container/$key"]?.let {
+    private fun check(container: String, key: String) {
+        if (container in denied) {
+            throw java.nio.file.AccessDeniedException("$scheme://$container/$key", null, "denied")
+        }
+    }
+
+    override fun head(container: String, key: String): ObjectInfo? {
+        check(container, key)
+        return objects["$container/$key"]?.let {
             ObjectInfo(it.data.size.toLong(), it.modified, it.version.toString())
         }
+    }
 
     override fun read(
         container: String,
@@ -56,13 +67,14 @@ internal class MemoryStore(private val part: Int = 1024, override val uploadConc
     ): ByteBuffer {
         val stored = objects["$container/$key"] ?: throw NoSuchFileException("s3://$container/$key")
         if (version != null && version != stored.version.toString()) {
-            throw IOException("s3://$container/$key changed while it was read")
+            throw IOException("$scheme://$container/$key changed while it was read")
         }
         ranges += from until to
         return ByteBuffer.wrap(stored.data.copyOfRange(from.toInt(), to.toInt()))
     }
 
     override fun list(container: String, prefix: String): Iterator<Listed> {
+        check(container, prefix)
         val under = "$container/$prefix"
         val entries = sortedMapOf<String, Listed>()
         for ((name, stored) in objects.tailMap(under)) {
@@ -88,23 +100,27 @@ internal class MemoryStore(private val part: Int = 1024, override val uploadConc
     }
 
     override fun delete(container: String, key: String) {
+        check(container, key)
         objects.remove("$container/$key")
     }
 
     override fun copy(fromContainer: String, fromKey: String, toContainer: String, toKey: String) {
+        check(toContainer, toKey)
         copies.incrementAndGet()
         val stored =
             objects["$fromContainer/$fromKey"]
-                ?: throw NoSuchFileException("s3://$fromContainer/$fromKey")
+                ?: throw NoSuchFileException("$scheme://$fromContainer/$fromKey")
         store(toContainer, toKey, stored.data)
     }
 
     override fun put(container: String, key: String, data: ByteBuffer) {
+        check(container, key)
         puts.incrementAndGet()
         store(container, key, ByteArray(data.remaining()).also { data.get(it) })
     }
 
     override fun upload(container: String, key: String): Upload {
+        check(container, key)
         uploads.incrementAndGet()
         val sent = ConcurrentHashMap<Int, ByteArray>()
         return object : Upload {

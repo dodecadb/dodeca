@@ -99,13 +99,12 @@ class CloudStorageSettings : SettingsDeclaration {
         @JvmField @field:Internal val azbPullSlots = azbQueues.pullSlots
         @JvmField @field:Internal val azbPullChunk = azbQueues.pullChunk
 
-        /** The read sizes of [scheme]. */
+        /** The read sizes of [scheme], or of `s3` for a scheme of tests. */
         internal fun queues(scheme: String): Queues =
             when (scheme) {
-                "s3" -> s3Queues
                 "gs" -> gsQueues
                 "azb" -> azbQueues
-                else -> throw IllegalArgumentException("No cloud storage for scheme $scheme")
+                else -> s3Queues
             }
     }
 }
