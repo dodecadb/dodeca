@@ -347,7 +347,10 @@ As enabling a server places nothing on it, reallocate to give it copies.
 
 Routing tables, from any server, list the servers a database is placed on, so
 `neo4j://` drivers reach them wherever they connect; secondaries as readers
-(see [Reading from secondaries](#reading-from-secondaries)). A server that does
+(see [Reading from secondaries](#reading-from-secondaries)). The leader is
+listed as the writer, and as a reader too only with
+`dbms.routing.reads_on_writers_enabled=true` (dynamic, per server), or while
+no other server can read the database. A server that does
 not host the database answers from what the others last told it, and a server
 that starts or stops leading a database tells the others at once, so that their
 routing tables follow a new leader within moments. When what they told it names

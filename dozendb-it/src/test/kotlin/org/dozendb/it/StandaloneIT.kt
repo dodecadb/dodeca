@@ -150,7 +150,7 @@ class StandaloneIT {
                 "initial.server.mode_constraint",
                 "initial.server.allowed_databases",
                 "initial.server.denied_databases",
-                "dbms.dozendb.routing.reads_on_leader",
+                "dbms.routing.reads_on_writers_enabled",
                 "dbms.dozendb.routing.forward_bolt_writes",
                 "dbms.routing.reads_on_primaries_enabled",
                 "dbms.dozendb.reads.default_consistency",

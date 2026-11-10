@@ -342,7 +342,9 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
 
 - **Writes go to the leader.** Drivers that route (`neo4j://`) get routing
   tables with the leader as writer and retry managed transactions on the new
-  leader after a failover. A new leader tells every server at once, so that
+  leader after a failover. As in Enterprise, the leader is a reader too only
+  with `dbms.routing.reads_on_writers_enabled`, or while no other member can
+  read the database. A new leader tells every server at once, so that
   routing tables from servers that do not host the database name it within
   moments too. A write transaction that reaches a follower runs on the leader
   when its client allows server-side routing, as in Enterprise: `neo4j://`
@@ -747,8 +749,6 @@ error, and their procedures do not exist.
   [Databases](#databases)).
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
   policies and `dbms.routing.load_balancing.shuffle_enabled`.
-  `dbms.routing.reads_on_writers_enabled` is
-  `dbms.dozendb.routing.reads_on_leader` in DozenDB.
 - **Restricting `dbms.setConfigValue`** with
   `server.dynamic.setting.allowlist`: every dynamic setting can be changed.
 - **Shutting the server down on a panic**

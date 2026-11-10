@@ -25,7 +25,7 @@ class ClusterRoutingTest {
                 leader(members[1]),
                 members,
                 bolt::get,
-                readsOnLeader = true,
+                readsOnWriters = true,
                 failed = emptySet(),
             )
 
@@ -41,7 +41,7 @@ class ClusterRoutingTest {
                 leader(members[1]),
                 members,
                 bolt::get,
-                readsOnLeader = true,
+                readsOnWriters = true,
                 failed = emptySet(),
                 readOnly = setOf(members[1].id, members[2].id),
             )
@@ -57,7 +57,7 @@ class ClusterRoutingTest {
                 leader(members[1]),
                 members,
                 bolt::get,
-                readsOnLeader = false,
+                readsOnWriters = false,
                 failed = emptySet(),
             )
 
@@ -71,7 +71,7 @@ class ClusterRoutingTest {
                 leader(members[0]),
                 members.take(1),
                 bolt::get,
-                readsOnLeader = false,
+                readsOnWriters = false,
                 failed = emptySet(),
             )
 
@@ -86,7 +86,7 @@ class ClusterRoutingTest {
                 leader(null),
                 members,
                 bolt::get,
-                readsOnLeader = true,
+                readsOnWriters = true,
                 failed = emptySet(),
             )
 
@@ -104,7 +104,7 @@ class ClusterRoutingTest {
                 leader(members[1]),
                 members,
                 addresses::get,
-                readsOnLeader = false,
+                readsOnWriters = false,
                 failed = setOf(secondaries[0]),
                 secondaries = secondaries,
             )
@@ -121,23 +121,23 @@ class ClusterRoutingTest {
     fun `without reads on primaries only secondaries read, while one can`() {
         val secondary = MemberId(UUID(0, 4))
         val addresses = bolt + (secondary to HostPort("replica", 7687))
-        fun readers(failed: Set<MemberId>, readsOnLeader: Boolean) =
+        fun readers(failed: Set<MemberId>, readsOnWriters: Boolean) =
             ClusterRouting.endpoints(
                     leader(members[1]),
                     members,
                     addresses::get,
-                    readsOnLeader = readsOnLeader,
+                    readsOnWriters = readsOnWriters,
                     failed = failed,
                     secondaries = listOf(secondary),
                     readsOnPrimaries = false,
                 )
                 .readers
 
-        assertThat(readers(emptySet(), readsOnLeader = false))
+        assertThat(readers(emptySet(), readsOnWriters = false))
             .containsExactly(HostPort("replica", 7687))
-        assertThat(readers(emptySet(), readsOnLeader = true))
+        assertThat(readers(emptySet(), readsOnWriters = true))
             .containsExactly(HostPort("replica", 7687), address(2))
-        assertThat(readers(setOf(secondary), readsOnLeader = false))
+        assertThat(readers(setOf(secondary), readsOnWriters = false))
             .describedAs("no secondary can read")
             .containsExactly(address(1), address(3))
     }
@@ -149,7 +149,7 @@ class ClusterRoutingTest {
                 leader(members[1]),
                 members,
                 bolt::get,
-                readsOnLeader = true,
+                readsOnWriters = true,
                 failed = setOf(members[0].id),
             )
 
@@ -165,7 +165,7 @@ class ClusterRoutingTest {
                 leader(members[1]),
                 members,
                 bolt::get,
-                readsOnLeader = true,
+                readsOnWriters = true,
                 failed = setOf(members[1].id),
             )
 
@@ -182,7 +182,7 @@ class ClusterRoutingTest {
                 leader(members[2]),
                 members,
                 known::get,
-                readsOnLeader = true,
+                readsOnWriters = true,
                 failed = emptySet(),
             )
 
@@ -200,7 +200,7 @@ class ClusterRoutingTest {
                 leader(stranger),
                 members,
                 bolt::get,
-                readsOnLeader = true,
+                readsOnWriters = true,
                 failed = emptySet(),
             )
 

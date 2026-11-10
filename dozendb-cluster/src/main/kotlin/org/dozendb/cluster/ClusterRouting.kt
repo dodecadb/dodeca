@@ -15,8 +15,8 @@ data class RoutingEndpoints(
 object ClusterRouting {
     /**
      * Writers: the [leader]. Readers: the followers, unless only [secondaries] are to read
-     * ([readsOnPrimaries]) and one can, the secondaries, and the leader if [readsOnLeader], or when
-     * no other member can be listed. Routers: every member and secondary. Members whose Bolt
+     * ([readsOnPrimaries]) and one can, the secondaries, and the leader if [readsOnWriters], or
+     * when no other member can be listed. Routers: every member and secondary. Members whose Bolt
      * address is not known yet are left out; during an election there is no writer, so drivers
      * retry until there is one. Members whose copy of the database [failed], such as by a panic,
      * neither write nor read it, but still route: their routing tables send drivers to the others.
@@ -25,7 +25,7 @@ object ClusterRouting {
         leader: MemberId?,
         members: List<Member>,
         boltAddress: (MemberId) -> HostPort?,
-        readsOnLeader: Boolean,
+        readsOnWriters: Boolean,
         failed: Set<MemberId>,
         readOnly: Set<MemberId> = emptySet(),
         secondaries: List<MemberId> = emptyList(),
@@ -42,7 +42,7 @@ object ClusterRouting {
         val readers =
             when {
                 leaderAddress == null -> nonWriters
-                readsOnLeader || nonWriters.isEmpty() -> nonWriters + leaderAddress
+                readsOnWriters || nonWriters.isEmpty() -> nonWriters + leaderAddress
                 else -> nonWriters
             }
         return RoutingEndpoints(

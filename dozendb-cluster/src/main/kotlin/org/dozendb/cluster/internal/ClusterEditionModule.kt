@@ -1410,7 +1410,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 locations,
                 directory,
                 ROUTING_REFRESH_WAIT,
-                config.get(ClusterSettings.readsOnLeader),
+                { config.get(ClusterSettings.readsOnWriters) },
                 ttl,
                 singleAddress,
                 singleAddress,

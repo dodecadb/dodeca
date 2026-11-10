@@ -27,7 +27,7 @@ internal class ClusterRoutingTableProvider(
     private val locations: DatabaseLocations,
     private val directory: MemberDirectory,
     private val refreshWait: Duration,
-    private val readsOnLeader: Boolean,
+    private val readsOnWriters: () -> Boolean,
     private val ttl: RoutingTableTTLProvider,
     private val local: ClientSideRoutingTableProvider,
     private val serverSide: ServerSideRoutingTableProvider,
@@ -57,7 +57,7 @@ internal class ClusterRoutingTableProvider(
                 location.leader,
                 location.voters,
                 directory::boltAddress,
-                readsOnLeader,
+                readsOnWriters(),
                 directory.failedCopies(database.id),
                 location.voters
                     .map { it.id }

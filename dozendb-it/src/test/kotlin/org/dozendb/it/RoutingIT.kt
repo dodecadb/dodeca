@@ -112,7 +112,7 @@ class RoutingIT {
 
     @Test
     @Order(1)
-    fun `routing tables send writes to the leader and reads to every member`() {
+    fun `routing tables send writes to the leader and reads to the other members`() {
         val leader = awaitLeader()
         // Members learn each other's Bolt addresses within a refresh interval.
         await atMost
@@ -121,8 +121,9 @@ class RoutingIT {
                 members.forEach { member ->
                     val table = routingTable(member, "neo4j")
                     assertThat(table["WRITE"]).containsExactly(boltAddress(leader))
+                    // As in Neo4j Enterprise, the leader takes no reads by default.
                     assertThat(table["READ"])
-                        .containsExactlyInAnyOrderElementsOf(members.map(::boltAddress))
+                        .containsExactlyInAnyOrderElementsOf((members - leader).map(::boltAddress))
                     assertThat(table["ROUTE"])
                         .containsExactlyInAnyOrderElementsOf(members.map(::boltAddress))
                 }

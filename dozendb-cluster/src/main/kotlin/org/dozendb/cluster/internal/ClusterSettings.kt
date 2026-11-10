@@ -149,11 +149,12 @@ class ClusterSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
-            "Whether routing tables list the leader as a reader too. Without it the leader takes " +
-                "only writes, unless it is the only member."
+            "Whether routing tables list the writer as a reader too. Without it the writer takes " +
+                "only writes, unless no other member can read. Named like Neo4j Enterprise's " +
+                "setting."
         )
-        val readsOnLeader: Setting<Boolean> =
-            newBuilder("dbms.dozendb.routing.reads_on_leader", BOOL, true).immutable().build()
+        val readsOnWriters: Setting<Boolean> =
+            newBuilder("dbms.routing.reads_on_writers_enabled", BOOL, false).dynamic().build()
 
         @JvmField
         @field:Description(

@@ -98,8 +98,8 @@ class NonHostingServersTest {
         }
         assertThat(addresses("ROUTE")).isEqualTo(hosts.map { it.boltAddress() }.toSet())
         assertThat(addresses("WRITE")).containsExactly(leader.boltAddress())
-        // The leader takes reads too, by default.
-        assertThat(addresses("READ")).isEqualTo(hosts.map { it.boltAddress() }.toSet())
+        // As in Neo4j Enterprise, the leader takes no reads by default.
+        assertThat(addresses("READ")).isEqualTo((hosts - leader).map { it.boltAddress() }.toSet())
 
         assertThat(writeAndRead("neo4j", router, "routed")).isEqualTo(1)
     }

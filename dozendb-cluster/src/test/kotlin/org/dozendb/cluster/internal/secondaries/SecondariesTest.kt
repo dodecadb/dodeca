@@ -423,14 +423,7 @@ class SecondariesTest {
         val cluster =
             cluster(
                 mapOf(BoltConnector.enabled to true),
-                own =
-                    mapOf(
-                        0 to
-                            mapOf(
-                                ClusterSettings.readsOnPrimaries to false,
-                                ClusterSettings.readsOnLeader to false,
-                            )
-                    ),
+                own = mapOf(0 to mapOf(ClusterSettings.readsOnPrimaries to false)),
             )
         cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 2 PRIMARIES 1 SECONDARY")
         cluster.awaitSecondary()
@@ -444,7 +437,8 @@ class SecondariesTest {
                 assertThat(routes["WRITE"]).containsExactly(leader.boltAddress())
                 assertThat(routes["READ"])
                     .isEqualTo(
-                        if (member.index == 0) setOf(cluster.secondary.boltAddress()) else everyone
+                        if (member.index == 0) setOf(cluster.secondary.boltAddress())
+                        else everyone - leader.boltAddress()
                     )
             }
         }
