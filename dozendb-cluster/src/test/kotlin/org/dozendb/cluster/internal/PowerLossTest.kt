@@ -210,7 +210,19 @@ class PowerLossTest {
     }
 
     @Test
-    fun `a member whose log has a hole that Neo4j reads past into garbage replays the rest from Raft`() {
+    fun `a member whose log has a hole that Neo4j reads past into garbage replays the rest from Raft`() =
+        replaysPastHoleBefore(TOKEN_LOOKALIKE)
+
+    @Test
+    fun `a member whose log has a hole before a property command lookalike replays the rest from Raft`() =
+        replaysPastHoleBefore(PROPERTY_LOOKALIKE)
+
+    /**
+     * Writes [lookalike] as a property value, then makes a hole in a member's log that has Neo4j
+     * read it as a command when the member starts, and checks that the member recovers every
+     * acknowledged write.
+     */
+    private fun replaysPastHoleBefore(lookalike: ByteArray) {
         val systems = ConcurrentHashMap<Int, PowerLossFileSystem>()
         val cluster = powerLossCluster(systems)
         val leader = cluster.awaitLeader()
@@ -231,20 +243,19 @@ class PowerLossTest {
         write(1L..5L)
         cluster.awaitSameData(acknowledged, "before the checkpoint")
         victim.checkpoint()
-        write(6L..6L, TOKEN_LOOKALIKE)
+        write(6L..6L, lookalike)
         write(7L..20L)
         cluster.awaitSameData(acknowledged, "after the checkpoint")
 
         // A hole from just after the header of the log entry that holds the lookalike up to it,
-        // with
-        // written transactions behind: Neo4j skips the zeros where the entry's command begins and
-        // reads the lookalike as one, as a power loss leaves it now and then (about one sector in a
-        // hundred of a log of small transactions). Neo4j asserts on what it reads there, which
-        // only tests enable; it stops at the entry as at any garbage.
+        // with written transactions behind: Neo4j skips the zeros where the entry's command begins
+        // and reads the lookalike as one, as a power loss leaves it now and then (about one sector
+        // in a hundred of a log of small transactions). Neo4j asserts on what it reads there,
+        // which only tests enable; it stops at the entry as at any garbage.
         fs.cut()
         runCatching { victim.stop() }
         val log = checkNotNull(fs.newestTransactionLog(ClusterHarness.DEFAULT_DATABASE))
-        val (from, until) = holeBefore(log, TOKEN_LOOKALIKE)
+        val (from, until) = holeBefore(log, lookalike)
         assertThat(fs.loseUnforcedRange(log, from, until)).isEqualTo(until - from)
         victim.start()
 
@@ -412,6 +423,27 @@ class PowerLossTest {
                 byteArrayOf(1, 0, 0, 1) +
                 byteArrayOf(1) +
                 ByteArray(4) { -1 } +
+                ByteArray(8) { -1 }
+
+        /**
+         * Bytes that Neo4j reads as a property command whose record before the change, not in use
+         * and without blocks, lists a deleted name record that is in use, which
+         * `PropertyRecord.addDeletedRecord` asserts against: the command type, the record id, then
+         * that record (flags, next, previous and owner -1, no blocks, deleted records, the first:
+         * id, type, in use, no bytes, no next block). Its integers read the same in either byte
+         * order.
+         */
+        val PROPERTY_LOOKALIKE =
+            byteArrayOf(2) +
+                byteArrayOf(1, 0, 0, 0, 0, 0, 0, 1) +
+                byteArrayOf(0) +
+                ByteArray(24) { -1 } +
+                byteArrayOf(0) +
+                byteArrayOf(1, 0, 0, 1) +
+                byteArrayOf(1, 0, 0, 0, 0, 0, 0, 1) +
+                byteArrayOf(1, 0, 0, 1) +
+                byteArrayOf(1) +
+                ByteArray(4) +
                 ByteArray(8) { -1 }
     }
 }
