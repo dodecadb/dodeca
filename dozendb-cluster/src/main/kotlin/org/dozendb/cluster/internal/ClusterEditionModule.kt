@@ -74,6 +74,7 @@ import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.DozenDb
 import org.dozendb.core.edition.DatabaseHosting
+import org.dozendb.core.edition.DatabaseQuarantine
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.edition.DozenDbEditionModule
 import org.dozendb.core.edition.DozenDbQueryRouterBootstrap
@@ -1049,6 +1050,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     ::seeder,
                     ::entryTerm,
                     consensus::seed,
+                    quarantines,
                 ),
                 memberId,
                 defaultDatabase,
@@ -1289,6 +1291,29 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
      * placed on, like every other database, once the system leader placed it.
      */
     override fun registerDefaultDatabaseInitializer(globalModule: GlobalModule) {}
+
+    /**
+     * How quarantines stop and bring back copies of databases: a copy stops on this member only, so
+     * that one that leads hands its leadership over, and its group runs on detached, voting and
+     * keeping entries. Once the quarantine is lifted, the reconciler brings the copy back;
+     * `system`, which it does not handle, starts again and rejoins its group.
+     */
+    override fun quarantineCopies(): DatabaseQuarantine.Copies =
+        object : DatabaseQuarantine.Copies {
+            override fun stop(id: NamedDatabaseId) {
+                replication.replica(id)?.handOverOnStop = true
+                databaseManager.stopDatabase(id)
+            }
+
+            override fun reconcile(id: NamedDatabaseId) {
+                if (id.isSystemDatabase) {
+                    replication.replica(id)?.handOverOnStop = true
+                    databaseManager.startDatabase(id)
+                } else {
+                    reconciler.request()
+                }
+            }
+        }
 
     /** Stops and starts databases through the database manager. */
     private fun databaseControl(): DatabaseControl =
@@ -1534,7 +1559,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 locations,
                 directory,
                 ROUTING_REFRESH_WAIT,
-            ),
+            ) {
+                quarantines.of(it) != null
+            },
             routing,
             routing,
             clientRoutingDomainChecker,

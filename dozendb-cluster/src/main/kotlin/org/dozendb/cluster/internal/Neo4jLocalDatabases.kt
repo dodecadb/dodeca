@@ -16,6 +16,7 @@ import org.dozendb.consensus.LogPosition
 import org.dozendb.consensus.Snapshot
 import org.dozendb.core.edition.DatabaseManager
 import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.edition.Quarantines
 import org.dozendb.core.servers.CopyMode
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
@@ -27,6 +28,7 @@ import org.neo4j.kernel.database.NamedDatabaseId
  *
  * @property entryTerm the term of a database's log entry, as the leader of its group tells it.
  * @property seed tells a database's group that this member holds its state up to a snapshot.
+ * @property quarantines the copies of databases in quarantine on this member.
  */
 internal class Neo4jLocalDatabases(
     private val manager: DatabaseManager,
@@ -38,6 +40,7 @@ internal class Neo4jLocalDatabases(
     private val seeder: () -> DatabaseSeeder?,
     private val entryTerm: (DatabaseRef, Long) -> EntryTerm,
     private val seed: (DatabaseRef, Snapshot) -> Unit,
+    private val quarantines: Quarantines,
 ) : LocalDatabases {
     override fun registered(): Map<NamedDatabaseId, LocalDatabase> =
         repository.registeredDatabases().mapValues { (id, context) ->
@@ -45,6 +48,7 @@ internal class Neo4jLocalDatabases(
                 started = context.database().isStarted,
                 failed = context.isFailed,
                 mode = hosting.mode(id),
+                quarantined = quarantines.of(id.databaseId().uuid()) != null,
             )
         }
 
@@ -55,6 +59,12 @@ internal class Neo4jLocalDatabases(
     override fun groups(): Set<UUID> = replication.localGroups()
 
     override fun secondaries(): Set<UUID> = secondaries.marked()
+
+    override fun quarantined(): Set<UUID> = quarantines.all().keys
+
+    override fun forgetQuarantine(id: UUID) {
+        quarantines.remove(id)
+    }
 
     override fun catchingUp(id: NamedDatabaseId): Boolean =
         replication.catchingUp(id) || secondaries.catchingUp(id)

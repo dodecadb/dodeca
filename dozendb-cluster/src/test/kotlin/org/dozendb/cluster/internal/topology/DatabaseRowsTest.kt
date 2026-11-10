@@ -74,6 +74,27 @@ class DatabaseRowsTest {
         }
 
     @Test
+    fun `a copy in quarantine is quarantined with its message, of an unknown role, no writer`() {
+        val message = "By neo4j at 2026-11-10T09:08:07.006Z: Inspecting its files"
+        val rows =
+            rows(
+                listOf(
+                    copy(a),
+                    copy(b, DatabaseState.Status.QUARANTINED, failure = message),
+                    copy(c),
+                ),
+                leader = b,
+            )
+
+        val quarantined = rows.getValue(b)
+        assertThat(quarantined.status()).isEqualTo("quarantined")
+        assertThat(quarantined.statusMessage()).isEqualTo(message)
+        assertThat(quarantined.role()).contains("unknown")
+        assertThat(quarantined.writer()).isFalse()
+        assertThat(rows.getValue(a).actualPrimariesCount()).isEqualTo(2)
+    }
+
+    @Test
     fun `a copy on a server the database moves off is deallocating, and may still be the writer`() {
         val rows = rows(listOf(copy(a), copy(b), copy(c)), leader = c, placed = setOf(a, b))
 

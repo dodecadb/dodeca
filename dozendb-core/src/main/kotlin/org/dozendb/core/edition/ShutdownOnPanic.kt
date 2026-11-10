@@ -26,7 +26,8 @@ fun interface ServerExit {
 /**
  * Ends the server's process, with status 1, once any database panics, when
  * `server.panic.shutdown_on_panic` is true, as in Neo4j Enterprise: so that a process manager
- * starts it again. Otherwise only the database fails.
+ * starts it again. Either way [DatabaseQuarantine] puts the database's copy in quarantine first, so
+ * that the restart keeps it stopped.
  */
 internal class ShutdownOnPanic(
     private val config: Config,

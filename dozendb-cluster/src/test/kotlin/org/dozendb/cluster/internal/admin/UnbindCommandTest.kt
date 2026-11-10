@@ -82,6 +82,10 @@ class UnbindCommandTest {
         val member = cluster.members[2]
         val others = cluster.members.take(2)
         val old = member.serverId
+        // Its copies are set aside, and the copies it makes anew are in no quarantine.
+        member
+            .database()
+            .executeTransactionally("CALL dbms.quarantineDatabase('neo4j', true, 'Inspecting it')")
         member.stop()
         val archives = Files.createDirectories(root.resolve("archives"))
 
@@ -92,6 +96,7 @@ class UnbindCommandTest {
         val data = member.home.resolve("data")
         assertThat(data.resolve("server_id")).doesNotExist()
         assertThat(data.resolve("raft")).doesNotExist()
+        assertThat(data.resolve("quarantine")).doesNotExist()
         val aside = Files.list(data.resolve("unbound")).use { it.toList() }.single()
         for (path in listOf("databases/neo4j", "databases/system", "transactions/neo4j")) {
             assertThat(aside.resolve(path)).isDirectory()
@@ -101,7 +106,7 @@ class UnbindCommandTest {
         assertThat(archive.fileName.toString()).matches("unbound_cluster_state\\.\\d{12}\\.zip")
         ZipFile(archive.toFile()).use { zip ->
             assertThat(zip.entries().asSequence().map { it.name }.toList())
-                .contains("raft/membership", "server_id")
+                .contains("raft/membership", "server_id", "quarantine")
         }
 
         member.start()

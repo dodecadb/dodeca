@@ -156,7 +156,7 @@ class MemberDirectoryTest {
     }
 
     @Test
-    fun `names the members whose copy of a database failed, this one included`() {
+    fun `names the members whose copy of a database failed or is in quarantine, this one too`() {
         val films = UUID(0, 7)
         val books = UUID(0, 8)
         fun report(vararg states: DatabaseState) =
@@ -169,12 +169,21 @@ class MemberDirectoryTest {
                 DatabaseState("films", films, DatabaseState.Status.FAILED, "No space left"),
                 DatabaseState("books", books, DatabaseState.Status.ONLINE),
             )
-        logs[2].metadata = report(DatabaseState("films", films, DatabaseState.Status.ONLINE))
+        logs[2].metadata =
+            report(
+                DatabaseState(
+                    "films",
+                    films,
+                    DatabaseState.Status.QUARANTINED,
+                    "By neo4j at 2026-11-10T09:08:07.006Z: Inspecting it",
+                )
+            )
         selfDatabases = listOf(DatabaseState("books", books, DatabaseState.Status.FAILED, "Panic"))
 
         directory.refresh()
 
-        assertThat(directory.failedCopies(films)).containsExactly(logs[1].self.id)
+        assertThat(directory.failedCopies(films))
+            .containsExactlyInAnyOrder(logs[1].self.id, logs[2].self.id)
         assertThat(directory.failedCopies(books)).containsExactly(logs[0].self.id)
         assertThat(directory.failedCopies(UUID(0, 9))).isEmpty()
     }

@@ -11,6 +11,7 @@
  * the system database last and drops databases without a checkpoint.
  * 2026-11-09: starts a database again when Neo4j's file watcher failed to start it because a
  * directory entry went meanwhile.
+ * 2026-11-10: starts no database in quarantine.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -38,7 +39,8 @@ import org.neo4j.logging.InternalLogProvider
 /**
  * This server's databases: creates, starts, stops and drops them, and keeps the created ones in
  * [repository]. A database that fails to start or stop is marked failed rather than throwing. A
- * database whose files [placement] left half-moved, as by an interrupted restore, fails to start.
+ * database whose files [placement] left half-moved, as by an interrupted restore, fails to start. A
+ * database in [quarantines] is not started at all.
  *
  * Like Neo4j's own database lifecycles, it throws database management exceptions without a GQL
  * status, which Neo4j 5.26 has none for.
@@ -50,6 +52,7 @@ class DatabaseManager(
     private val defaultDatabase: () -> String?,
     private val counts: DatabaseOperationCounts.Counter,
     private val placement: StorePlacement,
+    private val quarantines: Quarantines,
     logProvider: InternalLogProvider,
 ) {
     private val log = logProvider.getLog(javaClass)
@@ -94,14 +97,19 @@ class DatabaseManager(
      * Starts [database], again while it fails because an entry of a directory went while Neo4j's
      * file watcher began to watch the directory: the JDK's polling watch service (macOS and AIX)
      * reads each entry as it registers a directory, and fails if one goes meanwhile, as when
-     * another database's copy moves into place or a database is dropped.
+     * another database's copy moves into place or a database is dropped. Returns false, starting
+     * nothing, if the database is in quarantine: checked under the database's monitor, which
+     * starting and stopping it hold, and under which [DatabaseQuarantine] puts it in quarantine.
      */
-    private fun start(database: Database) {
+    private fun start(database: Database): Boolean {
         var attempt = 1
         while (true) {
             try {
-                database.start()
-                return
+                synchronized(database) {
+                    if (quarantined(database.namedDatabaseId)) return false
+                    database.start()
+                }
+                return true
             } catch (e: Throwable) {
                 if (attempt == WATCH_ATTEMPTS || !goneWhileWatched(e)) throw e
                 log.warn(
@@ -123,6 +131,10 @@ class DatabaseManager(
 
     fun startDatabase(context: StandaloneDatabaseContext, seed: Seed? = null) {
         val id = context.database().namedDatabaseId
+        if (quarantined(id)) {
+            log.info("Not starting '%s': it is in quarantine on this server.", id)
+            return
+        }
         if (seed != null && !placement.holdsStore(id.name()) && !placement.incomplete(id.name())) {
             try {
                 log.info("Creating the store of '%s' from %s.", id, seed)
@@ -165,8 +177,11 @@ class DatabaseManager(
         }
         try {
             log.info("Starting '%s'.", id)
-            start(context.database())
-            counts.increaseStartCount()
+            if (start(context.database())) {
+                counts.increaseStartCount()
+            } else {
+                log.info("Not starting '%s': it was put in quarantine on this server.", id)
+            }
         } catch (e: Throwable) {
             log.error("Failed to start '$id'.", e)
             context.fail(UnableToStartDatabaseException.unableToStartDb(id, e))
@@ -211,7 +226,10 @@ class DatabaseManager(
         log.info("Released '%s', keeping its files.", id)
     }
 
-    /** Stops [id] without a checkpoint, unregisters it and deletes its files. */
+    /**
+     * Stops [id] without a checkpoint, unregisters it and deletes its files; a quarantine of it
+     * here goes with it.
+     */
     @Synchronized
     fun dropDatabase(id: NamedDatabaseId) {
         val context = repository.getDatabaseContext(id)
@@ -227,6 +245,7 @@ class DatabaseManager(
             log.error("Failed to drop '$id'.", e)
             throw DatabaseManagementException("Failed to drop `$id`.", e)
         }
+        quarantines.remove(id.databaseId().uuid())
         counts.increaseDropCount()
         log.info("Dropped '%s' successfully.", id)
     }
@@ -293,6 +312,9 @@ class DatabaseManager(
                     }
             }
         }
+
+    private fun quarantined(id: NamedDatabaseId): Boolean =
+        quarantines.of(id.databaseId().uuid()) != null
 
     private fun systemContext(): StandaloneDatabaseContext =
         repository.getDatabaseContext(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID).orElseThrow {

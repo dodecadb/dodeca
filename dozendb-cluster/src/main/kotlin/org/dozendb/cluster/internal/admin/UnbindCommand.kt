@@ -14,6 +14,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import org.dozendb.cluster.MembershipFile
 import org.dozendb.cluster.internal.ClusterSettings
+import org.dozendb.core.edition.Quarantines
 import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.CommandProvider
@@ -29,11 +30,11 @@ import picocli.CommandLine.Option
 
 /**
  * `neo4j-admin server unbind`, as Neo4j Enterprise documents it, in place of Neo4j Community's,
- * which removes only the server's id: it removes the server's cluster state, its Raft directory and
- * id, archived if asked, so that the server starts as a new server of its cluster. The files of its
- * databases are set aside in `unbound/<time>/` next to their directories, kept but no longer
- * served: as a new server it copies the databases placed on it from the others, and would delete
- * files it no longer counts as its own.
+ * which removes only the server's id: it removes the server's cluster state, its Raft directory, id
+ * and quarantines, archived if asked, so that the server starts as a new server of its cluster. The
+ * files of its databases are set aside in `unbound/<time>/` next to their directories, kept but no
+ * longer served: as a new server it copies the databases placed on it from the others, and would
+ * delete files it no longer counts as its own.
  *
  * Each step can be run again: a run cut short leaves the server id removed and the Raft directory's
  * membership record, which makes the server refuse to start, in place until the last step.
@@ -104,8 +105,11 @@ class UnbindCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         val owner = MembershipFile(raft.resolve(MembershipFile.FILE_NAME)).read()?.memberId
         // In the names of the archive and of the directory the databases' files go to.
         val time = TIME.format(Instant.now())
-        val archive = archivePath?.let { archive(raft, serverId, it, time) }
+        // The quarantines of copies that are set aside, which the server copies anew.
+        val quarantines = layout.dataDirectory().resolve(Quarantines.FILE_NAME)
+        val archive = archivePath?.let { archive(raft, listOf(serverId, quarantines), it, time) }
         Files.deleteIfExists(serverId)
+        Files.deleteIfExists(quarantines)
         val aside = setAside(layout, time)
         deleteClusterState(raft)
         out.println(
@@ -126,8 +130,11 @@ class UnbindCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         )
     }
 
-    /** Writes the Raft directory and the server id to a zip archive; returns its path. */
-    private fun archive(raft: Path, serverId: Path, destination: Path, time: String): Path {
+    /**
+     * Writes the Raft directory and the [files] of the data directory that exist, such as the
+     * server id, to a zip archive; returns its path.
+     */
+    private fun archive(raft: Path, files: List<Path>, destination: Path, time: String): Path {
         val file =
             if (Files.isDirectory(destination))
                 destination.resolve("unbound_cluster_state.$time.zip")
@@ -141,9 +148,9 @@ class UnbindCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     zip.closeEntry()
                 }
             }
-            if (Files.exists(serverId)) {
-                zip.putNextEntry(ZipEntry(serverId.fileName.toString()))
-                Files.copy(serverId, zip)
+            for (file in files.filter(Files::exists)) {
+                zip.putNextEntry(ZipEntry(file.fileName.toString()))
+                Files.copy(file, zip)
                 zip.closeEntry()
             }
         }

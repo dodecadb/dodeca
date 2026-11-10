@@ -76,6 +76,7 @@ import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.database.MapCachingDatabaseIdRepository
 import org.neo4j.kernel.database.MapCachingDatabaseReferenceRepository
+import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.database.SystemGraphDatabaseIdRepository
 import org.neo4j.kernel.database.SystemGraphDatabaseReferenceRepository
 import org.neo4j.kernel.impl.pagecache.CommunityIOControllerService
@@ -114,6 +115,16 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     /** Creates and starts the default database. */
     protected var defaultDatabaseStarter: Lifecycle = LifecycleAdapter()
         private set
+
+    /** The copies of databases in quarantine on this server. */
+    protected lateinit var quarantines: Quarantines
+        private set
+
+    /** Puts copies of databases in quarantine and lifts it. */
+    private lateinit var quarantine: DatabaseQuarantine
+
+    /** Makes the databases follow the system graph without clustering, once created. */
+    private var standaloneDatabases: StandaloneDatabases? = null
 
     /** Hosts the databases together with other servers; null when this server alone does. */
     protected open val hosting: DatabaseHosting?
@@ -168,6 +179,18 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalModule.globalLife.add(
             CommunityKernelPanicListener(globalModule.databaseEventListeners, repository)
         )
+        quarantines =
+            Quarantines(globalModule.neo4jLayout.dataDirectory().resolve(Quarantines.FILE_NAME))
+        quarantine =
+            DatabaseQuarantine(
+                quarantines,
+                repository,
+                quarantineCopies(),
+                globalModule.globalClock,
+                globalModule.logService.getUserLog(DatabaseQuarantine::class.java),
+            )
+        // Before ShutdownOnPanic, so that a copy that panics is in quarantine when the server ends.
+        globalModule.databaseEventListeners.registerDatabaseEventListener(quarantine)
         globalModule.databaseEventListeners.registerDatabaseEventListener(
             ShutdownOnPanic(
                 globalModule.globalConfig,
@@ -189,9 +212,10 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                     DatabaseOperationCounts.Counter::class.java
                 ),
                 StorePlacement(globalModule.fileSystem, globalModule.neo4jLayout),
+                quarantines,
                 globalModule.logService.internalLogProvider,
             )
-        databaseStateService = DozenDbDatabaseStateService(repository)
+        databaseStateService = DozenDbDatabaseStateService(repository, quarantines)
         // Before the databases start, so that it sees them start.
         MetricsService.create(globalModule, repository)?.let {
             globalModule.globalLife.add(it)
@@ -232,6 +256,20 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalModule.globalDependencies.satisfyDependency(placement())
         return repository
     }
+
+    /**
+     * How quarantines stop and bring back copies of databases: without clustering, through the
+     * database manager, and by following the system graph.
+     */
+    protected open fun quarantineCopies(): DatabaseQuarantine.Copies =
+        object : DatabaseQuarantine.Copies {
+            override fun stop(id: NamedDatabaseId) = databaseManager.stopDatabase(id)
+
+            override fun reconcile(id: NamedDatabaseId) {
+                if (id.isSystemDatabase) databaseManager.startDatabase(id)
+                else standaloneDatabases?.follow()
+            }
+        }
 
     /**
      * The servers a database can be created from with existingDataSeedServer: without clustering,
@@ -283,7 +321,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
 
     /** The databases of this server; none before they are created. */
     protected fun databaseStates(): List<DatabaseState> =
-        if (::databaseRepository.isInitialized) databaseRepository.databaseStates() else emptyList()
+        if (::databaseRepository.isInitialized) databaseRepository.databaseStates(quarantines)
+        else emptyList()
 
     /** This server's advertised Bolt address, with the bound port if the configured one is 0. */
     protected fun boltAddress(): SocketAddress? {
@@ -527,15 +566,20 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             remoteAliases,
         )
 
-    /** Neo4j Community's procedures, `dbms.setConfigValue` and `dbms.setDefaultDatabase`. */
+    /**
+     * Neo4j Community's procedures, `dbms.setConfigValue`, `dbms.setDefaultDatabase` and
+     * `dbms.quarantineDatabase`.
+     */
     override fun registerEditionSpecificProcedures(
         globalProcedures: GlobalProcedures,
         databaseContextProvider: DatabaseContextProvider<*>,
     ) {
         super.registerEditionSpecificProcedures(globalProcedures, databaseContextProvider)
+        globalProcedures.registerComponent(DatabaseQuarantine::class.java, { quarantine }, true)
         globalProcedures.registerProcedure(SettingsProcedures::class.java)
         globalProcedures.registerProcedure(DefaultDatabaseProcedures::class.java)
         globalProcedures.registerProcedure(MonitoringProcedures::class.java)
+        globalProcedures.registerProcedure(QuarantineProcedures::class.java)
     }
 
     /** Starts the default database, then follows the system graph for the other databases. */
@@ -546,8 +590,10 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 databaseManager,
                 databaseRepository,
                 ::seeder,
+                quarantines,
                 globalModule.logService.internalLogProvider,
             )
+        standaloneDatabases = databases
         globalModule.transactionEventListeners.registerTransactionEventListener(
             GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
             databases,

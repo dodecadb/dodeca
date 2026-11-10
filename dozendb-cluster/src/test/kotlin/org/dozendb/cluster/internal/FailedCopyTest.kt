@@ -12,7 +12,10 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 
-/** A member whose copy of a database failed to apply a transaction. */
+/**
+ * A member whose copy of a database failed to apply a transaction: it is put in quarantine there,
+ * as in Neo4j Enterprise.
+ */
 class FailedCopyTest {
     // Kept when a test fails, for the members' logs.
     @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path
@@ -53,7 +56,7 @@ class FailedCopyTest {
         }
 
     @Test
-    fun `a copy that failed catches up once its database is started again`() {
+    fun `a copy that failed is put in quarantine, and catches up once it is lifted`() {
         val fileSystems = ConcurrentHashMap<Int, SlowLogFileSystem>()
         val cluster =
             ClusterHarness(root, 3, { fileSystems.getOrPut(it.index) { SlowLogFileSystem() } })
@@ -70,21 +73,26 @@ class FailedCopyTest {
         await atMost
             AWAIT untilAsserted
             {
-                assertThat(member.shown("films")).containsEntry("currentStatus", "offline")
+                val shown = member.shown("films")
+                assertThat(shown).containsEntry("currentStatus", "quarantined")
+                assertThat(shown["statusMessage"] as String)
+                    .startsWith("By the server at ")
+                    .contains("Database 'films' failed while running: ")
+                    .endsWith(
+                        "lift the quarantine on this server with CALL " +
+                            "dbms.quarantineDatabase('films', false)"
+                    )
             }
 
-        // Once repaired, the operator starts the database again.
-        fileSystems.getValue(member.index).failing = null
+        // Starting the database again does not start it there.
         cluster.administer("STOP DATABASE films")
-        await atMost
-            AWAIT untilAsserted
-            {
-                assertThat(member.shown("films")).containsEntry("currentStatus", "offline")
-                assertThat(cluster.running().map { it.shown("films")["currentStatus"] })
-                    .containsOnly("offline")
-            }
         cluster.administer("START DATABASE films")
         cluster.write("films") { cluster.running().filter { it != member } }
+        assertThat(member.shown("films")).containsEntry("currentStatus", "quarantined")
+
+        // Once repaired, the operator lifts the quarantine.
+        fileSystems.getValue(member.index).failing = null
+        member.database().executeTransactionally("CALL dbms.quarantineDatabase('films', false)")
 
         await atMost
             AWAIT untilAsserted

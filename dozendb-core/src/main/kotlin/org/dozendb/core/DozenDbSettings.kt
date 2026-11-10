@@ -88,8 +88,8 @@ class DozenDbSettings : SettingsDeclaration {
         @JvmField
         @field:Description(
             "Whether the server's process ends, with status 1, once a database panics, so that a " +
-                "process manager starts it again; otherwise only the database fails. Named like " +
-                "Neo4j Enterprise's setting."
+                "process manager starts it again. Either way the database's copy on the server is " +
+                "put in quarantine, which a restart keeps. Named like Neo4j Enterprise's setting."
         )
         val shutdownOnPanic: Setting<Boolean> =
             newBuilder("server.panic.shutdown_on_panic", BOOL, false).build()

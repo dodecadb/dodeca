@@ -124,15 +124,14 @@ class MemberDirectory(
         if (member == consensus.self.id) selfReport() else reports[member]
 
     /**
-     * The members whose copy of the database [id] failed, such as by a panic: this member's as it
-     * is now, the others' as they last reported it. A member that has not reported is not one.
+     * The members whose copy of the database [id] failed, such as by a panic, or is in quarantine:
+     * this member's as it is now, the others' as they last reported it. A member that has not
+     * reported is not one.
      */
     fun failedCopies(id: UUID): Set<MemberId> =
         (reports.keys + consensus.self.id)
             .filter { member ->
-                databaseStates(member).orEmpty().any {
-                    it.id == id && it.status == DatabaseState.Status.FAILED
-                }
+                databaseStates(member).orEmpty().any { it.id == id && it.status in FAILED }
             }
             .toSet()
 
@@ -414,5 +413,10 @@ class MemberDirectory(
         } catch (e: Exception) {
             log.warn("Refreshing the Bolt addresses of members failed: %s", e.toString())
         }
+    }
+
+    private companion object {
+        /** The states of copies that serve nothing, which routing tables leave out. */
+        val FAILED = setOf(DatabaseState.Status.FAILED, DatabaseState.Status.QUARANTINED)
     }
 }

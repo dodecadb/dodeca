@@ -19,6 +19,12 @@ class DatabaseStatesCodecTest {
                 DatabaseState("film.archive", UUID.randomUUID(), Status.OFFLINE),
                 DatabaseState("books", UUID.randomUUID(), Status.FAILED, "Unable to start books"),
                 DatabaseState(
+                    "maps",
+                    UUID.randomUUID(),
+                    Status.QUARANTINED,
+                    "By neo4j at 2026-11-10T09:08:07.006Z: Inspecting its files",
+                ),
+                DatabaseState(
                     "poems",
                     UUID.randomUUID(),
                     Status.ONLINE,

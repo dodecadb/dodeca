@@ -25,11 +25,16 @@ import org.neo4j.logging.InternalLogProvider
  * `system` and the default database are created at startup and never created or dropped here; the
  * default database is started and stopped like any other. A database that failed to start is
  * started again only when its status changes, as by STOP DATABASE and START DATABASE.
+ *
+ * A database in [quarantines] is left as it is, stopped, until its quarantine is lifted, which
+ * follows the system graph again; one that is dropped goes with its quarantine. The quarantines of
+ * databases that the system graph no longer names are forgotten.
  */
 internal class StandaloneDatabases(
     private val manager: DatabaseManager,
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
     private val seeder: () -> DatabaseSeeder?,
+    private val quarantines: Quarantines,
     logProvider: InternalLogProvider,
 ) : TransactionEventListenerAdapter<Any?>() {
     private val log = logProvider.getLog(javaClass)
@@ -69,8 +74,10 @@ internal class StandaloneDatabases(
                 it.key() == TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY
             }
 
+    /** Follows the system graph now, as once a quarantine is lifted. */
     @Synchronized
-    private fun follow() {
+    fun follow() {
+        if (!started) return
         val desired = desired()
         val default = desired.entries.firstOrNull { it.value.default }?.key
         repository
@@ -79,6 +86,11 @@ internal class StandaloneDatabases(
             .filter { !it.isSystemDatabase && it != default && it !in desired }
             .forEach { id -> attempt("drop", id) { manager.dropDatabase(id) } }
         requested.keys.retainAll(desired.keys)
+        quarantines.retainOnly(
+            (desired.keys + repository.registeredDatabases().keys).mapTo(HashSet()) {
+                it.databaseId().uuid()
+            }
+        )
         desired.forEach { (id, wanted) -> attempt("follow", id) { follow(id, wanted) } }
     }
 
@@ -87,6 +99,7 @@ internal class StandaloneDatabases(
         val changed = requested.put(id, online) != online
         val context = repository.getDatabaseContext(id).orElse(null)
         val seed = desired.seedUri?.let { DatabaseManager.Seed.Uri(it, seeder) }
+        if (context != null && quarantines.of(id.databaseId().uuid()) != null) return
         when {
             context == null && desired.default -> Unit
             context == null -> {

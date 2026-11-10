@@ -76,11 +76,15 @@ internal enum class ModeSwitch {
     LATER,
 }
 
-/** The state of a database registered on this member, hosted in [mode]. */
+/**
+ * The state of a database registered on this member, hosted in [mode]; [quarantined] if its copy is
+ * in quarantine here.
+ */
 internal data class LocalDatabase(
     val started: Boolean,
     val failed: Boolean,
     val mode: CopyMode = CopyMode.PRIMARY,
+    val quarantined: Boolean = false,
 )
 
 /** This member's databases: the database manager, their stores and their Raft groups. */
@@ -99,6 +103,12 @@ internal interface LocalDatabases {
 
     /** Ids of the databases whose stores here are secondaries'. */
     fun secondaries(): Set<UUID>
+
+    /** Ids of the databases whose copies here are in quarantine. */
+    fun quarantined(): Set<UUID>
+
+    /** Forgets the quarantine of the database [id], which is gone. */
+    fun forgetQuarantine(id: UUID)
 
     /** Whether [id] is being replaced by a copy because it fell behind its log or its upstreams. */
     fun catchingUp(id: NamedDatabaseId): Boolean
@@ -206,6 +216,10 @@ internal interface LocalDatabases {
  * names.
  *
  * A member removed from the cluster stops its databases, `system` aside, and changes nothing else.
+ *
+ * A copy in quarantine here is left as it is, stopped, until its quarantine is lifted, which
+ * reconciles again; one whose database is dropped goes with its quarantine, and the quarantines of
+ * databases that are gone are forgotten, as leftovers are.
  *
  * A database whose store is being replaced by catch-up is left alone. Work that cannot be done yet,
  * such as a copy whose creator has not created the store, is tried again after [retryDelay], and
@@ -338,6 +352,8 @@ internal class DatabaseReconciler(
         data class Group(val id: UUID) : Deletion
 
         data class Mark(val id: UUID) : Deletion
+
+        data class Quarantine(val id: UUID) : Deletion
     }
 
     private fun deletions(desired: List<DesiredDatabase>): List<Deletion> {
@@ -359,10 +375,12 @@ internal class DatabaseReconciler(
         val known = desired.map { it.id.uuid }.toSet() + registered.map { it.uuid }
         val groups = databases.groups() - SYSTEM.uuid - known
         val marks = databases.secondaries() - known
+        val quarantines = databases.quarantined() - SYSTEM.uuid - known
         return dropped.map { Deletion.Database(it) } +
             stores.map { Deletion.Store(it) } +
             groups.map { Deletion.Group(it) } +
-            marks.map { Deletion.Mark(it) }
+            marks.map { Deletion.Mark(it) } +
+            quarantines.map { Deletion.Quarantine(it) }
     }
 
     /** Returns false if [deletion] has to wait. */
@@ -392,6 +410,13 @@ internal class DatabaseReconciler(
                 )
                 databases.unmark(deletion.id)
             }
+            is Deletion.Quarantine -> {
+                log.info(
+                    "Forgetting the quarantine of %s, whose database the system graph lacks",
+                    deletion.id,
+                )
+                databases.forgetQuarantine(deletion.id)
+            }
         }
         return true
     }
@@ -416,6 +441,8 @@ internal class DatabaseReconciler(
         val id = database.id
         if (databases.catchingUp(id)) return false
         val state = databases.registered()[id]
+        // Left as it is until its quarantine is lifted, which reconciles again.
+        if (state?.quarantined == true) return true
         val placed = database.hosts.isNotEmpty()
         val wanted =
             when (self) {

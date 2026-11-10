@@ -88,7 +88,7 @@ class ForeignStoreTest {
     }
 
     @Test
-    fun `a member holding another database's store fails it loudly, and copies it once deleted`() {
+    fun `a member holding another database's store puts it in quarantine, and copies it once deleted`() {
         val cluster =
             ClusterHarness(root, 3, settings = mapOf(BoltConnector.enabled to true)).also {
                 harness = it
@@ -132,8 +132,11 @@ class ForeignStoreTest {
         await atMost
             AWAIT untilAsserted
             {
-                assertThat(member.shown("films"))
-                    .isEqualTo(mapOf("currentStatus" to "offline", "statusMessage" to message))
+                val shown = member.shown("films")
+                assertThat(shown).containsEntry("currentStatus", "quarantined")
+                assertThat(shown["statusMessage"] as String)
+                    .startsWith("By the server at ")
+                    .contains("Database 'films' failed while running: $message")
             }
         // Drivers are sent to the others for films, whichever member they ask; it still routes.
         val refused = member.boltAddress().substringAfterLast(':')
@@ -150,9 +153,7 @@ class ForeignStoreTest {
                     assertThat(table["ROUTE"]).describedAs("$router").contains(refused)
                 }
             }
-        assertThat(catchThrowable { member.count("films") })
-            .hasStackTraceContaining("The database has encountered a critical error")
-            .hasStackTraceContaining(message)
+        assertThat(catchThrowable { member.count("films") }).isNotNull()
         // The others keep serving it.
         cluster.write("films", 1, others)
         val expected = cluster.awaitLeader("films", others).count("films")
@@ -161,6 +162,8 @@ class ForeignStoreTest {
         FileUtils.deleteDirectory(data.resolve("databases/films"))
         FileUtils.deleteDirectory(data.resolve("transactions/films"))
         member.start()
+        // Copied again, it waits for its quarantine to be lifted.
+        member.database().executeTransactionally("CALL dbms.quarantineDatabase('films', false)")
 
         await atMost
             AWAIT untilAsserted

@@ -276,6 +276,47 @@ class DatabaseReconcilerTest {
     }
 
     @Test
+    fun `a copy in quarantine is left as it is, started, stopped or moved by none`() {
+        local.add(films, started = true)
+        local.quarantine(films)
+        graph.databases = listOf(desired(films, creator = creator, created = true))
+
+        assertThat(reconciler.reconcile()).isFalse()
+        assertThat(local.registered[films]?.started).isFalse()
+
+        graph.databases = listOf(desired(films, online = false, creator = creator, created = true))
+        assertThat(reconciler.reconcile()).isFalse()
+
+        // Placed elsewhere, and this member left the group.
+        local.notVoting += films
+        graph.databases = listOf(desired(films, creator = creator, hosts = setOf(creator)))
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.registered)
+            .containsEntry(films, LocalDatabase(false, false, quarantined = true))
+        assertThat(local.dropped).isEmpty()
+        assertThat(local.seeds).isEmpty()
+    }
+
+    @Test
+    fun `a dropped database goes with its quarantine, and those of databases gone are forgotten`() {
+        local.add(films, started = true)
+        local.quarantine(films)
+        val gone = UUID.randomUUID()
+        local.quarantines += gone
+        graph.reachable = false
+
+        assertThat(reconciler.reconcile()).isTrue()
+        assertThat(local.quarantines).contains(gone)
+
+        graph.reachable = true
+        assertThat(reconciler.reconcile()).isFalse()
+
+        assertThat(local.dropped).containsExactly(films)
+        assertThat(local.quarantines).isEmpty()
+    }
+
+    @Test
     fun `a system graph that is behind after a restart deletes nothing`() {
         local.stored["films"] = true
         local.groups += films.databaseId().uuid()
@@ -828,6 +869,21 @@ class DatabaseReconcilerTest {
         /** The databases whose stores are secondaries', by id. */
         val marks = mutableSetOf<UUID>()
 
+        /** The databases whose copies here are in quarantine, by id. */
+        val quarantines = mutableSetOf<UUID>()
+
+        /** Puts the copy of [id], registered, in quarantine, stopping it. */
+        fun quarantine(id: NamedDatabaseId) {
+            quarantines += id.databaseId().uuid()
+            registered[id] = registered.getValue(id).copy(started = false, quarantined = true)
+        }
+
+        override fun quarantined(): Set<UUID> = quarantines.toSet()
+
+        override fun forgetQuarantine(id: UUID) {
+            quarantines -= id
+        }
+
         fun add(id: NamedDatabaseId, started: Boolean) {
             registered[id] = LocalDatabase(started, false)
             stored[id.name()] = true
@@ -899,6 +955,7 @@ class DatabaseReconcilerTest {
             stored.remove(id.name())
             groups.remove(id.databaseId().uuid())
             marks.remove(id.databaseId().uuid())
+            quarantines.remove(id.databaseId().uuid())
             dropped += id
         }
 
