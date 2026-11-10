@@ -1,0 +1,2 @@
+org.dozendb.core.checkpoint.ContinuousThresholdPolicy
+org.dozendb.core.checkpoint.VolumetricThresholdPolicy
