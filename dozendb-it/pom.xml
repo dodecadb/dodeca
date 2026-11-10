@@ -110,6 +110,9 @@
                 <dozendb.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}.jar</dozendb.plugin.jar>
                 <neo4j.image>${neo4j.image}</neo4j.image>
                 <prometheus.image>${prometheus.image}</prometheus.image>
+                <s3mock.image>${s3mock.image}</s3mock.image>
+                <fake-gcs.image>${fake-gcs.image}</fake-gcs.image>
+                <azurite.image>${azurite.image}</azurite.image>
                 <it.logs>${project.build.directory}/it-logs</it.logs>
               </systemPropertyVariables>
               <classpathDependencyExcludes>
