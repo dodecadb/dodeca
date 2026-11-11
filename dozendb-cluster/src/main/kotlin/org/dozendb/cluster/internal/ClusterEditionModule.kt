@@ -53,6 +53,7 @@ import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.internal.routing.ClusterRoutingValidator
 import org.dozendb.cluster.internal.routing.ConfirmedReferences
+import org.dozendb.cluster.internal.routing.PolicyAgreement
 import org.dozendb.cluster.internal.routing.RoutingPolicies
 import org.dozendb.cluster.internal.secondaries.ClusterHosting
 import org.dozendb.cluster.internal.secondaries.PullProtocol
@@ -214,6 +215,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     override val hosting: DatabaseHosting
         get() = clusterHosting
 
+    /** The routing policies drivers name, from the configuration. */
+    private val routingPolicies: RoutingPolicies
+
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
     private lateinit var servers: ServerReconciler
@@ -239,6 +243,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         // Before anything creates a Ratis or DozenDB SLF4J logger.
         Slf4jLogRouting.useDebugLogProvider(logService.internalLogProvider)
         val userLog = logService.getUserLog(ClusterService::class.java)
+        routingPolicies = RoutingPolicies.of(config)
         val neo4jVersion = Version.getNeo4jVersion()
         lateinit var stores: Neo4jLocalStores
         lateinit var replicationService: ReplicationService
@@ -267,6 +272,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 MemberMetadata.SYSTEM_DATABASE_MODE to
                     config.get(ClusterSettings.systemDatabaseMode).name,
                 MemberMetadata.SYSTEM_GROUP to groups.systemGroup.toString(),
+                MemberMetadata.ROUTING_POLICIES to routingPolicies.digest,
             ) +
                 cluster.systemReport() +
                 seedReport() +
@@ -573,6 +579,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         emptyList()
                     }
                 },
+                reported = PolicyAgreement(routingPolicies.digest, userLog)::reported,
             )
         locations =
             DatabaseLocations(consensus, directory) { database ->
@@ -1653,7 +1660,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 singleAddress,
                 config.get(ClusterSettings.readsOnPrimaries),
                 groups,
-                RoutingPolicies.of(config),
+                routingPolicies,
                 { systemGraph.serverTags() },
                 config.get(ClusterSettings.loadBalancingShuffle),
             )

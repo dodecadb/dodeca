@@ -171,6 +171,45 @@ class RoutingPolicyTablesTest {
         }
     }
 
+    @Test
+    fun `a server with other policies is warned about, once`() {
+        val cluster =
+            ClusterHarness(root, 3, settings = mapOf(ServerPolicy.of("north") to "tags(north)"))
+                .also { harness = it }
+        val (first, second, odd) = cluster.members
+        odd.settings =
+            mapOf(
+                ServerPolicy.of("north") to "tags(north)",
+                ServerPolicy.of("south") to "tags(south)",
+            )
+        cluster.start()
+        fun ClusterHarness.Member.warnings(about: ClusterHarness.Member) =
+            home.resolve("logs/debug.log").toFile().readLines().count {
+                "Server ${about.serverId} at" in it && "has other routing policies" in it
+            }
+
+        eventually {
+            assertThat(first.warnings(about = odd)).isEqualTo(1)
+            assertThat(second.warnings(about = odd)).isEqualTo(1)
+            assertThat(odd.warnings(about = first)).isEqualTo(1)
+            assertThat(odd.warnings(about = second)).isEqualTo(1)
+        }
+        // Later reports of the odd server, which carry its last transaction, warn no more.
+        fun lastCommitted() =
+            first.database("system").executeTransactionally(
+                "SHOW DATABASE neo4j YIELD serverID, lastCommittedTxn " +
+                    "WHERE serverID = '${odd.serverId}'",
+                emptyMap(),
+            ) {
+                it.next()["lastCommittedTxn"] as Long
+            }
+        val before = lastCommitted()
+        cluster.awaitLeader().database("neo4j").executeTransactionally("CREATE ()")
+        eventually { assertThat(lastCommitted()).isGreaterThan(before) }
+        assertThat(first.warnings(about = odd)).isEqualTo(1)
+        assertThat(first.warnings(about = second)).isZero()
+    }
+
     private companion object {
         val TAGS =
             mapOf(

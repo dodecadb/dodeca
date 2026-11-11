@@ -38,7 +38,8 @@ import org.neo4j.logging.Log
  * answers. A member that does not answer keeps its last known address and report, and a report that
  * arrives after a later one of the same member is left out ([MemberMetadata.REPORT_NUMBER]). This
  * member's own come from [selfBoltAddress], [selfRoutingAddress], [selfDatabases], [selfReadOnly],
- * [selfLastCommitted] and [selfReport].
+ * [selfLastCommitted] and [selfReport]. Each report of another member that is recorded is handed to
+ * [reported] too.
  *
  * While no server is known, as on a system secondary that just started, it probes the [bootstrap]
  * addresses, the initial members, instead: what those report tells the servers.
@@ -57,6 +58,7 @@ class MemberDirectory(
     private val demandDeadline: Duration = Duration.ofSeconds(1),
     private val servers: () -> List<Member> = { consensus.members(databaseGroups.system) },
     private val bootstrap: () -> List<HostPort> = { emptyList() },
+    private val reported: (Member, Map<String, String>) -> Unit = { _, _ -> },
 ) {
     /** The group of `system` (see [DatabaseGroups]). */
     private val systemDatabase: DatabaseRef
@@ -333,7 +335,9 @@ class MemberDirectory(
         if (!MemberMetadata.laterReport(peer.metadata, reports[member.id])) return
         groups[member.id] = peer.groups
         val routing = peer.metadata[MemberMetadata.ROUTING_ADDRESS]
-        if (routing != reports.put(member.id, peer.metadata)?.get(MemberMetadata.ROUTING_ADDRESS)) {
+        val previous = reports.put(member.id, peer.metadata)
+        reported(member, peer.metadata)
+        if (routing != previous?.get(MemberMetadata.ROUTING_ADDRESS)) {
             when {
                 routing == null -> log.info("Member %s takes no forwarded writes", member.id)
                 parsed(routing) == null ->

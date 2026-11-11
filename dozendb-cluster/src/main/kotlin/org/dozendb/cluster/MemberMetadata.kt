@@ -102,6 +102,12 @@ object MemberMetadata {
     const val READ_ONLY_DATABASES = "dozendb.readOnlyDatabases"
 
     /**
+     * A digest of the member's routing policies (`RoutingPolicies.digest`), the same on members
+     * whose policies choose alike. Members of versions before routing policies report none.
+     */
+    const val ROUTING_POLICIES = "dozendb.routingPolicies"
+
+    /**
      * The id of the last transaction committed to each database that runs on the member, as
      * `<database id>=<transaction id>` separated by commas.
      */
