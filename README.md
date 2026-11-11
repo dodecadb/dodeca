@@ -45,7 +45,8 @@ Under development. Not ready for production use.
   version it was built for.
 - Java 17 or 21, as Neo4j 5.26.
 - To build: [mise](https://mise.jdx.dev), which provides the JDK
-  (`mise.toml`), and Docker for the integration tests.
+  (`mise.toml`), `unzip`, which the Maven wrapper unpacks Maven with, and
+  Docker for the integration tests.
 
 ## Installing
 
