@@ -60,3 +60,13 @@ META-INF/NOTICE:
   and RE2/J, Copyright The Go Authors.
 - Under the 2-clause BSD License (META-INF/license/LICENSE.bsd-2-clause.txt):
   the Stax2 API, Copyright FasterXML.com.
+- Under the Mozilla Public License 2.0 (https://mozilla.org/MPL/2.0/): the
+  Public Suffix List (https://publicsuffix.org), unchanged, as Apache
+  HttpClient 4 and 5 ship it in mozilla/public-suffix-list.txt and
+  org/publicsuffix/list/effective_tld_names.dat, each with the license's
+  notice.
+
+These libraries use annotations that the DozenDB jar bundles without
+relocating them, under the Apache License 2.0: JSpecify (org.jspecify),
+Copyright The JSpecify Authors, and the Android annotations
+(android.annotation), Copyright The Android Open Source Project.
