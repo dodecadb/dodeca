@@ -65,9 +65,12 @@ class PluginJarIT {
                 "org/dozendb/shaded/com/google/cloud/storage",
                 "org/dozendb/shaded/com/fasterxml/jackson/databind",
                 "org/dozendb/shaded/reactor/core",
+                "org/dozendb/shaded/org/jspecify/annotations",
+                "org/dozendb/shaded/android/annotation",
             )
-        // Ratis bundles a few annotations, and kotlinx-coroutines its debugger's stack frames.
-        val roots = listOf("org/dozendb/", "org/apache/ratis/", "org/jspecify/", "android/")
+        // Ratis is not relocated, and kotlinx-coroutines keeps its debugger's stack frames where
+        // the debugger looks for them.
+        val roots = listOf("org/dozendb/", "org/apache/ratis/")
         assertThat(classes.filterNot { name -> roots.any { name.startsWith(it) } }).allMatch {
             it.startsWith("_COROUTINE/")
         }

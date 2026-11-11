@@ -48,9 +48,11 @@ META-INF/NOTICE:
   OpenTelemetry, Copyright their authors; PerfMark; Jackson and Woodstox,
   Copyright FasterXML, LLC; Reactor Core, Copyright VMware, Inc. or its
   affiliates; Apache HttpComponents (HttpClient 4 and 5, HttpCore 4 and 5)
-  and Apache Commons Codec, Copyright The Apache Software Foundation; and JNA
-  Platform (jna-platform), which is available under the Apache License 2.0 or
-  the LGPL 2.1, Copyright its authors.
+  and Apache Commons Codec, Copyright The Apache Software Foundation; the
+  JSpecify annotations, Copyright The JSpecify Authors; the Android
+  annotations (android.annotation), Copyright The Android Open Source
+  Project; and JNA Platform (jna-platform), which is available under the
+  Apache License 2.0 or the LGPL 2.1, Copyright its authors.
 - Under the MIT License (META-INF/license/LICENSE.mit.txt in the jar): the
   Azure SDK for Java and the Microsoft Authentication Library for Java,
   Copyright Microsoft Corporation.
@@ -65,8 +67,3 @@ META-INF/NOTICE:
   HttpClient 4 and 5 ship it in mozilla/public-suffix-list.txt and
   org/publicsuffix/list/effective_tld_names.dat, each with the license's
   notice.
-
-These libraries use annotations that the DozenDB jar bundles without
-relocating them, under the Apache License 2.0: JSpecify (org.jspecify),
-Copyright The JSpecify Authors, and the Android annotations
-(android.annotation), Copyright The Android Open Source Project.

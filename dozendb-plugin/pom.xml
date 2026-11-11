@@ -208,6 +208,15 @@
                   <pattern>com.sun.jna.platform</pattern>
                   <shadedPattern>org.dozendb.shaded.com.sun.jna.platform</shadedPattern>
                 </relocation>
+                <!-- Annotations of Google Cloud Storage's libraries, which Ratis Thirdparty bundles too. -->
+                <relocation>
+                  <pattern>org.jspecify</pattern>
+                  <shadedPattern>org.dozendb.shaded.org.jspecify</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>android.annotation</pattern>
+                  <shadedPattern>org.dozendb.shaded.android.annotation</shadedPattern>
+                </relocation>
               </relocations>
               <filters>
                 <filter>
