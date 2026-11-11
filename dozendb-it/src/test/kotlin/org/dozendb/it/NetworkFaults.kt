@@ -94,7 +94,7 @@ class NetworkFaults(private val member: GenericContainer<*>) : AutoCloseable {
 
     companion object {
         /** Network tools; pinned so that test runs do not change with the image. */
-        const val IMAGE = "nicolaka/netshoot:v0.13"
+        const val IMAGE = "nicolaka/netshoot:v0.16"
         private const val RAFT_PORT = "7700"
 
         fun ipOf(container: GenericContainer<*>): String =
