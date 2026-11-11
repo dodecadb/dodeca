@@ -53,6 +53,7 @@ import org.dozendb.cluster.internal.routing.ClusterQueryRouterBootstrap
 import org.dozendb.cluster.internal.routing.ClusterRoutingTableProvider
 import org.dozendb.cluster.internal.routing.ClusterRoutingValidator
 import org.dozendb.cluster.internal.routing.ConfirmedReferences
+import org.dozendb.cluster.internal.routing.RoutingPolicies
 import org.dozendb.cluster.internal.secondaries.ClusterHosting
 import org.dozendb.cluster.internal.secondaries.PullProtocol
 import org.dozendb.cluster.internal.secondaries.PullSource
@@ -1652,6 +1653,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 singleAddress,
                 config.get(ClusterSettings.readsOnPrimaries),
                 groups,
+                RoutingPolicies.of(config),
+                { systemGraph.serverTags() },
+                config.get(ClusterSettings.loadBalancingShuffle),
             )
         return DefaultRoutingService(
             logProvider,
