@@ -37,9 +37,9 @@ Java 17 or 21.
 ### The jar
 
 Build it from source as the README says. The jar to install is
-`dozendb-plugin/target/dozendb-<version>.jar`, about 70 MB: it bundles what
-DozenDB needs. The small `dozendb-plugin-<version>.jar` next to it is not the
-one.
+`dozendb-plugin/target/dozendb-<version>-neo4j-5.26.27.jar`, about 70 MB: it
+bundles what DozenDB needs, and its name says which Neo4j version it runs on.
+The small `dozendb-plugin-<version>.jar` next to it is not the one.
 
 Copy it into the `lib/` directory of Neo4j Community 5.26.27, not into
 `plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds DozenDB's commands
@@ -56,7 +56,7 @@ Build an image from Neo4j's official Community image with the jar in its
 
 ```dockerfile
 FROM neo4j:5.26.27-community
-COPY dozendb-0.1.0-SNAPSHOT.jar /var/lib/neo4j/lib/
+COPY dozendb-0.1.0-SNAPSHOT-neo4j-5.26.27.jar /var/lib/neo4j/lib/
 ```
 
 Mounting the jar into the container read-only does not work: Neo4j's

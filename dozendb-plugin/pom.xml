@@ -58,10 +58,11 @@
 
   <properties>
     <!--
-      The installable jar. Written next to the module jar instead of replacing it: when shade
-      replaces the module jar, the next build shades the previous output again and stale classes win.
+      The installable jar, named after the Neo4j version it runs on. Written next to the module jar
+      instead of replacing it: when shade replaces the module jar, the next build shades the
+      previous output again and stale classes win.
     -->
-    <dozendb.plugin.jar>${project.build.directory}/dozendb-${project.version}.jar</dozendb.plugin.jar>
+    <dozendb.plugin.jar>${project.build.directory}/dozendb-${project.version}-neo4j-${neo4j.version}.jar</dozendb.plugin.jar>
   </properties>
 
   <build>

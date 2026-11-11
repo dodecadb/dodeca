@@ -49,13 +49,14 @@ Under development. Not ready for production use.
 
 ## Installing
 
-Build DozenDB (below), then copy `dozendb-plugin/target/dozendb-<version>.jar`
-into the `lib/` directory of Neo4j Community 5.26.27 and start Neo4j. With
-Docker, build an image:
+Build DozenDB (below), then copy
+`dozendb-plugin/target/dozendb-<version>-neo4j-5.26.27.jar` into the `lib/`
+directory of Neo4j Community 5.26.27 and start Neo4j. With Docker, build an
+image:
 
 ```dockerfile
 FROM neo4j:5.26.27-community
-COPY dozendb-0.1.0-SNAPSHOT.jar /var/lib/neo4j/lib/
+COPY dozendb-0.1.0-SNAPSHOT-neo4j-5.26.27.jar /var/lib/neo4j/lib/
 ```
 
 To form a cluster, see
@@ -99,8 +100,10 @@ mise exec -- ./mvnw verify            # build and unit tests
 mise exec -- ./mvnw verify -Pit       # also run the Testcontainers suites
 ```
 
-The jar to install is `dozendb-plugin/target/dozendb-<version>.jar`, about
-70 MB; the small `dozendb-plugin-<version>.jar` next to it is not the one.
+The jar to install is
+`dozendb-plugin/target/dozendb-<version>-neo4j-<neo4j version>.jar`, about
+70 MB, named after the Neo4j version it runs on; the small
+`dozendb-plugin-<version>.jar` next to it is not the one.
 
 Each module runs its test classes in 4 JVMs at once, and the Testcontainers
 suites in 3, each with a cluster of its own; `-Dtest.forks=1` and

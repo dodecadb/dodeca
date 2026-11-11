@@ -24,6 +24,8 @@
          Docker's memory: three members of 512 MB heap and 64 MB page cache, about 1.3 GB each.
          With less than 12 GB free, Docker's VM kills containers; pass -Dit.forks=1. -->
     <it.forks>3</it.forks>
+    <!-- The jar under test: the one this build makes, or another, as CI's of the jar it releases. -->
+    <it.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}-neo4j-${neo4j.version}.jar</it.plugin.jar>
   </properties>
 
   <dependencies>
@@ -109,7 +111,7 @@
               <!-- For TestPorts, as in the parent; Maven 3.9 leaves it empty elsewhere. -->
               <argLine>-Ddozendb.test.fork=${surefire.forkNumber}</argLine>
               <systemPropertyVariables>
-                <dozendb.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}.jar</dozendb.plugin.jar>
+                <dozendb.plugin.jar>${it.plugin.jar}</dozendb.plugin.jar>
                 <neo4j.image>${neo4j.image}</neo4j.image>
                 <prometheus.image>${prometheus.image}</prometheus.image>
                 <graphite.image>${graphite.image}</graphite.image>
