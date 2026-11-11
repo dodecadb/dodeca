@@ -29,6 +29,12 @@ mise exec -- ./mvnw verify -Pit           # every test, the Docker ones too
 - A failing or flaky test, even one the change did not touch, is fixed rather
   than retried or skipped.
 
+CI on GitHub Actions (`.github/workflows/ci.yml`) runs the same on each pull
+request and each push to `main`: it packages the jar, runs the unit tests, and
+runs the Docker tests against the packaged jar, split over six jobs. Its check
+`CI` passes once every job did. A failed job keeps its test reports, and for
+the Docker tests the members' logs, as an artifact of the run.
+
 ## Documentation
 
 Update the documents a change affects in the same change:

@@ -1,0 +1,181 @@
+# Builds DozenDB and runs every test on each push to main and each pull request. The release
+# workflow calls it too, with the version to release, and publishes the jar it packages.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    inputs:
+      version:
+        description: The version to package, such as 0.2.0; the pom's when empty.
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  MAVEN_ARGS: -B -ntp -Dstyle.color=always
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  package:
+    name: Package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: maven-
+      - name: Set the version
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: >-
+          ./mvnw org.codehaus.mojo:versions-maven-plugin:2.25.1:set -DnewVersion="$VERSION"
+          -DgenerateBackupPoms=false -DprocessAllModules=true
+      # The jar, and PluginJarIT, which checks what it contains.
+      - name: Package the jar
+        run: >-
+          ./mvnw verify -pl dozendb-plugin -am -Dspotless.check.skip=true
+          -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dozendb-jar
+          path: dozendb-plugin/target/dozendb-*-neo4j-*.jar
+          if-no-files-found: error
+          retention-days: 30
+
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: maven-
+      # Test data in memory, as Neo4j and Raft force every commit to disk. The JVMs unpack native
+      # libraries there too: a RAM disk of its own allows running them, whatever /dev/shm allows.
+      - name: Make a RAM disk for test data
+        run: |
+          sudo mkdir /mnt/dozendb-tests
+          sudo mount -t tmpfs -o size=8g,mode=1777 dozendb-tests /mnt/dozendb-tests
+      # Formatting, compilation and the unit tests, in two test JVMs: each takes up to about 4.5 GB
+      # with its servers' memory outside the heap. Maven, which compiles Kotlin in its own JVM,
+      # would take up to a quarter of the runner's 16 GB; 2 GB is enough.
+      - name: Build and test
+        env:
+          MAVEN_OPTS: -Xmx2g
+        run: ./mvnw verify -Dtest.tmpdir=/mnt/dozendb-tests -Dtest.forks=2 -Dtest.heap=3g
+      # This job resolves the most of the build's dependencies; the others only restore them.
+      - if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unit-test-reports
+          path: |
+            **/target/surefire-reports/
+            **/target/failsafe-reports/
+          retention-days: 14
+
+  docker:
+    name: Docker tests ${{ strategy.job-index }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each job runs every sixth test class, one cluster at a time on its own runner.
+        shard: [0, 1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@b44d12e7d0d8ee7461bb893e1b1993500433185b # v5.2.7
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.m2/repository
+          key: maven-${{ hashFiles('**/pom.xml', '.mvn/wrapper/maven-wrapper.properties') }}
+          restore-keys: maven-
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dozendb-jar
+          path: ${{ runner.temp }}/dist
+      # The classes come from their declarations, not file names, so that none is left out.
+      - name: Pick this job's test classes
+        id: classes
+        env:
+          SHARDS: ${{ strategy.job-total }}
+          SHARD: ${{ strategy.job-index }}
+        run: |
+          all=$(grep -rhoE '^(internal |open )?class [A-Za-z0-9_]+IT\b' --include='*.kt' ./*/src/test \
+            | awk '{print $NF}' | LC_ALL=C sort)
+          twice=$(uniq -d <<< "$all")
+          if [ -n "$twice" ]; then
+            echo "::error::Test classes declared twice: $twice"
+            exit 1
+          fi
+          mine=$(awk -v n="$SHARDS" -v i="$SHARD" '(NR - 1) % n == i' <<< "$all" | paste -sd, -)
+          echo "Test classes: $mine"
+          echo "list=$mine" >> "$GITHUB_OUTPUT"
+      # The tests run against the packaged jar, the one a release publishes.
+      - name: Test
+        env:
+          CLASSES: ${{ steps.classes.outputs.list }}
+        run: >-
+          ./mvnw verify -Pit -Dspotless.check.skip=true
+          -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false
+          -Dit.test="$CLASSES" -Dfailsafe.failIfNoSpecifiedTests=false -Dit.forks=1
+          -Dit.plugin.jar="$(ls "$RUNNER_TEMP"/dist/dozendb-*-neo4j-*.jar)"
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: docker-test-reports-${{ strategy.job-index }}
+          path: |
+            **/target/failsafe-reports/
+            dozendb-it/target/it-logs/
+          retention-days: 14
+
+  # One check for branch protection to require, whatever jobs CI runs.
+  ci:
+    name: CI
+    if: always()
+    needs: [package, unit, docker]
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    steps:
+      - name: Check every job passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: $RESULTS"
+          for result in $RESULTS; do
+            [ "$result" = success ] || exit 1
+          done
