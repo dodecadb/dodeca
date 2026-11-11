@@ -63,7 +63,9 @@ end its own way.
 | Change data capture | Not supported | [Not supported](#not-supported) |
 | `block` and `high_limit` store formats | Not supported | [Not supported](#not-supported) |
 | Pipelined and parallel runtimes | Not supported | [Not supported](#not-supported) |
-| Store copy and incremental import | Not supported | [Not supported](#not-supported) |
+| Incremental import (`neo4j-admin database import incremental`) | Same, with differences | [Import and copy](#import-and-copy) |
+| Resuming a stopped full import | Same, with differences | [Import and copy](#import-and-copy) |
+| Store copy (`neo4j-admin database copy`) | Same, with differences | [Import and copy](#import-and-copy) |
 | Page cache warmup | Not supported | [Not supported](#not-supported) |
 | Other procedures and settings only Enterprise has | Not supported | [Not supported](#not-supported) |
 
@@ -943,6 +945,108 @@ ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
   that database alone. Neo4j Community counts those of databases that
   checkpoint at the same time together.
 
+## Import and copy
+
+`neo4j-admin` in Neo4j Community lacks `database import incremental` and
+`database copy`, and runs `import full` in one go. DozenDB adds both commands
+with Enterprise's options, and resumes a stopped full import.
+`OPERATOR_GUIDE.md` describes how to use them. They work on the formats
+DozenDB has, `aligned` and `standard`.
+
+### Incremental import
+
+- **The merge writes through Neo4j's transactions**, 100,000 entities at a
+  time, on the stopped database, so that relationship chains, dense nodes,
+  counts, indexes and constraints are kept as for any write. This is slower
+  than a full import: about 300,000 nodes and 80,000 relationships a second
+  on an SSD. Each batch is a transaction: a merge that stops leaves the
+  database with the batches it committed, and continues after them when run
+  again. A batch that fails, as on a constraint the increment breaks, keeps the
+  batches before it, which the error message counts.
+- **The increment** is kept in `<databases>/.<database>.increment/` between
+  the stages: the keys `prepare` read, what `build` resolved, and the merge's
+  journal. It needs about the space of the input, and goes once the merge is
+  done.
+- **Keys**: the ID column of each node file names the label and key property
+  of its ID space, as `uuid:ID{label:Person}`, and that label and property
+  need a uniqueness or node key constraint. Keys are strings or integers,
+  compared as the group's `id-type` says. A node whose key the database has is
+  a duplicate, failing the import or skipped with `--skip-duplicate-nodes`:
+  existing nodes are not changed. A new node gets the label of its ID space if
+  it lacks it, so that the constraint covers it. `--id-type=actual` and
+  composite IDs are refused.
+- **Memory and disk**: the merge reads and writes through a page cache of
+  `--max-off-heap-memory`, which defaults to 90% of the free memory and is
+  printed. It writes the store's transaction log, about 250 bytes per entity,
+  which checkpoints prune as usual.
+- **Clusters**: the merge keeps the store's Raft position. Enterprise's
+  procedure, the database recreated with the importing server as its only
+  primary, works as documented, and so does importing on a database's only
+  primary while secondaries pull the import. A server refuses to start an
+  imported store as a secondary, or as one of several primaries while it holds
+  the database's Raft group, which the others' stores do not match: the
+  database fails there, with a message naming `dbms.cluster.recreateDatabase`
+  seeded from that server.
+
+### Resuming a full import
+
+- **How**: a full import that stopped, or failed, resumes when run again with
+  the same input and options, without `--overwrite-destination`, which still
+  deletes everything first and starts over. Enterprise documents the points,
+  not how to resume.
+- **From where**: from relationship linking, once all nodes and relationships
+  are imported, or from post-processing, once relationships are linked.
+  Post-processing is the last of the four stages the import's progress shows,
+  which begins with the relationship groups of dense nodes. An import that
+  stopped before its relationships were all imported starts over, with
+  `--overwrite-destination`. A failed import says which point it resumes from.
+- **The same input**: the same files, by their sizes and modification times,
+  and the same options, but for those that do not change what the import
+  writes, such as `--threads`, `--max-off-heap-memory` and `--report-file`.
+  Other input is refused, naming what differs.
+- **Its progress** is kept in `.dozendb-import.properties` in the database
+  directory. The report of bad entries the stopped import wrote is kept: the
+  stages it resumes from find none.
+
+### Store copy
+
+- **Formats**: `--to-format` takes `same`, `standard` and `aligned`;
+  `high_limit` and `block` are refused. A store in a format of an earlier
+  Neo4j version is refused until it is migrated.
+- **Schema**: one statement per index and constraint, with its index
+  configuration. Index providers are left out, so that the copy gets the
+  current ones. Token lookup indexes are not in the statements: the copy
+  builds its own. Graph type constraints on relationship endpoint labels are
+  left out, and so is the schema of labels, types and properties the filters
+  leave out; the command lists what it left out.
+- **`--copy-schema`** creates the indexes and constraints on the copy and
+  waits until they are built, where Enterprise builds them when the database
+  first starts.
+- **Records that cannot be read**, as in a store with inconsistencies, are
+  left out of the copy, with the relationships of nodes left out. They are
+  listed in `<to-database>-copy.report`, next to the schema file, one per line:
+  `node 123: <error>` or `relationship 456: <error>`.
+- **`--copy-only-node-properties`** on a node with several labels keeps only
+  the properties listed for any of its labels that has a list: a node that is
+  a `Person` and an `Actor`, with only `Person.name` listed, keeps only
+  `name`. `--skip-node-properties` drops a property listed for any of its
+  labels.
+- **`--temp-path`**, where a copy with the source's name is prepared, defaults
+  to a place next to the database, on the same file system, rather than the
+  current directory. A copy prepared on another file system is copied into
+  place.
+- **`--force`** also copies a store that was not shut down cleanly, as it is,
+  without the transactions recovery would apply, with a warning. Without it,
+  such a store is refused.
+- **Clusters**: on a clustered server, a copy to a new name is prepared where
+  `CREATE DATABASE ... OPTIONS {existingData: 'use', existingDataSeedServer:
+  '<id>'}` takes it, as a restore is, and the command prints that statement. A
+  copy is a store of its own, without the Raft position of the database it
+  came from: a copy with the source's name does not start on a server that
+  hosts the database as a secondary, or as a primary while it holds the
+  database's Raft group, until the database is recreated from that server's
+  store with `dbms.cluster.recreateDatabase`.
+
 ## Not supported
 
 DozenDB does not support these Enterprise features, checked against the
@@ -969,9 +1073,6 @@ error, and their procedures do not exist.
   declares `server.cypher.parallel.worker_limit`, which has no effect.
 - **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
   policies and `dbms.routing.load_balancing.shuffle_enabled`.
-- **Store copy and incremental import**: `neo4j-admin database copy`,
-  `neo4j-admin database import incremental`, and resuming a stopped import.
-  `neo4j-admin` lacks them, as in Neo4j Community.
 - **Page cache warmup.** Neo4j Community declares
   `db.memory.pagecache.warmup.*`, which have no effect.
 - **Shared query caches**: `server.memory.query_cache.sharing_enabled` and

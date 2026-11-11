@@ -1117,6 +1117,178 @@ database, `system` included, taken with `"*"`:
 Users, roles, privileges, the default numbers of copies and whether each
 database is online come with `system`.
 
+## Importing and copying databases
+
+`neo4j-admin database import full` creates a database from CSV files, as in
+Neo4j. DozenDB adds `import incremental`, which adds CSV files to an existing
+database, resumes a full import that stopped, and adds `neo4j-admin database
+copy`. `COMPATIBILITY.md`, "Import and copy", lists where they differ from
+Neo4j Enterprise.
+
+### Importing into an existing database
+
+An incremental import adds nodes and relationships to a database that exists,
+in three stages:
+
+1. `prepare`, with the database stopped, reads the keys of its nodes.
+2. `build` reads the CSV files and resolves each new relationship's nodes,
+   new or existing, without touching the database, which may run read-only
+   meanwhile.
+3. `merge`, with the database stopped, writes the new nodes and relationships.
+
+`--stage=all` runs the three on a stopped database:
+
+```
+neo4j-admin database import incremental --force --stage=all films \
+  --nodes=Person=persons.csv --relationships=KNOWS=knows.csv
+```
+
+The database name goes before `--nodes` and `--relationships`, which take
+several files each. Take a backup before, as Neo4j Enterprise advises.
+
+- **Keys.** The ID column of each node file names the label and the property
+  that identify its nodes, as `uuid:ID{label:Person}`, and that label and
+  property need a uniqueness or node key constraint. Keys are compared as
+  strings, or as integers with `--id-type=integer` or an `id-type` in the
+  braces, as `"id:ID{label:Movie,id-type:long}"`, quoted for its comma.
+  Relationship files refer to nodes by these keys, new ones and those the
+  database has. A new node gets the label of its keys if it
+  lacks it.
+- **Duplicates.** A node whose key the database has, or another node of the
+  increment has, fails the import, or is skipped with
+  `--skip-duplicate-nodes`; existing nodes are not changed. A relationship
+  whose node is missing fails it, or is skipped with
+  `--skip-bad-relationships`. Both are listed in `--report-file`.
+- **Reads during the build.** For the database to serve reads while the
+  increment is built, run the stages one by one:
+
+  ```
+  STOP DATABASE films WAIT
+  neo4j-admin database import incremental --force --stage=prepare films --nodes=...
+  ALTER DATABASE films SET ACCESS READ ONLY
+  START DATABASE films WAIT
+  neo4j-admin database import incremental --force --stage=build films --nodes=...
+  STOP DATABASE films WAIT
+  neo4j-admin database import incremental --force --stage=merge films
+  START DATABASE films WAIT
+  ALTER DATABASE films SET ACCESS READ WRITE
+  ```
+
+  `merge` needs no files. The database must not change between `prepare` and
+  `merge`: a merge into a database that changed is refused.
+- **The merge** writes transactions of 100,000 nodes or relationships, which
+  keep indexes, constraints and counts up to date: about 300,000 nodes and
+  80,000 relationships a second on an SSD. It reads and writes through a page
+  cache of `--max-off-heap-memory`, 90% of the free memory unless set, which
+  it prints. If it stops, the database keeps the batches it committed: run
+  `merge` again, and it continues after them. A batch that breaks a constraint
+  fails the merge, and the error says how many nodes and relationships the
+  database kept.
+- **Disk.** Between the stages, the increment is kept in
+  `data/databases/.films.increment/`, about the size of the input. The merge
+  also writes the transaction log, about 250 bytes per node or relationship.
+
+#### In a cluster
+
+Import on one server, with the database's other copies out of the way, as
+Neo4j Enterprise's procedure has it:
+
+1. Recreate the database with that server as its only primary, from its store:
+
+   ```
+   CALL dbms.cluster.recreateDatabase('films', {seedingServers: ['<id>'], primaries: 1})
+   ```
+
+2. `STOP DATABASE films WAIT`, import on that server, and `START DATABASE
+   films WAIT`. Secondaries pull what the import wrote.
+3. Put the topology back, as `ALTER DATABASE films SET TOPOLOGY 3 PRIMARIES`:
+   the other servers copy the database with the import.
+
+A server refuses to start an imported database while other primaries host it
+and it is still in their Raft group, since their copies lack the import, and
+refuses an import on a secondary. `SHOW DATABASES` gives the reason on that
+server, with the command that recreates the database from its store, which
+also puts the import on every server.
+
+### Resuming a full import
+
+A full import that stops, or fails, after all its nodes and relationships are
+imported resumes from relationship linking, or, once those are linked, from
+post-processing, the last of the stages its progress shows. A failed import
+prints which:
+
+```
+The import resumes from relationship linking: run the same command again, without --overwrite-destination, which starts over.
+```
+
+Run the same command again, with the same files and options, but without
+`--overwrite-destination`, which deletes what the import wrote and starts over.
+`--threads`, `--max-off-heap-memory`, `--high-parallel-io`, `--report-file`
+and `--verbose` may change. Files that changed, by size or modification time,
+and other options are refused, naming what differs. An import that stopped
+earlier starts over with `--overwrite-destination`. The import keeps its
+progress in `.dozendb-import.properties` in the database's directory, and the
+report of bad entries of the run that stopped.
+
+### Copying a database
+
+`neo4j-admin database copy` copies a stopped database to a new one, leaving out
+what its filters say, and writes its stores anew: relationships and properties
+no longer take the space of deleted ones. Nodes keep their ids, so that the
+node store keeps the gaps of deleted nodes, unless `--compact-node-store`
+numbers them anew; relationships get new ids.
+
+```
+STOP DATABASE films WAIT
+neo4j-admin database copy films films2 --ignore-nodes-with-labels=Draft --skip-properties=secret
+CREATE DATABASE films2 WAIT
+cat films2-schema.cypher | bin/cypher-shell -d films2
+```
+
+- **Filters.** `--copy-only-nodes-with-labels` or `--ignore-nodes-with-labels`
+  choose the nodes, and with them their relationships;
+  `--copy-only-relationships-with-types` or `--ignore-relationships-with-types`
+  the relationships; `--skip-labels` drops labels; `--skip-properties`,
+  `--skip-node-properties=Person.secret`, `--skip-relationship-properties`,
+  `--copy-only-node-properties=Person.name` and
+  `--copy-only-relationship-properties` drop properties. Lists are separated by
+  commas; a name with a comma or dot in it goes in backticks, as
+  ``--skip-labels=`My,label` ``. Options that contradict each other are
+  refused.
+- **Indexes and constraints.** The statements that create them on the copy go
+  to `<copy>-schema.cypher`, in `--to-path-schema` or the current directory,
+  to run once the database exists. `--copy-schema` creates them on the copy
+  instead, before the command ends, which waits until the indexes are built.
+  Those on what the filters leave out are left out, and printed.
+- **Format.** `--to-format` gives the copy another format, `standard` or
+  `aligned`; it keeps the source's by default.
+- **The same name** replaces the database with its copy, made first next to
+  it, or in `--temp-path`, then moved into place: `START DATABASE films` then
+  starts the copy.
+- **Damaged stores.** Records that cannot be read are left out of the copy,
+  which is consistent, and listed in `<copy>-copy.report` next to the schema
+  file. A database that was not shut down cleanly is refused, unless `--force`
+  copies its store as it is, without the transactions recovery would apply:
+  start and stop it first to keep them.
+- **Elsewhere.** `--from-path-data` and `--from-path-txn` read a database from
+  other directories, `--to-path-data` and `--to-path-txn` write the copy to
+  others. `--from-pagecache` (8 MiB) sizes the page cache that reads the
+  source.
+
+On a server of a cluster, a copy to a new name is prepared where
+`CREATE DATABASE` takes a seed from, and the command prints the statement that
+creates the database from it on every server it is placed on:
+
+```
+CREATE DATABASE films2 OPTIONS {existingData: 'use', existingDataSeedServer: '<id>'}
+```
+
+A copy that replaces a clustered database is a store of its own, which the
+database's Raft group did not write: the server does not start it until the
+database is recreated from its store, with
+`CALL dbms.cluster.recreateDatabase('films', {seedingServers: ['<id>']})`,
+which `SHOW DATABASES` names on that server.
+
 ## Cloud storage
 
 Backups, restores, dumps, loads, seeds, imports and `LOAD CSV` read and write
