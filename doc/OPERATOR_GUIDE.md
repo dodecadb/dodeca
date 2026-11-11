@@ -36,10 +36,18 @@ Java 17 or 21.
 
 ### The jar
 
-Build it from source as the README says. The jar to install is
-`dozendb-plugin/target/dozendb-<version>-neo4j-5.26.27.jar`, about 70 MB: it
-bundles what DozenDB needs, and its name says which Neo4j version it runs on.
-The small `dozendb-plugin-<version>.jar` next to it is not the one.
+Each [release](https://github.com/dozendb/dozendb/releases) has the jar,
+`dozendb-<version>-neo4j-5.26.27.jar`, about 70 MB: it bundles what DozenDB
+needs, and its name says which Neo4j version it runs on. To check that the
+release workflow built it, from the tagged commit:
+
+```sh
+gh attestation verify dozendb-<version>-neo4j-5.26.27.jar --repo dozendb/dozendb
+```
+
+Built from source as the README says, the jar is
+`dozendb-plugin/target/dozendb-<version>-neo4j-5.26.27.jar`; the small
+`dozendb-plugin-<version>.jar` next to it is not the one.
 
 Copy it into the `lib/` directory of Neo4j Community 5.26.27, not into
 `plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds DozenDB's commands
@@ -51,8 +59,14 @@ version at each start: `DozenDB 0.1.0-SNAPSHOT: clustering is disabled`.
 
 ### Docker
 
-Build an image from Neo4j's official Community image with the jar in its
-`lib/`:
+Each release publishes an image, `ghcr.io/dozendb/dozendb`, for `linux/amd64`
+and `linux/arm64`: Neo4j's official Community image with the jar in its
+`lib/`, which runs as Neo4j's image does. Its tags are the release's version,
+such as `0.2.0`, the version with Neo4j's, `0.2.0-neo4j-5.26.27`, the minor
+version, `0.2`, and `latest` (see [`RELEASING.md`, "What a release
+publishes"](RELEASING.md#what-a-release-publishes)).
+
+With a jar built from source, build such an image:
 
 ```dockerfile
 FROM neo4j:5.26.27-community
@@ -148,13 +162,13 @@ Drivers connect with `neo4j://` to any member, which routes them (see
 `neo4j://core1.example.com:7687`.
 
 To try a cluster on one machine, this Docker Compose file starts three
-members on Docker's network, in plaintext, next to the `Dockerfile` above and
-the jar:
+members of the published image on Docker's network, in plaintext. To try a
+jar built from source, add `build: .` under `image:`, next to the
+`Dockerfile` above and the jar, and add `--build` to `docker compose up`.
 
 ```yaml
 x-member: &member
-  image: dozendb:5.26.27
-  build: .
+  image: ghcr.io/dozendb/dozendb
   environment: &config
     NEO4J_AUTH: neo4j/change-this-password
     NEO4J_dbms_dozendb_cluster_enabled: "true"
@@ -187,7 +201,7 @@ services:
 ```
 
 ```sh
-docker compose up -d --build
+docker compose up -d
 docker compose exec core1 cypher-shell -u neo4j -p change-this-password \
   "CALL dozendb.cluster.members()"
 ```

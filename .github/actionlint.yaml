@@ -1,0 +1,6 @@
+# actionlint 1.7.12 predates GitHub's self-repository syntax, uses: $/..., for calling this
+# repository's own workflows at the running commit.
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'reusable workflow call "\$/'

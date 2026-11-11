@@ -45,6 +45,7 @@ Update the documents a change affects in the same change:
 | [`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) | DozenDB supports another Enterprise feature, behaves differently from Enterprise's documentation, or decides what it leaves open. |
 | [`doc/FORMATS.md`](doc/FORMATS.md) | What members send each other or keep changes. Follow its rules for changing a format, so that rolling upgrades keep working. |
 | [`doc/UPSTREAM_TOUCHPOINTS.md`](doc/UPSTREAM_TOUCHPOINTS.md) | The code builds on another Neo4j or Apache Ratis class, or relies on more of their behaviour. |
+| [`doc/RELEASING.md`](doc/RELEASING.md) | How releases are numbered, made or published changes, as in the workflows under `.github/`. |
 
 Code that ports or copies Neo4j Community, DozerDB or Apache Ratis code keeps
 their copyright notices and says what DozenDB changed and when.

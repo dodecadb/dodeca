@@ -50,15 +50,19 @@ Under development. Not ready for production use.
 
 ## Installing
 
-Build DozenDB (below), then copy
-`dozendb-plugin/target/dozendb-<version>-neo4j-5.26.27.jar` into the `lib/`
-directory of Neo4j Community 5.26.27 and start Neo4j. With Docker, build an
-image:
+Each [release](https://github.com/dozendb/dozendb/releases) has the jar,
+`dozendb-<version>-neo4j-5.26.27.jar`, and an image. Copy the jar into the
+`lib/` directory of Neo4j Community 5.26.27, the version its name gives, and
+start Neo4j. The image is Neo4j's official Community image with the jar in
+its `lib/`, and runs as Neo4j's does:
 
-```dockerfile
-FROM neo4j:5.26.27-community
-COPY dozendb-0.1.0-SNAPSHOT-neo4j-5.26.27.jar /var/lib/neo4j/lib/
+```sh
+docker run --publish 7474:7474 --publish 7687:7687 ghcr.io/dozendb/dozendb
 ```
+
+The release notes say how to check that the jar and the image were built by
+this repository's release workflow. To build the jar from source instead, see
+[Building](#building).
 
 To form a cluster, see
 [Installing DozenDB](doc/OPERATOR_GUIDE.md#installing-dozendb) in the operator
@@ -72,7 +76,9 @@ guide, which ends with a Docker Compose file for three members.
 | [`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) | DozenDB compared with Neo4j Enterprise, area by area, and moving from Neo4j Community, Enterprise or DozerDB. |
 | [`doc/FORMATS.md`](doc/FORMATS.md) | What members send each other and keep, and how to change it without breaking rolling upgrades. |
 | [`doc/UPSTREAM_TOUCHPOINTS.md`](doc/UPSTREAM_TOUCHPOINTS.md) | The Neo4j and Apache Ratis code DozenDB builds on, to recheck after upgrading them. |
-| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contributing: the clean-room rule, tests, documentation and commits. |
+| [`doc/RELEASING.md`](doc/RELEASING.md) | Versions, Neo4j and dependency updates, and how releases are made and published. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contributing: the clean-room rule, tests, CI, documentation and commits. |
+| [`SECURITY.md`](SECURITY.md) | Reporting a vulnerability, privately. |
 
 ## Repository layout
 
@@ -87,6 +93,8 @@ guide, which ends with a Docker Compose file for three members.
 | `dozendb-cluster/` | Clustering on top of `dozendb-core`: membership, servers and placement, commit interception, routing, reads, secondaries, snapshots and disaster recovery. |
 | `dozendb-plugin/` | The entry point, and the build of the single jar installed into Neo4j's `lib/`. |
 | `dozendb-it/` | Integration, fault, crash and benchmark tests, in Docker against Neo4j's official image. |
+| `docker/` | The Dockerfile of DozenDB's image. |
+| `.github/` | CI and releases on GitHub Actions, and Dependabot's updates. |
 | `doc/` | The documentation above. |
 | `scripts/` | `test-ramdisk.sh`, which makes the tests faster on macOS (below). |
 
