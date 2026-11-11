@@ -321,7 +321,8 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
     finish with the old ones. The connections of a version that changed or
     was dropped close when its transactions end, found within a minute.
   - Passwords are encrypted with a key from a keystore, under Enterprise's
-    settings; see `OPERATOR_GUIDE.md`.
+    settings; see
+    [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#keystore-for-remote-aliases).
   - Failures there reach the client as remote execution failures,
     `Neo.ClientError.Statement.RemoteExecutionClientError`,
     `RemoteExecutionTransientError` or `RemoteExecutionFailed` with GQL
@@ -352,22 +353,24 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
 
 DozenDB's clustering is its own design, on Apache Ratis, built to what
 Enterprise documents that clients and operators see. Every database is
-replicated, `system` included, each in its own Raft group of its primaries;
-its secondaries pull its transactions instead. Clients see what an Enterprise
+replicated, `system` included, each in its own Raft group of its primaries; its
+secondaries pull its transactions instead. Clients see what an Enterprise
 cluster shows them: routing tables with the leader as writer, failover,
 bookmarks, server-side routing, and `SHOW DATABASES` with a row per member.
-Members talk to each other in protocols of DozenDB's own (`FORMATS.md`), on
-their Raft port (`server.dozendb.cluster.listen_address`, 7700) and their
-routing connector (7688), where Enterprise uses ports 5000, 6000 and 7000, so
-DozenDB and Enterprise servers cannot form a cluster together. A cluster forms
-from `dbms.dozendb.cluster.initial_members`, and grows with
+Members talk to each other in protocols of DozenDB's own
+([`FORMATS.md`](FORMATS.md)), on their Raft port
+(`server.dozendb.cluster.listen_address`, 7700) and their routing connector
+(7688), where Enterprise uses ports 5000, 6000 and 7000, so DozenDB and
+Enterprise servers cannot form a cluster together. A cluster forms from
+`dbms.dozendb.cluster.initial_members`, and grows with
 `dozendb.cluster.addMember`, instead of through Enterprise's discovery service;
-see `OPERATOR_GUIDE.md`, "Cluster members". Enterprise's settings for its
-discovery, Raft and catch-up internals (`dbms.cluster.discovery.*`,
-`dbms.cluster.raft.*` and `db.cluster.raft.*` other than the leadership
-settings, `dbms.cluster.network.*`, `server.cluster.listen_address` and the
-other addresses, `server.directories.cluster_state`, `dbms.kubernetes.*`) are
-not declared; DozenDB's own are named `*.dozendb.cluster.*`.
+see [`OPERATOR_GUIDE.md`, "Cluster members"](OPERATOR_GUIDE.md#cluster-members).
+Enterprise's settings for its discovery, Raft and catch-up internals
+(`dbms.cluster.discovery.*`, `dbms.cluster.raft.*` and `db.cluster.raft.*` other
+than the leadership settings, `dbms.cluster.network.*`,
+`server.cluster.listen_address` and the other addresses,
+`server.directories.cluster_state`, `dbms.kubernetes.*`) are not declared;
+DozenDB's own are named `*.dozendb.cluster.*`.
 
 ### What clients see
 
@@ -375,19 +378,19 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   tables with the leader as writer and retry managed transactions on the new
   leader after a failover. As in Enterprise, the leader is a reader too only
   with `dbms.routing.reads_on_writers_enabled`, or while no other member can
-  read the database. A new leader tells every server at once, so that
-  routing tables from servers that do not host the database name it within
-  moments too. A write transaction that reaches a follower runs on the leader
-  when its client allows server-side routing, as in Enterprise: `neo4j://`
-  drivers with `dbms.routing.default_router=SERVER`, and HTTP clients. This
-  needs mutual TLS between members and their routing connector
-  (`server.routing.listen_address`, port 7688) reachable from the others. A
-  `bolt://` write is forwarded only with
+  read the database. A new leader tells every server at once, so that routing
+  tables from servers that do not host the database name it within moments too.
+  A write transaction that reaches a follower runs on the leader when its client
+  allows server-side routing, as in Enterprise: `neo4j://` drivers with
+  `dbms.routing.default_router=SERVER`, and HTTP clients. This needs mutual TLS
+  between members and their routing connector (`server.routing.listen_address`,
+  port 7688) reachable from the others. A `bolt://` write is forwarded only with
   `dbms.dozendb.routing.forward_bolt_writes=true`, which Enterprise does not
   have. Otherwise the follower rejects the write with
   `Neo.ClientError.Cluster.NotALeader`, naming the leader's Bolt address. A
   database that does not run on the member asked, such as a stopped one, is
-  routed to that member only. See `OPERATOR_GUIDE.md`, "Writes on any member".
+  routed to that member only. See [`OPERATOR_GUIDE.md`, "Writes on any
+  member"](OPERATOR_GUIDE.md#writes-on-any-member).
 - **Administration commands** (users, `CREATE DATABASE` and the like) run on
   the leader of `system` and reach every member; a follower forwards them
   there or rejects them, as it does writes. `CREATE`, `STOP`, `START` and
@@ -421,16 +424,16 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   `ENTERPRISE_MANAGEMENT_ENDPOINTS`. A server with clustering disabled has
   none, as in Neo4j Community: they answer 404. Enterprise has no such mode,
   as a single Enterprise server is a cluster of one; a DozenDB server answers
-  them as a cluster of one too. See `OPERATOR_GUIDE.md`, "Cluster status
-  endpoints".
+  them as a cluster of one too. See [`OPERATOR_GUIDE.md`, "Cluster status
+  endpoints"](OPERATOR_GUIDE.md#cluster-status-endpoints).
 - **Linearizable reads**, DozenDB's own, are requested per transaction with
   the metadata key `dozendb.consistency` set to `linearizable`, or for every
   transaction with `dbms.dozendb.reads.default_consistency`. They apply to
   Bolt clients (drivers, Cypher Shell). The transaction waits on the member
   that runs it: the leader for a write that a follower forwards there. On a
   secondary, it asks a primary for the last transaction acknowledged before
-  it, and pulls until it has it. See `OPERATOR_GUIDE.md`, "Linearizable
-  reads".
+  it, and pulls until it has it. See [`OPERATOR_GUIDE.md`, "Linearizable
+  reads"](OPERATOR_GUIDE.md#linearizable-reads).
 - **Transaction size.** A transaction can replicate at most 16 MiB of changes
   in Neo4j's command encoding. A larger one fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is
@@ -465,23 +468,25 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   stopped database gets it once it is started again. If the creating server
   fails before it created the store, the others wait until it returns, and
   its copies cannot move elsewhere meanwhile.
-- **Members.** Members are added with `dozendb.cluster.addMember`, and
-  dropped with `DEALLOCATE DATABASES FROM SERVER` and `DROP SERVER`, one at a
-  time; the Raft group of each database follows the servers it is placed on.
-  See `OPERATOR_GUIDE.md`. A dropped member cannot rejoin with its data: its
-  data directory must be deleted first. A copy of a database that is offline
-  is made once it is started again.
+- **Members.** Members are added with `dozendb.cluster.addMember`, and dropped
+  with `DEALLOCATE DATABASES FROM SERVER` and `DROP SERVER`, one at a time; the
+  Raft group of each database follows the servers it is placed on. See
+  [`OPERATOR_GUIDE.md`, "Cluster members"](OPERATOR_GUIDE.md#cluster-members). A
+  dropped member cannot rejoin with its data: its data directory must be deleted
+  first. A copy of a database that is offline is made once it is started again.
 - **Upgrades.** DozenDB is upgraded one member at a time, mixing at most two
-  versions; formats that the previous version cannot read are used only once
-  an administrator calls `dozendb.cluster.finishUpgrade()`, after which no
-  member can return to it. Neo4j is upgraded with every member shut down. See
-  `OPERATOR_GUIDE.md`.
+  versions; formats that the previous version cannot read are used only once an
+  administrator calls `dozendb.cluster.finishUpgrade()`, after which no member
+  can return to it. Neo4j is upgraded with every member shut down. See
+  [`OPERATOR_GUIDE.md`, "Upgrading
+  DozenDB"](OPERATOR_GUIDE.md#upgrading-dozendb).
 - **Traffic between members.** A clustered member does not start until
   `dbms.ssl.policy.cluster.enabled` is set: `true` for mutual TLS, configured
   with Neo4j's SSL policy settings of the `cluster` scope as in Enterprise, or
   `false` for plaintext. `client_auth=OPTIONAL` is refused. Certificates are
   read at start, and members accept any certificate from a trusted authority,
-  whichever member presents it. See `OPERATOR_GUIDE.md`.
+  whichever member presents it. See [`OPERATOR_GUIDE.md`, "TLS between
+  members"](OPERATOR_GUIDE.md#tls-between-members).
 - **Checking connectivity.** `dbms.cluster.checkConnectivity` checks, as in
   Enterprise, whether the member it runs on reaches each other member at its
   ports. DozenDB carries the traffic of Enterprise's cluster and Raft ports on
@@ -562,9 +567,9 @@ Neo4j Community has no routing policies. DozenDB has Enterprise's
 `server_policies` load balancing plugin, its policies
 (`dbms.routing.load_balancing.config.server_policies.<name>`, in the rules of
 `server.cluster.catchup.user_defined_upstream_strategy`) and
-`dbms.routing.load_balancing.shuffle_enabled`. `OPERATOR_GUIDE.md`, "Routing
-policies", describes how to use them. Where Enterprise's documentation says
-nothing:
+`dbms.routing.load_balancing.shuffle_enabled`. [`OPERATOR_GUIDE.md`, "Routing
+policies"](OPERATOR_GUIDE.md#routing-policies), describes how to use them. Where
+Enterprise's documentation says nothing:
 
 - **A policy chooses readers and routers.** The writer is the leader whatever
   the policy says. A policy that passes no reader gives a table without
@@ -596,16 +601,15 @@ nothing:
 ## Servers
 
 DozenDB shows and changes servers, and places databases on them, as Enterprise
-documents: `SHOW SERVERS` with Enterprise's columns, `ENABLE SERVER`,
-`ALTER SERVER`, `RENAME SERVER`, `[DRYRUN] DEALLOCATE DATABASES FROM
-SERVER[S]`, `[DRYRUN] REALLOCATE DATABASES` and `DROP SERVER`; the states
-`Free`, `Enabled`, `Cordoned`, `Deallocating`, `Deallocated` and `Dropped`;
-the server options; `CREATE DATABASE ... TOPOLOGY` and
-`ALTER DATABASE ... SET TOPOLOGY`, with a default of one primary and no
-secondaries; secondaries, which pull transactions from upstreams; the settings
-`initial.server.tags`, `initial.server.mode_constraint`,
-`initial.server.allowed_databases`, `initial.server.denied_databases`,
-`initial.dbms.default_primaries_count`,
+documents: `SHOW SERVERS` with Enterprise's columns, `ENABLE SERVER`, `ALTER
+SERVER`, `RENAME SERVER`, `[DRYRUN] DEALLOCATE DATABASES FROM SERVER[S]`,
+`[DRYRUN] REALLOCATE DATABASES` and `DROP SERVER`; the states `Free`, `Enabled`,
+`Cordoned`, `Deallocating`, `Deallocated` and `Dropped`; the server options;
+`CREATE DATABASE ... TOPOLOGY` and `ALTER DATABASE ... SET TOPOLOGY`, with a
+default of one primary and no secondaries; secondaries, which pull transactions
+from upstreams; the settings `initial.server.tags`,
+`initial.server.mode_constraint`, `initial.server.allowed_databases`,
+`initial.server.denied_databases`, `initial.dbms.default_primaries_count`,
 `initial.dbms.default_secondaries_count`,
 `initial.dbms.automatically_enable_free_servers`,
 `server.cluster.system_database_mode`, `db.cluster.catchup.pull_interval`,
@@ -622,9 +626,11 @@ secondaries; secondaries, which pull transactions from upstreams; the settings
 `dbms.setDefaultAllocationNumbers`, `dbms.showTopologyGraphConfig`,
 `dbms.cluster.secondaryReplicationDisable` and its deprecated name
 `dbms.cluster.readReplicaToggle`; and `neo4j-admin server unbind`. See
-`OPERATOR_GUIDE.md`, "Servers", "Placing databases", "Secondaries" and
-"Unbinding a server". Where DozenDB differs, or decides what
-Enterprise does not document:
+`OPERATOR_GUIDE.md`, "[Servers](OPERATOR_GUIDE.md#servers)", "[Placing
+databases](OPERATOR_GUIDE.md#placing-databases)",
+"[Secondaries](OPERATOR_GUIDE.md#secondaries)" and "[Unbinding a
+server](OPERATOR_GUIDE.md#unbinding-a-server)". Where DozenDB differs, or
+decides what Enterprise does not document:
 
 - `ALTER DATABASE ... SET TOPOLOGY` without `SECONDARIES` keeps the number of
   secondaries; `CREATE DATABASE ... TOPOLOGY` without it takes the default
@@ -662,8 +668,9 @@ Enterprise does not document:
   DozenDB does both, as every move makes the new copy before it removes the
   old one.
 - Enterprise does not document where it places copies; DozenDB's placement is
-  deterministic (see `OPERATOR_GUIDE.md`, "Where copies go").
-  `dbms.showTopologyGraphConfig` shows `allocator` as null.
+  deterministic (see [`OPERATOR_GUIDE.md`, "Where copies
+  go"](OPERATOR_GUIDE.md#where-copies-go)). `dbms.showTopologyGraphConfig` shows
+  `allocator` as null.
 - `DROP SERVER` also refuses a deallocating server that still votes in a
   database's Raft group, as the leader of `system` knows it, also while the
   server is down, so that a database whose only copy is there is not lost.
@@ -696,7 +703,8 @@ default, moves leaders so that every member leads as many databases as the
 others, and `NO_BALANCING` leaves them where elections put them. DozenDB makes
 the setting dynamic. As in Enterprise, a member hands over the leadership of a
 database that is read-only on it (`server.databases.read_only` and the like).
-See `OPERATOR_GUIDE.md`, "Where databases are led".
+See [`OPERATOR_GUIDE.md`, "Where databases are
+led"](OPERATOR_GUIDE.md#where-databases-are-led).
 
 Where Enterprise's documentation says nothing, DozenDB's choices:
 
@@ -731,14 +739,15 @@ priority tag, with Neo4j's warning that names the setting replacing them.
 ## Backup and restore
 
 Backups and restores use Enterprise's commands, options and settings:
-`neo4j-admin database backup`, `restore` and `aggregate-backup`,
-`neo4j-admin backup inspect`, `neo4j-admin database check --from-path`,
+`neo4j-admin database backup`, `restore` and `aggregate-backup`, `neo4j-admin
+backup inspect`, `neo4j-admin database check --from-path`,
 `server.backup.enabled`, `server.backup.listen_address` and
 `dbms.ssl.policy.backup.*`. They work alike on standalone servers and cluster
-members; see `OPERATOR_GUIDE.md`, "Backup and restore". A backup artifact is a
-file of DozenDB's own format, which Neo4j Community's `neo4j-admin database
-load` also loads as a dump when it is a full backup. Exchanging backups with
-Enterprise is not promised. The differences:
+members; see [`OPERATOR_GUIDE.md`, "Backup and
+restore"](OPERATOR_GUIDE.md#backup-and-restore). A backup artifact is a file of
+DozenDB's own format, which Neo4j Community's `neo4j-admin database load` also
+loads as a dump when it is a full backup. Exchanging backups with Enterprise is
+not promised. The differences:
 
 - Backups go to, and are restored, inspected, checked and aggregated from,
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
@@ -760,15 +769,15 @@ Enterprise is not promised. The differences:
 ## Cloud storage
 
 Amazon S3 (`s3://<bucket>/<path>`), Google Cloud Storage
-(`gs://<bucket>/<path>`) and Azure Blob Storage
-(`azb://<storage account>/<container>/<path>`) work as in Enterprise for
-`neo4j-admin database dump`, `load`, `check` and `import full`, backups,
-restores, seeds and `LOAD CSV`, with each SDK's own credentials and the
-settings `dbms.integrations.cloud_storage.azb.blob_endpoint_suffix` and
+(`gs://<bucket>/<path>`) and Azure Blob Storage (`azb://<storage
+account>/<container>/<path>`) work as in Enterprise for `neo4j-admin database
+dump`, `load`, `check` and `import full`, backups, restores, seeds and `LOAD
+CSV`, with each SDK's own credentials and the settings
+`dbms.integrations.cloud_storage.azb.blob_endpoint_suffix` and
 `dbms.integrations.cloud_storage.azb.authority_endpoint`; see
-`OPERATOR_GUIDE.md`, "Cloud storage". The SDKs come in DozenDB's jar,
-relocated, so that they never meet other copies on Neo4j's classpath. The
-differences:
+[`OPERATOR_GUIDE.md`, "Cloud storage"](OPERATOR_GUIDE.md#cloud-storage). The
+SDKs come in DozenDB's jar, relocated, so that they never meet other copies on
+Neo4j's classpath. The differences:
 
 - `S3SeedProvider` is a name for `CloudSeedProvider` on `s3:` URIs; its
   `seedConfig` and `seedCredentials` options fail `CREATE DATABASE`, which
@@ -802,7 +811,7 @@ Where Enterprise's documentation says nothing, DozenDB's choices:
 
 A cluster that lost a majority of its servers recovers as Enterprise's
 disaster recovery guide shows, with the same commands; see
-`OPERATOR_GUIDE.md`, "Disaster recovery":
+[`OPERATOR_GUIDE.md`, "Disaster recovery"](OPERATOR_GUIDE.md#disaster-recovery):
 
 - **`neo4j-admin dbms unbind-system-db`**, with `--archive-cluster-state` and
   `--archive-path`, removes a stopped server's Raft state of `system` only and
@@ -828,19 +837,21 @@ disaster recovery guide shows, with the same commands; see
   `dbms.cluster.*` procedures; on a standalone server, drop the database and
   create it from a seed.
 - **`dbms.quarantineDatabase`** and copies that fail while running behave as in
-  Enterprise. Quarantines are kept in `data/quarantine`, a file of DozenDB's
-  own (`FORMATS.md`); that of `system` lasts until the server restarts.
-- **`dbms.cluster.protocols`** lists DozenDB's protocols (`FORMATS.md`), not
-  Enterprise's: `raft`, `probe` and `bulk` with the bulk transfers it carried.
-  A leader lists its outbound Raft connections to the members it replicates
-  to that answered lately.
+  Enterprise. Quarantines are kept in `data/quarantine`, a file of DozenDB's own
+  ([`FORMATS.md`](FORMATS.md)); that of `system` lasts until the server
+  restarts.
+- **`dbms.cluster.protocols`** lists DozenDB's protocols
+  ([`FORMATS.md`](FORMATS.md)), not Enterprise's: `raft`, `probe` and `bulk`
+  with the bulk transfers it carried. A leader lists its outbound Raft
+  connections to the members it replicates to that answered lately.
 
 ## Metrics and logs
 
 DozenDB reports metrics and writes the query log and the security log as
 Enterprise's operations manual describes them; Neo4j Community declares the
 query log settings and ships the log files' configuration, but writes neither
-log. `OPERATOR_GUIDE.md` describes how to use them.
+log. [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#monitoring) describes how to use
+them.
 
 - **Exporters:** CSV files, Graphite, Prometheus and JMX (domain
   `neo4j.metrics`), with Enterprise's settings and defaults. Neo4j Community
@@ -893,12 +904,12 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   leader (`dozendb.cluster.raft.followers`, `follower_lag_max`), not one
   series each.
 - **The query log is on by default**, at Neo4j's declared default
-  `db.logs.query.enabled=VERBOSE`: every member logs the start and end of
-  every query with its parameters, rotated by the shipped `server-logs.xml`
-  (7 files of 20 MB). A server moving from Neo4j Community starts writing
-  `query.log`, which costs up to 12% of the throughput of trivial queries
-  (`OPERATOR_GUIDE.md`). Set `INFO` with a `db.logs.query.threshold`, or
-  `OFF`, to log less.
+  `db.logs.query.enabled=VERBOSE`: every member logs the start and end of every
+  query with its parameters, rotated by the shipped `server-logs.xml` (7 files
+  of 20 MB). A server moving from Neo4j Community starts writing `query.log`,
+  which costs up to 12% of the throughput of trivial queries
+  ([`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#query-log)). Set `INFO` with a
+  `db.logs.query.threshold`, or `OFF`, to log less.
 - **Query log lines** follow the documented fields, their order and the JSON
   field names. Neo4j does not document the rest, which DozenDB defines:
   - `Query started: ` before start lines; `id:<n> - ` only with `VERBOSE`;
@@ -938,24 +949,25 @@ log. `OPERATOR_GUIDE.md` describes how to use them.
   neither.
 - **Monitoring procedures**, as in Enterprise: `db.checkpoint` checkpoints the
   database it runs on, or waits for the checkpoint under way, on the member it
-  runs on, without the checkpoint I/O limit (see [Checkpoints](#checkpoints)). `dbms.scheduler.jobs`, `dbms.scheduler.groups` and
-  `dbms.scheduler.failedJobs` list the jobs of the member's internal job
-  scheduler, the groups that run jobs, and the latest runs that failed. Where
-  Enterprise's documentation says nothing, job ids are `job-<number>`, and times
-  are shown in `db.temporal.timezone`, as Neo4j's other procedures show them.
-  `dbms.listPools` lists the member's memory pools, and in them the pools of
-  the databases the user may see in `SHOW DATABASES`; a pool without a limit
-  has `Unlimited` free and in total. `db.listLocks` lists the locks held in
-  the database it runs on, with their transactions as `SHOW TRANSACTIONS`
-  names them, and `dbms.listActiveLocks` the locks of the transaction running
-  a query, for a user who may see that transaction in `SHOW TRANSACTIONS`.
+  runs on, without the checkpoint I/O limit (see [Checkpoints](#checkpoints)).
+  `dbms.scheduler.jobs`, `dbms.scheduler.groups` and `dbms.scheduler.failedJobs`
+  list the jobs of the member's internal job scheduler, the groups that run
+  jobs, and the latest runs that failed. Where Enterprise's documentation says
+  nothing, job ids are `job-<number>`, and times are shown in
+  `db.temporal.timezone`, as Neo4j's other procedures show them.
+  `dbms.listPools` lists the member's memory pools, and in them the pools of the
+  databases the user may see in `SHOW DATABASES`; a pool without a limit has
+  `Unlimited` free and in total. `db.listLocks` lists the locks held in the
+  database it runs on, with their transactions as `SHOW TRANSACTIONS` names
+  them, and `dbms.listActiveLocks` the locks of the transaction running a query,
+  for a user who may see that transaction in `SHOW TRANSACTIONS`.
 
 ## Checkpoints
 
 Neo4j Community accepts Enterprise's checkpoint settings, but runs the
 `CONTINUOUS` and `VOLUMETRIC` policies as `PERIODIC`, with a warning, and
 ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
-`OPERATOR_GUIDE.md` describes how to use them.
+[`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#checkpoints) describes how to use them.
 
 - **`CONTINUOUS`** checks every 100 milliseconds and checkpoints whenever
   transactions were appended since the last checkpoint.
@@ -989,15 +1001,16 @@ ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
 Neo4j Community declares `db.memory.pagecache.warmup.*` and does nothing with
 them. DozenDB profiles and warms up the page cache as Enterprise does, on by
 default, and preloads whole files with `db.memory.pagecache.warmup.preload`.
-`OPERATOR_GUIDE.md`, "Page cache warmup", describes how to use it. Where
-Enterprise's documentation says nothing:
+[`OPERATOR_GUIDE.md`, "Page cache warmup"](OPERATOR_GUIDE.md#page-cache-warmup),
+describes how to use it. Where Enterprise's documentation says nothing:
 
 - **Profiles** are DozenDB's own files, `profiles/<file>.cacheprof` in the
   database's directory, `<file>` the profiled file's path in it (see
-  `FORMATS.md`). They are taken every interval once the warmup ended, so that
-  a profile of a page cache still warming up never replaces a fuller one, and
-  when the database stops; a profile is written only when it changed, and one
-  of a file that is gone, such as a dropped index's, is deleted.
+  [`FORMATS.md`](FORMATS.md)). They are taken every interval once the warmup
+  ended, so that a profile of a page cache still warming up never replaces a
+  fuller one, and when the database stops; a profile is written only when it
+  changed, and one of a file that is gone, such as a dropped index's, is
+  deleted.
 - **The warmup** loads the pages of each profile, up to the end of the file
   if it shrank, in the background once the database is available, and stops
   when the database stops. The pages it counts include those held already.
@@ -1017,8 +1030,9 @@ Enterprise's documentation says nothing:
 `neo4j-admin` in Neo4j Community lacks `database import incremental` and
 `database copy`, and runs `import full` in one go. DozenDB adds both commands
 with Enterprise's options, and resumes a stopped full import.
-`OPERATOR_GUIDE.md` describes how to use them. They work on the formats
-DozenDB has, `aligned` and `standard`.
+[`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#importing-and-copying-databases)
+describes how to use them. They work on the formats DozenDB has, `aligned` and
+`standard`.
 
 ### Incremental import
 
@@ -1169,13 +1183,16 @@ changes with `dbms.setDefaultDatabase`, no longer with
 
 ### From Neo4j Enterprise
 
-- **Databases** move as dumps (`neo4j-admin database dump`), created on
-  DozenDB from those (`OPERATOR_GUIDE.md`, "Creating a database from a backup
-  or a dump"). Migrate a database in another store format than `aligned` or
-  `standard` first, with `neo4j-admin database migrate --to-format=aligned`.
+- **Databases** move as dumps (`neo4j-admin database dump`), created on DozenDB
+  from those ([`OPERATOR_GUIDE.md`, "Creating a database from a backup or a
+  dump"](OPERATOR_GUIDE.md#creating-a-database-from-a-backup-or-a-dump)).
+  Migrate a database in another store format than `aligned` or `standard` first,
+  with `neo4j-admin database migrate --to-format=aligned`.
 - **Roles and privileges** move as commands: DozenDB refuses to start on a
-  `system` database that holds Enterprise's roles. `OPERATOR_GUIDE.md`,
-  "Moving roles from or to Neo4j Enterprise", has the steps, both ways.
+  `system` database that holds Enterprise's roles. [`OPERATOR_GUIDE.md`, "Moving
+  roles from or to Neo4j
+  Enterprise"](OPERATOR_GUIDE.md#moving-roles-from-or-to-neo4j-enterprise), has
+  the steps, both ways.
 - **Backups** are not promised to be exchangeable.
 - **Settings** of the features DozenDB does not support, Enterprise's cluster
   discovery settings among them, stop the server at startup: remove them.
@@ -1184,13 +1201,13 @@ changes with `dbms.setDefaultDatabase`, no longer with
 
 ### From DozerDB
 
-DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and contains a
-port of the DozerDB code it built on (`UPSTREAM_TOUCHPOINTS.md`). Neo4j
-Community with the DozenDB jar starts on the data directory of DozerDB
-5.26.27.0 as it is: databases, users and constraints carry over, and the
-first start gives `admin` to one user as it does on Neo4j Community's.
-Compared with DozerDB 5.26.27.0, as verified against the
-`graphstack/dozerdb:5.26.27.0` image:
+DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and contains a port
+of the DozerDB code it built on
+([`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md)). Neo4j Community with the
+DozenDB jar starts on the data directory of DozerDB 5.26.27.0 as it is:
+databases, users and constraints carry over, and the first start gives `admin`
+to one user as it does on Neo4j Community's. Compared with DozerDB 5.26.27.0, as
+verified against the `graphstack/dozerdb:5.26.27.0` image:
 
 - `ALTER USER` works; DozerDB fails every `ALTER USER` with an
   `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`.
@@ -1217,5 +1234,6 @@ Compared with DozerDB 5.26.27.0, as verified against the
   failed while running as `online`.
 - Label existence and relationship endpoint label constraints are refused,
   where DozerDB creates them and does not enforce them.
-- DozenDB writes the query log and metrics to CSV files (see
-  [Metrics and logs](#metrics-and-logs)), and logs its version at startup instead of DozerDB's banner.
+- DozenDB writes the query log and metrics to CSV files (see [Metrics and
+  logs](#metrics-and-logs)), and logs its version at startup instead of
+  DozerDB's banner.

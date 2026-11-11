@@ -2,9 +2,10 @@
 
 ## Installing DozenDB
 
-DozenDB is one jar added to Neo4j Community's `lib/`. It runs only on the
-Neo4j version it was built for, 5.26.27, as it builds on Neo4j's internal
-classes (`COMPATIBILITY.md`, "Pinned versions"), on Java 17 or 21.
+DozenDB is one jar added to Neo4j Community's `lib/`. It runs only on the Neo4j
+version it was built for, 5.26.27, as it builds on Neo4j's internal classes
+([`COMPATIBILITY.md`, "Pinned versions"](COMPATIBILITY.md#pinned-versions)), on
+Java 17 or 21.
 
 ### The jar
 
@@ -14,12 +15,12 @@ DozenDB needs. The small `dozendb-plugin-<version>.jar` next to it is not the
 one.
 
 Copy it into the `lib/` directory of Neo4j Community 5.26.27, not into
-`plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds DozenDB's
-commands there too, such as `neo4j-admin database backup`. Without further
-settings, the server runs alone, as Neo4j Community does, with what DozenDB
-adds; it starts on a Neo4j Community data directory as it is (see
-`COMPATIBILITY.md`, "From Neo4j Community"). `neo4j.log` names the version at
-each start: `DozenDB 0.1.0-SNAPSHOT: clustering is disabled`.
+`plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds DozenDB's commands
+there too, such as `neo4j-admin database backup`. Without further settings, the
+server runs alone, as Neo4j Community does, with what DozenDB adds; it starts on
+a Neo4j Community data directory as it is (see [`COMPATIBILITY.md`, "From Neo4j
+Community"](COMPATIBILITY.md#from-neo4j-community)). `neo4j.log` names the
+version at each start: `DozenDB 0.1.0-SNAPSHOT: clustering is disabled`.
 
 ### Docker
 
@@ -102,7 +103,7 @@ rejoins from its own Raft state, and `initial_members` matters again only to
 join as [Adding a member](#adding-a-member) describes. A cluster can
 also start from the databases of one existing server: list it among the
 initial members, with its data directory, and give the others empty ones (see
-`COMPATIBILITY.md`, "Running a cluster").
+[`COMPATIBILITY.md`, "Running a cluster"](COMPATIBILITY.md#running-a-cluster)).
 
 To check the cluster, as an administrator on any member:
 
@@ -186,7 +187,8 @@ together, as for a Neo4j upgrade (see [Upgrading DozenDB](#upgrading-dozendb)).
 A member keeps its Raft state and its databases, and starts from them
 (`Rejoining the cluster from local Raft state`). It catches up with what the
 others wrote meanwhile, from their Raft logs or with a copy (see
-`COMPATIBILITY.md`, "Raft log retention and catch-up").
+[`COMPATIBILITY.md`, "Raft log retention and
+catch-up"](COMPATIBILITY.md#running-a-cluster)).
 
 A database takes writes while a majority of its primaries run, once they
 elected a leader, within seconds. A member that runs without that majority,
@@ -342,13 +344,13 @@ while the server runs, and prints the server's old id. Then:
    copies are made again on the other servers, which may include the new one,
    from the copies they hold.
 
-A database whose only copy was on the server cannot be copied (see
-[Replacing a failed member](#replacing-a-failed-member)). Restore it from a
-backup, or from its files in `data/unbound/<time>/`: put its two directories
-back under `data/databases` and `data/transactions` of a stopped server
-without clustering, dump it with `neo4j-admin database dump`, and create the
-database from the dump (see
-[Creating a database from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
+A database whose only copy was on the server cannot be copied (see [Replacing a
+failed member](#replacing-a-failed-member)). Restore it from a backup, or from
+its files in `data/unbound/<time>/`: put its two directories back under
+`data/databases` and `data/transactions` of a stopped server without clustering,
+dump it with `neo4j-admin database dump`, and create the database from the dump
+(see [Creating a database from a backup or a
+dump](#creating-a-database-from-a-backup-or-a-dump)).
 
 A server whose `data/server_id` was removed or replaced otherwise, as Neo4j
 Community's `neo4j-admin server unbind` does, refuses to start: under a new
@@ -1457,8 +1459,9 @@ database is online come with `system`.
 `neo4j-admin database import full` creates a database from CSV files, as in
 Neo4j. DozenDB adds `import incremental`, which adds CSV files to an existing
 database, resumes a full import that stopped, and adds `neo4j-admin database
-copy`. `COMPATIBILITY.md`, "Import and copy", lists where they differ from
-Neo4j Enterprise.
+copy`. [`COMPATIBILITY.md`, "Import and
+copy"](COMPATIBILITY.md#import-and-copy), lists where they differ from Neo4j
+Enterprise.
 
 ### Importing into an existing database
 
@@ -1753,14 +1756,14 @@ the recovered cluster is refused (see [Lost servers](#lost-servers)).
    them all, the new ones with empty data directories.
 
 The servers re-form `system` once they reach each other: the server whose
-`system` holds the latest transaction, then the one with the lowest id, starts
-a new Raft group of `system` from its store, and the others copy `system` from
-it and join that group. The new group has an id of its own, kept in each
-server's membership record (`FORMATS.md`), so that lost servers cannot take
+`system` holds the latest transaction, then the one with the lowest id, starts a
+new Raft group of `system` from its store, and the others copy `system` from it
+and join that group. The new group has an id of its own, kept in each server's
+membership record ([`FORMATS.md`](FORMATS.md)), so that lost servers cannot take
 part in it. A server left that was not unbound, servers whose `system` comes
-from another cluster, and servers without any refuse to re-form, with a
-message. Users, roles, privileges, servers and databases come with `system`;
-what the lost servers had committed to it that no server left holds is lost.
+from another cluster, and servers without any refuse to re-form, with a message.
+Users, roles, privileges, servers and databases come with `system`; what the
+lost servers had committed to it that no server left holds is lost.
 
 `SHOW SERVERS` then lists the lost servers as `Unavailable`, still hosting
 what they hosted, and `CALL dbms.cluster.statusCheck([])` shows which
@@ -1780,10 +1783,10 @@ A lost server that comes back with its old state is refused once it reaches a
 server of the recovered cluster, with a message: its Raft group of `system` is
 stale. To bring it back as the same server, with its databases, before it is
 dropped: run `neo4j-admin dbms unbind-system-db` on it, set its
-`dbms.dozendb.cluster.initial_members` to servers of the cluster, start it,
-and add it with `CALL dozendb.cluster.addMember('<its Raft address>')` on the
-leader of `system`. To bring it back as a new server, unbind it with
-`neo4j-admin server unbind` instead (see [Unbinding a server](#unbinding-a-server)).
+`dbms.dozendb.cluster.initial_members` to servers of the cluster, start it, and
+add it with `CALL dozendb.cluster.addMember('<its Raft address>')` on the leader
+of `system`. To bring it back as a new server, unbind it with `neo4j-admin
+server unbind` instead (see [Unbinding a server](#unbinding-a-server)).
 
 ### Recreating a database
 
@@ -1805,11 +1808,11 @@ takes Neo4j Enterprise's options:
   server that hosts a copy does not answer and is not cordoned. Each seeder
   hosts a copy of the recreated database, so there may be no more seeders than
   copies.
-- `seedURI`: a backup or a dump to recreate the database from, read as
-  `CREATE DATABASE` reads one (see
-  [Creating a database from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
-  With `seedingServers`, which must then be empty, it seeds the database only
-  when none of the seeders holds a store.
+- `seedURI`: a backup or a dump to recreate the database from, read as `CREATE
+  DATABASE` reads one (see [Creating a database from a backup or a
+  dump](#creating-a-database-from-a-backup-or-a-dump)). With `seedingServers`,
+  which must then be empty, it seeds the database only when none of the seeders
+  holds a store.
 - `primaries` and `secondaries`: the new topology; `secondaries` needs
   `primaries`, and `primaries` alone means no secondaries. Without them the
   topology stays.
@@ -1879,8 +1882,9 @@ The quarantine of `system` lasts until the server restarts, as in Enterprise.
 ## Roles and privileges
 
 Roles and privileges work as Neo4j Enterprise's operations manual describes,
-with the differences listed in `COMPATIBILITY.md`. With clustering, their
-commands run on the system leader: run them there, or through a routing
+with the differences listed in
+[`COMPATIBILITY.md`](COMPATIBILITY.md#roles-and-privileges). With clustering,
+their commands run on the system leader: run them there, or through a routing
 driver or Cypher Shell (`neo4j://`), which sends them there, or on any member
 that forwards them (see [Writes on any member](#writes-on-any-member)).
 
@@ -1952,12 +1956,12 @@ Move them as commands instead, in either direction:
 
 1. On the server that has them, save the output of `SHOW ROLES WITH USERS`
    and `SHOW PRIVILEGES AS COMMANDS`, and the users from `SHOW USERS`.
-2. Move the databases other than `system` as dumps
-   (`neo4j-admin database dump`), and create them on the new servers from
-   those ([Creating a database from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
+2. Move the databases other than `system` as dumps (`neo4j-admin database
+   dump`), and create them on the new servers from those ([Creating a database
+   from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
    Neo4j Community, and so DozenDB, reads only the `aligned` and `standard`
-   store formats: migrate a database in another format with
-   `neo4j-admin database migrate --to-format=aligned` first.
+   store formats: migrate a database in another format with `neo4j-admin
+   database migrate --to-format=aligned` first.
 3. On the new servers, create the users (`CREATE USER`, with new passwords:
    no command shows the old ones) and the roles (`CREATE ROLE`), give the
    users their roles (`GRANT ROLE`), and run the saved privilege commands.
@@ -1983,8 +1987,8 @@ CREATE ALIAS `remote-films` FOR DATABASE films
   DRIVER {connection_timeout: duration('PT5S')}
 ```
 
-`COMPATIBILITY.md` describes what aliases do and where DozenDB answered what
-Neo4j's documentation leaves open.
+[`COMPATIBILITY.md`](COMPATIBILITY.md#database-aliases) describes what aliases
+do and where DozenDB answered what Neo4j's documentation leaves open.
 
 ### Keystore for remote aliases
 
@@ -2063,8 +2067,8 @@ pruned. `db.checkpoint` chooses when a database checkpoints, on each member:
 | `VOLUMETRIC` | When moving the checkpoint on would let `db.tx_log.rotation.retention_policy` delete logs, checked every 10 seconds: logs are kept as the retention policy says and no longer. With a policy that keeps every log, only backups, `db.checkpoint()` and stopping the database checkpoint. |
 
 On a cluster member, checkpoints also let the member take Raft snapshots and
-prune its Raft log (see "Raft log retention and catch-up" in
-`COMPATIBILITY.md`).
+prune its Raft log (see ["Raft log retention and catch-up" in
+`COMPATIBILITY.md`](COMPATIBILITY.md#running-a-cluster)).
 
 `db.checkpoint.iops.limit` (default `600`, `-1` for none) caps the I/Os a
 second of each database's background checkpoints, those the policy starts, so
@@ -2131,10 +2135,11 @@ default.
 
 ## Monitoring
 
-DozenDB reports metrics, and writes the query log and the security log, as
-Neo4j Enterprise's operations manual describes them; `COMPATIBILITY.md` lists
-the differences. With clustering, each member reports and logs what happens
-on it: monitor every member.
+DozenDB reports metrics, and writes the query log and the security log, as Neo4j
+Enterprise's operations manual describes them;
+[`COMPATIBILITY.md`](COMPATIBILITY.md#metrics-and-logs) lists the differences.
+With clustering, each member reports and logs what happens on it: monitor every
+member.
 
 ### Metrics
 
@@ -2196,7 +2201,7 @@ With clustering, each member reports for each database, under
 | `dozendb.cluster.raft.followers`, `follower_lag_max` | On the leader only: the followers it sends to, and the most committed entries one of them does not have yet. A lag that keeps growing means a follower does not keep up. |
 | `dozendb.cluster.raft.snapshots`, `leader_changes` | Raft snapshots taken and leaders learned of since the member started. |
 | `dozendb.cluster.raft.leadership_transfers` | Leaderships the member handed over to another member on purpose since it started: when it stopped the database, when the database was read-only on it, or to balance leaders (see [Where databases are led](#where-databases-are-led)). |
-| `dozendb.cluster.store_copy.received`, `served`, `repeated`, `received.millis` | Copies of the database the member installed, to join or to catch up; copies it sent to other members; copies it needed within an hour of the previous one, a sign that it does not keep up (see "Raft log retention and catch-up" in `COMPATIBILITY.md`); and how long catching up took. |
+| `dozendb.cluster.store_copy.received`, `served`, `repeated`, `received.millis` | Copies of the database the member installed, to join or to catch up; copies it sent to other members; copies it needed within an hour of the previous one, a sign that it does not keep up (see ["Raft log retention and catch-up" in `COMPATIBILITY.md`](COMPATIBILITY.md#running-a-cluster)); and how long catching up took. |
 | `cluster.catchup.tx_pull_requests_received` | Pulls of transactions that secondaries sent the member. |
 | `cluster.store_copy.pull_updates`, `pull_update_highest_tx_id_requested`, `pull_update_highest_tx_id_received` | On a secondary: the pulls it sent, the id of the last transaction it had when it last pulled, and the highest transaction id it pulled. Its lag shows in `SHOW DATABASES` (see [Reading from secondaries](#reading-from-secondaries)). |
 
@@ -2367,11 +2372,11 @@ runs on and another member that is open now, and for each protocol the
 connection carried: `orientation` (`inbound` or `outbound`), `remoteAddress`,
 `applicationProtocol`, `applicationProtocolVersion`, and `modifierProtocols`,
 `TLS` for an encrypted connection and empty otherwise. The protocols are
-DozenDB's own (`FORMATS.md`): `raft` for Raft's messages, at the version of
-the replicated transactions; `probe`; and `bulk`, with a row for each bulk
-transfer the connection carried, such as `dozendb.storeCopy`. A leader lists
-its outbound Raft connections to the members it replicates to that answered
-lately. It needs no administrator.
+DozenDB's own ([`FORMATS.md`](FORMATS.md)): `raft` for Raft's messages, at the
+version of the replicated transactions; `probe`; and `bulk`, with a row for each
+bulk transfer the connection carried, such as `dozendb.storeCopy`. A leader
+lists its outbound Raft connections to the members it replicates to that
+answered lately. It needs no administrator.
 
 ### Query log
 
@@ -2444,9 +2449,10 @@ setting change, and an empty value none. It is read at start.
 ## DozenDB's settings
 
 Settings that Neo4j Enterprise has keep Enterprise's names and work as its
-operations manual describes them; the sections above say where DozenDB
-differs, and `COMPATIBILITY.md` lists them. DozenDB's own settings, for what
-Enterprise does its own way or does not have, have `dozendb` in their names:
+operations manual describes them; the sections above say where DozenDB differs,
+and [`COMPATIBILITY.md`](COMPATIBILITY.md) lists them. DozenDB's own settings,
+for what Enterprise does its own way or does not have, have `dozendb` in their
+names:
 
 | Setting | Default | Dynamic | |
 |---|---|---|---|
@@ -2454,8 +2460,8 @@ Enterprise does its own way or does not have, have `dozendb` in their names:
 | `dbms.dozendb.cluster.initial_members` | none | No | The Raft addresses of the members that form the cluster, this one included. Read at a member's first start, and when servers re-form `system` (see [Recovering the system database](#recovering-the-system-database)). |
 | `server.dozendb.cluster.listen_address` | `:7700` | No | Where the member's Raft server listens: Raft, membership, probes, copies and pulls. A port alone takes the host of `server.default_listen_address`. |
 | `server.dozendb.cluster.advertised_address` | `:7700` | No | The member's Raft address, which the others reach, and which names it in `initial_members` and `dozendb.cluster.addMember`. A port alone takes the host of `server.default_advertised_address`. See [Changing an address](#changing-an-address). |
-| `server.dozendb.cluster.raft_directory` | `raft` | No | Where the member keeps its Raft logs, one directory per database, and its membership record; relative to `server.directories.data`. Never delete it while the member keeps its id (`COMPATIBILITY.md`, "Lost databases"). |
-| `server.dozendb.cluster.single_fsync` | `true` | No | Commits to replicated databases force only the Raft log to disk; `false` forces Neo4j's transaction log at every commit too. See `COMPATIBILITY.md`, "Durability (single fsync)". |
+| `server.dozendb.cluster.raft_directory` | `raft` | No | Where the member keeps its Raft logs, one directory per database, and its membership record; relative to `server.directories.data`. Never delete it while the member keeps its id ([`COMPATIBILITY.md`, "Lost databases"](COMPATIBILITY.md#running-a-cluster)). |
+| `server.dozendb.cluster.single_fsync` | `true` | No | Commits to replicated databases force only the Raft log to disk; `false` forces Neo4j's transaction log at every commit too. See [`COMPATIBILITY.md`, "Durability (single fsync)"](COMPATIBILITY.md#running-a-cluster). |
 | `dbms.dozendb.cluster.election_timeout_min`, `election_timeout_max` | `1s`, `2s` | No | A primary that hears nothing from its database's leader for a random time between the two starts an election, so they bound how soon a failed leader is replaced. Shorter timeouts fail over sooner, and on a slow or busy network start elections that are not needed. At least 100 ms and 200 ms, the maximum above the minimum; give every member the same. |
 | `dbms.dozendb.routing.forward_bolt_writes` | `false` | Yes | Forwards write transactions of `bolt://` connections to the leader. See [Writes on any member](#writes-on-any-member). |
 | `dbms.dozendb.reads.default_consistency` | `CAUSAL` | No | `LINEARIZABLE` makes every transaction that names no consistency a linearizable read. See [Linearizable reads](#linearizable-reads). |

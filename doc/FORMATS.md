@@ -1,7 +1,8 @@
 # Formats between members
 
 What members send each other and keep, and how to change it without breaking
-rolling upgrades (`OPERATOR_GUIDE.md`, "Upgrading DozenDB").
+rolling upgrades ([`OPERATOR_GUIDE.md`, "Upgrading
+DozenDB"](OPERATOR_GUIDE.md#upgrading-dozendb)).
 
 ## Formats
 

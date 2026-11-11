@@ -55,7 +55,7 @@ changes over.
 | `LogicalTransactionStore`, `NoSuchLogEntryException`, `CommandBatch`, `DatabaseHealth`, `CommunityKernelPanicListener`, `CommunityDatabaseState` | `DatabaseStateMachine` | A store attached with a higher Raft index than its group delivered on the member is checked against the group's entry at that index: its last transaction, read from its logs, must have the same kernel version, times and serialized commands. Otherwise `DatabaseHealth.panic` fails the database, `CommunityKernelPanicListener` records the panic's root cause as the database's failure, and the copy is put in quarantine (`DatabaseQuarantine`), which `SHOW DATABASES` shows as `currentStatus` `quarantined` with the failure in `statusMessage` (`DozenDbDatabaseStateService`). |
 | `TopologyInfoService`, `DefaultTopologyInfoService`, `DatabaseDetails`, `TopologyGraphDbmsModel.DatabaseAccess`, `ShowDatabasesExecutionPlanner` | `ClusterTopologyInfoService`, `DatabaseRows` | In a cluster, replaces Community's database details with one per member (`createTopologyInfoService`), built from Community's for this member. Neo4j's `SHOW DATABASES` turns each into a row and keeps rows apart by `serverID`. |
 | `ShowServers`, `EnableServer`, `AlterServer`, `RenameServer`, `DeallocateServer`, `ReallocateDatabases`, `DropServer`, `AdministrationShowCommandUtils`, `ParameterTransformer`, `DatabaseAdministrationOnFollowerException` | `ServerCommands` | Plans the server commands for the logical plans `AdministrationCommandPlanBuilder` builds for them, whose `source` checks the privileges. `SHOW SERVERS` takes its rows from `TopologyInfoService.servers` in the command's system transaction; the changes run in it as a `ParameterTransformer`, and a `DRYRUN` returns its moves through a `SystemCommandExecutionPlan`. Recheck the plans' fields and Enterprise's `SHOW SERVERS` and `DRYRUN` columns after an upgrade. |
-| `TopologyInfoService.servers`, `ServerDetails`, `InstanceModeConstraint`, `TopologyGraphDbmsModel` (`Instance`, `RemovedInstance`, `HOSTED_ON`, `TopologyGraphSettings`) | `SingleServerTopology`, `ClusterTopologyInfoService`, `ServerRecords`, `Placements` | Servers and placements kept as Neo4j Enterprise keeps them in the system graph (`FORMATS.md`), which Community never writes. `createTopologyInfoService` returns DozenDB's servers; `ServerDetails` gives them the `SHOW SERVERS` columns and states. |
+| `TopologyInfoService.servers`, `ServerDetails`, `InstanceModeConstraint`, `TopologyGraphDbmsModel` (`Instance`, `RemovedInstance`, `HOSTED_ON`, `TopologyGraphSettings`) | `SingleServerTopology`, `ClusterTopologyInfoService`, `ServerRecords`, `Placements` | Servers and placements kept as Neo4j Enterprise keeps them in the system graph ([`FORMATS.md`](FORMATS.md)), which Community never writes. `createTopologyInfoService` returns DozenDB's servers; `ServerDetails` gives them the `SHOW SERVERS` columns and states. |
 | `SettingMigrator`, `SettingMigrators.migrateSettingNameChange`, `migrateGroupSettingPrefixChange` | `DozenDbSettingsMigrator`, `ClusterSettingsMigrator` | Neo4j Enterprise's deprecated `server.groups` and `db.cluster.raft.leader_transfer.priority_group[.<database>]`, renamed to the settings replacing them before Neo4j validates the configuration, with Neo4j's warning. Migrators are found as services. |
 | `GroupSetting`, `GroupSettingHelper`, `Config.getGroups` | `DatabasePriorityTag`, `ServerPolicy` | `db.cluster.raft.leader_transfer.priority_tag.<database>` and `dbms.routing.load_balancing.config.server_policies.<name>`, group settings found as services. Neo4j finds the prefix on an instance made with the public constructor, makes one per name with the private `(String)` one, and takes the name up to the next dot: a setting whose name has a further dot is dropped without a warning. |
 | `DatabaseStateService`, `CommunityDatabaseStateService`, `CommunityDatabaseState`, `DefaultTopologyInfoService` | `DozenDbDatabaseStateService` | Replaces Community's state service with a copy of it, except that a started database that failed is reported stopped, which `SHOW DATABASES` (`DefaultTopologyInfoService`) shows as `offline`, and a copy in quarantine has an `OperatorState` of DozenDB's own, `quarantined`, with the quarantine's message as its failure. Neo4j reads the state only there and, for its failure, when the system database starts. |
@@ -93,14 +93,15 @@ changes over.
 
 ## Code ported from DozerDB
 
-DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and kept its
-source as a git subtree. On 2026-10-19 the DozerDB code it built on was ported
-to Kotlin and DozerDB was removed; that code is now in `dozendb-core` and
+DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and kept its source
+as a git subtree. On 2026-10-19 the DozerDB code it built on was ported to
+Kotlin and DozerDB was removed; that code is now in `dozendb-core` and
 `dozendb-plugin`. The port started from
 [dozerdb/dozerdb-core](https://github.com/dozerdb/dozerdb-core) branch
 `neo4j-5.26.8`, commit `f76393e`. Ported files keep the Neo4j and DozerDB
-copyright notices and add a DozenDB modification notice; `COMPATIBILITY.md`,
-"From DozerDB", lists how DozenDB behaves differently.
+copyright notices and add a DozenDB modification notice; [`COMPATIBILITY.md`,
+"From DozerDB"](COMPATIBILITY.md#from-dozerdb), lists how DozenDB behaves
+differently.
 
 | DozerDB class | DozenDB code |
 |---|---|
