@@ -19,7 +19,7 @@ commands there too, such as `neo4j-admin database backup`. Without further
 settings, the server runs alone, as Neo4j Community does, with what DozenDB
 adds; it starts on a Neo4j Community data directory as it is (see
 `COMPATIBILITY.md`, "From Neo4j Community"). `neo4j.log` names the version at
-each start: `DozenDB 0.1.0: clustering is disabled`.
+each start: `DozenDB 0.1.0-SNAPSHOT: clustering is disabled`.
 
 ### Docker
 
@@ -28,7 +28,7 @@ Build an image from Neo4j's official Community image with the jar in its
 
 ```dockerfile
 FROM neo4j:5.26.27-community
-COPY dozendb-0.1.0.jar /var/lib/neo4j/lib/
+COPY dozendb-0.1.0-SNAPSHOT.jar /var/lib/neo4j/lib/
 ```
 
 Mounting the jar into the container read-only does not work: Neo4j's

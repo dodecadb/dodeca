@@ -1,22 +1,75 @@
 # DozenDB
 
-DozenDB adds to Neo4j Community Edition what Community leaves to Enterprise:
-many databases (`CREATE`, `DROP`, `START` and `STOP DATABASE`), property
-existence, key and type constraints, roles and privileges, local and remote
-database aliases, online backup and restore, metrics and the query and
-security logs, and Raft-based replication with automatic leader failover,
-writes on any member, database leaders balanced over the members, databases
-placed on servers by their topologies, and secondaries that pull transactions
-to serve reads. A cluster of three or more voting members survives the loss
-of a minority of members without losing acknowledged writes.
+DozenDB adds to Neo4j Community Edition much of what Neo4j keeps for its
+Enterprise Edition, as one jar in Community's `lib/`:
 
-DozenDB is a single jar installed into Neo4j Community's `lib/`. It began as an
-add-on to [DozerDB](https://dozerdb.org) and contains a Kotlin port of the
-DozerDB code it built on; see `doc/UPSTREAM_TOUCHPOINTS.md`.
+- many databases (`CREATE`, `DROP`, `START` and `STOP DATABASE`), local and
+  remote database aliases, property existence, key and type constraints, user
+  status and home databases, and roles and privileges;
+- clustering on Raft: replication with automatic failover, routing tables and
+  server-side routing, writes on any member, servers and databases placed on
+  them by their topologies, secondaries that pull transactions to serve
+  reads, leaders balanced over the members, routing policies, and disaster
+  recovery;
+- online backup and restore, full and differential, and cloud storage on
+  Amazon S3, Google Cloud Storage and Azure Blob Storage for backups, dumps,
+  seeds, imports and `LOAD CSV`;
+- metrics for Prometheus, JMX, CSV files and Graphite, the query log and the
+  security log;
+- incremental and resumable imports, `neo4j-admin database copy`, checkpoint
+  policies with an I/O limit, and page cache warmup.
+
+[`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) compares DozenDB with Neo4j
+Enterprise feature by feature, and lists what it does not support.
+
+Each database of a cluster is replicated in a Raft group of its primaries. A
+database with three primaries keeps taking writes, without losing any write it
+acknowledged, while one of its servers is down; one with five, while two are.
+`system` has a primary on every member, unless told otherwise. Other databases
+get one primary by default, as in Neo4j Enterprise: set
+`initial.dbms.default_primaries_count=3` when forming a cluster of three, or
+give each database its topology (see
+[Raising the default](doc/OPERATOR_GUIDE.md#raising-the-default)).
+
+DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and contains a
+Kotlin port of the DozerDB code it built on; see
+[`doc/UPSTREAM_TOUCHPOINTS.md`](doc/UPSTREAM_TOUCHPOINTS.md).
 
 ## Status
 
 Under development. Not ready for production use.
+
+## Requirements
+
+- Neo4j Community 5.26.27, exactly: each DozenDB build runs on the Neo4j
+  version it was built for.
+- Java 17 or 21, as Neo4j 5.26.
+- To build: [mise](https://mise.jdx.dev), which provides the JDK
+  (`mise.toml`), and Docker for the integration tests.
+
+## Installing
+
+Build DozenDB (below), then copy `dozendb-plugin/target/dozendb-<version>.jar`
+into the `lib/` directory of Neo4j Community 5.26.27 and start Neo4j. With
+Docker, build an image:
+
+```dockerfile
+FROM neo4j:5.26.27-community
+COPY dozendb-0.1.0-SNAPSHOT.jar /var/lib/neo4j/lib/
+```
+
+To form a cluster, see
+[Installing DozenDB](doc/OPERATOR_GUIDE.md#installing-dozendb) in the operator
+guide, which ends with a Docker Compose file for three members.
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`doc/OPERATOR_GUIDE.md`](doc/OPERATOR_GUIDE.md) | Installing, forming and running a cluster, backups, monitoring, and DozenDB's settings. |
+| [`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) | DozenDB compared with Neo4j Enterprise, area by area, and moving from Neo4j Community, Enterprise or DozerDB. |
+| [`doc/FORMATS.md`](doc/FORMATS.md) | What members send each other and keep, and how to change it without breaking rolling upgrades. |
+| [`doc/UPSTREAM_TOUCHPOINTS.md`](doc/UPSTREAM_TOUCHPOINTS.md) | The Neo4j and Apache Ratis code DozenDB builds on, to recheck after upgrading them. |
 
 ## Repository layout
 
@@ -25,12 +78,14 @@ Under development. Not ready for production use.
 | `consensus-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
 | `neo4j-server-stubs/` | The signatures of the Neo4j web server classes that `dozendb-cluster` extends, to compile against: Neo4j does not publish the `neo4j-server` jar to Maven Central. Never packaged; Neo4j's own classes run. |
-| `dozendb-core/` | What DozenDB adds to Neo4j Community on every server, clustered or not: the edition module, database management, administration commands, constraints and settings. |
-| `dozendb-backup/` | Online backup and restore, clustered or not: `neo4j-admin database backup`, `database restore`, `database aggregate-backup` and `backup inspect`, with Neo4j's `.backup` artifacts, full and differential. |
-| `dozendb-cluster/` | Clustering on top of `dozendb-core`: commit interception, routing, reads, snapshots and membership. |
+| `dozendb-core/` | What DozenDB adds to Neo4j Community on every server, clustered or not: the edition module, database management, administration commands, roles and privileges, aliases, constraints, metrics and logs, checkpoints, page cache warmup, imports, `database copy` and settings. |
+| `dozendb-cloud/` | Cloud storage: Neo4j's storage interface for `s3://`, `gs://` and `azb://` URIs, over each cloud's SDK. |
+| `dozendb-backup/` | Online backup and restore, clustered or not: `neo4j-admin database backup`, `database restore`, `database aggregate-backup` and `backup inspect`, with Neo4j's `.backup` artifacts, full and differential, and seeds of `CREATE DATABASE`. |
+| `dozendb-cluster/` | Clustering on top of `dozendb-core`: membership, servers and placement, commit interception, routing, reads, secondaries, snapshots and disaster recovery. |
 | `dozendb-plugin/` | The entry point, and the build of the single jar installed into Neo4j's `lib/`. |
-| `dozendb-it/` | Integration, fault, crash and benchmark tests. |
-| `doc/` | Compatibility matrix, upstream touchpoints, operator documentation, and the formats between members. |
+| `dozendb-it/` | Integration, fault, crash and benchmark tests, in Docker against Neo4j's official image. |
+| `doc/` | The documentation above. |
+| `scripts/` | `test-ramdisk.sh`, which makes the tests faster on macOS (below). |
 
 ## Building
 
@@ -43,7 +98,8 @@ mise exec -- ./mvnw verify            # build and unit tests
 mise exec -- ./mvnw verify -Pit       # also run the Testcontainers suites
 ```
 
-The plugin jar is written to `dozendb-plugin/target/`.
+The jar to install is `dozendb-plugin/target/dozendb-<version>.jar`, about
+70 MB; the small `dozendb-plugin-<version>.jar` next to it is not the one.
 
 Each module runs its test classes in 4 JVMs at once, and the Testcontainers
 suites in 3, each with a cluster of its own; `-Dtest.forks=1` and
