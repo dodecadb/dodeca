@@ -70,6 +70,7 @@ guide, which ends with a Docker Compose file for three members.
 | [`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) | DozenDB compared with Neo4j Enterprise, area by area, and moving from Neo4j Community, Enterprise or DozerDB. |
 | [`doc/FORMATS.md`](doc/FORMATS.md) | What members send each other and keep, and how to change it without breaking rolling upgrades. |
 | [`doc/UPSTREAM_TOUCHPOINTS.md`](doc/UPSTREAM_TOUCHPOINTS.md) | The Neo4j and Apache Ratis code DozenDB builds on, to recheck after upgrading them. |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | Contributing: the clean-room rule, tests, documentation and commits. |
 
 ## Repository layout
 
