@@ -1,5 +1,197 @@
 # DozenDB operator guide
 
+## Installing DozenDB
+
+DozenDB is one jar added to Neo4j Community's `lib/`. It runs only on the
+Neo4j version it was built for, 5.26.27, as it builds on Neo4j's internal
+classes (`COMPATIBILITY.md`, "Pinned versions"), on Java 17 or 21.
+
+### The jar
+
+Build it from source as the README says. The jar to install is
+`dozendb-plugin/target/dozendb-<version>.jar`, about 70 MB: it bundles what
+DozenDB needs. The small `dozendb-plugin-<version>.jar` next to it is not the
+one.
+
+Copy it into the `lib/` directory of Neo4j Community 5.26.27, not into
+`plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds DozenDB's
+commands there too, such as `neo4j-admin database backup`. Without further
+settings, the server runs alone, as Neo4j Community does, with what DozenDB
+adds; it starts on a Neo4j Community data directory as it is (see
+`COMPATIBILITY.md`, "From Neo4j Community"). `neo4j.log` names the version at
+each start: `DozenDB 0.1.0: clustering is disabled`.
+
+### Docker
+
+Build an image from Neo4j's official Community image with the jar in its
+`lib/`:
+
+```dockerfile
+FROM neo4j:5.26.27-community
+COPY dozendb-0.1.0.jar /var/lib/neo4j/lib/
+```
+
+Mounting the jar into the container read-only does not work: Neo4j's
+entrypoint changes the owner of the files under `/var/lib/neo4j`, and the
+container stops when it cannot. Settings are environment variables, as in
+Neo4j's image: `NEO4J_` and the setting's name, with `_` for `.` and `__` for
+`_`, such as `NEO4J_dbms_dozendb_cluster_initial__members` for
+`dbms.dozendb.cluster.initial_members`.
+
+### Forming a cluster
+
+A cluster forms from its initial members, three for a cluster that bears the
+loss of one, five for two. Give each initial member, in `neo4j.conf`:
+
+```properties
+server.default_listen_address=0.0.0.0
+server.default_advertised_address=core1.example.com
+dbms.dozendb.cluster.enabled=true
+dbms.dozendb.cluster.initial_members=core1.example.com:7700,core2.example.com:7700,core3.example.com:7700
+dbms.ssl.policy.cluster.enabled=true
+dbms.ssl.policy.cluster.verify_hostname=true
+initial.dbms.default_primaries_count=3
+```
+
+- `server.default_listen_address`: Neo4j listens on `localhost` only by
+  default, which other servers cannot reach. Neo4j's Docker image sets
+  `0.0.0.0` itself.
+- `server.default_advertised_address`: the host name or address of this
+  member that the others and clients reach, its own on each member. It gives
+  the member's addresses their host: Bolt on port 7687, Raft on 7700
+  (`server.dozendb.cluster.advertised_address`) and the routing connector on
+  7688 (`server.routing.advertised_address`). Neo4j's default, `localhost`,
+  does not work between servers.
+- `dbms.dozendb.cluster.initial_members`: the Raft addresses of every initial
+  member, this one included, the same list on each. Members read it only at
+  their first start, when they have no Raft state yet.
+- `dbms.ssl.policy.cluster.enabled`: a member does not start until it is set.
+  `true` makes members talk over mutual TLS, with a certificate for each (see
+  [TLS between members](#tls-between-members)); `false` in plaintext, only on
+  a network that nothing but the members reach.
+- `initial.dbms.default_primaries_count=3`: new databases, and the default
+  database, get three primaries, one on each member, so that each takes
+  writes while one member is down. Without it they get one, as in Neo4j
+  Enterprise, and a database is unavailable while its only server is down
+  (see [Raising the default](#raising-the-default)). It is read at the
+  cluster's first start.
+
+Set the same initial password on every member, as with `neo4j-admin dbms
+set-initial-password` or Docker's `NEO4J_AUTH`: one of them creates the
+users, and which one is decided at the first start.
+
+Start every initial member. Each waits until it reaches all of them, logging
+in `neo4j.log` every 10 seconds which it does not reach yet:
+
+```
+Waiting for initial cluster members, 2 of 3 reachable. Unreachable: ...
+```
+
+Once they all answer, one member creates `system` and the default database,
+and the others copy them:
+
+```
+All 3 initial cluster members are reachable: [...]. Databases come from 95371b19-... at core1:7700, which creates them.
+```
+
+Each member then logs `Started.`. From then on, a member that starts again
+rejoins from its own Raft state, and `initial_members` matters again only to
+[recover the system database](#recovering-the-system-database); new members
+join as [Adding a member](#adding-a-member) describes. A cluster can
+also start from the databases of one existing server: list it among the
+initial members, with its data directory, and give the others empty ones (see
+`COMPATIBILITY.md`, "Running a cluster").
+
+To check the cluster, as an administrator on any member:
+
+```cypher
+CALL dozendb.cluster.members()
+SHOW SERVERS
+SHOW DATABASES
+```
+
+`dozendb.cluster.members()` lists the three members, one of them `LEADER` of
+`system`; `SHOW SERVERS` lists them `Enabled` and `Available`; and
+`SHOW DATABASES` lists `system` and the default database `online` on each.
+Drivers connect with `neo4j://` to any member, which routes them (see
+[Clients](#clients)), for example
+`neo4j://core1.example.com:7687`.
+
+To try a cluster on one machine, this Docker Compose file starts three
+members on Docker's network, in plaintext, next to the `Dockerfile` above and
+the jar:
+
+```yaml
+x-member: &member
+  image: dozendb:5.26.27
+  build: .
+  environment: &config
+    NEO4J_AUTH: neo4j/change-this-password
+    NEO4J_dbms_dozendb_cluster_enabled: "true"
+    NEO4J_dbms_dozendb_cluster_initial__members: core1:7700,core2:7700,core3:7700
+    NEO4J_initial_dbms_default__primaries__count: "3"
+    NEO4J_dbms_ssl_policy_cluster_enabled: "false"
+    # Small, for one machine.
+    NEO4J_server_memory_heap_max__size: 1g
+    NEO4J_server_memory_pagecache_size: 256m
+
+services:
+  core1:
+    <<: *member
+    hostname: core1
+    environment:
+      <<: *config
+      NEO4J_server_default__advertised__address: core1
+  core2:
+    <<: *member
+    hostname: core2
+    environment:
+      <<: *config
+      NEO4J_server_default__advertised__address: core2
+  core3:
+    <<: *member
+    hostname: core3
+    environment:
+      <<: *config
+      NEO4J_server_default__advertised__address: core3
+```
+
+```sh
+docker compose up -d --build
+docker compose exec core1 cypher-shell -u neo4j -p change-this-password \
+  "CALL dozendb.cluster.members()"
+```
+
+### Ports
+
+| Port | Setting | Reached by |
+|---|---|---|
+| 7687 | `server.bolt.listen_address` | Clients: drivers, Cypher Shell, and remote aliases of other DBMSs. |
+| 7474 | `server.http.listen_address` | HTTP clients, Neo4j Browser, and load balancers asking the [cluster status endpoints](#cluster-status-endpoints). |
+| 7473 | `server.https.listen_address` | The same, over HTTPS, when `server.https.enabled` is set. |
+| 7700 | `server.dozendb.cluster.listen_address` | The other members: Raft, membership, probes, database copies, and secondaries' pulls. |
+| 7688 | `server.routing.listen_address` | The other members, with TLS between them: writes they forward (see [Writes on any member](#writes-on-any-member)). |
+| 6362 | `server.backup.listen_address` | `neo4j-admin database backup`; only from the server's own host by default (see [Serving backups](#serving-backups)). |
+| 2004 | `server.metrics.prometheus.endpoint` | Prometheus, when enabled; only from the server's own host by default (see [Metrics](#metrics)). |
+
+Members also connect out: to Graphite (2003) when it is enabled, to cloud
+storage, and to the DBMSs of remote aliases.
+
+### Stopping and starting a cluster
+
+Members can be shut down and started in any order, one at a time or all
+together, as for a Neo4j upgrade (see [Upgrading DozenDB](#upgrading-dozendb)).
+A member keeps its Raft state and its databases, and starts from them
+(`Rejoining the cluster from local Raft state`). It catches up with what the
+others wrote meanwhile, from their Raft logs or with a copy (see
+`COMPATIBILITY.md`, "Raft log retention and catch-up").
+
+A database takes writes while a majority of its primaries run, once they
+elected a leader, within seconds. A member that runs without that majority,
+as the first member of a cluster to start, serves reads of what it holds, and
+refuses writes: `No member leads database 'films' right now; writes succeed
+once one is elected.` Start the others, and writes go on.
+
 ## Cluster members
 
 The members of a cluster, its servers, are the voting members of the Raft
@@ -29,7 +221,8 @@ dropped, and with two both must be up to drop one.
 
 ### Adding a member
 
-1. Configure the new server like the others: the same Neo4j and DozenDB
+1. Configure the new server like the others (see
+   [Forming a cluster](#forming-a-cluster)): the same Neo4j and DozenDB
    versions, `dbms.dozendb.cluster.enabled=true`, the same TLS settings with a
    certificate of its own (see [TLS between members](#tls-between-members)),
    its own `server.dozendb.cluster.advertised_address`, and
