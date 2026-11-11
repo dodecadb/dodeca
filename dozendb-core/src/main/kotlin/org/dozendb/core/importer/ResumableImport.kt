@@ -144,13 +144,13 @@ internal class ImportProgress(layout: DatabaseLayout) {
  * [ImportProgress] records them. An import that stopped earlier, while nodes and relationships were
  * imported, starts over with `--overwrite-destination`.
  *
- * Resumed from linking, the relationships are linked anew, whatever a stopped linking or
- * defragmentation of their groups wrote: the temporary stores and the relationship group store go,
- * node degrees are counted again from the relationship store, and every relationship's links are
- * written again. Post-processing is Neo4j's last stage of an import, as its progress shows it:
- * resumed from there, the relationship groups that linking wrote to the temporary group store are
- * moved to the relationship group store again, which a stopped one may have left half written, and
- * the counts store, token lookup indexes and transaction log are built again.
+ * Resumed from linking, the relationships are linked anew, whatever a stopped linking wrote: the
+ * temporary stores and the relationship group store go, node degrees are counted again from the
+ * relationship store, and every relationship's links are written again. Post-processing is Neo4j's
+ * last stage of an import, as its progress shows it: resumed from there, the relationship groups
+ * that linking wrote to the temporary group store are moved to the relationship group store again,
+ * which a stopped one may have left half written, and the counts store, token lookup indexes and
+ * transaction log are built again.
  *
  * @param input the import's input and options, which a resumed import must have the same of.
  * @param interruption called at the points an import may stop at, for tests.
