@@ -44,6 +44,7 @@ end its own way.
 | Local and remote database aliases | Same | [Database aliases](#database-aliases) |
 | Clustering: replication, failover, routing | Own design, same for clients | [Clustering](#clustering) |
 | Server-side routing | Same | [Clustering](#clustering) |
+| Routing policies (the load balancing plugin) | Same, with differences | [Routing policies](#routing-policies) |
 | Cluster status endpoints of the HTTP server | Same, with differences | [Clustering](#clustering) |
 | Checking connectivity between members | Same, with differences | [Clustering](#clustering) |
 | Protocols between members (`dbms.cluster.protocols`) | Same, with differences | [Clustering](#clustering) |
@@ -54,19 +55,18 @@ end its own way.
 | Cloud storage: Amazon S3, Google Cloud Storage, Azure Blob Storage | Same, with differences | [Cloud storage](#cloud-storage) |
 | Metrics: CSV files, Graphite, Prometheus, JMX | Same, with differences | [Metrics and logs](#metrics-and-logs) |
 | Checkpoint policies and the checkpoint I/O limit | Same, with differences | [Checkpoints](#checkpoints) |
+| Page cache warmup | Same, with differences | [Page cache warmup](#page-cache-warmup) |
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing the default database | Same | [Databases](#databases) |
 | Disaster recovery: `unbind-system-db`, recreating databases, quarantine | Same, with differences | [Disaster recovery](#disaster-recovery) |
-| Routing policies (the load balancing plugin) | Not supported | [Not supported](#not-supported) |
 | Change data capture | Not supported | [Not supported](#not-supported) |
 | `block` and `high_limit` store formats | Not supported | [Not supported](#not-supported) |
 | Pipelined and parallel runtimes | Not supported | [Not supported](#not-supported) |
 | Incremental import (`neo4j-admin database import incremental`) | Same, with differences | [Import and copy](#import-and-copy) |
 | Resuming a stopped full import | Same, with differences | [Import and copy](#import-and-copy) |
 | Store copy (`neo4j-admin database copy`) | Same, with differences | [Import and copy](#import-and-copy) |
-| Page cache warmup | Not supported | [Not supported](#not-supported) |
 | Other procedures and settings only Enterprise has | Not supported | [Not supported](#not-supported) |
 
 ## Edition
@@ -554,6 +554,43 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   it as a writer or reader of that database, within about 10 seconds;
   it still serves routing tables, which send drivers to the others.
 
+## Routing policies
+
+Neo4j Community has no routing policies. DozenDB has Enterprise's
+`server_policies` load balancing plugin, its policies
+(`dbms.routing.load_balancing.config.server_policies.<name>`, in the rules of
+`server.cluster.catchup.user_defined_upstream_strategy`) and
+`dbms.routing.load_balancing.shuffle_enabled`. `OPERATOR_GUIDE.md`, "Routing
+policies", describes how to use them. Where Enterprise's documentation says
+nothing:
+
+- **A policy chooses readers and routers.** The writer is the leader whatever
+  the policy says. A policy that passes no reader gives a table without
+  readers, so that the driver fails reads and writes still work; one that
+  passes no router leaves the leader as the only router, or while there is no
+  leader, the routers the table would have without the policy.
+- **The servers a policy chooses from** are those that host the database and
+  answered the latest probe of the server asked, so that `min(n)` counts the
+  servers that run. Routing tables leave out a server that stops answering
+  without a policy too.
+- **An unknown policy** fails the routing request with Neo4j's own error for
+  it, `Neo.ClientError.Routing.RoutingFailed` (GQL status `08N15`), "Policy
+  definition for '<name>' could not be found.", followed by the server's
+  policies.
+- **Servers with different policies.** Enterprise says only that the result is
+  unpredictable. Each server reports a digest of its policies to the others,
+  and one that hears a different digest names the server in a warning in
+  `neo4j.log`, once until it changes. Policies that differ only in their
+  spelling, or in an `all()` that changes nothing, count as the same.
+- **A comma between rules**, which one of Enterprise's upstream examples has, is
+  refused: its meaning is not documented.
+- **Shuffling** orders the readers and routers of each table at random; without
+  it, in the order of the servers' ids.
+- **Policies are read at start.**
+- **Tables that take no policy**: server-side routing's, a server's with
+  clustering disabled, and a one-server cluster's, which Neo4j Community makes
+  and which name only the server asked; these do not check the policy name.
+
 ## Servers
 
 DozenDB shows and changes servers, and places databases on them, as Enterprise
@@ -945,6 +982,34 @@ ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
   that database alone. Neo4j Community counts those of databases that
   checkpoint at the same time together.
 
+## Page cache warmup
+
+Neo4j Community declares `db.memory.pagecache.warmup.*` and does nothing with
+them. DozenDB profiles and warms up the page cache as Enterprise does, on by
+default, and preloads whole files with `db.memory.pagecache.warmup.preload`.
+`OPERATOR_GUIDE.md`, "Page cache warmup", describes how to use it. Where
+Enterprise's documentation says nothing:
+
+- **Profiles** are DozenDB's own files, `profiles/<file>.cacheprof` in the
+  database's directory, `<file>` the profiled file's path in it (see
+  `FORMATS.md`). They are taken every interval once the warmup ended, so that
+  a profile of a page cache still warming up never replaces a fuller one, and
+  when the database stops; a profile is written only when it changed, and one
+  of a file that is gone, such as a dropped index's, is deleted.
+- **The warmup** loads the pages of each profile, up to the end of the file
+  if it shrank, in the background once the database is available, and stops
+  when the database stops. The pages it counts include those held already.
+- **The preload allowlist** is a regular expression that must match the whole
+  file name, such as `neostore\.nodestore\.db`.
+- **Copies.** Store copies to other members, online backups, restores and
+  seeds carry the profiles, as Enterprise says of its store copies and backups;
+  `neo4j-admin database copy`, which writes a new store, does not.
+- **Metrics** are DozenDB's own: `page_cache.warmup.pages_loaded` and
+  `page_cache.warmup.duration` of each database.
+- **`internal.db.memory.pagecache.warmup.blocking_enabled`**, an internal
+  setting Neo4j Community declares, has no effect: the warmup never holds up
+  a database's start.
+
 ## Import and copy
 
 `neo4j-admin` in Neo4j Community lacks `database import incremental` and
@@ -1071,10 +1136,6 @@ error, and their procedures do not exist.
   Neo4j Community's slotted runtime with a notification, as in Neo4j
   Community, or fails with `dbms.cypher.hints_error=true`. Neo4j Community
   declares `server.cypher.parallel.worker_limit`, which has no effect.
-- **Routing policies**: `dbms.routing.load_balancing.plugin`, its server
-  policies and `dbms.routing.load_balancing.shuffle_enabled`.
-- **Page cache warmup.** Neo4j Community declares
-  `db.memory.pagecache.warmup.*`, which have no effect.
 - **Shared query caches**: `server.memory.query_cache.sharing_enabled` and
   `shared_cache_num_entries`.
 - **Settings of features DozenDB has in its own way**: `server.max_databases`,

@@ -390,7 +390,10 @@ As enabling a server places nothing on it, reallocate to give it copies.
 
 Routing tables, from any server, list the servers a database is placed on, so
 `neo4j://` drivers reach them wherever they connect; secondaries as readers
-(see [Reading from secondaries](#reading-from-secondaries)). The leader is
+(see [Reading from secondaries](#reading-from-secondaries)). Servers that stop
+answering drop out of the tables within about 10 seconds, and a driver can name
+a routing policy that chooses among the others by their tags (see [Routing
+policies](#routing-policies)). The leader is
 listed as the writer, and as a reader too only with
 `dbms.routing.reads_on_writers_enabled=true` (dynamic, per server), or while
 no other server can read the database. A server that does
@@ -485,7 +488,8 @@ server.cluster.catchup.user_defined_upstream_strategy=tags(eu); tags(us)->min(2)
 
 A server with an unknown strategy, or rules that do not parse, does not start.
 A comma between rules, which one of Neo4j Enterprise's examples has, is
-refused: its meaning is not documented.
+refused: its meaning is not documented. Routing policies are written in the
+same rules (see [Routing policies](#routing-policies)).
 
 ### Reading from secondaries
 
@@ -621,6 +625,89 @@ returns once it votes there. Its other databases stay as they are.
   upstreams keep their transaction logs copies the whole database. Keep them,
   on every server that serves pulls, for at least as long as a secondary may
   be down for maintenance.
+
+## Routing policies
+
+A driver that routes (`neo4j://`) can name a routing policy, which chooses the
+servers of its routing tables by their server tags, as in Neo4j Enterprise:
+clients in one data centre read from the servers there, and from others when
+too few of those run. A policy is a setting, the same on every server:
+
+```
+dbms.routing.load_balancing.config.server_policies.<name>=<rules>
+```
+
+The rules are those of a secondary's upstreams (see [Choosing
+upstreams](#choosing-upstreams)): rules separated by `;`, asked in order, the
+first that passes any server wins; a rule chains filters with `->`, from every
+server: `tags(a, b)` passes those with either tag, and two in a chain those
+with a tag of each, `min(n)` passes the servers it is given if there are at
+least `n`, else none, `all()` passes every server, and `halt()`, at the end of
+the last rule, passes none. Unless the rules end with `halt()`, `all()` follows
+them. For three data centres, two of them in Europe:
+
+```
+# Servers in eu-west, if at least two run; else none.
+dbms.routing.load_balancing.config.server_policies.eu_west_only=tags(eu-west)->min(2); halt()
+# Servers in eu-west, if at least two run; else every server.
+dbms.routing.load_balancing.config.server_policies.eu_west=tags(eu-west)->min(2)
+# Servers in eu-west or eu-central, if at least two run; else any in Europe; else every server.
+dbms.routing.load_balancing.config.server_policies.eu=\
+  tags(eu-west, eu-central)->min(2);\
+  tags(europe)
+```
+
+The servers have their tags from `initial.server.tags` or `ALTER SERVER` (see
+[Servers](#servers)); a server in `eu-west` above is tagged `eu-west,europe`. A
+driver names the policy in its URI:
+
+```
+neo4j://db.example.com:7687?policy=eu_west
+```
+
+What a policy chooses:
+
+- **Readers and routers**: among the servers that host the database and
+  answered the latest probe of the server asked, as `min(n)` counts them; a
+  server that stops drops out within about 10 seconds. The writer is the leader
+  whatever the policy says, so writes work wherever the client is.
+- **A policy that passes no reader** gives a table without readers: the
+  driver fails reads, saying that it has no readers, and writes still work.
+- **A policy that passes no router** leaves the leader as the only router, so
+  that the driver can still refresh its table; while there is no leader, the
+  servers it would route through without the policy.
+- **A driver that names no policy** gets the policy named `default`, which is
+  `all()` unless set.
+
+Names have letters, digits and underscores, and are case-sensitive. A server
+with a policy whose name has other characters, or whose rules do not parse,
+does not start. A
+driver that names a policy the server does not have cannot use the cluster:
+its routing requests fail with `Neo.ClientError.Routing.RoutingFailed`,
+"Policy definition for 'eu' could not be found. The routing policies of this
+server are default, eu_west, eu_west_only."
+
+Every server must have the same policies, as Neo4j Enterprise says; otherwise
+the routing table a driver gets depends on the server it asks. Servers compare
+theirs, and a server whose policies differ from another's says so in
+`neo4j.log`, once until they change:
+
+```
+Server 5f6e... at core3:7700 has other routing policies than this server, so that the routing tables of drivers that name a policy depend on the server they ask: set the same dbms.routing.load_balancing.config.server_policies.* on every server
+```
+
+Policies are read at start. Rename or remove one only once no client names it.
+
+`dbms.routing.load_balancing.shuffle_enabled` (default `true`) lists the
+readers and routers of each table in a new random order, so that drivers
+spread their first connections; with `false`, in the order of the servers'
+ids. `dbms.routing.load_balancing.plugin` takes only `server_policies`, its
+default, as in Neo4j Enterprise.
+
+Policies apply to routing tables, so to drivers that route on the client.
+Server-side routing (`dbms.routing.default_router=SERVER`), a server with
+clustering disabled, and a cluster of one server give Neo4j Community's
+tables, which name only the server asked.
 
 ## TLS between members
 
@@ -1755,6 +1842,44 @@ last checkpoint of each database. A limit that is too low for the write load
 keeps checkpoints from completing, as pages are changed faster than they are
 written, and transaction logs from being pruned: when checkpoints take longer
 and longer, raise the limit or remove it.
+
+## Page cache warmup
+
+After a restart, a database's first queries read their pages from disk. As in
+Neo4j Enterprise, each database records which pages of its files the page
+cache holds, a profile, and loads those pages again when it starts, in the
+background, so that the first queries find them in memory. It is on by
+default.
+
+| Setting | Default | |
+|---|---|---|
+| `db.memory.pagecache.warmup.enable` | `true` | Profiles and warmup. |
+| `db.memory.pagecache.warmup.profile.interval` | `1m` | How often profiles are taken. |
+| `db.memory.pagecache.warmup.preload` | `false` | Loads every page of the database's files instead, and takes no profiles: for a page cache larger than the store. |
+| `db.memory.pagecache.warmup.preload.allowlist` | `.*` | The files the preload loads: a regular expression that matches the whole file name, such as `neostore\..*` for the store files without their indexes. |
+
+- **Profiles** cover the store files and the indexes the page cache holds. They
+  are taken every interval once the warmup ended, and when the database
+  stops, and kept in `profiles/` in the database's directory, one file per
+  store file; a profile is rewritten only when it changed. A database stopped
+  before its warmup ended keeps the profiles it had. A profile costs a bit per
+  8 KiB page, compressed: at most 16 KiB per GiB of store.
+- **The warmup** starts once the database is available: queries run
+  meanwhile, and share the disk with it. Pages that a profile names past the
+  end of a file that shrank are left out. `debug.log` says what it did:
+
+  ```
+  [neo4j/4f3a1b2c] Page cache warmup loaded 51234 pages in 5341 ms
+  ```
+
+- **Copies carry the profiles**: a member that copies a database from another
+  one, an online backup and the database restored or seeded from it warm up
+  from the profiles of the copy's source. `neo4j-admin database copy` writes a
+  new store, without them.
+- **Metrics**: `<prefix>.database.<database>.page_cache.warmup.pages_loaded`,
+  the pages the warmup or preload loaded since the database started, and
+  `page_cache.warmup.duration`, the milliseconds it took (see
+  [Metrics](#metrics)).
 
 ## Monitoring
 
