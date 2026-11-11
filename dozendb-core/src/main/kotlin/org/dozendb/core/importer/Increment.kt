@@ -47,6 +47,12 @@ internal class Increment(val layout: DatabaseLayout) {
     /** The names of the tokens of the new nodes and relationships. */
     val tokens: Path = directory.resolve("tokens")
 
+    /** What the merge did so far. */
+    val journal: Path = directory.resolve("merge-journal")
+
+    /** The ids of the new nodes the merge created, by their place in the increment. */
+    val mergedNodeIds: Path = directory.resolve("merged-node-ids")
+
     /** The state recorded so far, null if there is no increment. */
     fun state(): IncrementState? {
         if (!Files.exists(stateFile)) return null

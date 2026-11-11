@@ -13,6 +13,8 @@ import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.storageengine.api.StorageEngineFactory
 import picocli.CommandLine.Command
+import picocli.CommandLine.Model.CommandSpec
+import picocli.CommandLine.Spec
 
 /**
  * `neo4j-admin database import` with Neo4j's `incremental` subcommand next to `full`, which Neo4j
@@ -30,11 +32,24 @@ class DozenDbImportCommand : ImportCommand()
  * Neo4j's `neo4j-admin database import incremental`, which fails with the reason DozenDB's importer
  * gives, or the input's error, rather than only "Error importing csv file.", and without Neo4j's
  * warning that a failed import leaves the store "likely in an unusable state": no stage leaves it
- * so.
+ * so. As Neo4j Enterprise documents, the merge stage needs no `--nodes`, which Neo4j Community's
+ * subcommand requires for every stage.
  */
 @Command(name = "incremental", description = ["Incremental import into an existing database."])
 class IncrementalImportCommand(context: ExecutionContext) :
     ImportCommand.Incremental(withoutUnusableStoreWarning(context)) {
+
+    /**
+     * Makes `--nodes` optional, for the merge stage: picocli calls this while it builds the
+     * command's model, once Neo4j's options are in it.
+     */
+    @Spec
+    fun optionalNodes(spec: CommandSpec) {
+        val nodes = spec.findOption(NODES) ?: return
+        if (!nodes.required()) return
+        spec.remove(nodes)
+        spec.addOption(nodes.toBuilder().required(false).build())
+    }
 
     override fun execute() {
         val name = spec.positionalParameters().first().getValue<NormalizedDatabaseName>().name()
@@ -46,6 +61,17 @@ class IncrementalImportCommand(context: ExecutionContext) :
                     "DATABASE.",
                 ExitCode.FAIL,
             )
+        }
+        val nodes = spec.findOption(NODES)
+        if (nodes.getValue<List<*>?>() == null) {
+            if (spec.findOption("--stage").getValue<Any>().toString() != "merge") {
+                throw CommandFailedException(
+                    "Missing required option: '${nodes.paramLabel()}', which every stage but " +
+                        "merge needs.",
+                    ExitCode.USAGE,
+                )
+            }
+            nodes.setValue(emptyList<Any>())
         }
         try {
             super.execute()
@@ -61,6 +87,8 @@ class IncrementalImportCommand(context: ExecutionContext) :
     }
 
     private companion object {
+        const val NODES = "--nodes"
+
         /** The line Neo4j's file importer prints when any import fails. */
         const val UNUSABLE_STORE_WARNING = "WARNING Import failed. The store files in "
 

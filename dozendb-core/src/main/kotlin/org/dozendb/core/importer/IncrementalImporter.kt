@@ -21,11 +21,13 @@ import org.neo4j.internal.kernel.api.IndexQueryConstraints
 import org.neo4j.internal.kernel.api.security.LoginContext
 import org.neo4j.internal.schema.IndexDescriptor
 import org.neo4j.internal.schema.SchemaDescriptor
+import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.locker.FileLockException
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
+import org.neo4j.kernel.KernelVersion
 import org.neo4j.kernel.api.KernelTransaction
 import org.neo4j.kernel.api.index.IndexProvidersAccess
 import org.neo4j.kernel.impl.transaction.log.LogTailMetadata
@@ -113,6 +115,9 @@ internal class IncrementalImporter(
     private val serverConfig: Config,
     private val collector: Collector,
     private val memoryTracker: MemoryTracker,
+    private val batchSize: Int = IncrementMerger.BATCH_SIZE,
+    /** Called with false before each batch of the merge commits, and with true after; for tests. */
+    private val onBatch: (committed: Boolean) -> Unit = {},
 ) : IncrementalBatchImporter {
     private val increment = Increment(layout)
     private val name: String = layout.databaseName
@@ -200,7 +205,57 @@ internal class IncrementalImporter(
     }
 
     override fun merge() {
-        throw IncrementalImportException("The merge stage is not available yet.")
+        val state =
+            increment.state()
+                ?: throw IncrementalImportException(
+                    "There is no increment of database '$name' to merge: run the prepare and " +
+                        "build stages first."
+                )
+        if (state.stage == Stage.PREPARED) {
+            throw IncrementalImportException(
+                "The increment of database '$name' is not built: run the build stage first."
+            )
+        }
+        checkStopped()
+        val last = logTail.get().lastCommittedTransaction
+        MergeJournal(increment.journal, increment.mergedNodeIds, memoryTracker).use { journal ->
+            val position = journal.recover(last.id(), last.checksum(), state)
+            if (state.stage == Stage.BUILT) increment.record(state.copy(stage = Stage.MERGING))
+            val pageCache = importConfig.maxOffHeapMemory()
+            out.println(
+                if (position.tokens) {
+                    "Continuing the merge into database '$name' after ${position.nodes} new " +
+                        "nodes and ${position.relationships} new relationships"
+                } else {
+                    "Merging ${state.nodes - state.skippedNodes} new nodes and " +
+                        "${state.relationships} new relationships into database '$name'"
+                } + ", with a page cache of ${ByteUnit.bytesToString(pageCache)}"
+            )
+            ScratchDbms.open(
+                    layout,
+                    serverConfig,
+                    increment.home,
+                    increment.logs,
+                    writable = true,
+                    state.consensusIndex,
+                    KernelVersion.getForVersion(state.kernelVersion),
+                    pageCache,
+                )
+                .use { scratch ->
+                    IncrementMerger(
+                            increment,
+                            state,
+                            scratch.database,
+                            journal,
+                            out,
+                            batchSize,
+                            onBatch,
+                        )
+                        .merge(position)
+                }
+        }
+        increment.delete()
+        out.println("Merged the increment into database '$name'")
     }
 
     override fun close() {}

@@ -6,18 +6,29 @@ import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.assertj.core.api.Assertions.catchThrowable
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.importer.IncrementState.Stage
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
+import org.neo4j.batchimport.api.Configuration
+import org.neo4j.batchimport.api.input.Collector
 import org.neo4j.cli.AdminTool
 import org.neo4j.cli.ExecutionContext
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.consistency.ConsistencyCheckService
+import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
+import org.neo4j.kernel.impl.transaction.log.files.LogFilesBuilder
+import org.neo4j.memory.EmptyMemoryTracker
+import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.TransactionIdStore
 
 /**
@@ -389,5 +400,325 @@ class IncrementalImportTest {
         assertThat(integers.exitCode).isNotZero
         assertThat(integers.err)
             .contains("Prepare read the keys for --id-type=string: build with the same --id-type.")
+    }
+
+    private val filmsLayout
+        get() =
+            Neo4jLayout.of(Config.defaults(GraphDatabaseSettings.neo4j_home, server.home))
+                .databaseLayout("films")
+
+    /** Stops films and checks its consistency. */
+    private fun assertConsistent() {
+        server.administer("STOP DATABASE films WAIT")
+        val config =
+            Config.newBuilder()
+                .set(GraphDatabaseSettings.neo4j_home, server.home)
+                .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
+                .build()
+        assertThat(
+                ConsistencyCheckService(filmsLayout)
+                    .with(config)
+                    .runFullConsistencyCheck()
+                    .isSuccessful
+            )
+            .describedAs("films is consistent")
+            .isTrue
+    }
+
+    private fun count(cypher: String): Long = server.rows(cypher, "films").single()["c"] as Long
+
+    private fun plan(cypher: String): String =
+        server.database("films").executeTransactionally("EXPLAIN $cypher", emptyMap()) {
+            it.executionPlanDescription.toString()
+        }
+
+    @Test
+    fun `all merges into the database, which keeps its indexes, constraints and counts`() {
+        server.rows("CREATE CONSTRAINT FOR (p:Person) REQUIRE p.uuid IS UNIQUE", "films")
+        server.rows("CREATE INDEX person_name FOR (p:Person) ON (p.name)", "films")
+        server.rows("CREATE INDEX knows_since FOR ()-[k:KNOWS]-() ON (k.since)", "films")
+        server.rows(
+            "CREATE (:Person {uuid: 'a', name: 'Ann'})-[:KNOWS {since: 1999}]->" +
+                "(:Person {uuid: 'b', name: 'Bob'})",
+            "films",
+        )
+        server.administer("STOP DATABASE films WAIT")
+
+        val result =
+            admin(
+                "database",
+                "import",
+                "incremental",
+                "--force",
+                "--skip-duplicate-nodes",
+                "--report-file=$report",
+                "films",
+                "--nodes=" +
+                    csv(
+                        "persons.csv",
+                        "uuid:ID{label:Person},name,:LABEL,born:int,tags:string[],when:date," +
+                            "loc:point",
+                        "c,Carla,Person;Actor,1970,x;y,2026-11-10,\"{x: 1.0, y: 2.0}\"",
+                        "d,Dan,,,,,",
+                        "a,Again,,,,,",
+                    ),
+                "--relationships=" +
+                    csv(
+                        "knows.csv",
+                        ":START_ID,:END_ID,:TYPE,since:int",
+                        "a,c,KNOWS,2001",
+                        "c,d,KNOWS,2002",
+                        "b,a,LIKES,2003",
+                    ),
+            )
+
+        assertThat(result.exitCode).describedAs(result.toString()).isZero
+        assertThat(result.out)
+            .contains("Merging 2 new nodes and 3 new relationships into database 'films'")
+            .contains("Merged the increment into database 'films'")
+        assertThat(increment.directory).doesNotExist()
+        server.administer("START DATABASE films WAIT")
+        assertThat(count("MATCH (p:Person) RETURN count(p) AS c")).isEqualTo(4)
+        assertThat(count("MATCH ()-[k:KNOWS]->() RETURN count(k) AS c")).isEqualTo(3)
+        assertThat(count("MATCH (:Person)-[l:LIKES]->(:Person) RETURN count(l) AS c")).isEqualTo(1)
+        assertThat(
+                server.rows(
+                    "MATCH (a:Person {uuid: 'a'})-[:KNOWS]->(c:Person {uuid: 'c'})-[:KNOWS]->" +
+                        "(d:Person {uuid: 'd'}), (:Person {uuid: 'b'})-[:LIKES]->(a) " +
+                        "RETURN a.name AS a, labels(c) AS labels, c.born AS born, " +
+                        "[t IN c.tags | t] AS tags, " +
+                        "toString(c.when) AS when, c.loc.x AS x, d.name AS d",
+                    "films",
+                )
+            )
+            .containsExactly(
+                mapOf(
+                    "a" to "Ann",
+                    "labels" to listOf("Person", "Actor"),
+                    "born" to 1970L,
+                    "tags" to listOf("x", "y"),
+                    "when" to "2026-11-10",
+                    "x" to 1.0,
+                    "d" to "Dan",
+                )
+            )
+        assertThat(plan("MATCH (p:Person {uuid: 'd'}) RETURN p")).contains("NodeUniqueIndexSeek")
+        assertThat(plan("MATCH (p:Person {name: 'Dan'}) RETURN p")).contains("NodeIndexSeek")
+        assertThat(count("MATCH (p:Person) WHERE p.name = 'Dan' RETURN count(p) AS c")).isEqualTo(1)
+        assertThat(count("MATCH ()-[k:KNOWS]->() WHERE k.since = 2002 RETURN count(k) AS c"))
+            .isEqualTo(1)
+        assertThatThrownBy { server.rows("CREATE (:Person {uuid: 'c'})", "films") }
+            .hasMessageContaining("already exists")
+        assertConsistent()
+    }
+
+    @Test
+    fun `build reads the input while the database runs read-only`() {
+        persons()
+        val files =
+            arrayOf(
+                "--nodes=" + csv("persons.csv", "uuid:ID{label:Person}", "c"),
+                "--relationships=" + csv("knows.csv", ":START_ID,:END_ID,:TYPE", "a,c,KNOWS"),
+            )
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+        server.administer("ALTER DATABASE films SET ACCESS READ ONLY")
+        server.administer("START DATABASE films WAIT")
+
+        assertThat(incremental("build", "films", *files).exitCode).isZero
+        assertThat(count("MATCH (p:Person) RETURN count(p) AS c")).isEqualTo(2)
+
+        server.administer("STOP DATABASE films WAIT")
+        val merged = incremental("merge", "films")
+        assertThat(merged.exitCode).describedAs(merged.toString()).isZero
+        server.administer("ALTER DATABASE films SET ACCESS READ WRITE")
+        server.administer("START DATABASE films WAIT")
+        assertThat(
+                count(
+                    "MATCH (:Person {uuid: 'a'})-[k:KNOWS]->(:Person {uuid: 'c'}) RETURN count(k) AS c"
+                )
+            )
+            .isEqualTo(1)
+        assertConsistent()
+    }
+
+    @Test
+    fun `merge refuses a database that changed since prepare`() {
+        persons()
+        val files = arrayOf("--nodes=" + csv("persons.csv", "uuid:ID{label:Person}", "c"))
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+        assertThat(incremental("build", "films", *files).exitCode).isZero
+        server.administer("START DATABASE films WAIT")
+        server.rows("CREATE (:Person {uuid: 'z'})", "films")
+        server.administer("STOP DATABASE films WAIT")
+
+        val merged = incremental("merge", "films")
+
+        assertThat(merged.exitCode).isNotZero
+        assertThat(merged.err)
+            .contains("Database 'films' changed since the prepare stage read it")
+            .contains("Run the prepare and build stages again.")
+        server.administer("START DATABASE films WAIT")
+        assertThat(count("MATCH (p:Person) RETURN count(p) AS c")).isEqualTo(3)
+    }
+
+    /** Runs the merge of films in this JVM, in batches of [batchSize], calling [onBatch]. */
+    private fun merge(batchSize: Int, onBatch: (Boolean) -> Unit = {}): String {
+        val config = Config.defaults(GraphDatabaseSettings.neo4j_home, server.home)
+        val fs = DefaultFileSystemAbstraction()
+        val engine = StorageEngineFactory.selectStorageEngine(fs, filmsLayout).orElseThrow()
+        val out = ByteArrayOutputStream()
+        IncrementalImporter(
+                filmsLayout,
+                fs,
+                Configuration.DEFAULT,
+                PrintStream(out, true),
+                {
+                    LogFilesBuilder.logFilesBasedOnlyBuilder(
+                            filmsLayout.transactionLogsDirectory,
+                            fs,
+                        )
+                        .withStorageEngineFactory(engine)
+                        .build()
+                        .tailMetadata
+                },
+                config,
+                Collector.EMPTY,
+                EmptyMemoryTracker.INSTANCE,
+                batchSize,
+                onBatch,
+            )
+            .use { it.merge() }
+        return out.toString()
+    }
+
+    /** 7 new persons, c1 to c7, one of them duplicating 'a', and 6 relationships. */
+    private fun buildSeven() {
+        persons()
+        val files =
+            arrayOf(
+                "--skip-duplicate-nodes",
+                "--nodes=" +
+                    csv(
+                        "persons.csv",
+                        "uuid:ID{label:Person},n:int",
+                        "c1,1",
+                        "a,2",
+                        "c3,3",
+                        "c4,4",
+                        "c5,5",
+                        "c6,6",
+                        "c7,7",
+                    ),
+                "--relationships=" +
+                    csv(
+                        "knows.csv",
+                        ":START_ID,:END_ID,:TYPE",
+                        "a,c1,KNOWS",
+                        "c1,c3,KNOWS",
+                        "c3,c4,KNOWS",
+                        "c4,c5,KNOWS",
+                        "c5,c6,KNOWS",
+                        "c6,c7,KNOWS",
+                    ),
+            )
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+        assertThat(incremental("build", "films", *files).exitCode).isZero
+    }
+
+    private fun assertSevenMerged() {
+        server.administer("START DATABASE films WAIT")
+        assertThat(count("MATCH (p:Person) RETURN count(p) AS c")).isEqualTo(8)
+        assertThat(count("MATCH (p:Person) RETURN count(DISTINCT p.uuid) AS c")).isEqualTo(8)
+        assertThat(count("MATCH ()-[k:KNOWS]->() RETURN count(k) AS c")).isEqualTo(6)
+        assertThat(
+                count(
+                    "MATCH p = (:Person {uuid: 'a'})-[:KNOWS*6]->(:Person {uuid: 'c7'}) " +
+                        "RETURN count(p) AS c"
+                )
+            )
+            .isEqualTo(1)
+        assertConsistent()
+    }
+
+    private class Crash : RuntimeException("crash")
+
+    @ParameterizedTest(name = "cut short {0} batch {1}")
+    @CsvSource(
+        "before the commit of, 1",
+        "after the commit of, 1",
+        "before the commit of, 2",
+        "after the commit of, 3",
+        // Relationship batches: nodes take four batches of two.
+        "before the commit of, 5",
+        "after the commit of, 6",
+        "after the commit of, 7",
+    )
+    fun `a merge cut short continues after the batches the database committed`(
+        point: String,
+        batch: Int,
+    ) {
+        buildSeven()
+        val afterCommit = point.startsWith("after")
+        var batches = 0
+        val crash = catchThrowable {
+            merge(2) { committed ->
+                if (committed == afterCommit && ++batches == batch) throw Crash()
+            }
+        }
+        assertThat(generateSequence(crash) { it.cause }.any { it is Crash })
+            .describedAs("cut short by the crash: $crash")
+            .isTrue
+        assertThat(checkNotNull(increment.state()).stage).isEqualTo(Stage.MERGING)
+        assertThat(increment.directory).exists()
+
+        val resumed = incremental("merge", "films")
+
+        assertThat(resumed.exitCode).describedAs(resumed.toString()).isZero
+        assertThat(resumed.out).contains("Continuing the merge into database 'films' after")
+        assertSevenMerged()
+    }
+
+    @Test
+    fun `a merge in batches of duplicates alone commits the others`() {
+        buildSeven()
+
+        // The second node, 'a', is a batch of its own.
+        merge(1)
+
+        assertSevenMerged()
+    }
+
+    @Test
+    fun `a batch that violates a constraint fails the merge, which keeps the batches before it`() {
+        server.rows("CREATE CONSTRAINT FOR (p:Person) REQUIRE p.email IS UNIQUE", "films")
+        server.rows("CREATE CONSTRAINT FOR (p:Person) REQUIRE p.uuid IS UNIQUE", "films")
+        server.rows("CREATE (:Person {uuid: 'a', email: 'a@example.com'})", "films")
+        server.administer("STOP DATABASE films WAIT")
+        val files =
+            arrayOf(
+                "--nodes=" +
+                    csv(
+                        "persons.csv",
+                        "uuid:ID{label:Person},email",
+                        "c,c@example.com",
+                        "d,d@example.com",
+                        "e,a@example.com",
+                    )
+            )
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+        assertThat(incremental("build", "films", *files).exitCode).isZero
+
+        assertThatThrownBy { merge(2) }
+            .isInstanceOf(IncrementalImportException::class.java)
+            .hasMessageStartingWith("Merging new nodes 3 to 3 into database 'films' failed: ")
+            .hasMessageContaining("a@example.com")
+            .hasMessageEndingWith(
+                "The database keeps the 2 new nodes and 0 new relationships merged before " +
+                    "them; the merge stage continues from there when run again."
+            )
+
+        server.administer("START DATABASE films WAIT")
+        assertThat(server.rows("MATCH (p:Person) RETURN p.uuid AS uuid ORDER BY uuid", "films"))
+            .containsExactly(mapOf("uuid" to "a"), mapOf("uuid" to "c"), mapOf("uuid" to "d"))
     }
 }
