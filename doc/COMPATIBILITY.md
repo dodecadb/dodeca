@@ -125,29 +125,27 @@ places the database on servers (see [Servers](#servers)), and
   `statusMessage`; with clustering the members follow in the background.
 - **Creating a database from a seed**, `CREATE DATABASE ... OPTIONS
   {existingData: 'use', seedURI: '...'}`, works as in Enterprise with a dump or
-  a full backup as the seed, from a file, a URL or cloud storage (see
-  [Cloud storage](#cloud-storage)). `dbms.databases.seed_from_uri_providers`
-  enables `FileSeedProvider` (`file:`) and `CloudSeedProvider` (`s3:`, `gs:`,
-  `azb:`) by default, where Enterprise enables `S3SeedProvider` and
-  `CloudSeedProvider`, and also takes `S3SeedProvider` and
-  `URLConnectionSeedProvider` (`http:`, `https:`, `ftp:`); other names fail
-  the server's start. As a DozenDB extension, a seed read by
-  `FileSeedProvider` or `CloudSeedProvider` may also be a differential
-  backup, restored with the backups it continues in its folder, or a folder of
-  backups, whose latest chain is restored, as Enterprise documents for cloud
-  seeds. A URI whose
-  scheme no enabled provider reads fails the command; a seed that cannot be
-  read fails the database, which `WAIT` and `SHOW DATABASES` show, and the
-  next start of the server tries it again.
-  `existingData: 'use'` without a seed uses the files that `neo4j-admin
-  database restore` put in place, and fails the command if there are none. A
-  seed is never combined with `OR REPLACE`. With clustering, one member
-  creates the database from the seed and the others copy it from that member:
-  the system leader, which must then be able to read the seed, or the member
-  that `existingDataSeedServer` names, which reads the seed, or without
-  `seedURI` uses the database that `neo4j-admin database restore` prepared on
-  it. `existingDataSeedServer` must name a member, and `existingData: 'use'`
-  needs it or a `seedURI`. Neo4j 5.26 keeps the seeding server in the
+  a full backup as the seed, from a file, a URL or cloud storage (see [Cloud
+  storage](#cloud-storage)). `dbms.databases.seed_from_uri_providers` enables
+  `FileSeedProvider` (`file:`) and `CloudSeedProvider` (`s3:`, `gs:`, `azb:`) by
+  default, where Enterprise enables `S3SeedProvider` and `CloudSeedProvider`,
+  and also takes `S3SeedProvider` and `URLConnectionSeedProvider` (`http:`,
+  `https:`, `ftp:`); other names fail the server's start. As a DozenDB
+  extension, a seed read by `FileSeedProvider` or `CloudSeedProvider` may also
+  be a differential backup, restored with the backups it continues in its
+  folder, or a folder of backups, whose latest chain is restored, as Enterprise
+  documents for cloud seeds. A URI whose scheme no enabled provider reads fails
+  the command; a seed that cannot be read fails the database, which `WAIT` and
+  `SHOW DATABASES` show, and the next start of the server tries it again.
+  `existingData: 'use'` without a seed uses the files that `neo4j-admin database
+  restore` put in place, and fails the command if there are none. A seed is
+  never combined with `OR REPLACE`. With clustering, one member creates the
+  database from the seed and the others copy it from that member: the system
+  leader, which must then be able to read the seed, or the member that
+  `existingDataSeedServer` names, which reads the seed, or without `seedURI`
+  uses the database that `neo4j-admin database restore` prepared on it.
+  `existingDataSeedServer` must name a member, and `existingData: 'use'` needs
+  it or a `seedURI`. Neo4j 5.26 keeps the seeding server in the
   `seeding_servers` property of the `Database` node, as DozenDB does;
   `designated_seeder` is deprecated.
 - **The default database** is the one `initial.dbms.default_database` names
@@ -407,24 +405,22 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   counted from the copy with the newest transaction; a member that does not
   answer shows neither. A standalone server shows one row, as Neo4j Community
   does.
-- **Cluster status endpoints** of the HTTP server tell load balancers where
-  to send writes and reads, as in Enterprise:
-  `/db/<database>/cluster/writable` answers `true` with 200 OK on the member
-  that leads the database, `read-only` on the other members that run it, and
-  `available` on every member that runs it; otherwise each answers `false`
-  with 404 Not Found. `/db/<database>/cluster/status` and
-  `/dbms/cluster/status` give Enterprise's JSON, without the deprecated
-  `raftCommandsPerSecond`.
-  On a secondary, `lastAppliedRaftIndex` is the Raft index of the last
-  transaction it pulled. Enterprise's documentation names the health field of
-  `/dbms/cluster/status` both `healthy` and `isHealthy`: DozenDB gives both.
-  As in Enterprise, the endpoints need a login unless
-  `dbms.security.cluster_status_auth_enabled` is `false`, and
-  `server.http_enabled_modules` turns them off without
-  `ENTERPRISE_MANAGEMENT_ENDPOINTS`. A server with clustering disabled has
-  none, as in Neo4j Community: they answer 404. Enterprise has no such mode,
-  as a single Enterprise server is a cluster of one; a DozenDB server answers
-  them as a cluster of one too. See [`OPERATOR_GUIDE.md`, "Cluster status
+- **Cluster status endpoints** of the HTTP server tell load balancers where to
+  send writes and reads, as in Enterprise: `/db/<database>/cluster/writable`
+  answers `true` with 200 OK on the member that leads the database, `read-only`
+  on the other members that run it, and `available` on every member that runs
+  it; otherwise each answers `false` with 404 Not Found.
+  `/db/<database>/cluster/status` and `/dbms/cluster/status` give Enterprise's
+  JSON, without the deprecated `raftCommandsPerSecond`. On a secondary,
+  `lastAppliedRaftIndex` is the Raft index of the last transaction it pulled.
+  Enterprise's documentation names the health field of `/dbms/cluster/status`
+  both `healthy` and `isHealthy`: DozenDB gives both. As in Enterprise, the
+  endpoints need a login unless `dbms.security.cluster_status_auth_enabled` is
+  `false`, and `server.http_enabled_modules` turns them off without
+  `ENTERPRISE_MANAGEMENT_ENDPOINTS`. A server with clustering disabled has none,
+  as in Neo4j Community: they answer 404. Enterprise has no such mode, as a
+  single Enterprise server is a cluster of one; a DozenDB server answers them as
+  a cluster of one too. See [`OPERATOR_GUIDE.md`, "Cluster status
   endpoints"](OPERATOR_GUIDE.md#cluster-status-endpoints).
 - **Linearizable reads**, DozenDB's own, are requested per transaction with
   the metadata key `dozendb.consistency` set to `linearizable`, or for every
@@ -545,15 +541,14 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   rebuild a member from nothing, remove it from the cluster, delete its whole
   data directory, and add it again as a new member.
 - **Database files put in place by hand.** A member that finds a database's
-  files applied up to a higher Raft index than its group reached there, as
-  after copying another database's or cluster's files into place while it was
-  down, checks the group's entry at that index against the files' last
-  transaction, once the group's log reaches it. If they differ, the copy on
-  that member is put in quarantine with a message saying how to recover:
-  delete the files there and restart the member, which then copies the
-  database, and lift the quarantine. Files applied up to an index the group
-  already reached on that member are not checked.
-  Create databases from other files with a seed instead.
+  files applied up to a higher Raft index than its group reached there, as after
+  copying another database's or cluster's files into place while it was down,
+  checks the group's entry at that index against the files' last transaction,
+  once the group's log reaches it. If they differ, the copy on that member is
+  put in quarantine with a message saying how to recover: delete the files there
+  and restart the member, which then copies the database, and lift the
+  quarantine. Files applied up to an index the group already reached on that
+  member are not checked. Create databases from other files with a seed instead.
 - **Stopped databases.** A member whose replicated database stops, for example
   after a panic, keeps taking part in the database's Raft group but no longer
   applies entries, and hands leadership to another member. Once a member's
@@ -988,8 +983,8 @@ ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
   way, that checkpoint completes without the limit, as Enterprise's
   `db.checkpoint()` documents.
 - **A limit too low for the write load** keeps checkpoints from completing:
-  pages are dirtied faster than a checkpoint flushes them. Transaction logs,
-  and on a cluster member the Raft log, are then not pruned. `check_point.duration`
+  pages are dirtied faster than a checkpoint flushes them. Transaction logs, and
+  on a cluster member the Raft log, are then not pruned. `check_point.duration`
   shows how long checkpoints take.
 - **Each database counts its own checkpoints**: the checkpoint log line and the
   `check_point.*` metrics (pages, I/Os, the limit, pauses) count the flushes of

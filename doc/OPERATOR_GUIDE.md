@@ -1,5 +1,32 @@
 # DozenDB operator guide
 
+How to install and run DozenDB, alone or as a cluster.
+[`COMPATIBILITY.md`](COMPATIBILITY.md) says where it differs from Neo4j
+Enterprise.
+
+- [Installing DozenDB](#installing-dozendb)
+- [Cluster members](#cluster-members)
+- [Servers](#servers)
+- [Placing databases](#placing-databases)
+- [Secondaries](#secondaries)
+- [Routing policies](#routing-policies)
+- [TLS between members](#tls-between-members)
+- [Writes on any member](#writes-on-any-member)
+- [Linearizable reads](#linearizable-reads)
+- [Where databases are led](#where-databases-are-led)
+- [Changing the default database](#changing-the-default-database)
+- [Upgrading DozenDB](#upgrading-dozendb)
+- [Backup and restore](#backup-and-restore)
+- [Importing and copying databases](#importing-and-copying-databases)
+- [Cloud storage](#cloud-storage)
+- [Disaster recovery](#disaster-recovery)
+- [Roles and privileges](#roles-and-privileges)
+- [Database aliases](#database-aliases)
+- [Checkpoints](#checkpoints)
+- [Page cache warmup](#page-cache-warmup)
+- [Monitoring](#monitoring)
+- [DozenDB's settings](#dozendbs-settings)
+
 ## Installing DozenDB
 
 DozenDB is one jar added to Neo4j Community's `lib/`. It runs only on the Neo4j
@@ -311,12 +338,12 @@ lost.
 
 ### Replacing a failed member
 
-Add the replacement and enable it, then deallocate the failed server: its
-copies are made again on the other servers, from the copies they hold, and it
-leaves each database's group. The replacement may have the failed server's
-address: until the failed server is dropped, the others still count it, down,
-and the replacement answers only for itself. Once `SHOW SERVERS` shows it `Deallocated`, drop
-it. Deallocating first works as well, if the other servers can take its
+Add the replacement and enable it, then deallocate the failed server: its copies
+are made again on the other servers, from the copies they hold, and it leaves
+each database's group. The replacement may have the failed server's address:
+until the failed server is dropped, the others still count it, down, and the
+replacement answers only for itself. Once `SHOW SERVERS` shows it `Deallocated`,
+drop it. Deallocating first works as well, if the other servers can take its
 copies.
 
 A database whose only copy is on the failed server cannot be copied: it stays
@@ -594,22 +621,21 @@ As enabling a server places nothing on it, reallocate to give it copies.
 ### Clients
 
 Routing tables, from any server, list the servers a database is placed on, so
-`neo4j://` drivers reach them wherever they connect; secondaries as readers
-(see [Reading from secondaries](#reading-from-secondaries)). Servers that stop
+`neo4j://` drivers reach them wherever they connect; secondaries as readers (see
+[Reading from secondaries](#reading-from-secondaries)). Servers that stop
 answering drop out of the tables within about 10 seconds, and a driver can name
 a routing policy that chooses among the others by their tags (see [Routing
-policies](#routing-policies)). The leader is
-listed as the writer, and as a reader too only with
-`dbms.routing.reads_on_writers_enabled=true` (dynamic, per server), or while
-no other server can read the database. A server that does
-not host the database answers from what the others last told it, and a server
-that starts or stops leading a database tells the others at once, so that their
+policies](#routing-policies)). The leader is listed as the writer, and as a
+reader too only with `dbms.routing.reads_on_writers_enabled=true` (dynamic, per
+server), or while no other server can read the database. A server that does not
+host the database answers from what the others last told it, and a server that
+starts or stops leading a database tells the others at once, so that their
 routing tables follow a new leader within moments. When what they told it names
 no leader, or no server that runs the database, it asks them first. It waits up
 to 1 second for each server's answer, and up to 3 seconds in all, so a server
 that does not answer at all delays it by no more than that. A transaction that
-reaches a server that does not host its database runs on one that does, when
-its client lets the server route it (see [Writes on any
+reaches a server that does not host its database runs on one that does, when its
+client lets the server route it (see [Writes on any
 member](#writes-on-any-member)): a write on the leader, a read on any server
 that runs the database. Otherwise it fails, saying where to connect.
 
@@ -710,14 +736,15 @@ the leader when the client lets the server route them (see
 [Writes on any member](#writes-on-any-member)).
 
 A read on a secondary sees what it pulled, about a pull interval behind the
-primaries. A read whose bookmarks name a transaction the secondary lacks has
-it pull from the leader at once, and waits for it as on any server
+primaries. A read whose bookmarks name a transaction the secondary lacks has it
+pull from the leader at once, and waits for it as on any server
 (`db.transaction.bookmark_ready_timeout`), so that a driver session reads its
 own writes without waiting for the next pull. A linearizable read (see
-[Linearizable reads](#linearizable-reads)) on a secondary first asks a
-primary for the last transaction acknowledged before the read, then pulls
-until it has it; it fails as on a follower when no primary answers. A backup taken from a secondary does
-the same first, so that it holds every write acknowledged before it started.
+[Linearizable reads](#linearizable-reads)) on a secondary first asks a primary
+for the last transaction acknowledged before the read, then pulls until it has
+it; it fails as on a follower when no primary answers. A backup taken from a
+secondary does the same first, so that it holds every write acknowledged before
+it started.
 
 `SHOW DATABASES` lists each secondary with the role `secondary`, `writer`
 false, its `lastCommittedTxn`, and as `replicationLag` how many transactions
@@ -885,10 +912,9 @@ What a policy chooses:
   `all()` unless set.
 
 Names have letters, digits and underscores, and are case-sensitive. A server
-with a policy whose name has other characters, or whose rules do not parse,
-does not start. A
-driver that names a policy the server does not have cannot use the cluster:
-its routing requests fail with `Neo.ClientError.Routing.RoutingFailed`,
+with a policy whose name has other characters, or whose rules do not parse, does
+not start. A driver that names a policy the server does not have cannot use the
+cluster: its routing requests fail with `Neo.ClientError.Routing.RoutingFailed`,
 "Policy definition for 'eu' could not be found. The routing policies of this
 server are default, eu_west, eu_west_only."
 
@@ -1150,14 +1176,14 @@ Leadership moves:
   (below), so that a stopping member spreads its leaderships over the others.
 - **When a database is read-only on the member that leads it**, by
   `server.databases.read_only`, `server.databases.default_to_read_only` or
-  `server.databases.writable`, which are dynamic and set per member: the
-  member hands the leadership to the member where the database is writable
-  that leads the fewest databases, those with the database's priority tag
-  first, within a second or two. Meanwhile routing
-  tables list no writer for the database, so routing drivers wait and retry.
-  A database that is read-only on every member keeps its leader, its writes
-  fail with `Neo.ClientError.General.WriteOnReadOnlyAccessDatabase`, and the
-  leader logs a warning once.
+  `server.databases.writable`, which are dynamic and set per member: the member
+  hands the leadership to the member where the database is writable that leads
+  the fewest databases, those with the database's priority tag first, within a
+  second or two. Meanwhile routing tables list no writer for the database, so
+  routing drivers wait and retry. A database that is read-only on every member
+  keeps its leader, its writes fail with
+  `Neo.ClientError.General.WriteOnReadOnlyAccessDatabase`, and the leader logs a
+  warning once.
 - **To a member with the database's priority tag**, a server tag that
   `db.cluster.raft.leader_transfer.priority_tag` names for every database, or
   `db.cluster.raft.leader_transfer.priority_tag.<database>` for one, in place
@@ -1172,17 +1198,17 @@ Leadership moves:
   setting's name only up to the dot, and ignores the setting.
 - **To balance the leaderships**, with
   `dbms.cluster.raft.leader_transfer.balancing_strategy=EQUAL_BALANCING`, the
-  default. Once the leaders have stayed put on every member for 10 seconds,
-  the member that leads the most databases hands one over to the member that
-  leads the fewest, if they lead at least two apart. One move at a time, until
-  every member leads as many databases as the others, give or take one; every
-  database counts the same, `system` too. Databases with a priority tag count
-  but stay where the priority puts them. This is how a member that comes
-  back from a restart gets its share again, once it has caught up with the
-  writes it missed, and how a new database, which
-  starts led by the member that created it (the leader of `system`), finds
-  its place. `NO_BALANCING` leaves the leaders where elections and handovers
-  put them. The setting is dynamic; give every member the same.
+  default. Once the leaders have stayed put on every member for 10 seconds, the
+  member that leads the most databases hands one over to the member that leads
+  the fewest, if they lead at least two apart. One move at a time, until every
+  member leads as many databases as the others, give or take one; every database
+  counts the same, `system` too. Databases with a priority tag count but stay
+  where the priority puts them. This is how a member that comes back from a
+  restart gets its share again, once it has caught up with the writes it missed,
+  and how a new database, which starts led by the member that created it (the
+  leader of `system`), finds its place. `NO_BALANCING` leaves the leaders where
+  elections and handovers put them. The setting is dynamic; give every member
+  the same.
 
 A member that hands a leadership over on purpose stops taking new commits of
 the database, lets the commits under way finish, then hands over, which
@@ -1498,8 +1524,7 @@ several files each. Take a backup before, as Neo4j Enterprise advises.
   strings, or as integers with `--id-type=integer` or an `id-type` in the
   braces, as `"id:ID{label:Movie,id-type:long}"`, quoted for its comma.
   Relationship files refer to nodes by these keys, new ones and those the
-  database has. A new node gets the label of its keys if it
-  lacks it.
+  database has. A new node gets the label of its keys if it lacks it.
 - **Duplicates.** A node whose key the database has, or another node of the
   increment has, fails the import, or is skipped with
   `--skip-duplicate-nodes`; existing nodes are not changed. A relationship
@@ -1919,7 +1944,11 @@ again:
 2. Start every member. On the member where `CALL dozendb.cluster.status()`
    shows `system` with the role `LEADER`, give the role back; the other
    members refuse the command with `NotALeader`:
-   `bin/cypher-shell -a bolt://localhost:7687 -d system "GRANT ROLE admin TO neo4j"`.
+
+   ```sh
+   bin/cypher-shell -a bolt://localhost:7687 -d system "GRANT ROLE admin TO neo4j"
+   ```
+
    With authentication disabled, every command is allowed, including those
    about `IMMUTABLE` roles and privileges. A user whose password is lost gets
    a new one the same way:
@@ -2289,13 +2318,13 @@ JSON, and `/dbms/cluster/status` that of every database the member hosts, as
  "leader":"5f0d2a9b-8e47-4c39-a1d6-7e3b9c2f4d58","millisSinceLastLeaderMessage":84}
 ```
 
-`core` is false on a secondary, which does not take part in the database's
-Raft group (`participatingInRaftGroup`); its `lastAppliedRaftIndex` is the
-Raft index of the last transaction it pulled. `leader` is missing while the
-member knows no leader. `millisSinceLastLeaderMessage`, the milliseconds since
-the member last heard from the leader, is 0 on the leader, and missing on a
-secondary or while the member knows no leader. `isHealthy` is false once the
-database failed on the member. A database the member does not host answers 404 on every path.
+`core` is false on a secondary, which does not take part in the database's Raft
+group (`participatingInRaftGroup`); its `lastAppliedRaftIndex` is the Raft index
+of the last transaction it pulled. `leader` is missing while the member knows no
+leader. `millisSinceLastLeaderMessage`, the milliseconds since the member last
+heard from the leader, is 0 on the leader, and missing on a secondary or while
+the member knows no leader. `isHealthy` is false once the database failed on the
+member. A database the member does not host answers 404 on every path.
 
 The endpoints need a login, as the rest of the HTTP API does, unless
 `dbms.security.cluster_status_auth_enabled=false` is set, for load balancers
@@ -2430,24 +2459,25 @@ Every member writes `logs/security.log`:
   `[alice:bob]: impersonating user bob logged in` when `alice`
   impersonates `bob`.
 
-For JSON lines, use
-`<JsonTemplateLayout eventTemplateUri="classpath:org/neo4j/logging/StructuredJsonLayout.json"/>`
-in the `SecurityLog` appender.
+For JSON lines, use Neo4j's layout in the `SecurityLog` appender:
+
+```
+<JsonTemplateLayout eventTemplateUri="classpath:org/neo4j/logging/StructuredJsonLayout.json"/>
+```
 
 ### Changing settings while running
 
-`CALL dbms.setConfigValue('db.logs.query.enabled', 'INFO')` changes a
-dynamic setting at once, until the member restarts; an empty value restores
-the default. It needs the `admin` role and changes only the member it runs
-on: with clustering, run it on each member, connecting to each directly
-(`bolt://`), and change `neo4j.conf` too so that the change outlasts a
-restart. A member with `dbms.dozendb.routing.forward_bolt_writes=true`
-forwards write transactions to the leader, which the procedure would change
-instead: run it in a read transaction there, as with Cypher Shell's
-`--access-mode read`. `SHOW SETTINGS YIELD name, isDynamic WHERE isDynamic` lists the
-dynamic settings. `CALL dbms.checkConfigValue('db.logs.query.enabled', 'INFO')`
-tells whether a value is valid for a setting, dynamic or not, without changing
-it.
+`CALL dbms.setConfigValue('db.logs.query.enabled', 'INFO')` changes a dynamic
+setting at once, until the member restarts; an empty value restores the default.
+It needs the `admin` role and changes only the member it runs on: with
+clustering, run it on each member, connecting to each directly (`bolt://`), and
+change `neo4j.conf` too so that the change outlasts a restart. A member with
+`dbms.dozendb.routing.forward_bolt_writes=true` forwards write transactions to
+the leader, which the procedure would change instead: run it in a read
+transaction there, as with Cypher Shell's `--access-mode read`. `SHOW SETTINGS
+YIELD name, isDynamic WHERE isDynamic` lists the dynamic settings. `CALL
+dbms.checkConfigValue('db.logs.query.enabled', 'INFO')` tells whether a value is
+valid for a setting, dynamic or not, without changing it.
 
 `server.dynamic.setting.allowlist` limits the settings the procedure may
 change: setting names, comma separated, in which `*` stands for any text, such
