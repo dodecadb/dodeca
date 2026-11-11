@@ -114,9 +114,12 @@ Docker's VM kills containers, so pass `-Dit.forks=1`.
 
 Most of a test's time goes to forcing commits to disk. On macOS,
 `scripts/test-ramdisk.sh` creates a RAM disk that the build keeps test data on
-while it is mounted, which makes the tests several times faster; on Linux,
-pass `-Dtest.tmpdir=/dev/shm`. The directories of failed tests are on it too,
-until it is ejected or the Mac restarts; run the script again after a restart.
+while it is mounted, which makes the tests several times faster. The
+directories of failed tests are on it too, until it is ejected or the Mac
+restarts; run the script again after a restart. On Linux, pass
+`-Dtest.tmpdir=/dev/shm`, or another RAM disk, as long as it allows running
+programs: the tests' JVMs unpack native libraries there. Containers mount
+`/dev/shm` with `noexec`; mount a `tmpfs` without it instead.
 
 ## License
 

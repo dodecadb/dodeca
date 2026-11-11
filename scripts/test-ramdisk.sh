@@ -5,7 +5,7 @@
 set -eu
 volume=/Volumes/DozenDbTests
 if [ "$(uname)" != Darwin ]; then
-  echo "Not macOS: pass -Dtest.tmpdir=/dev/shm, or another RAM disk, to the build" >&2
+  echo "Not macOS: pass -Dtest.tmpdir=/dev/shm, or another RAM disk that allows running programs, to the build" >&2
   exit 1
 fi
 if [ -d "$volume" ]; then
