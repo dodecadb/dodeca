@@ -29,7 +29,7 @@ class UpstreamSelection(
     private val strategies: List<String>,
     private val toTags: () -> Collection<String>,
     private val toGroups: () -> Collection<String>,
-    private val rules: UpstreamRules,
+    private val rules: ServerRules,
     private val random: Random = Random.Default,
 ) {
     /**
@@ -68,7 +68,7 @@ class UpstreamSelection(
             TO_GROUP -> tagged(toGroups())
             LEADER_ONLY -> candidates.firstOrNull { it.leader }
             USER_DEFINED,
-            USER_DEFINED_ALIAS -> rules.select(candidates).randomOrNull(random)
+            USER_DEFINED_ALIAS -> rules.select(candidates) { it.tags }.randomOrNull(random)
             else -> throw IllegalArgumentException("unknown upstream strategy $strategy")
         }
     }
@@ -111,125 +111,5 @@ class UpstreamSelection(
 
         /** The names among [strategies] that are no strategy. */
         fun unknown(strategies: List<String>): List<String> = strategies.filter { it !in NAMES }
-    }
-}
-
-/**
- * Neo4j Enterprise's rules for a user-defined upstream strategy,
- * `server.cluster.catchup.user_defined_upstream_strategy`: rules separated by `;`, asked in order,
- * the first that passes any server wins. A rule is a chain of filters joined by `->`, which starts
- * from every server: `tags(a, b)` passes the servers with any of the tags (`groups(...)` is its
- * deprecated name), `min(n)` passes the servers it is given if there are at least n, else none,
- * `all()` passes every server, and `halt()`, which may only end the last rule, passes none and ends
- * the rules. Unless they end so, `all()` follows the last rule.
- *
- * A comma between rules, which one of Enterprise's examples has, is refused: its meaning is not
- * documented.
- */
-class UpstreamRules
-private constructor(
-    private val rules: List<List<Filter>>,
-    private val halted: Boolean,
-) {
-    private sealed interface Filter {
-        fun pass(servers: List<UpstreamCandidate>): List<UpstreamCandidate>
-
-        data class Tags(val tags: Set<String>) : Filter {
-            override fun pass(servers: List<UpstreamCandidate>) = servers.filter { server ->
-                server.tags.any { it in tags }
-            }
-        }
-
-        data class Min(val count: Int) : Filter {
-            override fun pass(servers: List<UpstreamCandidate>) =
-                if (servers.size >= count) servers else emptyList()
-        }
-
-        data object All : Filter {
-            override fun pass(servers: List<UpstreamCandidate>) = servers
-        }
-
-        data object Halt : Filter {
-            override fun pass(servers: List<UpstreamCandidate>) = emptyList<UpstreamCandidate>()
-        }
-    }
-
-    /** The servers of [candidates] that the first rule with a result passes, in their order. */
-    fun select(candidates: List<UpstreamCandidate>): List<UpstreamCandidate> {
-        for (rule in rules) {
-            val passed = rule.fold(candidates) { servers, filter -> filter.pass(servers) }
-            if (passed.isNotEmpty()) return passed
-        }
-        return if (halted) emptyList() else candidates
-    }
-
-    companion object {
-        /** The rules [text] writes. */
-        fun parse(text: String): UpstreamRules {
-            require(text.count { it == '(' } == text.count { it == ')' }) {
-                "unbalanced parentheses in upstream rules '$text'"
-            }
-            var depth = 0
-            for (character in text) {
-                when (character) {
-                    '(' -> depth++
-                    ')' -> depth--
-                    ',' ->
-                        require(depth > 0) {
-                            "a comma separates rules in '$text'; separate them with ';'"
-                        }
-                }
-                require(depth in 0..1) { "unbalanced parentheses in upstream rules '$text'" }
-            }
-            val rules =
-                text
-                    .split(';')
-                    .map { it.trim() }
-                    .filter { it.isNotEmpty() }
-                    .map { rule ->
-                        rule.split("->").map { filter(it.trim(), text) }
-                    }
-            for ((index, rule) in rules.withIndex()) {
-                for ((position, filter) in rule.withIndex()) {
-                    require(
-                        filter != Filter.Halt ||
-                            (index == rules.lastIndex && position == rule.lastIndex)
-                    ) {
-                        "halt() ends the last rule only, in '$text'"
-                    }
-                }
-            }
-            return UpstreamRules(rules, rules.lastOrNull()?.lastOrNull() == Filter.Halt)
-        }
-
-        private fun filter(text: String, rules: String): Filter {
-            val match =
-                Regex("""([A-Za-z]+)\s*\((.*)\)""").matchEntire(text)
-                    ?: throw IllegalArgumentException("'$text' is no filter, in '$rules'")
-            val name = match.groupValues[1]
-            val arguments =
-                match.groupValues[2].split(',').map { it.trim() }.filter { it.isNotEmpty() }
-            fun none(filter: Filter): Filter {
-                require(arguments.isEmpty()) { "$name() takes no arguments, in '$rules'" }
-                return filter
-            }
-            return when (name) {
-                "tags",
-                "groups" -> {
-                    require(arguments.isNotEmpty()) { "$name() needs a tag, in '$rules'" }
-                    Filter.Tags(arguments.toSet())
-                }
-                "min" -> {
-                    val count = arguments.singleOrNull()?.toIntOrNull()
-                    require(count != null && count > 0) {
-                        "min() needs a number of servers above 0, in '$rules'"
-                    }
-                    Filter.Min(count)
-                }
-                "all" -> none(Filter.All)
-                "halt" -> none(Filter.Halt)
-                else -> throw IllegalArgumentException("unknown filter $name, in '$rules'")
-            }
-        }
     }
 }

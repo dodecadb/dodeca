@@ -3,7 +3,6 @@ package org.dozendb.core.servers
 import java.util.UUID
 import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
-import org.assertj.core.api.Assertions.catchThrowable
 import org.dozendb.core.servers.CopyMode.PRIMARY
 import org.dozendb.core.servers.CopyMode.SECONDARY
 import org.junit.jupiter.api.Test
@@ -41,7 +40,7 @@ class UpstreamSelectionTest {
             strategies.toList(),
             toTags = { toTags },
             toGroups = { emptyList() },
-            rules = UpstreamRules.parse(rules),
+            rules = ServerRules.parse(rules),
             random = random,
         )
 
@@ -125,35 +124,6 @@ class UpstreamSelectionTest {
             )
             .describedAs("all() follows the rules unless halt() ends them")
             .isEqualTo(south)
-    }
-
-    @Test
-    fun `rules filter, pass at least a number of servers or none, and refuse what is unclear`() {
-        val rules = UpstreamRules.parse("tags(north, west) -> min(3); tags(east); halt()")
-        assertThat(rules.select(all)).containsExactly(follower, north, north2)
-        assertThat(rules.select(all - north)).containsExactly(leader)
-        assertThat(rules.select(listOf(south))).isEmpty()
-        assertThat(UpstreamRules.parse("groups(south);").select(all)).containsExactly(south)
-        assertThat(UpstreamRules.parse("").select(all)).isEqualTo(all)
-        assertThat(UpstreamRules.parse("all()").select(all)).isEqualTo(all)
-
-        for ((text, error) in
-            listOf(
-                "tags(north)->min(3), tags(east)" to "a comma separates rules",
-                "tags()" to "tags() needs a tag",
-                "min(0)" to "min() needs a number of servers above 0",
-                "min(x)" to "min() needs a number of servers above 0",
-                "halt(); tags(east)" to "halt() ends the last rule only",
-                "halt()->tags(east)" to "halt() ends the last rule only",
-                "near(east)" to "unknown filter near",
-                "tags(east" to "unbalanced parentheses",
-                "all(east)" to "all() takes no arguments",
-            )) {
-            assertThat(catchThrowable { UpstreamRules.parse(text) })
-                .describedAs(text)
-                .isInstanceOf(IllegalArgumentException::class.java)
-                .hasMessageContaining(error)
-        }
     }
 
     @Test

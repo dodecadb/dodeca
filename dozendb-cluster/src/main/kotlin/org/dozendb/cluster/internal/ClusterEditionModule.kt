@@ -96,8 +96,8 @@ import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.ServerRecord
 import org.dozendb.core.servers.ServerRecords
+import org.dozendb.core.servers.ServerRules
 import org.dozendb.core.servers.Servers
-import org.dozendb.core.servers.UpstreamRules
 import org.dozendb.core.servers.UpstreamSelection
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.bolt.tx.TransactionManager
@@ -408,7 +408,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     toTags = { config.get(ClusterSettings.connectRandomlyToServerTags) },
                     toGroups = { config.get(ClusterSettings.connectRandomlyToServerGroup) },
                     rules =
-                        UpstreamRules.parse(
+                        ServerRules.parse(
                             config.get(ClusterSettings.userDefinedUpstreamStrategy).orEmpty()
                         ),
                 ),

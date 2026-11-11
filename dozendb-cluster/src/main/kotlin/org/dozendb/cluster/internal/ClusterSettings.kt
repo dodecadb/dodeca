@@ -6,7 +6,7 @@ import org.dozendb.cluster.FormatLevels
 import org.dozendb.cluster.internal.leadership.BalancingStrategy
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.core.servers.CopyMode
-import org.dozendb.core.servers.UpstreamRules
+import org.dozendb.core.servers.ServerRules
 import org.dozendb.core.servers.UpstreamSelection
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -43,6 +43,9 @@ import org.neo4j.graphdb.config.Setting
 class ClusterSettings : SettingsDeclaration {
     companion object {
         const val DEFAULT_RAFT_PORT = 7700
+
+        /** The load balancing plugin of routing policies, the only one. */
+        const val SERVER_POLICIES = "server_policies"
 
         @JvmField
         @field:Description(
@@ -174,6 +177,41 @@ class ClusterSettings : SettingsDeclaration {
         )
         val readsOnPrimaries: Setting<Boolean> =
             newBuilder("dbms.routing.reads_on_primaries_enabled", BOOL, true).immutable().build()
+
+        @JvmField
+        @field:Description(
+            "The load balancing plugin that makes routing tables: server_policies, the only one, " +
+                "which applies the routing policy a driver names " +
+                "(dbms.routing.load_balancing.config.server_policies.<name>). Named like Neo4j " +
+                "Enterprise's setting."
+        )
+        val loadBalancingPlugin: Setting<String> =
+            newBuilder("dbms.routing.load_balancing.plugin", STRING, SERVER_POLICIES)
+                .addConstraint(
+                    object : SettingConstraint<String>() {
+                        override fun validate(value: String?, config: Configuration) {
+                            require(value == SERVER_POLICIES) {
+                                "the load balancing plugin $value does not exist; the only one " +
+                                    "is $SERVER_POLICIES"
+                            }
+                        }
+
+                        override fun getDescription() = "$SERVER_POLICIES."
+                    }
+                )
+                .immutable()
+                .build()
+
+        @JvmField
+        @field:Description(
+            "Whether routing tables list their routers and readers in a new random order each " +
+                "time one is made, so that drivers spread their first contacts. Named like Neo4j " +
+                "Enterprise's setting."
+        )
+        val loadBalancingShuffle: Setting<Boolean> =
+            newBuilder("dbms.routing.load_balancing.shuffle_enabled", BOOL, true)
+                .immutable()
+                .build()
 
         @JvmField
         @field:Description(
@@ -339,7 +377,7 @@ class ClusterSettings : SettingsDeclaration {
                 .addConstraint(
                     object : SettingConstraint<String>() {
                         override fun validate(value: String?, config: Configuration) {
-                            if (value != null) UpstreamRules.parse(value)
+                            if (value != null) ServerRules.parse(value)
                         }
 
                         override fun getDescription() = "Rules that parse."

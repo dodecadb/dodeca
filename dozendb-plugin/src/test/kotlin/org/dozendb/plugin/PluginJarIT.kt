@@ -192,6 +192,11 @@ class PluginJarIT {
                 "org.dozendb.core.DozenDbSettingsMigrator",
                 "org.dozendb.cluster.internal.ClusterSettingsMigrator",
             )
+        assertThat(services("org.neo4j.configuration.GroupSetting"))
+            .containsExactlyInAnyOrder(
+                "org.dozendb.cluster.internal.DatabasePriorityTag",
+                "org.dozendb.cluster.internal.routing.ServerPolicy",
+            )
     }
 
     @Test
