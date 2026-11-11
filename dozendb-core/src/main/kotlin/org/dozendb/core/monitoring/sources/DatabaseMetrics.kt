@@ -2,6 +2,7 @@ package org.dozendb.core.monitoring.sources
 
 import java.util.concurrent.TimeUnit
 import org.dozendb.core.monitoring.MetricRegistry
+import org.dozendb.core.pagecache.PageCacheWarmup
 import org.neo4j.internal.schema.IndexType
 import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.kernel.api.database.DatabaseSizeService
@@ -44,6 +45,9 @@ internal object DatabaseMetrics {
         storeSizes(metrics, database, sizes)
         indexes(metrics, dependencies.resolveDependency(DatabaseIndexStats::class.java))
         cypher(metrics, dependencies.resolveDependency(QueryCacheStatistics::class.java))
+        dependencies.resolveTypeDependencies(PageCacheWarmup::class.java).firstOrNull()?.let {
+            warmup(metrics, it)
+        }
 
         val heap = metrics.histogram("transaction.tx_size_heap", "Heap bytes of each transaction.")
         val native =
@@ -105,6 +109,21 @@ internal object DatabaseMetrics {
         }
         metrics.counter("transaction.last_closed_tx_id", "The last closed transaction id.") {
             ids.lastClosedTransactionId
+        }
+    }
+
+    private fun warmup(metrics: MetricRegistry.MetricGroup, warmup: PageCacheWarmup) {
+        metrics.counter(
+            "page_cache.warmup.pages_loaded",
+            "Pages the page cache warmup, or preload, loaded since the database started.",
+        ) {
+            warmup.pagesLoaded
+        }
+        metrics.gauge(
+            "page_cache.warmup.duration",
+            "Milliseconds the page cache warmup, or preload, took, once it ended.",
+        ) {
+            warmup.durationMillis
         }
     }
 

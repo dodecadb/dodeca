@@ -151,6 +151,8 @@ class MetricSourcesTest {
                 .containsKeys(
                     "neo4j_database_neo4j_pool_transaction_neo4j_used_heap",
                     "neo4j_database_system_transaction_committed_total",
+                    "neo4j_database_neo4j_page_cache_warmup_pages_loaded_total",
+                    "neo4j_database_neo4j_page_cache_warmup_duration",
                 )
         }
     }

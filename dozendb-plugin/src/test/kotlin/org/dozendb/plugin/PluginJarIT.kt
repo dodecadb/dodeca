@@ -160,7 +160,10 @@ class PluginJarIT {
                 "org.dozendb.shaded.com.azure.core.http.jdk.httpclient.JdkHttpClientProvider"
             )
         assertThat(services("org.neo4j.kernel.extension.ExtensionFactory"))
-            .containsExactly("org.dozendb.backup.source.BackupExtensionFactory")
+            .containsExactlyInAnyOrder(
+                "org.dozendb.backup.source.BackupExtensionFactory",
+                "org.dozendb.core.pagecache.PageCacheWarmupExtensionFactory",
+            )
         assertThat(services("org.neo4j.kernel.impl.constraints.ConstraintSemantics"))
             .containsExactly("org.dozendb.core.constraints.DozenDbConstraintSemantics")
         assertThat(services("org.neo4j.cli.CommandProvider"))
