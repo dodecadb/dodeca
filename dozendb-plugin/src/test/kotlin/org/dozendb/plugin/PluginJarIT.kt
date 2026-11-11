@@ -172,6 +172,7 @@ class PluginJarIT {
                 "org.dozendb.cluster.internal.admin.UnbindCommandProvider",
                 "org.dozendb.cluster.internal.admin.UnbindSystemCommandProvider",
                 "org.dozendb.core.importer.DozenDbImportCommandProvider",
+                "org.dozendb.core.copy.CopyCommandProvider",
             )
         assertThat(services("org.neo4j.internal.batchimport.IncrementalBatchImporterFactory"))
             .containsExactly("org.dozendb.core.importer.DozenDbIncrementalImporterFactory")

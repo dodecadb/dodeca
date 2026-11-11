@@ -1,6 +1,7 @@
 package org.dozendb.core.store
 
 import java.nio.ByteBuffer
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.UUID
@@ -154,10 +155,16 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
         }
     }
 
+    /** Replaces [target] with [staging], copied if it is on another file system. */
     private fun replace(staging: Path, target: Path) {
         fs.deleteRecursively(target)
         fs.mkdirs(target.parent)
-        fs.renameFile(staging, target, StandardCopyOption.ATOMIC_MOVE)
+        try {
+            fs.renameFile(staging, target, StandardCopyOption.ATOMIC_MOVE)
+        } catch (_: AtomicMoveNotSupportedException) {
+            fs.copyRecursively(staging, target)
+            fs.deleteRecursively(staging)
+        }
     }
 
     companion object {
@@ -167,6 +174,9 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
          * database from.
          */
         const val RESTORED = "seed"
+
+        /** The purpose of the copy `neo4j-admin database copy` makes of a database onto itself. */
+        const val COPIED = "storecopy"
 
         private const val MARKER_PREFIX = ".dozendb-incomplete-"
         private const val SEED_PREFIX = ".dozendb-seedmark-"
