@@ -76,6 +76,8 @@ initial.dbms.default_primaries_count=3
   (see [Raising the default](#raising-the-default)). It is read at the
   cluster's first start.
 
+[DozenDB's settings](#dozendbs-settings) lists the others of DozenDB's own.
+
 Set the same initial password on every member, as with `neo4j-admin dbms
 set-initial-password` or Docker's `NEO4J_AUTH`: one of them creates the
 users, and which one is decided at the first start.
@@ -2438,3 +2440,32 @@ it.
 change: setting names, comma separated, in which `*` stands for any text, such
 as `db.logs.query.*,dbms.max_databases`. The default `*` lets every dynamic
 setting change, and an empty value none. It is read at start.
+
+## DozenDB's settings
+
+Settings that Neo4j Enterprise has keep Enterprise's names and work as its
+operations manual describes them; the sections above say where DozenDB
+differs, and `COMPATIBILITY.md` lists them. DozenDB's own settings, for what
+Enterprise does its own way or does not have, have `dozendb` in their names:
+
+| Setting | Default | Dynamic | |
+|---|---|---|---|
+| `dbms.dozendb.cluster.enabled` | `false` | No | Makes the server a cluster member; otherwise it runs alone. See [Forming a cluster](#forming-a-cluster). |
+| `dbms.dozendb.cluster.initial_members` | none | No | The Raft addresses of the members that form the cluster, this one included. Read at a member's first start, and when servers re-form `system` (see [Recovering the system database](#recovering-the-system-database)). |
+| `server.dozendb.cluster.listen_address` | `:7700` | No | Where the member's Raft server listens: Raft, membership, probes, copies and pulls. A port alone takes the host of `server.default_listen_address`. |
+| `server.dozendb.cluster.advertised_address` | `:7700` | No | The member's Raft address, which the others reach, and which names it in `initial_members` and `dozendb.cluster.addMember`. A port alone takes the host of `server.default_advertised_address`. See [Changing an address](#changing-an-address). |
+| `server.dozendb.cluster.raft_directory` | `raft` | No | Where the member keeps its Raft logs, one directory per database, and its membership record; relative to `server.directories.data`. Never delete it while the member keeps its id (`COMPATIBILITY.md`, "Lost databases"). |
+| `server.dozendb.cluster.single_fsync` | `true` | No | Commits to replicated databases force only the Raft log to disk; `false` forces Neo4j's transaction log at every commit too. See `COMPATIBILITY.md`, "Durability (single fsync)". |
+| `dbms.dozendb.cluster.election_timeout_min`, `election_timeout_max` | `1s`, `2s` | No | A primary that hears nothing from its database's leader for a random time between the two starts an election, so they bound how soon a failed leader is replaced. Shorter timeouts fail over sooner, and on a slow or busy network start elections that are not needed. At least 100 ms and 200 ms, the maximum above the minimum; give every member the same. |
+| `dbms.dozendb.routing.forward_bolt_writes` | `false` | Yes | Forwards write transactions of `bolt://` connections to the leader. See [Writes on any member](#writes-on-any-member). |
+| `dbms.dozendb.reads.default_consistency` | `CAUSAL` | No | `LINEARIZABLE` makes every transaction that names no consistency a linearizable read. See [Linearizable reads](#linearizable-reads). |
+
+DozenDB's settings under `internal.`, such as
+`internal.dbms.dozendb.cluster.raft_log_segment_size`, are for tests, and may
+change or go in any version. On a running server,
+
+```cypher
+SHOW SETTINGS YIELD name, value, isDynamic, description WHERE name CONTAINS 'dozendb'
+```
+
+shows DozenDB's settings with their values.
