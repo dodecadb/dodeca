@@ -1,0 +1,40 @@
+# Weekly pull requests for what DozenDB depends on, each tested by CI (doc/RELEASING.md). Security
+# updates come at once, in pull requests of their own.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    # New versions are proposed once they have been out for a week, not the day they appear.
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: maven
+    directory: /
+    schedule:
+      interval: weekly
+    # Not for Neo4j: its patches carry Neo4j's security fixes.
+    cooldown:
+      default-days: 7
+      exclude: ["org.neo4j:*"]
+    groups:
+      # A new Neo4j 5.26 patch: what a DozenDB release follows, so on its own.
+      neo4j:
+        patterns: ["org.neo4j:*"]
+      dependencies:
+        patterns: ["*"]
+        exclude-patterns: ["org.neo4j:*"]
+    ignore:
+      # DozenDB follows Neo4j 5.26's patches. Moving to another Neo4j line is a decision, not an
+      # update.
+      - dependency-name: "org.neo4j:*"
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # The versions Neo4j ships in lib/, which DozenDB runs on: they change with Neo4j, by hand.
+      - dependency-name: "org.slf4j:*"
+      - dependency-name: "jakarta.ws.rs:jakarta.ws.rs-api"
+      - dependency-name: "net.java.dev.jna:*"
+      - dependency-name: "com.fasterxml.jackson.core:*"
