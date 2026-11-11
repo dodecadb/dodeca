@@ -171,7 +171,10 @@ class PluginJarIT {
                 "org.dozendb.backup.cli.AggregateBackupCommandProvider",
                 "org.dozendb.cluster.internal.admin.UnbindCommandProvider",
                 "org.dozendb.cluster.internal.admin.UnbindSystemCommandProvider",
+                "org.dozendb.core.importer.DozenDbImportCommandProvider",
             )
+        assertThat(services("org.neo4j.internal.batchimport.IncrementalBatchImporterFactory"))
+            .containsExactly("org.dozendb.core.importer.DozenDbIncrementalImporterFactory")
         assertThat(services("org.neo4j.dbms.archive.CheckDatabase"))
             .containsExactly("org.dozendb.backup.cli.CheckBackup")
         assertThat(
