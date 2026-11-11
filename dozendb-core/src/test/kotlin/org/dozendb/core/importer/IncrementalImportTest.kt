@@ -58,6 +58,9 @@ class IncrementalImportTest {
         return Result(exitCode, out.toString(), err.toString())
     }
 
+    private val report: Path
+        get() = root.resolve("import.report")
+
     /** `--nodes` and `--relationships` take several files: the database comes first. */
     private fun incremental(stage: String, database: String, vararg arguments: String) =
         admin(
@@ -66,6 +69,7 @@ class IncrementalImportTest {
             "incremental",
             "--force",
             "--stage=$stage",
+            "--report-file=$report",
             database,
             *arguments,
         )
@@ -233,5 +237,157 @@ class IncrementalImportTest {
         assertThat(result.exitCode).isNotZero
         assertThat(result.err)
             .contains("Database 'series' does not exist: an incremental import adds to an existing")
+    }
+
+    /** Films with :Person {uuid} keys 'a' and 'b', the database stopped; their node ids. */
+    private fun persons(): Map<Any, Long> {
+        server.rows("CREATE CONSTRAINT FOR (p:Person) REQUIRE p.uuid IS UNIQUE", "films")
+        server.rows("CREATE (:Person {uuid: 'a'}), (:Person {uuid: 'b'})", "films")
+        val ids = nodeIds("MATCH (p:Person) RETURN p.uuid AS key, id(p) AS id")
+        server.administer("STOP DATABASE films WAIT")
+        return ids
+    }
+
+    private fun builtNodes(): List<Pair<List<String>, Map<String, Any>>> {
+        val tokens = Tokens.read(increment.tokens)
+        val nodes = mutableListOf<Pair<List<String>, Map<String, Any>>>()
+        EntityReader(increment.nodes, relationships = false).use { reader ->
+            while (true) {
+                val node = reader.node() ?: break
+                nodes +=
+                    node.labels.map(tokens.labels::get) to
+                        node.properties.associate { tokens.keys[it.key] to it.value }
+            }
+        }
+        return nodes
+    }
+
+    private fun builtRelationships(): List<Triple<Long, String, Long>> {
+        val tokens = Tokens.read(increment.tokens)
+        val relationships = mutableListOf<Triple<Long, String, Long>>()
+        EntityReader(increment.relationships, relationships = true).use { reader ->
+            while (true) {
+                val relationship = reader.relationship() ?: break
+                relationships +=
+                    Triple(relationship.start, tokens.types[relationship.type], relationship.end)
+            }
+        }
+        return relationships
+    }
+
+    @Test
+    fun `build reads new nodes and relationships against the existing keys`() {
+        val persons = persons()
+        val files =
+            arrayOf(
+                "--nodes=" +
+                    csv("persons.csv", "uuid:ID{label:Person},name,:LABEL", "c,Carla,Person;Actor"),
+                // The label of the key is added where the node lacks it.
+                "--nodes=" + csv("others.csv", "uuid:ID{label:Person},born:int", "d,1970"),
+                "--relationships=" +
+                    csv(
+                        "knows.csv",
+                        ":START_ID,:END_ID,:TYPE,since:int",
+                        "a,c,KNOWS,2001",
+                        "c,d,KNOWS,2002",
+                        "b,a,LIKES,2003",
+                    ),
+            )
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+
+        val result = incremental("build", "films", *files)
+
+        assertThat(result.exitCode).describedAs(result.toString()).isZero
+        assertThat(result.out).contains("Built an increment of 2 new nodes and 3 new relationships")
+        assertThat(checkNotNull(increment.state()).stage).isEqualTo(Stage.BUILT)
+        assertThat(builtNodes())
+            .containsExactly(
+                listOf("Person", "Actor") to mapOf("uuid" to "c", "name" to "Carla"),
+                listOf("Person") to mapOf("uuid" to "d", "born" to 1970L),
+            )
+        val c = NewRelationship.new(0)
+        val d = NewRelationship.new(1)
+        assertThat(builtRelationships())
+            .containsExactly(
+                Triple(persons["a"]!!, "KNOWS", c),
+                Triple(c, "KNOWS", d),
+                Triple(persons["b"]!!, "LIKES", persons["a"]!!),
+            )
+    }
+
+    @Test
+    fun `build fails on nodes whose keys exist, or skips them with --skip-duplicate-nodes`() {
+        persons()
+        val files =
+            arrayOf(
+                "--nodes=" + csv("persons.csv", "uuid:ID{label:Person}", "a", "c", "c"),
+                "--relationships=" + csv("knows.csv", ":START_ID,:END_ID,:TYPE", "c,a,KNOWS"),
+            )
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+
+        val failed = incremental("build", "films", *files)
+
+        assertThat(failed.exitCode).isNotZero
+        assertThat(failed.err)
+            .contains("Error importing csv file: Id 'a' is defined more than once in group")
+        assertThat(failed.err).doesNotContain("likely in an unusable state")
+        assertThat(checkNotNull(increment.state()).stage).isEqualTo(Stage.PREPARED)
+
+        val skipped = incremental("build", "films", "--skip-duplicate-nodes", *files)
+
+        assertThat(skipped.exitCode).describedAs(skipped.toString()).isZero
+        assertThat(skipped.out)
+            .contains(
+                "Built an increment of 1 new nodes and 1 new relationships, skipping 2 nodes " +
+                    "whose keys exist"
+            )
+        val state = checkNotNull(increment.state())
+        assertThat(state.nodes).isEqualTo(3)
+        assertThat(state.skippedNodes).isEqualTo(2)
+        assertThat(Files.readString(report)).contains("'a'").contains("'c'")
+    }
+
+    @Test
+    fun `build fails on relationships to unknown keys, or skips them with --skip-bad-relationships`() {
+        val persons = persons()
+        val files =
+            arrayOf(
+                "--nodes=" + csv("persons.csv", "uuid:ID{label:Person}", "c"),
+                "--relationships=" +
+                    csv("knows.csv", ":START_ID,:END_ID,:TYPE", "a,c,KNOWS", "c,zed,KNOWS"),
+            )
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+
+        val failed = incremental("build", "films", *files)
+
+        assertThat(failed.exitCode).isNotZero
+        assertThat(failed.err).contains("Error importing csv file: ").contains("zed")
+        assertThat(failed.err).doesNotContain("likely in an unusable state")
+
+        val skipped = incremental("build", "films", "--skip-bad-relationships", *files)
+
+        assertThat(skipped.exitCode).describedAs(skipped.toString()).isZero
+        assertThat(builtRelationships())
+            .containsExactly(Triple(persons["a"]!!, "KNOWS", NewRelationship.new(0)))
+        assertThat(Files.readString(report)).contains("zed")
+    }
+
+    @Test
+    fun `build needs a prepared increment and the --id-type it was prepared for`() {
+        persons()
+        val files = arrayOf("--nodes=" + csv("persons.csv", "uuid:ID{label:Person}", "c"))
+
+        val unprepared = incremental("build", "films", *files)
+
+        assertThat(unprepared.exitCode).isNotZero
+        assertThat(unprepared.err)
+            .contains("There is no increment of database 'films' to build: run the prepare stage")
+
+        assertThat(incremental("prepare", "films", *files).exitCode).isZero
+        val integers = incremental("build", "films", "--id-type=integer", *files)
+
+        assertThat(integers.exitCode).isNotZero
+        assertThat(integers.err)
+            .contains("Prepare read the keys for --id-type=string: build with the same --id-type.")
     }
 }

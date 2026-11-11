@@ -111,8 +111,8 @@ internal class IncrementalImporter(
     private val out: PrintStream,
     private val logTail: ThrowingSupplier<LogTailMetadata, IOException>,
     private val serverConfig: Config,
-    @Suppress("unused") private val collector: Collector,
-    @Suppress("unused") private val memoryTracker: MemoryTracker,
+    private val collector: Collector,
+    private val memoryTracker: MemoryTracker,
 ) : IncrementalBatchImporter {
     private val increment = Increment(layout)
     private val name: String = layout.databaseName
@@ -172,7 +172,31 @@ internal class IncrementalImporter(
     }
 
     override fun build(input: Input) {
-        throw IncrementalImportException("The build stage is not available yet.")
+        val state =
+            increment.state()
+                ?: throw IncrementalImportException(
+                    "There is no increment of database '$name' to build: run the prepare stage " +
+                        "first."
+                )
+        if (state.stage == Stage.MERGING) {
+            throw IncrementalImportException(
+                "The increment in ${increment.directory} is being merged into database '$name'. " +
+                    "Run the merge stage again to complete it."
+            )
+        }
+        val keyType = if (input.idType() == IdType.INTEGER) KeyType.INTEGER else KeyType.TEXT
+        if (input.idType() == IdType.ACTUAL || keyType != state.keyType) {
+            throw IncrementalImportException(
+                "Prepare read the keys for --id-type=${state.keyType.idType}: build with the same " +
+                    "--id-type.",
+                ExitCode.USAGE,
+            )
+        }
+        out.println("Building the increment of database '$name' in ${increment.directory}")
+        increment.record(
+            IncrementBuilder(increment, state, input, collector, importConfig, memoryTracker, out)
+                .build()
+        )
     }
 
     override fun merge() {

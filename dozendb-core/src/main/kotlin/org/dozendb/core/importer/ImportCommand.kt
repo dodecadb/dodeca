@@ -28,8 +28,9 @@ class DozenDbImportCommand : ImportCommand()
 
 /**
  * Neo4j's `neo4j-admin database import incremental`, which fails with the reason DozenDB's importer
- * gives, rather than only "Error importing csv file.", and without Neo4j's warning that a failed
- * import leaves the store "likely in an unusable state": no stage leaves it so.
+ * gives, or the input's error, rather than only "Error importing csv file.", and without Neo4j's
+ * warning that a failed import leaves the store "likely in an unusable state": no stage leaves it
+ * so.
  */
 @Command(name = "incremental", description = ["Incremental import into an existing database."])
 class IncrementalImportCommand(context: ExecutionContext) :
@@ -49,11 +50,13 @@ class IncrementalImportCommand(context: ExecutionContext) :
         try {
             super.execute()
         } catch (e: CommandFailedException) {
-            val reason =
-                generateSequence<Throwable>(e) { it.cause }
-                    .filterIsInstance<IncrementalImportException>()
-                    .firstOrNull() ?: throw e
-            throw CommandFailedException(reason.message, e, reason.exitCode)
+            val causes = generateSequence<Throwable>(e) { it.cause }.toList()
+            val reason = causes.filterIsInstance<IncrementalImportException>().firstOrNull()
+            if (reason != null) throw CommandFailedException(reason.message, e, reason.exitCode)
+            // Such as a duplicate key or a missing node, which Neo4j leaves to --verbose.
+            val detail = causes.drop(1).lastOrNull { !it.message.isNullOrBlank() }?.message
+            if (detail == null || e.message.isNullOrBlank()) throw e
+            throw CommandFailedException("${e.message?.removeSuffix(".")}: $detail", e, e.exitCode)
         }
     }
 

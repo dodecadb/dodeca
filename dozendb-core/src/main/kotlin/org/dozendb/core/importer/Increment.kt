@@ -32,6 +32,21 @@ internal class Increment(val layout: DatabaseLayout) {
     /** The keys of the existing nodes of the ID space [group], as `prepare` found them. */
     fun keys(group: Int): Path = directory.resolve("keys-$group")
 
+    /** The keys the build's ID mapper holds, by their place in it. */
+    val ids: Path = directory.resolve("ids")
+
+    /** The new nodes, in order. */
+    val nodes: Path = directory.resolve("nodes")
+
+    /** The places of the new nodes that are duplicates, in order. */
+    val duplicates: Path = directory.resolve("duplicates")
+
+    /** The new relationships, in order. */
+    val relationships: Path = directory.resolve("relationships")
+
+    /** The names of the tokens of the new nodes and relationships. */
+    val tokens: Path = directory.resolve("tokens")
+
     /** The state recorded so far, null if there is no increment. */
     fun state(): IncrementState? {
         if (!Files.exists(stateFile)) return null
@@ -80,6 +95,12 @@ internal data class IncrementState(
     val keyType: KeyType,
     /** The ID spaces of the input's nodes, in the order of their key files. */
     val groups: List<KeyedGroup>,
+    /** How many new nodes the build read, duplicates included. */
+    val nodes: Long = 0,
+    /** How many of those are duplicates. */
+    val skippedNodes: Long = 0,
+    /** How many new relationships the build read. */
+    val relationships: Long = 0,
 ) {
     enum class Stage {
         /** The store's keys are read. */
@@ -108,6 +129,9 @@ internal data class IncrementState(
                 setProperty("group.$i.keyType", group.keyType.name)
                 setProperty("group.$i.existing", group.existing.toString())
             }
+            setProperty("build.nodes", nodes.toString())
+            setProperty("build.skippedNodes", skippedNodes.toString())
+            setProperty("build.relationships", relationships.toString())
         }
 
     companion object {
@@ -140,6 +164,9 @@ internal data class IncrementState(
                             existing = value("group.$i.existing").toLong(),
                         )
                     },
+                nodes = value("build.nodes").toLong(),
+                skippedNodes = value("build.skippedNodes").toLong(),
+                relationships = value("build.relationships").toLong(),
             )
         }
     }
@@ -161,9 +188,9 @@ internal data class KeyedGroup(
  * How node keys compare, as a uniqueness constraint compares the values the import writes: as text,
  * or as integers, whatever their size in the input or the store.
  */
-internal enum class KeyType {
-    TEXT,
-    INTEGER,
+internal enum class KeyType(val idType: String) {
+    TEXT("string"),
+    INTEGER("integer"),
 }
 
 /** Writes the keys of an ID space with the IDs of their nodes. */
