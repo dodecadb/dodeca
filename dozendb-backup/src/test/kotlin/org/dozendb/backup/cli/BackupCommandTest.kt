@@ -2,10 +2,15 @@ package org.dozendb.backup.cli
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilAsserted
+import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.Admin
 import org.dozendb.backup.Artifact
 import org.dozendb.backup.ArtifactChains
@@ -14,6 +19,7 @@ import org.dozendb.backup.CommunityServer
 import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestPorts
 import org.dozendb.core.StandaloneServer
+import org.dozendb.core.pagecache.PageCacheWarmup
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -86,6 +92,43 @@ class BackupCommandTest {
 
     private fun count(server: CommunityServer, label: String): Long =
         server.rows("MATCH (n:$label) RETURN count(n) AS count").single()["count"] as Long
+
+    @Test
+    fun `a full backup carries the page cache profiles, from which the restored database warms up`() {
+        val source =
+            source(
+                    GraphDatabaseSettings.pagecache_warmup_profiling_interval to
+                        Duration.ofMillis(100)
+                )
+                .apply { start() }
+        source.rows("UNWIND range(1, 20000) AS i CREATE (:Person {id: i, name: 'person ' + i})")
+        val profile = "data/databases/neo4j/profiles/neostore.nodestore.db.cacheprof"
+        await withPollInterval
+            Duration.ofMillis(50) atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(source.home.resolve(profile)).isRegularFile()
+            }
+
+        val result = backup(source, "--type=FULL")
+        assertThat(result.exitCode).describedAs(result.toString()).isZero
+        val target = restored(artifacts().single())
+
+        assertThat(target.home.resolve(profile)).isRegularFile()
+        val warmup =
+            target
+                .database()
+                .dependencyResolver
+                .resolveTypeDependencies(PageCacheWarmup::class.java)
+                .single()
+        await withPollInterval
+            Duration.ofMillis(50) atMost
+            Duration.ofSeconds(60) untilAsserted
+            {
+                assertThat(warmup.warmedUp).isTrue()
+            }
+        assertThat(warmup.pagesLoaded).isPositive()
+    }
 
     @Test
     fun `keeps the users, roles and privileges of the database, which a restore writes out`() {
