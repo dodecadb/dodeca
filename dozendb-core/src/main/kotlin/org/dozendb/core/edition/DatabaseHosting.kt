@@ -27,6 +27,12 @@ interface DatabaseHosting {
         idGeneratorFactory: IdGeneratorFactory,
         storeExists: Boolean,
     ): HostedDatabase
+
+    /**
+     * Called before the database [namedDatabaseId] starts, each time, with its store in place; an
+     * exception fails the start, with its message.
+     */
+    fun beforeStart(namedDatabaseId: NamedDatabaseId) {}
 }
 
 /** A database as a [DatabaseHosting] hosts it. */

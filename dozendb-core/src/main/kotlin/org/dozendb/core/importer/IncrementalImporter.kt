@@ -2,6 +2,9 @@ package org.dozendb.core.importer
 
 import java.io.IOException
 import java.io.PrintStream
+import java.nio.file.Files
+import java.time.Instant
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.importer.IncrementState.Stage
 import org.neo4j.batchimport.api.AdditionalInitialIds
 import org.neo4j.batchimport.api.Configuration
@@ -15,6 +18,7 @@ import org.neo4j.batchimport.api.input.Input
 import org.neo4j.cli.ExitCode
 import org.neo4j.commandline.dbms.LockChecker
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.function.ThrowingSupplier
 import org.neo4j.internal.batchimport.IncrementalBatchImporterFactory
 import org.neo4j.internal.kernel.api.IndexQueryConstraints
@@ -123,6 +127,12 @@ internal class IncrementalImporter(
     private val name: String = layout.databaseName
 
     override fun prepare(input: Input) {
+        if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
+            throw IncrementalImportException(
+                "Incremental import adds to user databases, not to system.",
+                ExitCode.USAGE,
+            )
+        }
         val idType = input.idType()
         if (idType == IdType.ACTUAL) {
             throw IncrementalImportException(
@@ -253,6 +263,13 @@ internal class IncrementalImporter(
                         )
                         .merge(position)
                 }
+        }
+        if (serverConfig.get(DozenDbSettings.clusterEnabled)) {
+            // Before the increment goes: a merge that stops in between runs again.
+            Files.writeString(
+                increment.imported,
+                "Merged by neo4j-admin database import incremental at ${Instant.now()}\n",
+            )
         }
         increment.delete()
         out.println("Merged the increment into database '$name'")

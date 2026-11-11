@@ -31,6 +31,7 @@ import org.dozendb.cluster.internal.forwarding.RoutingBoltDatabases
 import org.dozendb.cluster.internal.http.ClusterNeoWebServer
 import org.dozendb.cluster.internal.http.ClusterStatuses
 import org.dozendb.cluster.internal.http.DatabaseClusterStatus
+import org.dozendb.cluster.internal.importer.ImportedStores
 import org.dozendb.cluster.internal.leadership.LeaderAnnouncer
 import org.dozendb.cluster.internal.leadership.LeaderBalancer
 import org.dozendb.cluster.internal.reads.ConsistentBoltDatabases
@@ -472,7 +473,18 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 },
                 groups = groups,
             )
-        clusterHosting = ClusterHosting(replicationService, secondaries)
+        clusterHosting =
+            ClusterHosting(
+                replicationService,
+                secondaries,
+                ImportedStores(
+                    globalModule.neo4jLayout,
+                    memberId.toString(),
+                    { name -> systemGraph.hosts(name).size - systemGraph.secondaries(name).size },
+                    { id -> groups.groupOf(id.databaseId().uuid()) in consensus.localGroups() },
+                    logService.getInternalLog(ImportedStores::class.java),
+                ),
+            )
         // Before Neo4j creates `system`, which it does before the cluster service starts.
         pullsSystem =
             systemDatabase.id !in consensus.localGroups() &&

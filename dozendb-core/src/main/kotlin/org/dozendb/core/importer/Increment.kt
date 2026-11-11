@@ -82,11 +82,24 @@ internal class Increment(val layout: DatabaseLayout) {
         Files.createDirectories(directory)
     }
 
+    /**
+     * Where a clustered server learns that an incremental import merged into the database (see
+     * [importedMarker]).
+     */
+    val imported: Path = importedMarker(layout)
+
     /** Deletes the increment, without following the links of a DBMS home left by a crash. */
     fun delete() {
         ScratchDbms.deleteHome(directory)
     }
 }
+
+/**
+ * The marker a merge leaves next to the database [layout] on a clustered server, which the cluster
+ * reads before it starts the database: its other servers do not have what the import merged.
+ */
+fun importedMarker(layout: DatabaseLayout): Path =
+    layout.neo4jLayout.databasesDirectory().resolve(".${layout.databaseName}.imported")
 
 /** What an increment's stages recorded. */
 internal data class IncrementState(

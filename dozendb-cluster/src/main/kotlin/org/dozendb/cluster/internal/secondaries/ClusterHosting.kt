@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal.secondaries
 
 import java.util.concurrent.ConcurrentHashMap
+import org.dozendb.cluster.internal.importer.ImportedStores
 import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.HostedDatabase
@@ -13,12 +14,14 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * through its Raft group ([primaries]), or as a secondary that pulls ([secondaries]). The
  * reconciler sets the mode before it creates the database ([host]); a database it set none for is a
  * primary. `system` is hosted in the mode this member hosts it in, and switches modes in place
- * ([switchSystem]). Neither reuses freed IDs from the start: a primary learns which are free first,
- * and a secondary allocates none.
+ * ([switchSystem]). A store that an incremental import merged into is checked before each start
+ * ([imported]). Neither reuses freed IDs from the start: a primary learns which are free first, and
+ * a secondary allocates none.
  */
 internal class ClusterHosting(
     private val primaries: ReplicationService,
     private val secondaries: Secondaries,
+    private val imported: ImportedStores? = null,
 ) : DatabaseHosting {
     private val modes = ConcurrentHashMap<String, CopyMode>()
 
@@ -47,6 +50,11 @@ internal class ClusterHosting(
             prepare(mode(namedDatabaseId), namedDatabaseId, idGeneratorFactory, storeExists)
         if (!namedDatabaseId.isSystemDatabase) return hosted
         return SwitchingHostedDatabase(hosted).also { system = it to idGeneratorFactory }
+    }
+
+    override fun beforeStart(namedDatabaseId: NamedDatabaseId) {
+        if (!namedDatabaseId.isSystemDatabase)
+            imported?.check(namedDatabaseId, mode(namedDatabaseId))
     }
 
     private fun prepare(

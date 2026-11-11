@@ -55,6 +55,8 @@ class DatabaseManager(
     private val placement: StorePlacement,
     private val quarantines: Quarantines,
     logProvider: InternalLogProvider,
+    /** Called before a database starts, each time; an exception fails the start. */
+    private val beforeStart: (NamedDatabaseId) -> Unit = {},
 ) {
     private val log = logProvider.getLog(javaClass)
 
@@ -173,6 +175,19 @@ class DatabaseManager(
                     "by an interrupted 'neo4j-admin database restore'. Restore it again."
             log.error(message)
             context.fail(DatabaseManagementException(message))
+            counts.increaseFailedCount()
+            return
+        }
+        val refusal =
+            try {
+                beforeStart(id)
+                null
+            } catch (e: Exception) {
+                e.message ?: e.toString()
+            }
+        if (refusal != null) {
+            log.error("Not starting '%s': %s", id, refusal)
+            context.fail(DatabaseManagementException(refusal))
             counts.increaseFailedCount()
             return
         }

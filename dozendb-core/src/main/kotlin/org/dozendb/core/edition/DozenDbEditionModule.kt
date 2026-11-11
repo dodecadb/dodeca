@@ -214,6 +214,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 StorePlacement(globalModule.fileSystem, globalModule.neo4jLayout),
                 quarantines,
                 globalModule.logService.internalLogProvider,
+                beforeStart = { id -> hosting?.beforeStart(id) },
             )
         databaseStateService = DozenDbDatabaseStateService(repository, quarantines)
         // Before the databases start, so that it sees them start.
