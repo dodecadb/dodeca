@@ -27,6 +27,10 @@ class CsvReporterTest {
     private val log = Log4jLogProvider(output).getLog(CsvReporter::class.java)
     private val registry = MetricRegistry("neo4j", listOf(GlobbingPattern("*")), log)
     private val clock = FakeClock(1_700_000_000_123, java.util.concurrent.TimeUnit.MILLISECONDS)
+    private val stoppedClock =
+        object : com.codahale.metrics.Clock() {
+            override fun getTick() = 0L
+        }
 
     private fun reporter(
         rotationSize: Long = 0,
@@ -45,12 +49,11 @@ class CsvReporterTest {
         var heap: Long? = 1024
         dbms.gauge("vm.heap.used", "Heap.") { heap }
         dbms.gauge("page_cache.usage_ratio", "Ratio.") { 0.25 }
-        val latency =
-            checkNotNull(
-                registry
-                    .database("films")
-                    .histogram("db.query.execution.latency.millis", "Latency.")
-            )
+        // Its reservoir weighs values by when they came: on a clock that stands still, the same.
+        val latency = SummaryHistogram(stoppedClock)
+        registry
+            .database("films")
+            .histogram("db.query.execution.latency.millis", "Latency.", latency)
         val reporter = reporter()
 
         counter.inc(3)
@@ -72,8 +75,8 @@ class CsvReporterTest {
         val histogram = lines("neo4j.database.films.db.query.execution.latency.millis.csv")
         assertThat(histogram.first())
             .isEqualTo("t,count,max,mean,min,stddev,p50,p75,p95,p98,p99,p999")
-        // count, max, then the decaying reservoir's mean, close to 20.
-        assertThat(histogram[1]).startsWith("1700000000,2,30,20.0000")
+        // count, max, mean and min: on the stopped clock, both values weigh the same.
+        assertThat(histogram[1]).startsWith("1700000000,2,30,20.000000,10,")
         assertThat(histogram[1].split(',')).hasSize(12)
     }
 

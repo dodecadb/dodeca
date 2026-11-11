@@ -1,5 +1,6 @@
 package org.dozendb.core.monitoring
 
+import com.codahale.metrics.Clock
 import com.codahale.metrics.Counter
 import com.codahale.metrics.Counting
 import com.codahale.metrics.Gauge
@@ -42,9 +43,10 @@ class Metric(
 
 /**
  * A Dropwizard histogram that also sums the values recorded, for Prometheus summaries. Its
- * reservoir favours the last five minutes, like Dropwizard's default.
+ * reservoir favours the last five minutes, like Dropwizard's default, by the time of [clock].
  */
-class SummaryHistogram : Histogram(LockFreeExponentiallyDecayingReservoir.builder().build()) {
+class SummaryHistogram(clock: Clock = Clock.defaultClock()) :
+    Histogram(LockFreeExponentiallyDecayingReservoir.builder().clock(clock).build()) {
     private val sum = LongAdder()
 
     override fun update(value: Long) {
