@@ -190,6 +190,14 @@ others wrote meanwhile, from their Raft logs or with a copy (see
 [`COMPATIBILITY.md`, "Raft log retention and
 catch-up"](COMPATIBILITY.md#running-a-cluster)).
 
+Each member says in `neo4j.log` when another stops answering, and why, within
+the 10 seconds between its probes, and when it answers again:
+
+```
+Member 5f6e... at core3:7700 does not answer: probe of core3:7700 failed: UNAVAILABLE: Unable to resolve host core3 (java.net.UnknownHostException: core3)
+Member 5f6e... at core3:7700 answers again
+```
+
 A database takes writes while a majority of its primaries run, once they
 elected a leader, within seconds. A member that runs without that majority,
 as the first member of a cluster to start, serves reads of what it holds, and

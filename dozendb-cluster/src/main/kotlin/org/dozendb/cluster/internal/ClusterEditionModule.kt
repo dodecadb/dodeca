@@ -580,6 +580,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     }
                 },
                 reported = PolicyAgreement(routingPolicies.digest, userLog)::reported,
+                userLog = logService.getUserLog(MemberDirectory::class.java),
             )
         locations =
             DatabaseLocations(consensus, directory) { database ->

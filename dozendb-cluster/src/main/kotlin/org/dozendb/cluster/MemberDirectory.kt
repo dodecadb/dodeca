@@ -35,11 +35,13 @@ import org.neo4j.logging.Log
  * a member it does not know yet, and when someone waits for it ([awaitRefresh]). A probe on demand
  * waits for each member for at most [demandDeadline], on a thread of its own, so that a member that
  * answers nothing at all holds up only the periodic probe, which finds out that it no longer
- * answers. A member that does not answer keeps its last known address and report, and a report that
- * arrives after a later one of the same member is left out ([MemberMetadata.REPORT_NUMBER]). This
- * member's own come from [selfBoltAddress], [selfRoutingAddress], [selfDatabases], [selfReadOnly],
- * [selfLastCommitted] and [selfReport]. Each report of another member that is recorded is handed to
- * [reported] too.
+ * answers, and logs it once, with why, until the member answers again: gRPC's own warnings about
+ * such a member are left out (`GrpcLogs` in consensus-ratis). A member that does not answer keeps
+ * its last known address and report, and a report that arrives after a later one of the same member
+ * is left out ([MemberMetadata.REPORT_NUMBER]). This member's own come from [selfBoltAddress],
+ * [selfRoutingAddress], [selfDatabases], [selfReadOnly], [selfLastCommitted] and [selfReport]. Each
+ * report of another member that is recorded is handed to [reported] too. Whether members answer
+ * goes to [userLog], the rest to [log].
  *
  * While no server is known, as on a system secondary that just started, it probes the [bootstrap]
  * addresses, the initial members, instead: what those report tells the servers.
@@ -59,6 +61,7 @@ class MemberDirectory(
     private val servers: () -> List<Member> = { consensus.members(databaseGroups.system) },
     private val bootstrap: () -> List<HostPort> = { emptyList() },
     private val reported: (Member, Map<String, String>) -> Unit = { _, _ -> },
+    private val userLog: Log = log,
 ) {
     /** The group of `system` (see [DatabaseGroups]). */
     private val systemDatabase: DatabaseRef
@@ -68,6 +71,9 @@ class MemberDirectory(
     private val reports = ConcurrentHashMap<MemberId, Map<String, String>>()
     private val groups = ConcurrentHashMap<MemberId, Map<UUID, List<Member>>>()
     private val answered: MutableSet<MemberId> = ConcurrentHashMap.newKeySet()
+
+    /** The members logged as not answering, until they answer again. */
+    private val silent: MutableSet<MemberId> = ConcurrentHashMap.newKeySet()
 
     /**
      * Numbers probes in the order they start, so that what an earlier one found out is left out.
@@ -270,6 +276,7 @@ class MemberDirectory(
         synchronized(recording) {
             val ids = others.map { it.id }.toSet()
             answered.retainAll(ids)
+            silent.retainAll(ids)
             groups.keys.retainAll(ids)
             outcomes.keys.retainAll(ids)
             for ((member, answer) in answers) {
@@ -282,10 +289,18 @@ class MemberDirectory(
                 if (latest) outcomes[member.id] = probe
                 val peer = answer.getOrNull()?.takeIf { it.member.id == member.id }
                 if (peer == null) {
-                    if (latest) answered -= member.id
+                    if (latest) {
+                        answered -= member.id
+                        if (silent.add(member.id)) {
+                            userLog.warn("Member %s does not answer: %s", member, why(answer))
+                        }
+                    }
                     continue
                 }
-                if (latest) answered += member.id
+                if (latest) {
+                    answered += member.id
+                    if (silent.remove(member.id)) userLog.info("Member %s answers again", member)
+                }
                 answering += member.id
                 record(peer)
             }
@@ -384,6 +399,11 @@ class MemberDirectory(
         executor?.shutdownNow()
         nextRefresh.get().cancel(false)
     }
+
+    /** Why a probe whose [answer] came from no member, or another one, tells nothing. */
+    private fun why(answer: Result<PeerInfo?>): String =
+        answer.exceptionOrNull()?.let { it.message ?: it.toString() }
+            ?: "${answer.getOrNull()?.member} answers at its address"
 
     private fun parsed(address: String): HostPort? = runCatching {
         HostPort.parse(address)

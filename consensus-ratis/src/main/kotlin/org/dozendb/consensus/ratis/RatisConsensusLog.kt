@@ -162,6 +162,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     override fun start() {
         check(server == null) { "already started" }
         stopping = false
+        GrpcLogs.install()
         val parameters = tlsParameters()
         GrpcConfigKeys.Server.setServicesCustomizer(
             parameters,

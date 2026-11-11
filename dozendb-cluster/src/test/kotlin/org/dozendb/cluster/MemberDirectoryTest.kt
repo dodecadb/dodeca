@@ -1,5 +1,6 @@
 package org.dozendb.cluster
 
+import java.io.ByteArrayOutputStream
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertTimeoutPreemptively
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
+import org.neo4j.logging.log4j.Log4jLogProvider
 
 class MemberDirectoryTest {
     private val consensus = InMemoryConsensus()
@@ -154,6 +156,44 @@ class MemberDirectoryTest {
 
         assertThat(directory.boltAddress(logs[1].self.id)).isEqualTo(HostPort("core1", 7687))
         assertThat(directory.boltAddress(logs[2].self.id)).isEqualTo(HostPort("core2", 7687))
+    }
+
+    @Test
+    fun `says once when a member stops answering, and why, and once when it answers again`() {
+        val output = ByteArrayOutputStream()
+        logs[2].onProbe = { throw ConsensusUnavailableException("Unable to resolve host core2") }
+        val logged =
+            MemberDirectory(
+                    logs[0],
+                    groups,
+                    { HostPort("self", 7687) },
+                    { HostPort("self", 7688) },
+                    { emptyList() },
+                    NullLog.getInstance(),
+                    Duration.ofHours(1),
+                    userLog = Log4jLogProvider(output).getLog(MemberDirectory::class.java),
+                )
+                .also(others::add)
+        fun lines(text: String) = output.toString().lines().filter { text in it }
+        val silent1 = "Member ${logs[1].self} does not answer"
+        val silent2 = "Member ${logs[2].self} does not answer: Unable to resolve host core2"
+
+        logged.refresh()
+        logged.refresh()
+
+        assertThat(lines("does not answer")).singleElement().asString().contains("WARN", silent2)
+        logs[1].onProbe = { throw ConsensusUnavailableException("Connection refused") }
+        logs[2].onProbe = {}
+
+        logged.refresh()
+        logged.refresh()
+
+        assertThat(lines(silent1)).singleElement().asString().contains("Connection refused")
+        assertThat(lines("Member ${logs[2].self} answers again"))
+            .singleElement()
+            .asString()
+            .contains("INFO")
+        assertThat(lines(silent2)).hasSize(1)
     }
 
     @Test
