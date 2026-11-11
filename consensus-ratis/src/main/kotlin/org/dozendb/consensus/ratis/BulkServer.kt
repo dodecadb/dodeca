@@ -38,7 +38,8 @@ private constructor(
          * Starts serving the sources that [sources] finds by name on [address], over TLS with [tls]
          * or in plaintext if it is null. The sources run on threads named after [name].
          *
-         * @throws java.io.IOException if it cannot listen on [address].
+         * @throws java.io.IOException if it cannot listen on [address], saying why as the JDK words
+         *   it, such as `Address already in use`.
          */
         fun start(
             address: InetSocketAddress,
@@ -58,11 +59,28 @@ private constructor(
                     .build()
             try {
                 server.start()
+            } catch (e: IOException) {
+                executor.shutdownNow()
+                throw IOException(whyNotListening(e), e)
             } catch (e: Exception) {
                 executor.shutdownNow()
                 throw e
             }
             return BulkServer(server, executor)
+        }
+
+        /**
+         * How Netty's native transport, which gRPC uses on Linux, words why a call failed:
+         * `bind(..) failed with error(-98): Address already in use`, where the JDK says `Address
+         * already in use`.
+         */
+        private val NATIVE_ERROR = Regex("""\w+\(\.\.\) failed(?: with error\(-?\d+\))?: (.+)""")
+
+        /** Why gRPC could not listen: [e] itself says only "Failed to bind to address". */
+        internal fun whyNotListening(e: IOException): String {
+            val reason = generateSequence<Throwable>(e) { it.cause }.last()
+            val message = reason.message ?: return reason.toString()
+            return NATIVE_ERROR.matchEntire(message)?.groupValues?.get(1) ?: message
         }
 
         /**

@@ -41,7 +41,7 @@ internal class BackupListener(
             } catch (e: IOException) {
                 throw IllegalStateException(
                     "Unable to serve backups on $address (${BackupSettings.listenAddress.name()}): " +
-                        (e.cause ?: e).message,
+                        e.message,
                     e,
                 )
             }

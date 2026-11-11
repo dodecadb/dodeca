@@ -203,6 +203,24 @@ class BulkServerTest {
         assertThat(sourceFailure.get(30, TimeUnit.SECONDS)).isNotNull
     }
 
+    @Test
+    fun `a port it cannot listen on is reported as the JDK words it, on every transport`() {
+        ServerSocket(0).use { taken ->
+            assertThatThrownBy {
+                    BulkServer.start(InetSocketAddress(taken.localPort), null, "test") { null }
+                }
+                .isInstanceOf(IOException::class.java)
+                .hasMessage("Address already in use")
+        }
+        // As Netty's native transport, which gRPC uses on Linux, words it.
+        val native =
+            IOException(
+                "Failed to bind to address /127.0.0.1:6362",
+                IOException("bind(..) failed with error(-98): Address already in use"),
+            )
+        assertThat(BulkServer.whyNotListening(native)).isEqualTo("Address already in use")
+    }
+
     private companion object {
         const val GREETING = "greeting"
     }
