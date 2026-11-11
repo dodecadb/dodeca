@@ -27,6 +27,7 @@ import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.Neo4jException
+import org.neo4j.driver.summary.ResultSummary
 import org.testcontainers.DockerClientFactory
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Network
@@ -289,6 +290,12 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
             }
         } catch (e: Neo4jException) {
             Outcome.Failed(e.code(), e.message.orEmpty())
+        }
+
+    /** Runs [cypher] against [database] and returns its summary, with its profile if it has one. */
+    fun summary(cypher: String, database: String = "neo4j"): ResultSummary =
+        driver().session(SessionConfig.forDatabase(database)).use { session ->
+            session.run(cypher).consume()
         }
 
     /**
