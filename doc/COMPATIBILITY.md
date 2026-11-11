@@ -429,7 +429,8 @@ not declared; DozenDB's own are named `*.dozendb.cluster.*`.
   Bolt clients (drivers, Cypher Shell). The transaction waits on the member
   that runs it: the leader for a write that a follower forwards there. On a
   secondary, it asks a primary for the last transaction acknowledged before
-  it, and pulls until it has it.
+  it, and pulls until it has it. See `OPERATOR_GUIDE.md`, "Linearizable
+  reads".
 - **Transaction size.** A transaction can replicate at most 16 MiB of changes
   in Neo4j's command encoding. A larger one fails with
   `Neo.DatabaseError.Transaction.TransactionCommitFailed` and nothing is

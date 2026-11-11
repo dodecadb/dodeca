@@ -702,9 +702,9 @@ primaries. A read whose bookmarks name a transaction the secondary lacks has
 it pull from the leader at once, and waits for it as on any server
 (`db.transaction.bookmark_ready_timeout`), so that a driver session reads its
 own writes without waiting for the next pull. A linearizable read (see
-`COMPATIBILITY.md`) on a secondary first asks a primary for the last
-transaction acknowledged before the read, then pulls until it has it; it fails
-as on a follower when no primary answers. A backup taken from a secondary does
+[Linearizable reads](#linearizable-reads)) on a secondary first asks a
+primary for the last transaction acknowledged before the read, then pulls
+until it has it; it fails as on a follower when no primary answers. A backup taken from a secondary does
 the same first, so that it holds every write acknowledged before it started.
 
 `SHOW DATABASES` lists each secondary with the role `secondary`, `writer`
@@ -1012,7 +1012,8 @@ security log record it, with `dozendb-forwarding/<version>` as the client's
 user agent, and `SHOW TRANSACTIONS` and `TERMINATE TRANSACTION` on the leader
 see it. Read transactions run on the member they reach if it hosts the
 database (see [Clients](#clients) otherwise), and linearizable reads
-(`COMPATIBILITY.md`) wait where the transaction runs.
+(see [Linearizable reads](#linearizable-reads)) wait where the transaction
+runs.
 
 ### Requirements
 
@@ -1068,6 +1069,58 @@ following Neo4j's settings for server-side routing:
 `dbms.routing.driver.connection.max_lifetime` and
 `dbms.routing.driver.connection.connect_timeout`. What the connections log goes
 to `debug.log`, at `dbms.routing.driver.logging.level`.
+
+## Linearizable reads
+
+A read sees the writes that its transaction's bookmarks name, as in Neo4j
+Enterprise, so a driver session reads its own writes on any server. A write
+it holds no bookmark of, such as another client's, may not be visible yet on a
+server other than the leader, although it was acknowledged: the other servers
+apply what the leader commits a moment later. A linearizable read, DozenDB's
+own, sees every write acknowledged anywhere in the cluster before the read
+began, wherever it runs.
+
+A transaction asks for one with the metadata key `dozendb.consistency` set to
+`linearizable`, in any case; `causal` is the usual read. In the Java driver:
+
+```java
+var linearizable = TransactionConfig.builder()
+    .withMetadata(Map.of("dozendb.consistency", "linearizable"))
+    .build();
+long films = session.executeRead(
+    tx -> tx.run("MATCH (f:Film) RETURN count(f) AS n").single().get("n").asLong(),
+    linearizable);
+```
+
+Other drivers pass transaction metadata alike, such as Python's
+`@unit_of_work(metadata={"dozendb.consistency": "linearizable"})`. Any other
+value fails the transaction with `Neo.ClientError.Request.Invalid`.
+`dbms.dozendb.reads.default_consistency=LINEARIZABLE` (not dynamic) makes
+every transaction on a member that names no consistency linearizable, also
+those of clients that cannot set metadata, such as Cypher Shell. Linearizable
+reads apply to Bolt clients.
+
+Before the transaction begins, the server it runs on makes sure that it
+applied everything the database had committed when the read asked:
+
+- A primary asks the leader for its commit index, a Raft ReadIndex: the leader
+  first confirms with a majority of the primaries that it still leads. The
+  primary then waits until it applied up to that index.
+- A secondary asks a primary the same, then pulls until it holds it (see
+  [Reading from secondaries](#reading-from-secondaries)).
+
+Each linearizable transaction thus waits for a round trip to the leader and
+from it to a majority, where a read with a bookmark waits only while the
+server lacks the bookmarked write. Use bookmarks where the client has them,
+and linearizable reads where it has none, as across clients. A write
+transaction that a member forwards waits on the leader (see
+[Writes on any member](#writes-on-any-member)).
+
+A read that cannot be confirmed, as on a server that does not reach a
+majority of the primaries, fails with
+`Neo.TransientError.Cluster.ReplicationFailure`, "A linearizable read of films
+could not be confirmed with the leader; retry later.", which drivers retry in
+managed transactions (`executeRead`). Causal reads still run there.
 
 ## Where databases are led
 
