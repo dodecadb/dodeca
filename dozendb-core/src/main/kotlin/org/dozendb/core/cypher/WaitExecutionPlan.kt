@@ -5,12 +5,17 @@ import java.util.UUID
 import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.ServerProgress
 import org.dozendb.core.edition.WantedDatabase
+import org.dozendb.core.servers.ServerRecords
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.DatabaseName
 import org.neo4j.cypher.internal.notification.InternalNotification
+import org.neo4j.cypher.internal.notification.WaitServerCatchingUp
+import org.neo4j.cypher.internal.notification.WaitServerCaughtUp
+import org.neo4j.cypher.internal.notification.WaitServerFailed
+import org.neo4j.cypher.internal.notification.WaitServerUnavailable
 import org.neo4j.cypher.internal.procs.AdministrationChainedExecutionPlan
 import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.SystemUpdateCountingQueryContext
@@ -36,8 +41,9 @@ import scala.collection.immutable.Set
  * WAIT: commits the transaction in which [source] changed the system graph, as Neo4j Enterprise
  * does, then waits until every server hosting databases did what the system graph now asks of the
  * database [databaseName], failed to, or [timeout] passed. Returns a row per server with its
- * `address`, `state` and `message`, and `success`, whether every server caught up. A local alias's
- * name stands for its database, as it was before [source] ran, which may drop the alias.
+ * `address`, `state` and `message`, and `success`, whether every server caught up; from Cypher 25
+ * on ([version]) also a notification per server, as Enterprise's Cypher 25. A local alias's name
+ * stands for its database, as it was before [source] ran, which may drop the alias.
  */
 internal class WaitExecutionPlan(
     source: ExecutionPlan,
@@ -93,6 +99,15 @@ internal class WaitExecutionPlan(
                 transaction.kernelTransaction().assertOpen()
             }
         val success = servers.all { it.state == ServerProgress.State.CaughtUp }
+        val notifications =
+            if (version == CypherVersion.Cypher5) previousNotifications
+            else {
+                val names =
+                    ServerRecords.records(transaction.transaction()).mapValues { it.value.name }
+                notifications(servers, names).fold(previousNotifications) { all, notification ->
+                    all.incl(notification)
+                }
+            }
         val rows =
             VirtualValues.list(
                 *servers
@@ -129,7 +144,7 @@ internal class WaitExecutionPlan(
                 params,
                 prePopulateResults,
                 subscriber,
-                previousNotifications,
+                notifications,
             )
     }
 
@@ -178,11 +193,31 @@ internal class WaitExecutionPlan(
         )
     }
 
-    private companion object {
+    internal companion object {
+        /**
+         * The notifications of Neo4j Enterprise's Cypher 25 for [servers], each named as [names]
+         * says, or by its id: caught up, failed, still catching up when the time limit passed, or
+         * not available, as a server that could not be asked.
+         */
+        fun notifications(
+            servers: List<ServerProgress>,
+            names: Map<UUID, String>,
+        ): List<InternalNotification> = servers.map { server ->
+            val name = names[server.server] ?: server.server.toString()
+            when (server.state) {
+                ServerProgress.State.CaughtUp -> WaitServerCaughtUp(name, server.address)
+                ServerProgress.State.Failed ->
+                    WaitServerFailed(name, server.address, server.message)
+                ServerProgress.State.TimedOut ->
+                    if (server.available) WaitServerCatchingUp(name, server.address)
+                    else WaitServerUnavailable(name)
+            }
+        }
+
         /** The parameter holding the rows, named so as not to clash with the user's. */
-        const val ROWS = "__internal_waitRows"
+        private const val ROWS = "__internal_waitRows"
 
         /** The parameter holding the name of the database waited for. */
-        const val TARGET = "__dozendb_waitTarget"
+        private const val TARGET = "__dozendb_waitTarget"
     }
 }

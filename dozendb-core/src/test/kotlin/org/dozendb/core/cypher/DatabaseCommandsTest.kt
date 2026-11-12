@@ -315,6 +315,25 @@ class DatabaseCommandsTest {
             )
     }
 
+    /**
+     * The rows WAIT [command] returns on `system`, and the GQL statuses and descriptions of the
+     * notifications Neo4j Enterprise's Cypher 25 adds for each server.
+     */
+    private fun StandaloneServer.waitedWithStatuses(
+        command: String
+    ): Pair<List<Map<String, Any?>>, List<Pair<String, String>>> =
+        database(StandaloneServer.SYSTEM).executeTransactionally(command, emptyMap()) { result ->
+            val rows = result.asSequence().map { it.toMap() }.toList()
+            rows to
+                result.gqlStatusObjects
+                    .filter { it.gqlStatus() in WAIT_STATUSES }
+                    .map { it.gqlStatus() to it.statusDescription() }
+        }
+
+    /** This server's name, as SHOW SERVERS shows it. */
+    private fun StandaloneServer.name(): String =
+        rows("SHOW SERVERS YIELD name", StandaloneServer.SYSTEM).single()["name"] as String
+
     /** The single row WAIT returns without clustering, without its address. */
     private fun StandaloneServer.waited(command: String): Map<String, Any?> =
         rows(command, StandaloneServer.SYSTEM).single().filterKeys { it != "address" }
@@ -347,6 +366,21 @@ class DatabaseCommandsTest {
         assertThat(server.names()).doesNotContain("films")
         assertThat(server.rows("CREATE DATABASE neo4j IF NOT EXISTS WAIT", StandaloneServer.SYSTEM))
             .isEmpty()
+
+        // Cypher 25 also notifies how the server did, as Neo4j Enterprise does; Cypher 5 does not.
+        val (rows, statuses) = server.waitedWithStatuses("CYPHER 25 CREATE DATABASE films WAIT")
+        assertThat(rows.single().filterKeys { it != "address" }).isEqualTo(caughtUp)
+        assertThat(statuses)
+            .singleElement()
+            .satisfies({ (code, description) ->
+                assertThat(code).isEqualTo("03N85")
+                assertThat(description)
+                    .contains(
+                        "Server `'${server.name()}'` at address `'${rows.single()["address"]}'` has " +
+                            "caught up."
+                    )
+            })
+        assertThat(server.waitedWithStatuses("CYPHER 5 DROP DATABASE films WAIT").second).isEmpty()
     }
 
     @Test
@@ -356,12 +390,24 @@ class DatabaseCommandsTest {
         Files.createFile(server.home.resolve("data/databases/films"))
         Files.createFile(server.home.resolve("data/databases/books"))
 
-        val films = server.waited("CREATE DATABASE films WAIT")
+        val (rows, statuses) = server.waitedWithStatuses("CYPHER 25 CREATE DATABASE films WAIT")
+        val films = rows.single()
         server.administer("CREATE DATABASE books")
 
         assertThat(films).containsEntry("state", "Failed").containsEntry("success", false)
         // The cause, which Neo4j's own message leaves out.
         assertThat(films["message"] as String).contains("Unable to start", "films", "Exception")
+        // In Cypher 25 as a notification too, as in Neo4j Enterprise.
+        assertThat(statuses)
+            .singleElement()
+            .satisfies({ (code, description) ->
+                assertThat(code).isEqualTo("01N80")
+                assertThat(description)
+                    .contains(
+                        "Server `'${server.name()}'` at address `'${films["address"]}'` failed: " +
+                            films["message"]
+                    )
+            })
         for (name in listOf("films", "books")) {
             assertThat(server.status(name)["currentStatus"])
                 .describedAs(name)
@@ -405,5 +451,10 @@ class DatabaseCommandsTest {
         assertThat(server.failure("CREATE OR REPLACE DATABASE neo4j"))
             .hasMessage("Not allowed to delete the default database 'neo4j'.")
         assertThat(server.names()).contains("neo4j")
+    }
+
+    private companion object {
+        /** Caught up, failed, still catching up, not available. */
+        val WAIT_STATUSES = setOf("03N85", "01N80", "01N81", "01N82")
     }
 }

@@ -622,7 +622,11 @@ each copy, with `currentStatus`:
 database for every server that still holds it. A server has caught up with a
 database that is to be online once its copy runs and it knows the database's
 leader, so that the database takes writes through any server as soon as
-`WAIT` returns, and can be backed up from any server that hosts it.
+`WAIT` returns, and can be backed up from any server that hosts it. `WAIT`
+returns a row per server, with its `address`, `state` (`CaughtUp`, `Failed` or
+`TimedOut`) and `message`, and in Cypher 25 also a notification per server:
+`03N85` caught up, `01N80` failed, `01N81` still catching up, `01N82` not
+available.
 
 `REALLOCATE DATABASES` moves copies so that the servers host about as many
 each: first the copies their servers may no longer host, then one at a time

@@ -12,8 +12,16 @@ class DatabaseProgressTest {
     private val online = WantedDatabase("films", id, online = true)
     private val offline = WantedDatabase("films", id, online = false)
 
+    private val server =
+        object : HostingServer {
+            override val id: UUID = UUID.randomUUID()
+            override val address = "server"
+
+            override fun databases() = emptyList<DatabaseState>()
+        }
+
     private fun state(of: DatabaseState, wanted: WantedDatabase): ServerProgress.State? =
-        DatabaseProgress.progressOf(listOf(of), wanted)?.invoke("server")?.state
+        DatabaseProgress.progressOf(listOf(of), wanted)?.invoke(server)?.state
 
     @Test
     fun `a database wanted online is caught up once it runs and its leader is known`() {

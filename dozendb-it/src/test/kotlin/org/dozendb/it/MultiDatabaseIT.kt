@@ -216,15 +216,19 @@ class MultiDatabaseIT {
                 .withDefaultAccessMode(AccessMode.WRITE)
                 .build()
 
-        val rows =
+        // The image runs Cypher 25, which also notifies how each server did.
+        val (rows, statuses) =
             driver.session(config).use { session ->
-                session.run("CREATE DATABASE waited WAIT 60 SECONDS").list { it.asMap() }
+                val result = session.run("CREATE DATABASE waited WAIT 60 SECONDS")
+                val rows = result.list { it.asMap() }
+                rows to result.consume().gqlStatusObjects().map { it.gqlStatus() }
             }
 
         assertThat(rows).hasSize(3).allSatisfy {
             assertThat(it).containsEntry("state", "CaughtUp").containsEntry("success", true)
         }
         assertThat(rows.map { it["address"] }).doesNotHaveDuplicates()
+        assertThat(statuses.filter { it == "03N85" }).hasSize(3)
         // At once, without waiting any further.
         assertThat(statuses("waited")).containsOnly("online")
     }

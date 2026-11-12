@@ -68,8 +68,17 @@ internal fun describe(failure: Throwable): String {
     else "${failure.message} Cause: $root"
 }
 
-/** Where one server stands with a [WantedDatabase]: a row of the result of WAIT. */
-data class ServerProgress(val address: String, val state: State, val message: String) {
+/**
+ * Where one server, [server] at [address], stands with a [WantedDatabase]: a row of the result of
+ * WAIT. A server that timed out because it could not be asked is not [available].
+ */
+data class ServerProgress(
+    val server: UUID,
+    val address: String,
+    val state: State,
+    val message: String,
+    val available: Boolean = true,
+) {
     /** The `state` column, named as in Neo4j Enterprise where it shows `CaughtUp`. */
     enum class State {
         CaughtUp,
@@ -80,6 +89,9 @@ data class ServerProgress(val address: String, val state: State, val message: St
 
 /** A server that hosts databases, as WAIT asks it about them. */
 interface HostingServer {
+    /** The server's id. */
+    val id: UUID
+
     /** The server's advertised Bolt address. */
     val address: String
 
@@ -118,17 +130,20 @@ class DatabaseProgress(
                         continue
                     }
                 unreachable.remove(server.address)
-                progressOf(databases, wanted)?.let { done[server.address] = it(server.address) }
+                progressOf(databases, wanted)?.let { done[server.address] = it(server) }
             }
             if (current.all { it.address in done }) return current.map { done.getValue(it.address) }
             if (System.nanoTime() - deadline >= 0) {
                 return current.map { server ->
+                    val failure = unreachable[server.address]
                     done[server.address]
                         ?: ServerProgress(
+                            server.id,
                             server.address,
                             ServerProgress.State.TimedOut,
-                            unreachable[server.address]?.let { "could not be asked: $it" }
+                            failure?.let { "could not be asked: $it" }
                                 ?: "not caught up within ${timeout.toSeconds()} seconds",
+                            available = failure == null,
                         )
                 }
             }
@@ -150,10 +165,15 @@ class DatabaseProgress(
         fun progressOf(
             databases: List<DatabaseState>,
             wanted: WantedDatabase,
-        ): ((String) -> ServerProgress)? {
+        ): ((HostingServer) -> ServerProgress)? {
             val hosted = databases.firstOrNull { it.name == wanted.name }
-            val caughtUp = { address: String ->
-                ServerProgress(address, ServerProgress.State.CaughtUp, "caught up")
+            val caughtUp = { server: HostingServer ->
+                ServerProgress(
+                    server.id,
+                    server.address,
+                    ServerProgress.State.CaughtUp,
+                    "caught up",
+                )
             }
             if (wanted.id == null) return caughtUp.takeIf { hosted == null }
             val same = hosted?.takeIf { it.id == wanted.id }
@@ -164,9 +184,10 @@ class DatabaseProgress(
                 DatabaseState.Status.ONLINE ->
                     caughtUp.takeIf { same.leaderKnown || same.mode == CopyMode.SECONDARY }
                 DatabaseState.Status.FAILED,
-                DatabaseState.Status.QUARANTINED -> { address ->
+                DatabaseState.Status.QUARANTINED -> { server ->
                     ServerProgress(
-                        address,
+                        server.id,
+                        server.address,
                         ServerProgress.State.Failed,
                         same.failure ?: "failed to start",
                     )

@@ -143,10 +143,10 @@ places the database on servers (see [Servers](#servers)), and
   `WAIT` a command returns once committed: without clustering the database has
   then started or failed to, and `SHOW DATABASES` shows why in
   `statusMessage`; with clustering the members follow in the background.
-  These rows are Cypher 5's. In Cypher 25, Enterprise answers `WAIT` with a
-  notification per server instead (`03N85` caught up, `01N80` failed, `01N81`
-  catching up, `01N82` not available); DozenDB gives the rows in Cypher 25 too,
-  and none of these notifications.
+  In Cypher 25 each server also gets a notification, as in Enterprise:
+  `03N85` caught up, `01N80` failed, `01N81` still catching up when the time
+  limit passed, and `01N82` not available, for a server that could not be
+  asked. They name the server as `SHOW SERVERS` does.
 - **Creating a database from a seed**, `CREATE DATABASE ... OPTIONS
   {existingData: 'use', seedURI: '...'}`, works as in Enterprise with a dump or
   a full backup as the seed, from a file, a URL or cloud storage (see [Cloud

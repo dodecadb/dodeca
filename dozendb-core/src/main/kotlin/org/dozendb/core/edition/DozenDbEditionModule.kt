@@ -373,6 +373,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     protected open fun hostingServers(wanted: WantedDatabase): List<HostingServer> =
         listOf(
             object : HostingServer {
+                override val id: UUID = identityModule.serverId().uuid()
                 override val address: String = boltAddress()?.toString() ?: "localhost"
 
                 override fun databases(): List<DatabaseState> = databaseStates()

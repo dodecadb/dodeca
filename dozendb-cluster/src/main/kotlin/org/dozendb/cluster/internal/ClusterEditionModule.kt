@@ -1548,6 +1548,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             .filter { if (placed.isEmpty()) systemGraph.enabled(it.id) else it.id in placed }
             .map { member ->
                 object : HostingServer {
+                    override val id: UUID = member.id.uuid
                     override val address: String =
                         (directory.boltAddress(member.id) ?: member.raftAddress).toString()
 

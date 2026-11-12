@@ -402,6 +402,21 @@ class MultiDatabaseTest {
     }
 
     /** The rows of [command], run on the system leader. */
+    /**
+     * The rows WAIT [command] returns on the system leader, and the GQL statuses and descriptions
+     * of the notifications Neo4j Enterprise's Cypher 25 adds for each server.
+     */
+    private fun ClusterHarness.waitedWithStatuses(
+        command: String
+    ): Pair<List<Map<String, Any?>>, List<Pair<String, String>>> =
+        awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command, emptyMap()) { result ->
+            val rows = result.asSequence().map { it.toMap() }.toList()
+            rows to
+                result.gqlStatusObjects
+                    .filter { it.gqlStatus() in setOf("03N85", "01N80", "01N81", "01N82") }
+                    .map { it.gqlStatus() to it.statusDescription() }
+        }
+
     private fun ClusterHarness.waited(command: String): List<Map<String, Any?>> =
         awaitLeader(SYSTEM).database(SYSTEM).executeTransactionally(command, emptyMap()) { result ->
             result.asSequence().map { it.toMap() }.toList()
@@ -432,6 +447,21 @@ class MultiDatabaseTest {
             assertThat(it).containsEntry("state", "CaughtUp")
         }
         assertThat(cluster.members).allSatisfy { assertThat(it.registered(FILMS)).isNull() }
+
+        // Cypher 25 also notifies how each server did, as Neo4j Enterprise does.
+        val (rows, statuses) = cluster.waitedWithStatuses("CYPHER 25 CREATE DATABASE $FILMS WAIT")
+        assertThat(rows).hasSize(3).allSatisfy { assertThat(it).containsEntry("state", "CaughtUp") }
+        assertThat(statuses).hasSize(3)
+        for (member in cluster.members) {
+            assertThat(statuses)
+                .contains(
+                    "03N85" to
+                        "info: server has caught up. Server `'${member.serverId}'` at address " +
+                            "`'127.0.0.1:${member.raftPort}'` has caught up."
+                )
+        }
+        assertThat(cluster.waitedWithStatuses("CYPHER 5 DROP DATABASE $FILMS WAIT").second)
+            .isEmpty()
     }
 
     @Test
@@ -455,10 +485,12 @@ class MultiDatabaseTest {
     fun `WAIT reports a member that did not catch up in time`() {
         val cluster = cluster()
         val down = cluster.members.first { it != cluster.awaitLeader(SYSTEM) }
+        val downId = down.serverId
         down.stop()
 
         // Long enough for the others to create films also while other tests load the machine.
-        val rows = cluster.waited("CREATE DATABASE $FILMS WAIT 10 SECONDS")
+        val (rows, statuses) =
+            cluster.waitedWithStatuses("CYPHER 25 CREATE DATABASE $FILMS WAIT 10 SECONDS")
 
         val (missing, others) = rows.partition { it["address"] == "127.0.0.1:${down.raftPort}" }
         assertThat(missing.single())
@@ -468,6 +500,14 @@ class MultiDatabaseTest {
         assertThat(others).hasSize(2).allSatisfy {
             assertThat(it).containsEntry("state", "CaughtUp").containsEntry("success", false)
         }
+        // In Cypher 25 as notifications too, as in Neo4j Enterprise.
+        assertThat(statuses)
+            .hasSize(3)
+            .contains(
+                "01N82" to "warn: server is not available. Server `'$downId'` is not available."
+            )
+            .filteredOn { it.first == "03N85" }
+            .hasSize(2)
     }
 
     @Test
