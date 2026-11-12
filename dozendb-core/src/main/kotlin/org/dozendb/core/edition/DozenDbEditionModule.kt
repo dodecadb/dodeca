@@ -10,6 +10,7 @@
  * CommunityEditionModule that keeps Community's user security component as a dependency, which
  * ALTER USER needs.
  * 2026-11-11: Neo4j 2026's fleet discovery is off unless the operator turns it on.
+ * 2026-11-12: a web server whose HTTPS takes TLS reloads on the connector it has.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -21,6 +22,7 @@ import java.util.UUID
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.SettingsProcedures
 import org.dozendb.core.checkpoint.CheckpointIoControllerService
+import org.dozendb.core.http.DozenDbNeoWebServer
 import org.dozendb.core.logging.QueryLog
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.monitoring.MetricsService
@@ -45,6 +47,9 @@ import org.dozendb.core.servers.SingleServerPlacement
 import org.dozendb.core.servers.SingleServerTopology
 import org.dozendb.core.ssl.TlsProcedures
 import org.dozendb.core.store.StorePlacement
+import org.neo4j.bolt.tx.TransactionManager
+import org.neo4j.collection.Dependencies
+import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.connectors.ConnectorType
@@ -90,8 +95,10 @@ import org.neo4j.kernel.database.MapCachingDatabaseReferenceRepository
 import org.neo4j.kernel.database.ModelBasedDatabaseIdRepository
 import org.neo4j.kernel.database.ModelBasedDatabaseReferenceRepository
 import org.neo4j.kernel.database.NamedDatabaseId
+import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.logging.InternalLogProvider
 import org.neo4j.logging.log4j.LoggerTarget
 import org.neo4j.router.transaction.DatabaseTransactionFactory
 
@@ -582,6 +589,27 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             null
         }
     }
+
+    /** Community's web server, whose HTTPS takes TLS reloads without closing its connections. */
+    override fun createWebServer(
+        managementService: DatabaseManagementService,
+        transactionManager: TransactionManager,
+        globalDependencies: Dependencies,
+        config: Config,
+        userLogProvider: InternalLogProvider,
+        dbmsInfo: DbmsInfo,
+    ): Lifecycle =
+        DozenDbNeoWebServer(
+            managementService,
+            transactionManager,
+            globalDependencies,
+            config,
+            userLogProvider,
+            dbmsInfo,
+            globalModule.memoryPools,
+            globalModule.globalMonitors,
+            globalModule.globalClock,
+        )
 
     /**
      * Neo4j Community's, with logins that have the privileges of their users' roles. The databases'

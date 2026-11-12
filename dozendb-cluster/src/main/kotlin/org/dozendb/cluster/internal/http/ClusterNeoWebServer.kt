@@ -2,6 +2,7 @@ package org.dozendb.cluster.internal.http
 
 import java.util.regex.Pattern
 import org.dozendb.cluster.internal.ClusterSettings
+import org.dozendb.core.http.DozenDbNeoWebServer
 import org.neo4j.bolt.tx.TransactionManager
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
@@ -10,7 +11,6 @@ import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.logging.InternalLogProvider
 import org.neo4j.memory.MemoryPools
 import org.neo4j.monitoring.Monitors
-import org.neo4j.server.CommunityNeoWebServer
 import org.neo4j.server.configuration.ConfigurableServerModules
 import org.neo4j.server.configuration.ServerSettings
 import org.neo4j.server.modules.ServerModule
@@ -18,7 +18,7 @@ import org.neo4j.server.rest.discovery.DiscoverableURIs
 import org.neo4j.time.SystemNanoClock
 
 /**
- * Neo4j Community's web server with Neo4j Enterprise's cluster status endpoints, which
+ * DozenDB's web server with Neo4j Enterprise's cluster status endpoints, which
  * `server.http_enabled_modules` turns on with `ENTERPRISE_MANAGEMENT_ENDPOINTS`, as in Enterprise.
  * They need a login unless `dbms.security.cluster_status_auth_enabled` is false.
  */
@@ -34,7 +34,7 @@ internal class ClusterNeoWebServer(
     clock: SystemNanoClock,
     private val statuses: ClusterStatuses,
 ) :
-    CommunityNeoWebServer(
+    DozenDbNeoWebServer(
         managementService,
         transactionManager,
         dependencies,

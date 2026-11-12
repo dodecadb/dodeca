@@ -1028,7 +1028,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             }
             .toMap()
 
-    /** Community's web server, with Neo4j Enterprise's cluster status endpoints. */
+    /** DozenDB's web server, with Neo4j Enterprise's cluster status endpoints. */
     override fun createWebServer(
         managementService: DatabaseManagementService,
         transactionManager: TransactionManager,
