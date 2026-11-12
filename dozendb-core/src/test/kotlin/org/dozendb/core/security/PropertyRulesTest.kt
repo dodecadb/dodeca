@@ -274,6 +274,34 @@ class PropertyRulesTest {
     }
 
     @Test
+    fun `takes the property on the right in Cypher 25, but not a value in a list property`() {
+        server.administer("CREATE ROLE r")
+        fun grant(predicate: String) =
+            server.administer("CYPHER 25 GRANT TRAVERSE ON GRAPH * FOR (n) WHERE $predicate TO r")
+
+        // Neo4j turns the comparison around, as Cypher 5 refuses it.
+        grant("1 < n.level")
+        grant("NOT 2 = n.level")
+        assertThat(
+                generateSequence(catchThrowable { grant("'EU' IN n.regions") }) { it.cause }.last()
+            )
+            .hasMessage(
+                "Failed to administer property rule. Property rules that look for a value in a " +
+                    "list property are not supported."
+            )
+
+        assertThat(
+                server.rows("SHOW ROLE r PRIVILEGES YIELD segment", StandaloneServer.SYSTEM).map {
+                    it["segment"]
+                }
+            )
+            .containsExactlyInAnyOrder(
+                "FOR((n) WHERE n.level > 1)",
+                "FOR((n) WHERE n.level <> 2)",
+            )
+    }
+
+    @Test
     fun `refuses rule values that no property can be compared with`() {
         server.administer("CREATE ROLE r")
         /** The message and GQL statuses, outermost first, of the refusal of [predicate]. */

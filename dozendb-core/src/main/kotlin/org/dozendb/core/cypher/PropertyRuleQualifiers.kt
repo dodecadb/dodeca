@@ -87,12 +87,22 @@ internal object PropertyRuleQualifiers {
             negated = !negated
             predicate = predicate.rhs()
         }
+        // Neo4j turns `1 < n.p` around in Cypher 25, but not `'a' IN n.p`, a value in a list.
+        fun property(lhs: Expression): String =
+            (lhs as? Property)?.propertyKey()?.name()
+                ?: throw unsupported(
+                    if (predicate is In) {
+                        "Property rules that look for a value in a list property are"
+                    } else {
+                        "Property rules without the property on the left are"
+                    }
+                )
         fun compare(
             lhs: Expression,
             operator: ComparisonOperator,
             rhs: Expression,
         ): PatternSegment {
-            val property = (lhs as Property).propertyKey().name()
+            val property = property(lhs)
             val applied = if (negated) NEGATED.getValue(operator) else operator
             val value = value(evaluate(rhs), applied)
             // Neo4j hands `p <> v` over as `NOT p = v`: the rule is named as written.
@@ -102,7 +112,7 @@ internal object PropertyRuleQualifiers {
         fun isNull(lhs: Expression, operator: NullOperator): PatternSegment =
             PatternSegment.NodeNullPatternSegment(
                 labels,
-                (lhs as Property).propertyKey().name(),
+                property(lhs),
                 if (negated) NEGATED_NULL.getValue(operator) else operator,
             )
         return when (predicate) {
