@@ -228,15 +228,34 @@ class ClusterQuarantineTest {
 
     @Test
     fun `replaceStateReplaceStore joins a primary as a new member of its group, from a new copy`() {
+        val (store, raft) = joinAsNew("replaceStateReplaceStore")
+
+        assertThat(store).describedAs("the store was replaced").doesNotExist()
+        assertThat(raft).describedAs("the Raft state was replaced").doesNotExist()
+    }
+
+    @Test
+    fun `replaceStateKeepStore joins a primary as a new member of its group, from its store`() {
+        val (store, raft) = joinAsNew("replaceStateKeepStore")
+
+        assertThat(store).describedAs("the store was kept").exists()
+        assertThat(raft).describedAs("the Raft state was replaced").doesNotExist()
+    }
+
+    /**
+     * Puts a follower's copy of films in quarantine, writes to the others, and lifts its quarantine
+     * from another member with [operation]; returns the files left in its store and Raft state.
+     */
+    private fun joinAsNew(operation: String): Pair<Path, Path> {
         val cluster = cluster()
         val member = cluster.members.first { it != cluster.awaitLeader("films") }
         val caller = cluster.members.first { it != member }
         val others = { cluster.running().filter { it != member } }
         member.quarantine("films", true)
         cluster.write("films", others)
-        val (store, raft) = member.mark("films")
+        val marks = member.mark("films")
 
-        caller.unquarantine(member.serverId, "films", "replaceStateReplaceStore")
+        caller.unquarantine(member.serverId, "films", operation)
 
         await atMost
             AWAIT untilAsserted
@@ -245,8 +264,6 @@ class ClusterQuarantineTest {
                 assertThat(member.count("films")).isEqualTo(2)
                 assertThat(member.status("films")?.role).isIn(Role.Follower, Role.Leader)
             }
-        assertThat(store).describedAs("the store was replaced").doesNotExist()
-        assertThat(raft).describedAs("the Raft state was replaced").doesNotExist()
         // The group removed it, and added it as a new member.
         assertThat(cluster.running().flatMap { it.debugEntries() }.map { it.message }).anySatisfy {
             assertThat(it)
@@ -255,6 +272,7 @@ class ClusterQuarantineTest {
         }
         cluster.write("films")
         await atMost AWAIT untilAsserted { assertThat(member.count("films")).isEqualTo(3) }
+        return marks
     }
 
     @Test

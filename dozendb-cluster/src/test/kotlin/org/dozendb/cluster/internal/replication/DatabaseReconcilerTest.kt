@@ -1422,6 +1422,9 @@ class DatabaseReconcilerTest {
 
         override fun left(id: NamedDatabaseId): Boolean = id in notMember
 
+        override fun rejoinFromStore(id: NamedDatabaseId): ModeSwitch =
+            throw UnsupportedOperationException("not reconciled")
+
         override fun create(id: NamedDatabaseId, mode: CopyMode) {
             check(id !in registered) { "$id is registered" }
             registered[id] = LocalDatabase(started = false, failed = false, mode = mode)

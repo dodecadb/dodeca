@@ -244,6 +244,15 @@ internal interface LocalDatabases {
     fun switch(id: NamedDatabaseId, mode: CopyMode, pulledBeyond: Long? = null): ModeSwitch
 
     /**
+     * Replaces the Raft state of the primary [id], stopped here, so that it joins its group as a
+     * new member from its own store, as a secondary that turns primary does: the log entry of the
+     * store's last transaction seeds the group, as far as the group's leader still holds it, and
+     * [id] is registered again, stopped. [NEEDS_COPY][ModeSwitch.NEEDS_COPY], changing nothing, if
+     * the leader no longer holds it; [LATER][ModeSwitch.LATER] if the leader cannot tell now.
+     */
+    fun rejoinFromStore(id: NamedDatabaseId): ModeSwitch
+
+    /**
      * Copies the store of [id], which this member lacks, from the member at [source], for a copy in
      * [mode]: a secondary's is marked once it is in place.
      */

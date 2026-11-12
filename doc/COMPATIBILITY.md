@@ -960,7 +960,8 @@ disaster recovery guide shows, with the same commands; see
   named, by its name or id, from any server, and fails with Enterprise's
   error 52N17. `replaceStateReplaceStore` deletes the copy and its Raft
   state, has the database's group remove the server, and copies the database
-  anew, which the group adds; DozenDB refuses `replaceStateKeepStore` for now.
+  anew, which the group adds; `replaceStateKeepStore` keeps the store, which
+  is copied only if the group's log no longer holds what follows it.
   `dbms.quarantineDatabase` exists under
   Cypher 5 only, deprecated, as in Enterprise, whose Cypher 25 has no way to
   put a copy in quarantine. Quarantines are kept in `data/quarantine`, a file of DozenDB's own

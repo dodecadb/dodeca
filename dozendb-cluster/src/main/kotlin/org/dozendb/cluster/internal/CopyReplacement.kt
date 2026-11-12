@@ -8,6 +8,7 @@ import kotlinx.coroutines.runBlocking
 import org.dozendb.cluster.DatabaseGroups
 import org.dozendb.cluster.GroupViews
 import org.dozendb.cluster.internal.replication.LocalDatabases
+import org.dozendb.cluster.internal.replication.ModeSwitch
 import org.dozendb.consensus.ConsensusLog
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.DatabaseRef
@@ -23,13 +24,15 @@ import org.neo4j.logging.InternalLog
  * documents them.
  *
  * A primary leaves its database's Raft group, which a majority of the group's voters must let it
- * do, and joins it again as a member that the group adds, from a new copy of the database. It first
- * deletes its own state of the group, so that it no longer runs the group, and only then asks the
- * other voters to remove it: one that ran the group meanwhile could be added again with its old
- * state, which it would then delete as a voter, forgetting its votes. Until the group removed it,
- * it is a voter that does not answer. If the removal fails, its state stays deleted and the copy
- * stays in quarantine, which the reconciler leaves alone: the operation can be run again, and asks
- * for the removal only.
+ * do, and joins it again as a member that the group adds: from a new copy of the database, or from
+ * its own store, which seeds its new state of the group with the log entry of its last transaction,
+ * as a secondary that turns primary does, as long as the group's leader still holds that entry; it
+ * is copied otherwise. It first deletes its own state of the group, so that it no longer runs the
+ * group, and only then asks the other voters to remove it: one that ran the group meanwhile could
+ * be added again with its old state, which it would then delete as a voter, forgetting its votes.
+ * Until the group removed it, it is a voter that does not answer; a copy in quarantine does not
+ * start, nor does its group run. If the removal fails, the copy stays in quarantine, without its
+ * old state: the operation can be run again.
  *
  * A secondary votes in no group: it is copied again, or kept as it is.
  *
@@ -60,7 +63,6 @@ internal class CopyReplacement(
             }
             return
         }
-        check(!keepStore) { "DozenDB does not keep the store of a copy that joins as new yet." }
         val ref = groups.of(id)
         val self = consensus.self.id
         val voters =
@@ -74,15 +76,17 @@ internal class CopyReplacement(
                 "join as a new member. Lift its quarantine with keepStateKeepStore, or recreate " +
                 "the database."
         }
-        if (state != null) {
-            log.info(
-                "Deleting %s here, in quarantine, and its Raft group: it joins the group as a " +
-                    "new member, from a new copy",
-                id,
-            )
-            databases.drop(id)
-        } else if (ref.id in consensus.localGroups()) {
-            consensus.removeGroup(ref)
+        if (!keepStore || !rejoinFromStore(id)) {
+            if (state != null) {
+                log.info(
+                    "Deleting %s here, in quarantine, and its Raft group: it joins the group as " +
+                        "a new member, from a new copy",
+                    id,
+                )
+                databases.drop(id)
+            } else if (ref.id in consensus.localGroups()) {
+                consensus.removeGroup(ref)
+            }
         }
         if (!voting) return
         try {
@@ -98,6 +102,36 @@ internal class CopyReplacement(
         }
         log.info("The Raft group of %s removed this member, which joins it as a new member", id)
     }
+
+    /**
+     * Replaces the Raft state of the copy of [id] by a seed from its store; false if its group's
+     * log moved on, so that it needs a new copy.
+     */
+    private fun rejoinFromStore(id: NamedDatabaseId): Boolean =
+        when (databases.rejoinFromStore(id)) {
+            ModeSwitch.SWITCHED -> {
+                log.info(
+                    "Deleted the Raft group of %s here, in quarantine: it joins the group as a " +
+                        "new member, from its store",
+                    id,
+                )
+                true
+            }
+            ModeSwitch.NEEDS_COPY -> {
+                log.info(
+                    "The Raft group of %s no longer holds the transactions after the store here: " +
+                        "the copy joins as a new member from a new copy instead",
+                    id,
+                )
+                false
+            }
+            ModeSwitch.LATER ->
+                throw IllegalStateException(
+                    "Database '${id.name()}': its group's leader cannot tell the term of the last " +
+                        "transaction of the copy here now. Run the operation again once the group " +
+                        "has a leader."
+                )
+        }
 
     /**
      * The voting members of [ref]: this member's view where it votes in the group, else the view

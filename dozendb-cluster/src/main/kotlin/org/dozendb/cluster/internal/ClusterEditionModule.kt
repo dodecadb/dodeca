@@ -134,14 +134,19 @@ import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.DatabaseIdRepository
+import org.neo4j.kernel.database.DatabaseTracers
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.kernel.recovery.LogTailExtractor
 import org.neo4j.logging.InternalLogProvider
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.router.transaction.DatabaseTransactionFactory
 import org.neo4j.ssl.config.SslPolicyProvider
+import org.neo4j.storageengine.api.StorageEngineFactory
+import org.neo4j.storageengine.api.TransactionId
 import org.neo4j.storageengine.api.TransactionIdStore
 
 /**
@@ -1078,6 +1083,20 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         }
     }
 
+    /**
+     * The last transaction of the store of [id], which does not run here, read from its files; null
+     * if it has none.
+     */
+    private fun lastTransactionOnDisk(id: NamedDatabaseId): TransactionId? {
+        val fs = globalModule.fileSystem
+        val layout = globalModule.neo4jLayout.databaseLayout(id.name())
+        val engine =
+            StorageEngineFactory.selectStorageEngine(fs, layout).orElse(null) ?: return null
+        return LogTailExtractor(fs, globalModule.globalConfig, engine, DatabaseTracers.EMPTY)
+            .getTailMetadata(layout, EmptyMemoryTracker.INSTANCE)
+            .lastCommittedTransaction
+    }
+
     /** The Raft index of the last transaction of each database that runs on this member. */
     private fun lastPulledHere(): Map<UUID, Long> =
         transactionIdStoresHere().mapValues {
@@ -1125,6 +1144,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 quarantines,
                 groups,
                 detachOnStart = { cluster.detachOnStart(it) },
+                lastTransaction = ::lastTransactionOnDisk,
             )
         copyReplacement =
             CopyReplacement(

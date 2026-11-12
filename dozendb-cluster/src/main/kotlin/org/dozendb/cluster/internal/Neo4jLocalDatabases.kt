@@ -24,6 +24,7 @@ import org.dozendb.core.servers.CopyMode
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.kernel.database.NamedDatabaseId
+import org.neo4j.storageengine.api.TransactionId
 
 /**
  * This member's databases, through the database manager, their files, and their replication as
@@ -34,6 +35,8 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * @property quarantines the copies of databases in quarantine on this member.
  * @property detachOnStart has the store of a database detach from the Raft group it was replicated
  *   in as the database starts next.
+ * @property lastTransaction the last transaction of a database's store that does not run here, read
+ *   from its files; null if it has none.
  */
 internal class Neo4jLocalDatabases(
     private val manager: DatabaseManager,
@@ -48,6 +51,7 @@ internal class Neo4jLocalDatabases(
     private val quarantines: Quarantines,
     private val groups: DatabaseGroups = DatabaseGroups(),
     private val detachOnStart: (String) -> Unit = {},
+    private val lastTransaction: (NamedDatabaseId) -> TransactionId? = { null },
 ) : LocalDatabases {
     override fun registered(): Map<NamedDatabaseId, LocalDatabase> =
         repository.registeredDatabases().mapValues { (id, context) ->
@@ -203,6 +207,22 @@ internal class Neo4jLocalDatabases(
         manager.releaseDatabase(id)
         if (told is EntryTerm.Known) seed(ref, Snapshot(LogPosition(index, told.term), index))
         secondaries.remove(id)
+        create(id, CopyMode.PRIMARY)
+        return ModeSwitch.SWITCHED
+    }
+
+    override fun rejoinFromStore(id: NamedDatabaseId): ModeSwitch {
+        val ref = groups.of(id)
+        val last = lastTransaction(id) ?: return ModeSwitch.NEEDS_COPY
+        val index = last.consensusIndex()
+        val told = if (index < 0) null else entryTerm(ref, index)
+        if (told != null && told !is EntryTerm.Known) {
+            return if (told == EntryTerm.Unknown) ModeSwitch.LATER else ModeSwitch.NEEDS_COPY
+        }
+        replication.replica(id)?.handOverOnStop = false
+        if (repository.getDatabaseContext(id).isPresent) manager.releaseDatabase(id)
+        replication.remove(id)
+        if (told is EntryTerm.Known) seed(ref, Snapshot(LogPosition(index, told.term), index))
         create(id, CopyMode.PRIMARY)
         return ModeSwitch.SWITCHED
     }
