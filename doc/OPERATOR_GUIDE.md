@@ -1388,6 +1388,10 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   `DIFF` and `AUTO` take a full backup instead when the server no longer holds
   the transactions after the latest backup, or when the latest backup is of
   another database of that name. `FULL` always takes a full backup.
+- A differential backup continues the latest backup that holds transactions.
+  `--prefer-diff-as-parent` continues the latest differential backup instead,
+  even when a full backup was taken after it, so that a chain of differential
+  backups goes on whatever full backups are taken beside it.
 - A differential backup without new transactions is empty: it still marks the
   time and keeps the metadata. `--skip-empty-diffs` writes none, and needs
   `--include-metadata=none`.

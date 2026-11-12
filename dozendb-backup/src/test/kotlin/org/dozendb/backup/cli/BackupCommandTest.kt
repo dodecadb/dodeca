@@ -293,6 +293,34 @@ class BackupCommandTest {
     }
 
     @Test
+    fun `with --prefer-diff-as-parent, a differential backup continues the latest differential one`() {
+        val source = source().apply { start() }
+        for (arguments in listOf(arrayOf("--type=FULL"), arrayOf(), arrayOf("--type=FULL"))) {
+            source.rows("CREATE (:Batch)")
+            val result = backup(source, *arguments)
+            assertThat(result.exitCode).describedAs("$result").isZero
+        }
+        source.rows("CREATE (:Batch)")
+
+        val preferred = backup(source, "--type=DIFF", "--prefer-diff-as-parent")
+
+        assertThat(preferred.exitCode).describedAs("$preferred").isZero
+        val (_, differential, full, continued) = artifacts()
+        assertThat(full.header.full).isTrue
+        // Even though the full backup taken after it is newer.
+        assertThat(continued.header.lowestAppendIndex)
+            .isEqualTo(differential.header.highestAppendIndex + 1)
+        assertThat(count(restored(continued), "Batch")).isEqualTo(4)
+        // Without differential backups to continue, the latest backup, as without it.
+        Files.delete(differential.path)
+        Files.delete(continued.path)
+        source.rows("CREATE (:Batch)")
+        assertThat(backup(source, "--prefer-diff-as-parent=true").exitCode).isZero
+        assertThat(artifacts().last().header.lowestAppendIndex)
+            .isEqualTo(full.header.highestAppendIndex + 1)
+    }
+
+    @Test
     fun `a differential backup needs a backup to continue`() {
         val source = source().apply { start() }
 

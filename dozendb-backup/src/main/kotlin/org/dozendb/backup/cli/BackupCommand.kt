@@ -165,6 +165,21 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     }
 
     @Option(
+        names = ["--prefer-diff-as-parent"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Continue the latest differential backup that holds transactions, even when a " +
+                    "full backup was taken after it, instead of the latest backup. Without a " +
+                    "differential backup to continue, the latest backup."
+            ],
+    )
+    private var preferDiffAsParent = false
+
+    @Option(
         names = ["--skip-empty-diffs"],
         arity = "0..1",
         paramLabel = "true|false",
@@ -417,7 +432,11 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         return false
     }
 
-    /** The latest backup of [name] in --to-path, which a differential one continues. */
+    /**
+     * The backup of [name] in --to-path that a differential one continues: the latest that holds
+     * transactions, or with --prefer-diff-as-parent the latest such differential backup, with its
+     * chain, if there is one.
+     */
     private fun latest(name: String): Artifact? {
         val found = ArtifactChains.find(listOf(toPath), fs)
         found.unreadable.forEach { (file, why) ->
@@ -425,7 +444,19 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         }
         val artifacts = found.artifacts.filter { it.header.databaseName == name }
         if (artifacts.none { !it.header.empty }) return null
-        return ArtifactChains.select(artifacts, null).last
+        val latest = ArtifactChains.select(artifacts, null).last
+        if (!preferDiffAsParent) return latest
+        val differential =
+            artifacts
+                .filter {
+                    !it.header.full &&
+                        !it.header.empty &&
+                        it.header.databaseId == latest.header.databaseId &&
+                        it.header.storeId == latest.header.storeId
+                }
+                .maxByOrNull { it.header.highestAppendIndex } ?: return latest
+        // Checks that its chain is whole.
+        return ArtifactChains.select(artifacts, null, differential).last
     }
 
     /**

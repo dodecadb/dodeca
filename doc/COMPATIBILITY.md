@@ -882,8 +882,7 @@ not promised. The differences:
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
   them where they are, as it restores them, and never needs `--temp-path`.
 - Not supported: `--parallel-recovery` and `--inspect-path` of `backup`, and
-  the options Enterprise added since 2025.01: `--prefer-diff-as-parent`,
-  `--remote-address-resolution`, `--parallel-download`, `--skip-recovery` and
+  the options Enterprise added since 2025.01: `--remote-address-resolution`, `--parallel-download`, `--skip-recovery` and
   `--split-archive-part-size` of `backup`; nor
   `server.backup.advertised_address`.
   `server.split_archive.part_size`, which Neo4j Community declares, does not
