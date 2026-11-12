@@ -871,12 +871,12 @@ Backups and restores use Enterprise's commands, options and settings:
 `neo4j-admin database backup` and `restore`, `neo4j-admin backup aggregate`
 and `inspect`, `neo4j-admin database check --from-path`,
 `server.backup.enabled`, `server.backup.listen_address`,
-`server.backup.advertised_address` and `dbms.ssl.policy.backup.*`. They work alike on standalone servers and cluster
-members; see [`OPERATOR_GUIDE.md`, "Backup and
-restore"](OPERATOR_GUIDE.md#backup-and-restore). A backup artifact is a file of
-DozenDB's own format, which Neo4j Community's `neo4j-admin database load` also
-loads as a dump when it is a full backup. Exchanging backups with Enterprise is
-not promised. The differences:
+`server.backup.advertised_address` and `dbms.ssl.policy.backup.*`. They work
+alike on standalone servers and cluster members; see [`OPERATOR_GUIDE.md`,
+"Backup and restore"](OPERATOR_GUIDE.md#backup-and-restore). A backup artifact
+is a file of DozenDB's own format, which Neo4j Community's `neo4j-admin
+database load` also loads as a dump when it is a full backup. Exchanging
+backups with Enterprise is not promised. The differences:
 
 - Backups go to, and are restored, inspected, checked and aggregated from,
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
