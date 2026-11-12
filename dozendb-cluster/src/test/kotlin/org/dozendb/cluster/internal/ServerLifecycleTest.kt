@@ -254,7 +254,16 @@ class ServerLifecycleTest {
         assertThat(cluster.server(host)["state"]).describedAs("kept").isEqualTo("Cordoned")
         assertThat(cluster.hosts("films")).containsExactly(host)
 
-        cluster.administer("CALL dbms.cluster.uncordonServer('$id')")
+        // Enterprise's Cypher 25 has no dbms.cluster.uncordonServer, its Cypher 5 does.
+        assertThat(
+                catchThrowable {
+                    cluster.administer("CYPHER 25 CALL dbms.cluster.uncordonServer('$id')")
+                }
+            )
+            .hasMessageContaining("There is no procedure with the name")
+            .hasMessageContaining("dbms.cluster.uncordonServer")
+        assertThat(cluster.server(host)["state"]).isEqualTo("Cordoned")
+        cluster.administer("CYPHER 5 CALL dbms.cluster.uncordonServer('$id')")
 
         assertThat(cluster.server(host)["state"]).isEqualTo("Enabled")
         cluster.administer("CREATE DATABASE books TOPOLOGY 3 PRIMARIES")

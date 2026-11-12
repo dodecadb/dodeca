@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -350,8 +351,19 @@ class SecondariesIT {
         assertThat((waited as Outcome.Failed).code)
             .isEqualTo("Neo.TransientError.Transaction.BookmarkTimeout")
 
-        // Its deprecated name.
-        assertThat(read2.rows("CALL dbms.cluster.readReplicaToggle('films', false)", "system"))
+        // Its deprecated name, which Cypher 25, the image's default, no longer has.
+        assertThat(
+                catchThrowable {
+                    read2.rows("CALL dbms.cluster.readReplicaToggle('films', false)", "system")
+                }
+            )
+            .hasMessageContaining("dbms.cluster.readReplicaToggle")
+        assertThat(
+                read2.rows(
+                    "CYPHER 5 CALL dbms.cluster.readReplicaToggle('films', false)",
+                    "system",
+                )
+            )
             .containsExactly(mapOf("state" to "running"))
 
         assertThat(readOn("read2", query, bookmarks)).isEqualTo(count(1))

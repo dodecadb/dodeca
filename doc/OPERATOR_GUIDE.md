@@ -522,8 +522,8 @@ DROP SERVER '<name>'
 ```
 
 A cordoned server keeps its copies and takes no new ones until
-`ENABLE SERVER` (or `dbms.cluster.uncordonServer`, which Enterprise
-deprecates) enables it again. `DEALLOCATE DATABASES FROM SERVER` makes servers
+`ENABLE SERVER` enables it again (or, in Cypher 5 only, the deprecated
+`dbms.cluster.uncordonServer`). `DEALLOCATE DATABASES FROM SERVER` makes servers
 `Deallocating` and moves all their copies away; `DRYRUN` lists the moves and
 changes nothing, with Enterprise's columns `database`, `fromServerName`,
 `fromServerId`, `toServerName`, `toServerId` and `mode`. These procedures move
@@ -785,7 +785,7 @@ updating, and `SHOW DATABASES` shows `Secondary replication is paused` as its
 `statusMessage`. A pause ends when the database or the server starts again.
 The procedure needs an administrator, and fails on a server where the database
 does not run as a secondary. `dbms.cluster.readReplicaToggle` is its
-deprecated name.
+deprecated name, in Cypher 5 only.
 
 ### Changing modes
 

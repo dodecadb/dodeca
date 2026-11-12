@@ -16,7 +16,9 @@ import org.neo4j.internal.kernel.api.security.AdminActionOnResource
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.internal.kernel.api.security.Segment
+import org.neo4j.kernel.api.QueryLanguage
 import org.neo4j.kernel.api.exceptions.Status
+import org.neo4j.kernel.api.procedure.QueryLanguageScope
 import org.neo4j.kernel.api.procedure.SystemProcedure
 import org.neo4j.procedure.Admin
 import org.neo4j.procedure.Context
@@ -271,6 +273,8 @@ class ClusterProcedures {
         mode = Mode.DBMS,
         deprecatedBy = "ENABLE SERVER",
     )
+    // Enterprise's Cypher 25 no longer has it.
+    @QueryLanguageScope(scope = [QueryLanguage.CYPHER_5])
     @Description(
         "Enables a cordoned server, named by its name or id, again, as ENABLE SERVER does. Runs " +
             "on the leader of the system database, as Neo4j Enterprise's procedure of the same " +
@@ -435,6 +439,8 @@ class ClusterProcedures {
         mode = Mode.DBMS,
         deprecatedBy = "dbms.cluster.secondaryReplicationDisable",
     )
+    // Enterprise's Cypher 25 no longer has it.
+    @QueryLanguageScope(scope = [QueryLanguage.CYPHER_5])
     @Description(
         "The toggle can pause or resume read replica (deprecated in favor of " +
             "dbms.cluster.secondaryReplicationDisable)."

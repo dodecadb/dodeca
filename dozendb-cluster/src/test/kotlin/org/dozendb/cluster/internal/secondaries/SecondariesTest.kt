@@ -798,9 +798,19 @@ class SecondariesTest {
                 }
             )
             .hasMessageContaining("Database 'films' does not run as a secondary on this server")
+        // The deprecated name, which Enterprise's Cypher 25 no longer has.
+        assertThat(
+                catchThrowable {
+                    cluster.secondary.query(
+                        "CYPHER 25 CALL dbms.cluster.readReplicaToggle('$FILMS', true)"
+                    )
+                }
+            )
+            .hasMessageContaining("There is no procedure with the name")
+            .hasMessageContaining("dbms.cluster.readReplicaToggle")
         assertThat(
                 cluster.secondary
-                    .query("CALL dbms.cluster.readReplicaToggle('$FILMS', true)")
+                    .query("CYPHER 5 CALL dbms.cluster.readReplicaToggle('$FILMS', true)")
                     .single()["state"]
             )
             .describedAs("the deprecated name")

@@ -722,11 +722,7 @@ decides what Enterprise does not document:
   `connect-randomly-within-server-group` (the `-tags` ones). Without strict
   validation (`server.config.strict_validation.enabled=false`), the settings
   are ignored with a warning; the strategies are refused either way, as any
-  unknown strategy is. DozenDB keeps
-  `dbms.cluster.uncordonServer` and `dbms.cluster.readReplicaToggle`, which
-  Enterprise's Cypher 25 replaced with `ENABLE SERVER` and
-  `dbms.cluster.secondaryReplicationDisable`, in both Cypher versions, with a
-  deprecation warning.
+  unknown strategy is.
 - A copy whose server loses its mode but may host the other keeps its store
   and changes its mode in place, both ways, primary to secondary once its
   replacement votes. A server changes how it hosts `system` when restarted
