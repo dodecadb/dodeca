@@ -547,11 +547,13 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   members"](OPERATOR_GUIDE.md#tls-between-members).
 - **Cipher suites.** Members use the protocols and cipher suites of the
   policy, and with the default `tls_versions` negotiate TLS 1.3 with each
-  other. Without `ciphers`, Neo4j 2026.10.2 enables the JDK's default suites,
-  CBC suites among them, also for Bolt and HTTPS: it means to leave out CBC,
-  DH and ECDH suites, but its filter matches none. Enterprise's documentation
-  says that CBC suites are not supported since 2025.01, and that 2025.10 took
-  four of them out of the defaults. Set `ciphers` to restrict them.
+  other. Enterprise's documentation says that CBC suites are not supported
+  since 2025.01, and that 2025.10 took four of them out of the defaults.
+  Without `ciphers`, members and backups use the JDK's default suites without
+  the CBC ones and those with static DH or ECDH key exchange. Neo4j 2026.10.2
+  means to leave these out of every policy's defaults, but its filter matches
+  none, so Bolt and HTTPS, which are Neo4j's own, still enable CBC suites:
+  set `ciphers` in their policies to restrict them.
 - **Checking connectivity.** `dbms.cluster.checkConnectivity` checks, as in
   Enterprise, whether the member it runs on reaches each other member at its
   ports. DozenDB carries the traffic of Enterprise's cluster and Raft ports on

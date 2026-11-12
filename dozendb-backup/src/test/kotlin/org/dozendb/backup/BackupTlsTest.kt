@@ -92,6 +92,10 @@ class BackupTlsTest {
         assertThat(tls.requireClientCertificates).isTrue
         // Neo4j 2026's default; Neo4j 5.26's was false.
         assertThat(tls.verifyHostname).isTrue
+        // The JDK's defaults without the CBC and static (EC)DH suites, which Neo4j 2026 means to
+        // drop but does not.
+        assertThat(tls.cipherSuites).contains("TLS_AES_128_GCM_SHA256")
+        assertThat(tls.cipherSuites).noneMatch { suite -> INSECURE.any { it in suite } }
         assertThat(output.toString()).isEmpty()
     }
 
@@ -121,5 +125,23 @@ class BackupTlsTest {
         val tls = checkNotNull(BackupTls.client(enabled, policies(enabled)))
         assertThat(tls.certificateChain).containsExactly(certificate.certificate)
         assertThat(tls.verifyHostname).isFalse
+        assertThat(tls.cipherSuites).noneMatch { suite -> INSECURE.any { it in suite } }
+    }
+
+    @Test
+    fun `the cipher suites the operator chose are kept, CBC included`() {
+        val cbc = "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
+        val tls =
+            server(
+                "0.0.0.0:6362",
+                policy.enabled to true,
+                policy.ciphers to listOf("TLS_AES_128_GCM_SHA256", cbc),
+            )
+
+        assertThat(checkNotNull(tls).cipherSuites).containsExactly("TLS_AES_128_GCM_SHA256", cbc)
+    }
+
+    private companion object {
+        val INSECURE = listOf("_CBC_", "_DH_", "_ECDH_")
     }
 }

@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal
 
 import org.dozendb.consensus.ratis.TlsConfig
+import org.dozendb.core.ssl.CipherSuites
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.ssl.ClientAuth
 import org.neo4j.configuration.ssl.SslPolicyConfig
@@ -52,7 +53,7 @@ internal object ClusterTls {
             certificateChain = loaded.certificateChain().toList(),
             trustManagers = loaded.trustManagerFactory.trustManagers.toList(),
             protocols = loaded.tlsVersions?.toList()?.takeIf { it.isNotEmpty() },
-            cipherSuites = loaded.cipherSuites?.takeIf { it.isNotEmpty() },
+            cipherSuites = CipherSuites.of(config, SslPolicyScope.CLUSTER, loaded),
             requireClientCertificates = loaded.clientAuth == ClientAuth.REQUIRE,
             verifyHostname = loaded.isVerifyHostname,
         )

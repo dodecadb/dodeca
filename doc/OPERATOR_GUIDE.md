@@ -998,7 +998,8 @@ extended key usages, it needs both `serverAuth` and `clientAuth`.
   connections without a trusted certificate. `NONE` leaves only the member
   connected to checked, and members log a warning; `OPTIONAL` is refused.
 - `tls_versions` (default TLS 1.2 and 1.3) and `ciphers` restrict the protocol
-  versions and cipher suites.
+  versions and cipher suites. Without `ciphers`, members use the JDK's default
+  suites without the CBC ones and those with static DH or ECDH key exchange.
 - A certificate is not tied to a member id: members accept every certificate
   from a trusted authority. Use an authority, or an intermediate authority,
   that issues certificates for the cluster alone.
@@ -1333,7 +1334,8 @@ once `dbms.ssl.policy.backup.enabled` is set explicitly:
 
 - `true` (recommended): TLS, with Neo4j's SSL policy settings of the `backup`
   scope, as in Neo4j Enterprise, and certificates in `certificates/backup`
-  laid out as for [TLS between members](#tls-between-members).
+  laid out, and cipher suites by default, as for
+  [TLS between members](#tls-between-members).
   `dbms.ssl.policy.backup.client_auth` keeps its default, `REQUIRE`, so that
   only clients with a certificate from a trusted authority can take backups.
   `NONE` logs a warning; `OPTIONAL` is refused.

@@ -3,6 +3,7 @@ package org.dozendb.backup
 import java.net.InetAddress
 import java.net.UnknownHostException
 import org.dozendb.consensus.ratis.TlsConfig
+import org.dozendb.core.ssl.CipherSuites
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.configuration.ssl.ClientAuth
@@ -58,24 +59,24 @@ internal object BackupTls {
                     "($clientAuth=NONE): any host that reaches $address can copy every database."
             )
         }
-        return of(loaded)
+        return of(config, loaded)
     }
 
     /** The TLS that [config] asks for to take backups, with [policies]; null for plaintext. */
     fun client(config: Config, policies: SslPolicyProvider): TlsConfig? =
-        if (enabled(config)) of(policies.getPolicy(SslPolicyScope.BACKUP)) else null
+        if (enabled(config)) of(config, policies.getPolicy(SslPolicyScope.BACKUP)) else null
 
     // Neo4j knows the policy's settings only once one of them is set.
     private fun enabled(config: Config): Boolean =
         config.isExplicitlySet(policy.enabled) && config.get(policy.enabled)
 
-    private fun of(loaded: SslPolicy) =
+    private fun of(config: Config, loaded: SslPolicy) =
         TlsConfig(
             privateKey = loaded.privateKey(),
             certificateChain = loaded.certificateChain().toList(),
             trustManagers = loaded.trustManagerFactory.trustManagers.toList(),
             protocols = loaded.tlsVersions?.toList()?.takeIf { it.isNotEmpty() },
-            cipherSuites = loaded.cipherSuites?.takeIf { it.isNotEmpty() },
+            cipherSuites = CipherSuites.of(config, SslPolicyScope.BACKUP, loaded),
             requireClientCertificates = loaded.clientAuth == ClientAuth.REQUIRE,
             verifyHostname = loaded.isVerifyHostname,
         )

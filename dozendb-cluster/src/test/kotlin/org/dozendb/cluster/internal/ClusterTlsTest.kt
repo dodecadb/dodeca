@@ -67,8 +67,10 @@ class ClusterTlsTest {
         // Neo4j 2026's default; Neo4j 5.26's was false.
         assertThat(tls.verifyHostname).isTrue()
         assertThat(tls.protocols).containsExactly("TLSv1.2", "TLSv1.3")
-        // Neo4j 2026 lists the JDK's default suites, where Neo4j 5.26 left them unset.
+        // Neo4j 2026 lists the JDK's default suites, where Neo4j 5.26 left them unset; DozenDB
+        // drops the CBC and static (EC)DH ones, which Neo4j 2026 means to drop but does not.
         assertThat(tls.cipherSuites).contains("TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384")
+        assertThat(tls.cipherSuites).noneMatch { suite -> INSECURE.any { it in suite } }
         assertThat(output.toString()).isEmpty()
     }
 
@@ -80,13 +82,14 @@ class ClusterTlsTest {
                     policy.enabled to true,
                     policy.verify_hostname to false,
                     policy.tls_versions to listOf("TLSv1.3"),
-                    policy.ciphers to listOf("TLS_AES_128_GCM_SHA256"),
+                    policy.ciphers to listOf("TLS_AES_128_GCM_SHA256", CBC),
                 )
             )
 
         assertThat(tls.verifyHostname).isFalse()
         assertThat(tls.protocols).containsExactly("TLSv1.3")
-        assertThat(tls.cipherSuites).containsExactly("TLS_AES_128_GCM_SHA256")
+        // The operator's choice, CBC included.
+        assertThat(tls.cipherSuites).containsExactly("TLS_AES_128_GCM_SHA256", CBC)
     }
 
     @Test
@@ -100,5 +103,10 @@ class ClusterTlsTest {
             }
             .isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageContaining("dbms.ssl.policy.cluster.client_auth=OPTIONAL is not supported")
+    }
+
+    private companion object {
+        val INSECURE = listOf("_CBC_", "_DH_", "_ECDH_")
+        const val CBC = "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256"
     }
 }
