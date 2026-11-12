@@ -114,6 +114,10 @@ class PrivilegeCommandsTest {
 
     private fun databaseId(name: String) = checkNotNull(security().databaseId(name))
 
+    /** The commands of manager's privileges, in the Cypher version that [prefix] asks for. */
+    private fun commands(prefix: String) =
+        admin.run("$prefix SHOW ROLE manager PRIVILEGES AS COMMANDS").map { it["command"] }
+
     @Test
     fun `grants, denies and revokes DBMS privileges, which apply from the next transaction`() {
         assertThat(alice.refused("CREATE ROLE curator"))
@@ -188,6 +192,70 @@ class PrivilegeCommandsTest {
                 "GRANTED SHOW_INDEX database ${databaseId("films")} database",
                 "GRANTED SHOW_INDEX database ${databaseId("neo4j")} database",
             )
+    }
+
+    @Test
+    fun `SET DATABASE DEFAULT LANGUAGE lets a role set the default Cypher version, no more`() {
+        assertThat(alice.refused("ALTER DATABASE films SET DEFAULT LANGUAGE CYPHER 25"))
+            .hasMessageStartingWith("Permission has not been granted for SET DATABASE DEFAULT")
+
+        admin.run("GRANT SET DATABASE DEFAULT LANGUAGE ON DBMS TO manager")
+
+        alice.run("ALTER DATABASE films SET DEFAULT LANGUAGE CYPHER 25")
+        alice.run("ALTER DATABASE system SET DEFAULT LANGUAGE CYPHER 25")
+        assertThat(alice.refused("ALTER DATABASE films SET ACCESS READ ONLY"))
+            .hasMessageStartingWith("Permission has not been granted for SET DATABASE ACCESS")
+        // It shows no databases but those everyone sees: the home database, which PUBLIC may
+        // access, and system.
+        assertThat(alice.run("SHOW DATABASES YIELD name").map { it["name"] })
+            .containsExactlyInAnyOrder("neo4j", "system")
+        // Neo4j keeps it as on every database, which Cypher 5 names the DBMS.
+        assertThat(commands("CYPHER 5"))
+            .containsExactly("GRANT SET DATABASE DEFAULT LANGUAGE ON DBMS TO `manager`")
+        assertThat(commands("CYPHER 25"))
+            .containsExactly("GRANT SET DATABASE DEFAULT LANGUAGE ON DATABASE * TO `manager`")
+    }
+
+    @Test
+    fun `grants ALTER DATABASE, SET DATABASE ACCESS and SET DATABASE DEFAULT LANGUAGE on databases in Cypher 25`() {
+        admin.run("CREATE DATABASE books")
+        admin.run("CYPHER 25 GRANT SET DATABASE DEFAULT LANGUAGE ON DATABASE films TO manager")
+        admin.run("CYPHER 25 GRANT SET DATABASE ACCESS ON HOME DATABASE TO manager")
+        admin.run("CYPHER 25 GRANT ALTER DATABASE ON DATABASES books TO manager")
+
+        alice.run("ALTER DATABASE films SET DEFAULT LANGUAGE CYPHER 25")
+        assertThat(alice.refused("ALTER DATABASE films SET ACCESS READ ONLY"))
+            .hasMessageStartingWith("Permission has not been granted for SET DATABASE ACCESS")
+        alice.run("ALTER DATABASE neo4j SET ACCESS READ ONLY")
+        assertThat(alice.refused("ALTER DATABASE neo4j SET DEFAULT LANGUAGE CYPHER 25"))
+            .hasMessageStartingWith("Permission has not been granted for SET DATABASE DEFAULT")
+        // ALTER DATABASE covers both.
+        alice.run("ALTER DATABASE books SET ACCESS READ ONLY")
+        alice.run("ALTER DATABASE books SET DEFAULT LANGUAGE CYPHER 25")
+        // SET DATABASE ACCESS and ALTER DATABASE show the databases they are on; SET DATABASE
+        // DEFAULT LANGUAGE does not.
+        assertThat(alice.run("SHOW DATABASES YIELD name").map { it["name"] })
+            .containsExactlyInAnyOrder("neo4j", "system", "books")
+        assertThat(commands("CYPHER 25"))
+            .containsExactlyInAnyOrder(
+                "GRANT SET DATABASE DEFAULT LANGUAGE ON DATABASE films TO `manager`",
+                "GRANT SET DATABASE ACCESS ON HOME DATABASE TO `manager`",
+                "GRANT ALTER DATABASE ON DATABASE books TO `manager`",
+            )
+
+        admin.run("CYPHER 25 REVOKE ALTER DATABASE ON DATABASES books FROM manager")
+        assertThat(alice.refused("ALTER DATABASE books SET ACCESS READ WRITE"))
+            .hasMessageStartingWith("Permission has not been granted for SET DATABASE ACCESS")
+    }
+
+    @Test
+    fun `ALL DATABASE PRIVILEGES does not let a role alter the database`() {
+        admin.run("GRANT ALL DATABASE PRIVILEGES ON DATABASE films TO manager")
+
+        assertThat(alice.refused("ALTER DATABASE films SET DEFAULT LANGUAGE CYPHER 25"))
+            .hasMessageStartingWith("Permission has not been granted for SET DATABASE DEFAULT")
+        assertThat(alice.refused("ALTER DATABASE films SET ACCESS READ ONLY"))
+            .hasMessageStartingWith("Permission has not been granted for SET DATABASE ACCESS")
     }
 
     @Test

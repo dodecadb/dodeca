@@ -2,6 +2,7 @@ package org.dozendb.core.security
 
 import java.util.UUID
 import java.util.regex.Pattern
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.util.Stringifier
@@ -56,18 +57,19 @@ object PrivilegeText {
 
     /**
      * The command that gives [privilege] to the role [role], or to `$role` for null; with [revoke],
-     * the one that takes it away. Null for a privilege on a database that [databaseName] does not
-     * know; the database [parameter] is `$database`. WRITE on every node and on every relationship
-     * give the same command.
+     * the one that takes it away, in Cypher [version]. Null for a privilege on a database that
+     * [databaseName] does not know; the database [parameter] is `$database`. WRITE on every node
+     * and on every relationship give the same command.
      */
     fun command(
         privilege: Privilege,
         role: String?,
         revoke: Boolean,
         databaseName: (UUID) -> String?,
+        version: CypherVersion,
         parameter: UUID? = null,
     ): Command? {
-        val body = body(privilege, databaseName, parameter) ?: return null
+        val body = body(privilege, databaseName, version, parameter) ?: return null
         val immutable = if (privilege.immutable) "IMMUTABLE " else ""
         val access = if (privilege.access == Access.GRANTED) "GRANT" else "DENY"
         val grantee = role?.let { Stringifier.backtick(it, true) } ?: "\$role"
@@ -77,13 +79,30 @@ object PrivilegeText {
         return Command(text, privilege.immutable)
     }
 
+    /**
+     * Whether only Cypher 25 has a command for [privilege]: one of [DATABASE_AND_DBMS] on a
+     * database, or on the home database, as Neo4j Enterprise 2025.08 grants them.
+     */
+    fun cypher25Only(privilege: Privilege): Boolean =
+        privilege.action in DATABASE_AND_DBMS &&
+            (privilege.scope is PrivilegeScope.Database || privilege.scope == PrivilegeScope.Home)
+
     private fun body(
         privilege: Privilege,
         databaseName: (UUID) -> String?,
+        version: CypherVersion,
         parameter: UUID?,
     ): String? {
         val action = privilege.action
         val segment = privilege.segment
+        // Neo4j keeps these on the DBMS as on every database, which Cypher 5 names the DBMS.
+        if (
+            privilege.scope == PrivilegeScope.AllDatabases &&
+                action in DATABASE_AND_DBMS &&
+                version == CypherVersion.Cypher5
+        ) {
+            return "${keyword(action)} ON DBMS"
+        }
         return when (val scope = privilege.scope) {
             PrivilegeScope.Dbms ->
                 when (action) {
@@ -232,6 +251,17 @@ object PrivilegeText {
     private fun keyword(action: PrivilegeAction): String =
         KEYWORDS[action] ?: action.name.replace('_', ' ')
 
+    /**
+     * The database privileges that Cypher 5 grants on the DBMS only, and Cypher 25 also on
+     * databases; Neo4j keeps those on the DBMS as on every database.
+     */
+    val DATABASE_AND_DBMS =
+        setOf(
+            PrivilegeAction.ALTER_DATABASE,
+            PrivilegeAction.SET_DATABASE_ACCESS,
+            PrivilegeAction.SET_DEFAULT_LANGUAGE,
+        )
+
     private val DOT = Pattern.compile("\\.")
 
     /** Graph privileges whose commands name no elements. */
@@ -299,6 +329,7 @@ object PrivilegeText {
             PrivilegeAction.DROP_DATABASE to "DROP DATABASE",
             PrivilegeAction.ALTER_DATABASE to "ALTER DATABASE",
             PrivilegeAction.SET_DATABASE_ACCESS to "SET DATABASE ACCESS",
+            PrivilegeAction.SET_DEFAULT_LANGUAGE to "SET DATABASE DEFAULT LANGUAGE",
             PrivilegeAction.COMPOSITE_DATABASE_MANAGEMENT to "COMPOSITE DATABASE MANAGEMENT",
             PrivilegeAction.CREATE_COMPOSITE_DATABASE to "CREATE COMPOSITE DATABASE",
             PrivilegeAction.DROP_COMPOSITE_DATABASE to "DROP COMPOSITE DATABASE",

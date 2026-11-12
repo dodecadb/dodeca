@@ -202,6 +202,7 @@ internal class ShowPrivilegeCommands(
                                 if (users) null else held.role,
                                 revoke,
                                 graph::databaseName,
+                                version,
                             ) ?: return@mapNotNull null
                         command to (privilege to held)
                     }

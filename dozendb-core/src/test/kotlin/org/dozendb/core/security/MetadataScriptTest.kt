@@ -38,6 +38,10 @@ class MetadataScriptTest {
                 "DENY READ {secret} ON GRAPH films FOR (n:Movie) WHERE n.rating > 5 TO curator",
                 "GRANT TRAVERSE ON GRAPH * NODES Person TO curator",
                 "GRANT CREATE ROLE ON DBMS TO curator",
+                // On the DBMS in Cypher 5, which Neo4j keeps as on every database; on films, only
+                // Cypher 25 grants it.
+                "GRANT ALTER DATABASE ON DBMS TO curator",
+                "CYPHER 25 GRANT SET DATABASE ACCESS ON DATABASE films TO curator",
                 "GRANT MATCH {*} ON GRAPH neo4j TO curator",
                 "CREATE ROLE `film_fan`",
                 "GRANT ACCESS ON DATABASE films TO `film_fan`",
@@ -110,6 +114,10 @@ class MetadataScriptTest {
         assertThat(credentials("carol"))
             .contains("CHANGE REQUIRED SET STATUS SUSPENDED")
             .doesNotContain("HOME")
+        // Prefixed where only Cypher 25 has the command; ALTER DATABASE on the DBMS is left out.
+        assertThat(statements)
+            .contains("CYPHER 25 GRANT SET DATABASE ACCESS ON DATABASE \$database TO `curator`")
+            .noneMatch { "ALTER DATABASE" in it }
     }
 
     @Test
@@ -122,7 +130,8 @@ class MetadataScriptTest {
         }
         fun commands(server: StandaloneServer, role: String) =
             server
-                .rows("SHOW ROLE `$role` PRIVILEGES AS COMMANDS", SYSTEM)
+                // In Cypher 5, which names all privileges of the DBMS so.
+                .rows("CYPHER 5 SHOW ROLE `$role` PRIVILEGES AS COMMANDS", SYSTEM)
                 .map { it["command"] as String }
                 .filter { "DBMS" !in it && "neo4j" !in it }
                 .map { it.replace("archive", "films") }

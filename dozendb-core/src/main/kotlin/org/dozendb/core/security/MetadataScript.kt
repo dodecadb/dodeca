@@ -2,6 +2,7 @@ package org.dozendb.core.security
 
 import org.dozendb.core.edition.DefaultDatabase
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_CREDENTIALS_EXPIRED_PROPERTY as USER_EXPIRED
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_CREDENTIALS_PROPERTY as USER_CREDENTIALS
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
@@ -50,7 +51,9 @@ object MetadataScript {
                 ?: GraphDatabaseSettings.initial_default_database.defaultValue()
         fun affects(privilege: Privilege) =
             when (val scope = privilege.scope) {
-                PrivilegeScope.AllDatabases,
+                // Those Cypher 5 grants on the DBMS are the DBMS's, which Neo4j keeps as on every
+                // database.
+                PrivilegeScope.AllDatabases -> privilege.action !in PrivilegeText.DATABASE_AND_DBMS
                 PrivilegeScope.Home -> true
                 is PrivilegeScope.Database -> scope.id == id
                 // A remote alias's privileges are no database's.
@@ -70,8 +73,21 @@ object MetadataScript {
                 statements +=
                     record.privileges
                         .filter(::affects)
-                        .mapNotNull {
-                            PrivilegeText.command(it, role, false, graph::databaseName, id)?.command
+                        .mapNotNull { privilege ->
+                            // Prefixed where only Cypher 25 has the command.
+                            PrivilegeText.command(
+                                    privilege,
+                                    role,
+                                    false,
+                                    graph::databaseName,
+                                    CypherVersion.Cypher5,
+                                    id,
+                                )
+                                ?.command
+                                ?.let {
+                                    if (PrivilegeText.cypher25Only(privilege)) "CYPHER 25 $it"
+                                    else it
+                                }
                         }
                         .distinct()
                         .sorted()

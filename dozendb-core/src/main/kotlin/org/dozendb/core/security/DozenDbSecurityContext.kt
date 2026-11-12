@@ -58,9 +58,17 @@ internal constructor(
             )
         }
 
-        /** SHOW DATABASES: `system`, those with ACCESS, or all for database management. */
+        /**
+         * SHOW DATABASES: `system`, those with ACCESS, all for database management, and those ALTER
+         * DATABASE or SET DATABASE ACCESS is granted on, as Neo4j Enterprise 2025.08 has it in
+         * Cypher 25; SET DATABASE DEFAULT LANGUAGE shows none.
+         */
         override fun canSeeDatabase(database: DatabaseReference): Boolean =
-            canAccessDatabase(database) || seesAll
+            canAccessDatabase(database) ||
+                seesAll ||
+                SEE_ONE.any {
+                    policy.admin(it, databaseId(database.owningDatabaseName())).allowsAccess()
+                }
 
         override fun canAccessDatabase(database: DatabaseReference): Boolean {
             val name = database.owningDatabaseName()
@@ -163,13 +171,13 @@ internal constructor(
     }
 
     private companion object {
-        /** The DBMS privileges that show every standard database in SHOW DATABASES. */
-        val SEE_ALL =
-            listOf(
-                PrivilegeAction.CREATE_DATABASE,
-                PrivilegeAction.DROP_DATABASE,
-                PrivilegeAction.ALTER_DATABASE,
-                PrivilegeAction.SET_DATABASE_ACCESS,
-            )
+        /**
+         * The DBMS privileges that show every standard database in SHOW DATABASES; ALTER DATABASE
+         * and SET DATABASE ACCESS on the DBMS do as on all databases.
+         */
+        val SEE_ALL = listOf(PrivilegeAction.CREATE_DATABASE, PrivilegeAction.DROP_DATABASE)
+
+        /** The privileges that show the databases they are on in SHOW DATABASES. */
+        val SEE_ONE = listOf(PrivilegeAction.ALTER_DATABASE, PrivilegeAction.SET_DATABASE_ACCESS)
     }
 }

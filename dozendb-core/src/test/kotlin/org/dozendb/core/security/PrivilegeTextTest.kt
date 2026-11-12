@@ -3,6 +3,7 @@ package org.dozendb.core.security
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.internal.kernel.api.security.PropertyRule
@@ -13,9 +14,14 @@ class PrivilegeTextTest {
     private val neo4j = UUID(0, 1)
     private val names = mapOf(neo4j to "neo4j", UUID(0, 2) to "remote-db")
 
-    private fun commands(role: String?, vararg privileges: Privilege, revoke: Boolean = false) =
+    private fun commands(
+        role: String?,
+        vararg privileges: Privilege,
+        revoke: Boolean = false,
+        version: CypherVersion = CypherVersion.Cypher5,
+    ) =
         privileges
-            .mapNotNull { PrivilegeText.command(it, role, revoke, names::get)?.command }
+            .mapNotNull { PrivilegeText.command(it, role, revoke, names::get, version)?.command }
             .distinct()
             .sorted()
 
@@ -241,11 +247,45 @@ class PrivilegeTextTest {
     }
 
     @Test
+    fun `names the database privileges of Cypher 5's DBMS as each Cypher version grants them`() {
+        val everywhere =
+            listOf(
+                    PrivilegeAction.ALTER_DATABASE,
+                    PrivilegeAction.SET_DATABASE_ACCESS,
+                    PrivilegeAction.SET_DEFAULT_LANGUAGE,
+                )
+                .map { Privilege(Access.GRANTED, it, PrivilegeScope.AllDatabases) }
+                .toTypedArray()
+
+        assertThat(commands("r", *everywhere))
+            .containsExactly(
+                "GRANT ALTER DATABASE ON DBMS TO `r`",
+                "GRANT SET DATABASE ACCESS ON DBMS TO `r`",
+                "GRANT SET DATABASE DEFAULT LANGUAGE ON DBMS TO `r`",
+            )
+        assertThat(commands("r", *everywhere, version = CypherVersion.Cypher25))
+            .containsExactly(
+                "GRANT ALTER DATABASE ON DATABASE * TO `r`",
+                "GRANT SET DATABASE ACCESS ON DATABASE * TO `r`",
+                "GRANT SET DATABASE DEFAULT LANGUAGE ON DATABASE * TO `r`",
+            )
+        // On a database or the home database, only Cypher 25 grants them.
+        val one =
+            Privilege(Access.DENIED, PrivilegeAction.SET_DEFAULT_LANGUAGE, PrivilegeScope.Home)
+        assertThat(commands("r", one, version = CypherVersion.Cypher25))
+            .containsExactly("DENY SET DATABASE DEFAULT LANGUAGE ON HOME DATABASE TO `r`")
+        assertThat(PrivilegeText.cypher25Only(one)).isTrue()
+        assertThat(everywhere.map(PrivilegeText::cypher25Only)).containsOnly(false)
+    }
+
+    @Test
     fun `has a command for every privilege`() {
         val generator = PrivilegeGenerator(kotlin.random.Random(20261023), listOf(neo4j))
         repeat(2000) {
             val privilege = generator.next()
-            assertThat(PrivilegeText.command(privilege, "r", false, names::get))
+            assertThat(
+                    PrivilegeText.command(privilege, "r", false, names::get, CypherVersion.Cypher25)
+                )
                 .describedAs("$privilege")
                 .isNotNull()
             assertThat(PrivilegeText.row(privilege, names::get))
