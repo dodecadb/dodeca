@@ -70,6 +70,7 @@ class DatabaseReconcilerTest {
         hosts: Set<MemberId> = members.map { it.id }.filter { it !in graph.free }.toSet(),
         created: Boolean = false,
         secondaries: Set<MemberId> = emptySet(),
+        startedAt: Any? = null,
     ) =
         DesiredDatabase(
             id,
@@ -80,6 +81,7 @@ class DatabaseReconcilerTest {
             hosts = hosts,
             secondaries = secondaries,
             created = created,
+            startedAt = startedAt,
         )
 
     @Test
@@ -401,6 +403,26 @@ class DatabaseReconcilerTest {
         graph.databases = listOf(desired(films, online = true))
         reconciler.reconcile()
 
+        assertThat(local.registered).containsEntry(films, LocalDatabase(true, false))
+    }
+
+    // Enterprise's documented retry of a failed start: START DATABASE, which records a new start.
+    @Test
+    fun `a copy whose start failed starts again when START DATABASE asks again, once`() {
+        local.add(films, started = false)
+        graph.databases = listOf(desired(films, online = true, startedAt = 1))
+        local.failStarts = true
+        reconciler.reconcile()
+        assertThat(local.registered).containsEntry(films, LocalDatabase(false, true))
+        local.failStarts = false
+
+        reconciler.reconcile()
+        assertThat(local.registered)
+            .describedAs("the start it failed for is not asked again")
+            .containsEntry(films, LocalDatabase(false, true))
+
+        graph.databases = listOf(desired(films, online = true, startedAt = 2))
+        reconciler.reconcile()
         assertThat(local.registered).containsEntry(films, LocalDatabase(true, false))
     }
 
@@ -1390,11 +1412,19 @@ class DatabaseReconcilerTest {
         /** The seeds each database was started with. */
         val seeds = mutableMapOf<NamedDatabaseId, StoreSeed?>()
 
+        /** Whether starts fail, as the start of a broken store does. */
+        var failStarts = false
+
+        // As DatabaseManager, a start of a failed copy tries anew.
         override fun start(id: NamedDatabaseId, seed: StoreSeed?) {
             val state = registered.getValue(id)
-            check(!state.started && !state.failed)
+            check(!state.started)
             seeds[id] = seed
-            registered[id] = state.copy(started = true)
+            if (failStarts) {
+                registered[id] = state.copy(failed = true)
+                return
+            }
+            registered[id] = state.copy(started = true, failed = false)
             stored[id.name()] = true
             if (state.mode == CopyMode.PRIMARY) groups += id.databaseId().uuid()
         }

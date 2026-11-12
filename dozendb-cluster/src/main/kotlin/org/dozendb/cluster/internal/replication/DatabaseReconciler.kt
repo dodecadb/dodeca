@@ -768,11 +768,13 @@ internal class DatabaseReconciler(
         return !leaving
     }
 
-    /** Whether [database] was asked to start since this member last started its copy. */
-    private fun newStartRequest(database: DesiredDatabase): Boolean {
-        val id = database.id.uuid
-        return id !in startRequests || startRequests[id] != database.startedAt
-    }
+    /**
+     * Whether [database], whose copy here failed, was asked to start since this member last started
+     * it. A failed copy that this member did not start, seen for the first time, failed for the
+     * request it sees: it waits for the next.
+     */
+    private fun newStartRequest(database: DesiredDatabase): Boolean =
+        startRequests.getOrPut(database.id.uuid) { database.startedAt } != database.startedAt
 
     /** Creates [database] here, as [wanted] places it; returns false to be tried again. */
     private fun create(database: DesiredDatabase, wanted: CopyMode): Boolean {
