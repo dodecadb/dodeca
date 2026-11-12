@@ -1,12 +1,13 @@
 package org.dozendb.cluster.internal
 
+import org.dozendb.core.RemovedSettings
 import org.neo4j.configuration.SettingMigrator
-import org.neo4j.configuration.SettingMigrators
 import org.neo4j.logging.InternalLog
 
 /**
- * Takes Neo4j Enterprise's deprecated `db.cluster.raft.leader_transfer.priority_group`, also of a
- * database, for the priority tag, with Neo4j's warning. Registered in META-INF/services.
+ * Refuses Neo4j Enterprise's removed `db.cluster.raft.leader_transfer.priority_group`, also of a
+ * database, and `server.cluster.catchup.connect_randomly_to_server_group`, naming the settings that
+ * replaced them ([RemovedSettings]). Registered in META-INF/services.
  */
 class ClusterSettingsMigrator : SettingMigrator {
     override fun migrate(
@@ -14,21 +15,18 @@ class ClusterSettingsMigrator : SettingMigrator {
         defaultValues: MutableMap<String, String>,
         log: InternalLog,
     ) {
-        SettingMigrators.migrateSettingNameChange(
+        RemovedSettings.refuse(
             values,
             log,
-            PRIORITY_GROUP,
-            ClusterSettings.leaderPriorityTag,
-        )
-        SettingMigrators.migrateGroupSettingPrefixChange(
-            values,
-            log,
-            PRIORITY_GROUP,
+            "db.cluster.raft.leader_transfer.priority_group",
             DatabasePriorityTag.PREFIX,
+            ofGroup = true,
         )
-    }
-
-    private companion object {
-        const val PRIORITY_GROUP = "db.cluster.raft.leader_transfer.priority_group"
+        RemovedSettings.refuse(
+            values,
+            log,
+            "server.cluster.catchup.connect_randomly_to_server_group",
+            ClusterSettings.connectRandomlyToServerTags.name(),
+        )
     }
 }

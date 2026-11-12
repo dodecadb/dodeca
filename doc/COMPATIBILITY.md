@@ -713,12 +713,16 @@ decides what Enterprise does not document:
   `deniedDatabases` options and the `initial.server.*` settings, are database
   names, compared regardless of case. Enterprise also takes name patterns
   there since 2025.12.
-- DozenDB still takes the server groups that Enterprise removed in 2025.01,
-  as tags: `server.groups`, for `initial.server.tags`, with Neo4j's warning
-  that names the setting replacing it;
-  `server.cluster.catchup.connect_randomly_to_server_group`; and the
+- The server groups that Enterprise removed in 2025.01 stop the server at
+  startup, as in Enterprise, but the message names what replaced each one:
+  `server.groups` (`initial.server.tags`),
+  `server.cluster.catchup.connect_randomly_to_server_group`
+  (`server.cluster.catchup.connect_randomly_to_server_tags`) and the
   strategies `connect-randomly-to-server-group` and
-  `connect-randomly-within-server-group`, which log a warning at start. It keeps
+  `connect-randomly-within-server-group` (the `-tags` ones). Without strict
+  validation (`server.config.strict_validation.enabled=false`), the settings
+  are ignored with a warning; the strategies are refused either way, as any
+  unknown strategy is. DozenDB keeps
   `dbms.cluster.uncordonServer` and `dbms.cluster.readReplicaToggle`, which
   Enterprise's Cypher 25 replaced with `ENABLE SERVER` and
   `dbms.cluster.secondaryReplicationDisable`, in both Cypher versions, with a
@@ -820,8 +824,8 @@ database whose name contains a dot cannot have a priority tag of its own:
 Neo4j reads the setting's name only up to the dot, and ignores the setting.
 `db.cluster.raft.leader_transfer.priority_group` and
 `db.cluster.raft.leader_transfer.priority_group.<database>`, which Enterprise
-removed in 2025.01, are still taken for the priority tag, with Neo4j's warning
-that names the setting replacing them.
+removed in 2025.01, stop the server at startup as in Enterprise, with a
+message that names the `priority_tag` setting replacing them.
 
 ## Backup and restore
 

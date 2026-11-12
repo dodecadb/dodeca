@@ -341,19 +341,17 @@ class ClusterSettings : SettingsDeclaration {
                 "secondary, one pull in ten a primary), connect-randomly-to-server-tags (a " +
                 "secondary with a tag of server.cluster.catchup.connect_randomly_to_server_tags), " +
                 "connect-randomly-within-server-tags (a secondary with a tag of this server's), " +
-                "leader-only, user-defined (server.cluster.catchup.user_defined_upstream_strategy), " +
-                "and the deprecated connect-randomly-to-server-group and " +
-                "connect-randomly-within-server-group. Named like Neo4j Enterprise's setting."
+                "leader-only and user-defined " +
+                "(server.cluster.catchup.user_defined_upstream_strategy). Named like Neo4j " +
+                "Enterprise's setting."
         )
         val upstreamStrategy: Setting<List<String>> =
             newBuilder("server.cluster.catchup.upstream_strategy", listOf(STRING), emptyList())
                 .addConstraint(
                     object : SettingConstraint<List<String>>() {
                         override fun validate(value: List<String>, config: Configuration) {
-                            val unknown = UpstreamSelection.unknown(value)
-                            require(unknown.isEmpty()) {
-                                "unknown upstream strategies $unknown; the strategies are " +
-                                    UpstreamSelection.NAMES.joinToString()
+                            UpstreamSelection.refusal(value)?.let {
+                                throw IllegalArgumentException(it)
                             }
                         }
 
@@ -393,21 +391,6 @@ class ClusterSettings : SettingsDeclaration {
         val connectRandomlyToServerTags: Setting<List<String>> =
             newBuilder(
                     "server.cluster.catchup.connect_randomly_to_server_tags",
-                    listOf(STRING),
-                    emptyList(),
-                )
-                .dynamic()
-                .build()
-
-        @JvmField
-        @field:Description(
-            "Deprecated, as server groups became server tags: the server tags of the " +
-                "secondaries that the connect-randomly-to-server-group upstream strategy " +
-                "connects to. Named like Neo4j Enterprise's setting."
-        )
-        val connectRandomlyToServerGroup: Setting<List<String>> =
-            newBuilder(
-                    "server.cluster.catchup.connect_randomly_to_server_group",
                     listOf(STRING),
                     emptyList(),
                 )

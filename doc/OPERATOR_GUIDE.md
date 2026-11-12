@@ -706,6 +706,9 @@ from one of them at random. Strategies find only servers that run the
 database and answer. Without any, the strategy is
 `typically-connect-to-random-secondary`; when no strategy finds a server, a
 random primary is the last resort.
+The group strategies that Enterprise removed in 2025.01,
+`connect-randomly-to-server-group` and `connect-randomly-within-server-group`,
+are refused at startup, with a message naming the tag strategy replacing each.
 
 | Strategy | Upstream |
 |---|---|
@@ -715,7 +718,6 @@ random primary is the last resort.
 | `connect-randomly-within-server-tags` | A secondary that shares a tag with this server. |
 | `leader-only` | The leader. |
 | `user-defined` | As `server.cluster.catchup.user_defined_upstream_strategy` says (below). |
-| `connect-randomly-to-server-group`, `connect-randomly-within-server-group` | Deprecated names of the two tag strategies; the first takes its tags from `server.cluster.catchup.connect_randomly_to_server_group`. |
 
 `user_defined_upstream_strategy` holds rules separated by `;`, asked in order:
 the first that passes any server wins. A rule chains filters with `->`,

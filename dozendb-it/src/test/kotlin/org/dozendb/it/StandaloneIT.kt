@@ -20,6 +20,7 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.startupcheck.StartupCheckStrategy
 import org.testcontainers.containers.startupcheck.StartupCheckStrategy.StartupStatus
 import org.testcontainers.lifecycle.Startables
+import org.testcontainers.utility.DockerImageName
 
 /**
  * With clustering disabled, DozenDB is Neo4j Community with many databases and property existence
@@ -32,11 +33,7 @@ class StandaloneIT {
 
     private val community =
         DozenDbContainer(DozenDbContainer.communityImage, "community").withHttp()
-    private val dozenDb =
-        DozenDbContainer(DozenDbContainer.dozenDbImage, "dozendb")
-            .withHttp()
-            // Neo4j Enterprise's deprecated name of initial.server.tags.
-            .withEnv("NEO4J_server_groups", "eu")
+    private val dozenDb = DozenDbContainer(DozenDbContainer.dozenDbImage, "dozendb").withHttp()
     private val servers = listOf(community, dozenDb)
 
     @BeforeAll
@@ -109,16 +106,6 @@ class StandaloneIT {
                             )
                     }
             }
-    }
-
-    @Test
-    fun `takes Enterprise's deprecated server groups for the initial server tags, with a warning`() {
-        assertThat(dozenDb.logs)
-            .contains(
-                "Use of deprecated setting 'server.groups'. It is replaced by 'initial.server.tags'."
-            )
-        assertThat(dozenDb.rows("SHOW SERVERS YIELD tags", "system").single()["tags"])
-            .isEqualTo(listOf("eu"))
     }
 
     @Test
@@ -280,7 +267,6 @@ class StandaloneIT {
                 "server.cluster.system_database_mode",
                 "server.cluster.catchup.upstream_strategy",
                 "server.cluster.catchup.connect_randomly_to_server_tags",
-                "server.cluster.catchup.connect_randomly_to_server_group",
                 "server.cluster.catchup.user_defined_upstream_strategy",
                 "db.cluster.catchup.pull_interval",
                 "server.routing.advertised_address",
@@ -311,18 +297,34 @@ class StandaloneIT {
     @Test
     fun `Community refuses to start with the metrics settings DozenDB declares`() {
         val (exitCode, logs) =
-            GenericContainer(DozenDbContainer.communityImage)
-                .withEnv("NEO4J_AUTH", "none")
-                .withEnv("NEO4J_server_metrics_prometheus_enabled", "true")
-                .withStartupCheckStrategy(Exited().withTimeout(Duration.ofMinutes(2)))
-                .use {
-                    it.start()
-                    it.currentContainerInfo.state.exitCodeLong to it.logs
-                }
+            exit(DozenDbContainer.communityImage, "NEO4J_server_metrics_prometheus_enabled", "true")
 
         assertThat(exitCode).isNotZero()
         assertThat(logs).contains("Unrecognized setting", "server.metrics.prometheus.enabled")
     }
+
+    @Test
+    fun `refuses to start with the server groups Enterprise removed, naming the setting replacing them`() {
+        val (exitCode, logs) = exit(DozenDbContainer.dozenDbImage, "NEO4J_server_groups", "eu")
+
+        assertThat(exitCode).isNotZero()
+        assertThat(logs)
+            .contains(
+                "Setting 'server.groups' was removed in Neo4j 2025.01; use 'initial.server.tags' " +
+                    "instead."
+            )
+    }
+
+    /** The exit code and logs of a server of [image] started with the setting [env] at [value]. */
+    private fun exit(image: DockerImageName, env: String, value: String): Pair<Long?, String> =
+        GenericContainer(image)
+            .withEnv("NEO4J_AUTH", "none")
+            .withEnv(env, value)
+            .withStartupCheckStrategy(Exited().withTimeout(Duration.ofMinutes(2)))
+            .use {
+                it.start()
+                it.currentContainerInfo.state.exitCodeLong to it.logs
+            }
 
     /** Startup completes once the container stopped, whatever its exit code. */
     private class Exited : StartupCheckStrategy() {

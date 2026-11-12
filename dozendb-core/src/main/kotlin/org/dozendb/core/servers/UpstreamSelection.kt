@@ -2,6 +2,7 @@ package org.dozendb.core.servers
 
 import java.util.UUID
 import kotlin.random.Random
+import org.dozendb.core.RemovedSettings
 
 /**
  * A server that runs a database and answers, as a secondary of it chooses where to pull from:
@@ -22,13 +23,11 @@ data class UpstreamCandidate(
  * finds ([random]).
  *
  * The tag strategies take [toTags], `server.cluster.catchup.connect_randomly_to_server_tags`, or
- * this server's own tags; the deprecated group strategies take tags too, [toGroups] for the one
- * that names them. `user-defined` follows [rules].
+ * this server's own tags. `user-defined` follows [rules].
  */
 class UpstreamSelection(
     private val strategies: List<String>,
     private val toTags: () -> Collection<String>,
-    private val toGroups: () -> Collection<String>,
     private val rules: ServerRules,
     private val random: Random = Random.Default,
 ) {
@@ -63,9 +62,7 @@ class UpstreamSelection(
                 else secondaries.randomOrNull(random)
             TO_TAGS,
             TO_TAGS_ALIAS -> tagged(toTags())
-            WITHIN_TAGS,
-            WITHIN_GROUP -> tagged(ownTags)
-            TO_GROUP -> tagged(toGroups())
+            WITHIN_TAGS -> tagged(ownTags)
             LEADER_ONLY -> candidates.firstOrNull { it.leader }
             USER_DEFINED,
             USER_DEFINED_ALIAS -> rules.select(candidates) { it.tags }.randomOrNull(random)
@@ -87,10 +84,6 @@ class UpstreamSelection(
         /** The name the description of the rules setting gives the strategy. */
         const val USER_DEFINED_ALIAS = "user_defined"
 
-        /** Deprecated in Neo4j 5.5, as server groups became server tags. */
-        const val TO_GROUP = "connect-randomly-to-server-group"
-        const val WITHIN_GROUP = "connect-randomly-within-server-group"
-
         /** Every strategy name taken, in the order Enterprise lists them. */
         val NAMES: List<String> =
             listOf(
@@ -102,14 +95,36 @@ class UpstreamSelection(
                 LEADER_ONLY,
                 USER_DEFINED,
                 USER_DEFINED_ALIAS,
-                TO_GROUP,
-                WITHIN_GROUP,
             )
 
-        /** The deprecated strategy names. */
-        val DEPRECATED: Set<String> = setOf(TO_GROUP, WITHIN_GROUP)
+        /**
+         * The strategies that Neo4j Enterprise removed in [RemovedSettings.SINCE], as server groups
+         * became server tags, each with the one that replaced it.
+         */
+        val REMOVED: Map<String, String> =
+            mapOf(
+                "connect-randomly-to-server-group" to TO_TAGS,
+                "connect-randomly-within-server-group" to WITHIN_TAGS,
+            )
 
-        /** The names among [strategies] that are no strategy. */
+        /** The names among [strategies] that are no strategy, the removed ones included. */
         fun unknown(strategies: List<String>): List<String> = strategies.filter { it !in NAMES }
+
+        /**
+         * Why [strategies] are refused, naming what replaced a removed one; null if they are not.
+         */
+        fun refusal(strategies: List<String>): String? {
+            strategies
+                .firstOrNull { it in REMOVED }
+                ?.let {
+                    return "the upstream strategy $it was removed in Neo4j " +
+                        "${RemovedSettings.SINCE}; use ${REMOVED.getValue(it)} instead"
+                }
+            return unknown(strategies)
+                .takeIf { it.isNotEmpty() }
+                ?.let {
+                    "unknown upstream strategies $it; the strategies are ${NAMES.joinToString()}"
+                }
+        }
     }
 }

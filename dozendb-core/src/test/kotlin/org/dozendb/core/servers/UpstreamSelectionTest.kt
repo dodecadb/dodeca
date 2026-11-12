@@ -39,7 +39,6 @@ class UpstreamSelectionTest {
         UpstreamSelection(
             strategies.toList(),
             toTags = { toTags },
-            toGroups = { emptyList() },
             rules = ServerRules.parse(rules),
             random = random,
         )
@@ -133,6 +132,7 @@ class UpstreamSelectionTest {
                     listOf("leader-only", "connect-randomly-to-server-group", "closest")
                 )
             )
-            .containsExactly("closest")
+            .describedAs("Enterprise removed the group strategies in 2025.01")
+            .containsExactly("connect-randomly-to-server-group", "closest")
     }
 }

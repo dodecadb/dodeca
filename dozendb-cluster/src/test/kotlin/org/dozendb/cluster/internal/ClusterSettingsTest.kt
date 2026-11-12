@@ -49,16 +49,23 @@ class ClusterSettingsTest {
     }
 
     @Test
-    fun `the deprecated priority groups are priority tags`() {
-        val config =
-            config(
-                "db.cluster.raft.leader_transfer.priority_group" to "eu",
-                "db.cluster.raft.leader_transfer.priority_group.films" to "us",
+    fun `refuses the settings Enterprise removed in 2025_01, naming those that replaced them`() {
+        mapOf(
+                "db.cluster.raft.leader_transfer.priority_group" to
+                    "db.cluster.raft.leader_transfer.priority_tag",
+                "db.cluster.raft.leader_transfer.priority_group.films" to
+                    "db.cluster.raft.leader_transfer.priority_tag.films",
+                "server.cluster.catchup.connect_randomly_to_server_group" to
+                    "server.cluster.catchup.connect_randomly_to_server_tags",
             )
-
-        val tags = DatabasePriorityTag.lookup(config)
-        assertThat(tags("films")).isEqualTo("us")
-        assertThat(tags("neo4j")).isEqualTo("eu")
+            .forEach { (removed, replacement) ->
+                assertThatThrownBy { config(removed to "eu") }
+                    .rootCause()
+                    .hasMessageStartingWith(
+                        "Setting '$removed' was removed in Neo4j 2025.01; use '$replacement' " +
+                            "instead."
+                    )
+            }
     }
 
     @Test
@@ -162,6 +169,25 @@ class ClusterSettingsTest {
         assertThat(config().get(ClusterSettings.pullInterval)).isEqualTo(Duration.ofSeconds(1))
         assertThatThrownBy { config("server.cluster.catchup.upstream_strategy" to "closest") }
             .hasMessageContaining("unknown upstream strategies [closest]")
+        assertThatThrownBy {
+                config(
+                    "server.cluster.catchup.upstream_strategy" to
+                        "leader-only,connect-randomly-within-server-group"
+                )
+            }
+            .hasMessageContaining(
+                "the upstream strategy connect-randomly-within-server-group was removed in Neo4j " +
+                    "2025.01; use connect-randomly-within-server-tags instead"
+            )
+        assertThatThrownBy {
+                config(
+                    "server.cluster.catchup.upstream_strategy" to "connect-randomly-to-server-group"
+                )
+            }
+            .hasMessageContaining(
+                "the upstream strategy connect-randomly-to-server-group was removed in Neo4j " +
+                    "2025.01; use connect-randomly-to-server-tags instead"
+            )
         assertThatThrownBy {
                 config("server.cluster.catchup.user_defined_upstream_strategy" to "tags(a), all()")
             }

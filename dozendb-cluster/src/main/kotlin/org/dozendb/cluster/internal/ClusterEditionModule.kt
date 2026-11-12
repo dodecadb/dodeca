@@ -401,22 +401,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             )
         replication = replicationService
         globalModule.globalDependencies.satisfyDependency(replicationService)
-        val strategies = config.get(ClusterSettings.upstreamStrategy)
-        strategies
-            .filter { it in UpstreamSelection.DEPRECATED }
-            .forEach {
-                userLog.warn(
-                    "The upstream strategy %s is deprecated; server groups are server tags now",
-                    it,
-                )
-            }
         val upstreams =
             Upstreams(
                 memberId,
                 UpstreamSelection(
-                    strategies,
+                    config.get(ClusterSettings.upstreamStrategy),
                     toTags = { config.get(ClusterSettings.connectRandomlyToServerTags) },
-                    toGroups = { config.get(ClusterSettings.connectRandomlyToServerGroup) },
                     rules =
                         ServerRules.parse(
                             config.get(ClusterSettings.userDefinedUpstreamStrategy).orEmpty()
