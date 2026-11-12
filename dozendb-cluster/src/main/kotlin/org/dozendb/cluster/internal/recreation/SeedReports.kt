@@ -3,10 +3,9 @@ package org.dozendb.cluster.internal.recreation
 import java.util.UUID
 
 /**
- * The store a seeder of a recreated database keeps as its seed (see
- * `dbms.cluster.recreateDatabase`): the id of its [lastTransaction], that transaction's
- * [appendIndex] in the Raft log of the database it was recreated from and its [checksum], and its
- * [storeId] (`<creation time>/<random>`).
+ * The store a seeder of a recreated database keeps as its seed (see `dbms.recreateDatabase`): the
+ * id of its [lastTransaction], that transaction's [appendIndex] in the Raft log of the database it
+ * was recreated from and its [checksum], and its [storeId] (`<creation time>/<random>`).
  */
 internal data class Seed(
     val appendIndex: Long,

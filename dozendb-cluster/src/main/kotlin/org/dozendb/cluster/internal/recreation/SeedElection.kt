@@ -47,13 +47,13 @@ internal sealed interface Election {
 }
 
 /**
- * How the system leader chooses the creator of a database that `dbms.cluster.recreateDatabase`
- * recreated from the stores of its seeders, as Neo4j Enterprise documents it: once every seeder
- * reported its seed, the seeder whose last transaction has the latest append index, then the lowest
- * id. The seeds must have the same store id, and each other seeder's last transaction the same
- * checksum as the creator's transaction at its append index, which the creator reads from its logs;
- * one its logs no longer hold cannot be checked, and passes. Failures carry Neo4j Enterprise's
- * status messages.
+ * How the system leader chooses the creator of a database that `dbms.recreateDatabase` recreated
+ * from the stores of its seeders, as Neo4j Enterprise documents it: once every seeder reported its
+ * seed, the seeder whose last transaction has the latest append index, then the lowest id. The
+ * seeds must have the same store id, and each other seeder's last transaction the same checksum as
+ * the creator's transaction at its append index, which the creator reads from its logs; one its
+ * logs no longer hold cannot be checked, and passes. Failures carry Neo4j Enterprise's status
+ * messages.
  */
 internal object SeedElection {
     fun elect(

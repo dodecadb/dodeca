@@ -168,13 +168,13 @@ class StoreCopyClusterTest {
                         "server"
                 )
                 .contains(
-                    "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+                    "CALL dbms.recreateDatabase('$FILMS', {seedingServers: " +
                         "['${primary.serverId}']})"
                 )
         }
 
         cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: ['${primary.serverId}']})"
+            "CALL dbms.recreateDatabase('$FILMS', {seedingServers: ['${primary.serverId}']})"
         )
 
         eventually {

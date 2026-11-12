@@ -30,8 +30,8 @@ internal data class DesiredDatabase(
     /** The member to name its creator, which may hold its restored store; null for any. */
     val designatedSeeder: MemberId? = null,
     /**
-     * The members whose stores a database recreated by `dbms.cluster.recreateDatabase` is recreated
-     * from, `seeding_servers`; [designatedSeeder] is the first.
+     * The members whose stores a database recreated by `dbms.recreateDatabase` is recreated from,
+     * `seeding_servers`; [designatedSeeder] is the first.
      */
     val seeders: Set<MemberId> = setOfNotNull(designatedSeeder),
     /** The servers that host its primaries; none while it is not placed yet. */
@@ -42,7 +42,7 @@ internal data class DesiredDatabase(
     val created: Boolean = false,
     /** Whether it is the default database. */
     val default: Boolean = false,
-    /** The id it had before `dbms.cluster.recreateDatabase` recreated it, if it did. */
+    /** The id it had before `dbms.recreateDatabase` recreated it, if it did. */
     val recreatedFrom: UUID? = null,
     /**
      * What naming the creator of a database recreated from [seeders] waits for, or why it failed,
@@ -200,7 +200,7 @@ internal interface LocalDatabases {
 
     /**
      * The databases whose stores here are kept as the seeds of databases that
-     * `dbms.cluster.recreateDatabase` recreated from them, by name, with the ids they seed.
+     * `dbms.recreateDatabase` recreated from them, by name, with the ids they seed.
      */
     fun seeds(): Map<String, UUID>
 
@@ -303,9 +303,9 @@ internal interface LocalDatabases {
  * lack transactions this member already acted on.
  *
  * The default database is created, copied, started and stopped like any other; like without
- * clustering the reconciler never drops it, unless `dbms.cluster.recreateDatabase` recreated it
- * under another id. It is the one the system graph names, or while it names none, as before a
- * cluster formed, [initialDefault], the one `initial.dbms.default_database` names.
+ * clustering the reconciler never drops it, unless `dbms.recreateDatabase` recreated it under
+ * another id. It is the one the system graph names, or while it names none, as before a cluster
+ * formed, [initialDefault], the one `initial.dbms.default_database` names.
  *
  * A member removed from the cluster stops its databases, `system` aside, and changes nothing else.
  *

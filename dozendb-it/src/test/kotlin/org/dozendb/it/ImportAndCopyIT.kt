@@ -186,7 +186,7 @@ class ImportAndCopyIT {
         // The database on the importing server only.
         administer(
             members,
-            "CALL dbms.cluster.recreateDatabase('films', {seedingServers: ['$id'], primaries: 1})",
+            "CALL dbms.recreateDatabase('films', {seedingServers: ['$id'], primaries: 1})",
         )
         awaitHosts(members, "films", setOf(id))
         administer(members, "STOP DATABASE films WAIT")

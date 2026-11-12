@@ -63,14 +63,14 @@ internal class ImportedStores(
                 "$replaced, which hosts a secondary of it: a secondary takes its primaries' " +
                     "transactions, which do not apply to the copy. Copy on a server that hosts " +
                     "the database as a primary, and recreate it from that server's store with " +
-                    "dbms.cluster.recreateDatabase. $dropCopy"
+                    "dbms.recreateDatabase. $dropCopy"
             )
         }
         if (joinsGroup(id)) {
             throw ImportedStoreException(
                 "$replaced: the copy is a store of its own, which the Raft group of the database " +
                     "did not write. Recreate the database from this server's store, so that " +
-                    "every server copies it: CALL dbms.cluster.recreateDatabase('$name', " +
+                    "every server copies it: CALL dbms.recreateDatabase('$name', " +
                     "{seedingServers: ['$serverId']}). $dropCopy"
             )
         }
@@ -105,7 +105,7 @@ internal class ImportedStores(
                 "An incremental import merged into database '$name' on this server while " +
                     "$primaries servers host it as primaries, which do not have what it merged. " +
                     "Recreate the database from this server's store, so that every server " +
-                    "copies it: CALL dbms.cluster.recreateDatabase('$name', {seedingServers: " +
+                    "copies it: CALL dbms.recreateDatabase('$name', {seedingServers: " +
                     "['$serverId']}). $dropImport"
             )
         }

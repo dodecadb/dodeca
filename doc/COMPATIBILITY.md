@@ -185,7 +185,7 @@ places the database on servers (see [Servers](#servers)), and
   Enterprise takes as the default database since 2025.04, and, where
   Enterprise's documentation is silent, `system`; naming the default
   database changes nothing. The default database cannot be dropped or
-  replaced, but `dbms.cluster.recreateDatabase` recreates it under a new id
+  replaced, but `dbms.recreateDatabase` recreates it under a new id
   as any other database (see [Disaster recovery](#disaster-recovery)).
   `STOP DATABASE` and `START DATABASE` apply to it; stopped, it
   stays stopped when the server restarts, after starting briefly with it
@@ -939,21 +939,25 @@ disaster recovery guide shows, with the same commands; see
   that reaches only other lost servers cannot tell, so they must be kept from
   starting. A lost server rejoins as the same server once unbound from
   `system` and added with `dozendb.cluster.addMember`.
-- **`dbms.cluster.recreateDatabase`** takes Enterprise's options `seedURI`,
-  `seedingServers`, `primaries` and `secondaries`, and gives its status
-  messages. `clearData` (Enterprise 2025.02) and `storeFormat` (2025.04) fail,
-  as does a `server:` seed. Enterprise 2025.04 added `dbms.recreateDatabase`
-  and deprecated `dbms.cluster.recreateDatabase`, which its Cypher 25 keeps;
-  DozenDB has only the latter. The recreated database gets a new id, as when
-  it is dropped and created again: element ids change, and bookmarks of the
-  old database are not waited for. Privileges on it are kept. A seeder that
-  does not answer is waited for, with a status message naming it; a
-  recreation that failed waits to be recreated again. Seeders whose stores
-  fall behind the latest one pull the transactions they lack from it; one
-  whose history differs is copied. The procedure exists only on cluster
-  members, as the other
-  `dbms.cluster.*` procedures; on a standalone server, drop the database and
-  create it from a seed.
+- **`dbms.recreateDatabase`** (Enterprise 2025.04) takes Enterprise's options
+  `seedURI`, `seedingServers`, `clearData`, `storeFormat`, `primaries` and
+  `secondaries`, and gives its status messages; a `server:` seed (2026.04)
+  fails. `dbms.cluster.recreateDatabase`, which Enterprise deprecated for it
+  and its Cypher 25 keeps, does the same with a deprecation warning.
+  `clearData` without `storeFormat` creates the empty store in the format the
+  database was created in, its `CREATE DATABASE` option `storeFormat` or else
+  `db.format`, where Enterprise keeps the store's format: they differ for a
+  store migrated to another format since, or for `db.format` changed since the
+  database was created without the option. The recreated database gets a new
+  id, as when it is dropped and created again: element ids change, and
+  bookmarks of the old database are not waited for. Privileges on it are kept.
+  A seeder that does not answer is waited for, with a status message naming
+  it; a recreation that failed waits to be recreated again. Seeders whose
+  stores fall behind the latest one pull the transactions they lack from it;
+  one whose history differs is copied. Both procedures exist only on cluster
+  members; Enterprise's documentation does not say whether a standalone server
+  has them. On a standalone server, drop the database and create it again,
+  from a seed or empty.
 - **Quarantine.** `dbms.unquarantineDatabase(server, database, operation)`
   (Enterprise 2025.01) and copies that fail while running behave as in
   Enterprise 2026: the procedure lifts the quarantine of a copy on the server
@@ -1211,7 +1215,7 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
   primary while secondaries pull the import. A server refuses to start an
   imported store as a secondary, or as one of several primaries while it holds
   the database's Raft group, which the others' stores do not match: the
-  database fails there, with a message naming `dbms.cluster.recreateDatabase`
+  database fails there, with a message naming `dbms.recreateDatabase`
   seeded from that server.
 - **Not supported**: updating and deleting existing nodes and relationships,
   which Enterprise's incremental import does since 2025.03; `--dry-run`
@@ -1280,7 +1284,7 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
   came from: a copy with the source's name does not start on a server that
   hosts the database as a secondary, or as a primary while it holds the
   database's Raft group, until the database is recreated from that server's
-  store with `dbms.cluster.recreateDatabase`.
+  store with `dbms.recreateDatabase`.
 
 ## Not supported
 

@@ -95,9 +95,9 @@ class StorePlacement(private val fs: FileSystemAbstraction, private val layout: 
 
     /**
      * Marks the store of database [name] in place the seed of the database with the id [id], which
-     * `dbms.cluster.recreateDatabase` recreated from it: it is kept, not deleted, when its own
-     * database goes. Written to a file of its own, then moved over the mark, so that a mark is
-     * whole or absent.
+     * `dbms.recreateDatabase` recreated from it: it is kept, not deleted, when its own database
+     * goes. Written to a file of its own, then moved over the mark, so that a mark is whole or
+     * absent.
      */
     fun markSeed(name: String, id: UUID) {
         val mark = seedMark(name)

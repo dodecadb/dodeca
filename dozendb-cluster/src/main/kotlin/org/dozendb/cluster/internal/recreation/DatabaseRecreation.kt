@@ -19,9 +19,9 @@ import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.NormalizedDatabaseName
 
 /**
- * `dbms.cluster.recreateDatabase`, as Neo4j Enterprise documents it: recreates a database, as one
- * that lost a majority of its primaries, in one system transaction on the `system` leader, under
- * the records' lock.
+ * `dbms.recreateDatabase`, and the deprecated `dbms.cluster.recreateDatabase`, as Neo4j Enterprise
+ * documents them: recreates a database, as one that lost a majority of its primaries, or empty, in
+ * one system transaction on the `system` leader, under the records' lock.
  *
  * The database gets a new id: a Raft group that lost its majority cannot be re-formed under its old
  * id, as the old members coming back would lead it. So Neo4j sees one database dropped and one
@@ -31,6 +31,10 @@ import org.neo4j.kernel.database.NormalizedDatabaseName
  * ([PrivilegeRecords.retarget]); its topology is the one given, else the old one. It is placed
  * anew, as a new database, and requested online. [Neo4jSystemGraph.RECREATED_FROM_PROPERTY] names
  * the old id.
+ *
+ * Recreated empty (`clearData`), it has neither seed nor seeders: its creator creates an empty
+ * store, as for a new database, in the format given (`storeFormat`), else in the one it was created
+ * with.
  *
  * Its seeders, `seedingServers`, are placed on it, primaries first in their order: those named, or
  * for none named every enabled server that hosts a copy, primaries first; refused while a server
@@ -110,6 +114,12 @@ internal constructor(
                     node.setProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, uri)
                 } else {
                     node.removeProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY)
+                }
+                asked.storeFormat?.let {
+                    node.setProperty(
+                        TopologyGraphDbmsModel.DATABASE_STORE_FORMAT_NEW_DB_PROPERTY,
+                        it,
+                    )
                 }
                 if (seeders.isNotEmpty()) {
                     node.setProperty(

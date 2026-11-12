@@ -201,7 +201,7 @@ class DisasterRecoveryIT {
 
         // 3. The databases: neo4j, which lost its majority, is recreated from the survivor's
         // store; films, which kept it, gets its third copy back.
-        write(after, "system", "CALL dbms.cluster.recreateDatabase('neo4j', {seedingServers: []})")
+        write(after, "system", "CALL dbms.recreateDatabase('neo4j', {seedingServers: []})")
         await withPollInterval
             Duration.ofSeconds(1) atMost
             Duration.ofMinutes(3) untilAsserted
@@ -319,7 +319,7 @@ class DisasterRecoveryIT {
         client.shell("chmod -R a+rX /backups")
         write(members, "films", "UNWIND range(1, 50) AS i CREATE (:Film {i: -i})")
         awaitCount(members, "films", "Film", 250)
-        val recreate = "CALL dbms.cluster.recreateDatabase('films', {seedURI: 'file://$backup'})"
+        val recreate = "CALL dbms.recreateDatabase('films', {seedURI: 'file://$backup'})"
         // Only users who may create and drop databases recreate them. A GRANT that changes nothing
         // succeeds on every member that has the privilege already: run each on one member only.
         administer(

@@ -1587,7 +1587,7 @@ Neo4j Enterprise's procedure has it:
 1. Recreate the database with that server as its only primary, from its store:
 
    ```
-   CALL dbms.cluster.recreateDatabase('films', {seedingServers: ['<id>'], primaries: 1})
+   CALL dbms.recreateDatabase('films', {seedingServers: ['<id>'], primaries: 1})
    ```
 
 2. `STOP DATABASE films WAIT`, import on that server, and `START DATABASE
@@ -1677,7 +1677,7 @@ CREATE DATABASE films2 OPTIONS {existingData: 'use', existingDataSeedServer: '<i
 A copy that replaces a clustered database is a store of its own, which the
 database's Raft group did not write: the server does not start it until the
 database is recreated from its store, with
-`CALL dbms.cluster.recreateDatabase('films', {seedingServers: ['<id>']})`,
+`CALL dbms.recreateDatabase('films', {seedingServers: ['<id>']})`,
 which `SHOW DATABASES` names on that server.
 
 ## Cloud storage
@@ -1844,16 +1844,18 @@ server unbind` instead (see [Unbinding a server](#unbinding-a-server)).
 ### Recreating a database
 
 ```
-CALL dbms.cluster.recreateDatabase('<database>', {
+CALL dbms.recreateDatabase('<database>', {
   seedingServers: ['<id>', ...], seedURI: '<uri>', primaries: <n>, secondaries: <n>
 })
+CALL dbms.recreateDatabase('<database>', {clearData: true, storeFormat: '<format>'})
 ```
 
 recreates a database, as one that lost a majority of its primaries, from a
-seed, keeping its name, aliases, access, options, store format, whether it is
-the default database, and every privilege on it. It runs on the leader of
-`system`, needs the privileges `CREATE DATABASE` and `DROP DATABASE`, and
-takes Neo4j Enterprise's options:
+seed, or empty, keeping its name, aliases, access, options, store format
+unless `storeFormat` changes it, whether it is the default database, and
+every privilege on it. It runs on the leader of `system`, needs the
+privileges `CREATE DATABASE` and `DROP DATABASE`, and takes Neo4j
+Enterprise's options:
 
 - `seedingServers`: the servers whose stores the database is recreated from,
   by id; the latest of their stores seeds it. An empty list takes every
@@ -1866,11 +1868,20 @@ takes Neo4j Enterprise's options:
   dump](#creating-a-database-from-a-backup-or-a-dump)). With `seedingServers`,
   which must then be empty, it seeds the database only when none of the seeders
   holds a store.
+- `clearData`: `true` recreates the database empty, without its data, indexes
+  and constraints, and takes neither `seedingServers` nor `seedURI`.
+- `storeFormat`: with `clearData`, the format of the empty store, `aligned` or
+  `standard`. Without it the store gets the format the database was created
+  in: its `CREATE DATABASE` option `storeFormat`, else `db.format`.
 - `primaries` and `secondaries`: the new topology; `secondaries` needs
   `primaries`, and `primaries` alone means no secondaries. Without them the
   topology stays.
 
-It is refused without a seed, for `system` (see
+`dbms.cluster.recreateDatabase`, which Neo4j Enterprise deprecated in 2025.04
+for `dbms.recreateDatabase`, takes the same options and warns that it is
+deprecated.
+
+It is refused without a seed or `clearData`, for `system` (see
 [Recovering the system database](#recovering-the-system-database)), for an
 alias, and when a seeder's copy is in quarantine. The database may be online
 or offline; it is started.
@@ -1879,7 +1890,9 @@ The recreated database has a new id: Neo4j sees one database dropped and one
 created under the same name, so element ids change, and bookmarks of the old
 database are not waited for. Every server stops its old copy and removes its
 Raft group, which needs no leader, and the database is placed anew, its
-seeders first.
+seeders first. A copy in quarantine on a server that is not a seeder goes with
+the old database. Recreated empty or from a seed URI, the database is created
+as a new one is, and its old stores are deleted.
 
 From seeders, each seeder keeps its old store as a seed and reports it. Once
 all of them reported, the leader of `system` names the creator: the seeder

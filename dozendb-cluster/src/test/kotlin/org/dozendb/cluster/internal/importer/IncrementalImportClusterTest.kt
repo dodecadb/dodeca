@@ -172,14 +172,14 @@ class IncrementalImportClusterTest {
                         "servers host it as primaries"
                 )
                 .contains(
-                    "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+                    "CALL dbms.recreateDatabase('$FILMS', {seedingServers: " +
                         "['${imported.serverId}']})"
                 )
         }
         assertThat(imported.marker()).exists()
 
         cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: ['${imported.serverId}']})"
+            "CALL dbms.recreateDatabase('$FILMS', {seedingServers: ['${imported.serverId}']})"
         )
 
         eventually {

@@ -22,8 +22,8 @@ import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import picocli.CommandLine
 
 /**
- * `dbms.cluster.recreateDatabase`, as Neo4j Enterprise documents it: a database, also one that lost
- * a majority of its primaries, is recreated from a seed under a new id, keeping its name and
+ * `dbms.recreateDatabase`, as Neo4j Enterprise documents it: a database, also one that lost a
+ * majority of its primaries, is recreated from a seed under a new id, keeping its name and
  * privileges.
  */
 class RecreateDatabaseTest {
@@ -48,9 +48,7 @@ class RecreateDatabaseTest {
         val old = cluster.members[0].databaseId(FILMS)
         val privileges = cluster.privileges("viewer")
 
-        cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedURI: '${seed.toUri()}'})"
-        )
+        cluster.administer("CALL dbms.recreateDatabase('$FILMS', {seedURI: '${seed.toUri()}'})")
 
         cluster.awaitFilms(cluster.members, 3)
         val new = cluster.members[0].databaseId(FILMS)
@@ -91,9 +89,7 @@ class RecreateDatabaseTest {
         leader.database().executeTransactionally("CREATE (:Film)")
         val old = cluster.members[0].databaseId(DEFAULT)
 
-        cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$DEFAULT', {seedURI: '${seed.toUri()}'})"
-        )
+        cluster.administer("CALL dbms.recreateDatabase('$DEFAULT', {seedURI: '${seed.toUri()}'})")
 
         cluster.awaitFilms(cluster.members, 3, DEFAULT)
         assertThat(cluster.members.map { it.databaseId(DEFAULT) }).doesNotContain(old).hasSize(3)
@@ -131,7 +127,7 @@ class RecreateDatabaseTest {
         }
 
         cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedURI: '${seed.toUri()}'})",
+            "CALL dbms.recreateDatabase('$FILMS', {seedURI: '${seed.toUri()}'})",
             among = left,
         )
 
@@ -169,7 +165,7 @@ class RecreateDatabaseTest {
         val old = survivor.databaseId(FILMS)
 
         cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: ['${survivor.serverId}']})",
+            "CALL dbms.recreateDatabase('$FILMS', {seedingServers: ['${survivor.serverId}']})",
             among = left,
         )
 
@@ -211,7 +207,7 @@ class RecreateDatabaseTest {
                 "CALL dbms.unquarantineDatabase('${quarantined.serverId}', '$FILMS')"
             )
         cluster.awaitFilms(cluster.members, 3)
-        cluster.administer("CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: []})")
+        cluster.administer("CALL dbms.recreateDatabase('$FILMS', {seedingServers: []})")
 
         cluster.awaitFilms(cluster.members, 3)
         assertThat(cluster.members.map { it.databaseId(FILMS) }).doesNotContain(old)
@@ -237,7 +233,7 @@ class RecreateDatabaseTest {
         cluster.awaitFilms(up, 5)
 
         cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+            "CALL dbms.recreateDatabase('$FILMS', {seedingServers: " +
                 "${seeders.joinToString(prefix = "[", postfix = "]") { "'$it'" }}})",
             among = up,
         )
@@ -292,7 +288,7 @@ class RecreateDatabaseTest {
             .contains("server $wrongName hosts a copy of it but is not available")
             .contains("cordon it")
         cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+            "CALL dbms.recreateDatabase('$FILMS', {seedingServers: " +
                 "${(goodIds + wrongId).joinToString(prefix = "[", postfix = "]") { "'$it'" }}})",
             among = good,
         )
@@ -312,7 +308,7 @@ class RecreateDatabaseTest {
             }
 
         cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: " +
+            "CALL dbms.recreateDatabase('$FILMS', {seedingServers: " +
                 "${goodIds.joinToString(prefix = "[", postfix = "]") { "'$it'" }}})"
         )
 
@@ -320,6 +316,48 @@ class RecreateDatabaseTest {
         cluster.write(FILMS, 2)
         cluster.awaitFilms(cluster.members, 5)
         assertThat(cluster.shown(FILMS).values.map { it["statusMessage"] }).containsOnly("")
+    }
+
+    @Test
+    fun `clearData recreates a database empty, in the store format asked for, keeping privileges`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        cluster.write(FILMS, 3)
+        cluster.administer("CREATE ROLE viewer")
+        cluster.administer("GRANT MATCH {*} ON GRAPH $FILMS TO viewer")
+        cluster
+            .awaitLeader(FILMS)
+            .database(FILMS)
+            .executeTransactionally("CREATE INDEX film_i FOR (f:Film) ON (f.i)")
+        val old = cluster.members[0].databaseId(FILMS)
+        val privileges = cluster.privileges("viewer")
+
+        cluster.administer(
+            "CALL dbms.recreateDatabase('$FILMS', {clearData: true, storeFormat: 'standard'})"
+        )
+
+        cluster.awaitFilms(cluster.members, 0)
+        assertThat(cluster.members.map { it.databaseId(FILMS) }).doesNotContain(old)
+        assertThat(cluster.privileges("viewer")).isEqualTo(privileges)
+        for (member in cluster.members) {
+            assertThat(member.indexes(FILMS)).describedAs("$member").doesNotContain("film_i")
+        }
+        assertThat(cluster.stores(FILMS)).isNotEmpty.allMatch { "standard" in it }
+        // Without a format, the one the database was created in, here the one it has, which
+        // Enterprise keeps; a copy in quarantine goes with the old database.
+        cluster.write(FILMS, 2)
+        cluster.awaitFilms(cluster.members, 2)
+        cluster.members[1]
+            .database()
+            .executeTransactionally(
+                "CYPHER 5 CALL dbms.quarantineDatabase('$FILMS', true, 'testing')"
+            )
+        cluster.administer("CALL dbms.recreateDatabase('$FILMS', {clearData: true})")
+        cluster.awaitFilms(cluster.members, 0)
+        assertThat(cluster.stores(FILMS)).isNotEmpty.allMatch { "standard" in it }
+        assertThat(cluster.shown(FILMS).values.map { it["statusMessage"] }).containsOnly("")
+        cluster.write(FILMS, 4)
+        cluster.awaitFilms(cluster.members, 4)
     }
 
     @Test
@@ -333,7 +371,19 @@ class RecreateDatabaseTest {
         fun refusal(database: String, options: String): String? =
             refusal(cluster, options, database)
 
-        assertThat(refusal(FILMS, "{}")).contains("give seedingServers")
+        assertThat(refusal(FILMS, "{}")).contains("give seedingServers").contains("clearData")
+        assertThat(refusal(FILMS, "{clearData: 'yes'}")).contains("clearData must be a boolean")
+        assertThat(refusal(FILMS, "{clearData: true, seedURI: '$seed'}"))
+            .contains("clearData recreates it empty, without seedURI or seedingServers")
+        assertThat(refusal(FILMS, "{clearData: true, seedingServers: []}"))
+            .contains("clearData recreates it empty, without seedURI or seedingServers")
+        assertThat(refusal(FILMS, "{seedingServers: [], storeFormat: 'standard'}"))
+            .contains("storeFormat needs clearData")
+        for (format in listOf("papyrus", "block", "high_limit")) {
+            assertThat(refusal(FILMS, "{clearData: true, storeFormat: '$format'}"))
+                .contains("'$format' is no store format")
+                .contains("aligned, standard")
+        }
         assertThat(refusal(FILMS, "{seedURI: '$seed', colour: 'red'}"))
             .contains("unknown option 'colour'")
         assertThat(refusal(FILMS, "{seedURI: '$seed', seedingServers: ['a']}"))
@@ -349,6 +399,26 @@ class RecreateDatabaseTest {
         assertThat(cluster.members[0].count(FILMS)).isEqualTo(1)
     }
 
+    @Test
+    fun `dbms_cluster_recreateDatabase recreates too, deprecated in favor of dbms_recreateDatabase`() {
+        val cluster = ClusterHarness(root, 1).also { harness = it }
+        cluster.start()
+        cluster.write(FILMS, 1)
+
+        val warnings =
+            cluster.awaitLeader(SYSTEM).database(SYSTEM).beginTx().use { tx ->
+                tx.execute("CALL dbms.cluster.recreateDatabase('$FILMS', {clearData: true})")
+                    .use { result ->
+                        result.resultAsString()
+                        result.gqlStatusObjects.map { it.statusDescription() }
+                    }
+                    .also { tx.commit() }
+            }
+
+        assertThat(warnings).anySatisfy { assertThat(it).contains("dbms.recreateDatabase") }
+        cluster.awaitFilms(cluster.members, 0)
+    }
+
     /** Why recreating [database] with [options] is refused, with its causes; null if it is not. */
     private fun refusal(
         cluster: ClusterHarness,
@@ -356,10 +426,7 @@ class RecreateDatabaseTest {
         database: String = FILMS,
         among: List<ClusterHarness.Member> = cluster.members,
     ): String? = catchThrowable {
-        cluster.administer(
-            "CALL dbms.cluster.recreateDatabase('$database', $options)",
-            among,
-        )
+        cluster.administer("CALL dbms.recreateDatabase('$database', $options)", among)
     }
         ?.let {
             generateSequence(it) { e -> e.cause }.joinToString(" | ") { e -> e.message.orEmpty() }
@@ -428,6 +495,22 @@ class RecreateDatabaseTest {
         ) {
             it.next()["count"] as Long
         }
+
+    /** The names of the indexes of [database] on this member. */
+    private fun ClusterHarness.Member.indexes(database: String): List<String> =
+        database(database).executeTransactionally("SHOW INDEXES YIELD name", emptyMap()) {
+            it.asSequence().map { row -> row["name"] as String }.toList()
+        }
+
+    /** The store formats of the copies of [database], as SHOW DATABASES on each member tells. */
+    private fun ClusterHarness.stores(database: String): List<String> = members.flatMap { member ->
+        member.database(SYSTEM).executeTransactionally(
+            "SHOW DATABASE $database YIELD store",
+            emptyMap(),
+        ) {
+            it.asSequence().mapNotNull { row -> row["store"] as String? }.toList()
+        }
+    }
 
     private fun ClusterHarness.Member.databaseId(name: String): UUID =
         database(name).databaseId().databaseId().uuid()

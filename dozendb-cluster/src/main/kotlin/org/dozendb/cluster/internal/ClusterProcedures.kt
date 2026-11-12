@@ -188,19 +188,40 @@ class ClusterProcedures {
     }
 
     @SystemProcedure
-    @Procedure(name = "dbms.cluster.recreateDatabase", mode = Mode.WRITE)
+    @Procedure(name = "dbms.recreateDatabase", mode = Mode.WRITE)
     @Description(
         "Recreates a database, as one that lost a majority of its primaries, from a seed: a " +
-            "backup or dump (seedURI), or the stores of its servers (seedingServers). Options " +
-            "primaries and secondaries give it a new topology. It keeps its name, aliases, " +
-            "options and privileges, and gets a new id. Needs the CREATE DATABASE and DROP " +
-            "DATABASE privileges. Runs on the leader of the system database, as Neo4j " +
+            "backup or dump (seedURI), or the stores of its servers (seedingServers); or empty " +
+            "(clearData), without data or schema, in the store format storeFormat if given. " +
+            "Options primaries and secondaries give it a new topology. It keeps its name, " +
+            "aliases, options and privileges, and gets a new id. Needs the CREATE DATABASE and " +
+            "DROP DATABASE privileges. Runs on the leader of the system database, as Neo4j " +
             "Enterprise's procedure of the same name; SHOW DATABASES shows its progress."
     )
     fun recreateDatabase(
         @Name("database") database: String,
         @Name(value = "options", defaultValue = "{}") options: Map<String, Any?>,
-    ) {
+    ) = recreate(database, options)
+
+    @SystemProcedure
+    @Procedure(
+        name = "dbms.cluster.recreateDatabase",
+        mode = Mode.WRITE,
+        deprecatedBy = "dbms.recreateDatabase",
+    )
+    @Description(
+        "Recreates a database, as dbms.recreateDatabase does (deprecated in favor of " +
+            "dbms.recreateDatabase)."
+    )
+    // Neo4j looks for Java's annotation with deprecatedBy, and warns without it.
+    @Suppress("DEPRECATED_JAVA_ANNOTATION")
+    @java.lang.Deprecated
+    fun clusterRecreateDatabase(
+        @Name("database") database: String,
+        @Name(value = "options", defaultValue = "{}") options: Map<String, Any?>,
+    ) = recreate(database, options)
+
+    private fun recreate(database: String, options: Map<String, Any?>) {
         val context = securityContext
         if (context != null) {
             val allowed =
