@@ -219,7 +219,8 @@ class StandaloneIT {
                 "db.listLocks",
                 "dbms.listActiveLocks",
                 "dbms.setDefaultDatabase",
-                "dbms.quarantineDatabase",
+                // Under Cypher 25, the default, as Enterprise's dbms.quarantineDatabase is not.
+                "dbms.unquarantineDatabase",
             )
         assertThat(names(dozenDb, "SHOW FUNCTIONS YIELD name"))
             .isEqualTo(names(community, "SHOW FUNCTIONS YIELD name"))

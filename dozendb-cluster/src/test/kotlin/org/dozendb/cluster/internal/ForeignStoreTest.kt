@@ -163,7 +163,9 @@ class ForeignStoreTest {
         FileUtils.deleteDirectory(data.resolve("transactions/films"))
         member.start()
         // Copied again, it waits for its quarantine to be lifted.
-        member.database().executeTransactionally("CALL dbms.quarantineDatabase('films', false)")
+        member
+            .database()
+            .executeTransactionally("CALL dbms.unquarantineDatabase('${member.serverId}', 'films')")
 
         await atMost
             AWAIT untilAsserted

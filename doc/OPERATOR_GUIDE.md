@@ -423,9 +423,10 @@ with the error and the call that lifts the quarantine as `statusMessage`, and
 drivers are sent to the other members for that database. The member's
 `debug.log` has the error.
 
-Once the cause is repaired, lift the quarantine on that member:
-`CALL dbms.quarantineDatabase('<database>', false)`. The member starts its
-copy again from its local state, and catches up with the others. Neither a
+Once the cause is repaired, lift the quarantine, from any member:
+`CALL dbms.unquarantineDatabase('<server>', '<database>')`, with the member's
+name or id as `SHOW SERVERS` lists them. The member starts its copy again
+from its local state, and catches up with the others. Neither a
 restart nor `START DATABASE` starts a copy in quarantine (see
 [Quarantine](#quarantine)).
 
@@ -1908,14 +1909,35 @@ other seeders or from a seed URI, or drop it.
 ### Quarantine
 
 ```
-CALL dbms.quarantineDatabase('<database>', true, '<reason>')
-CALL dbms.quarantineDatabase('<database>', false)
+CALL dbms.unquarantineDatabase('<server>', '<database>')
+CALL dbms.unquarantineDatabase('<server>', '<database>', '<operation>')
+CYPHER 5 CALL dbms.quarantineDatabase('<database>', true, '<reason>')
 ```
 
-puts the copy of a database on the server it runs on in quarantine, or lifts
-the quarantine, as in Neo4j Enterprise, and returns `databaseName`,
-`quarantined` and `result`. It needs an administrator and acts on the server
-it runs on only: connect to that server with `bolt://`. A copy in quarantine
+`dbms.unquarantineDatabase` lifts the quarantine of the copy of a database on
+a server, named by its name or id as `SHOW SERVERS` lists them, from any
+server of the cluster, as in Neo4j Enterprise. It needs an administrator and
+returns nothing. The operation `keepStateKeepStore`, the default, leaves the
+copy's store and cluster state as they are. `replaceStateReplaceStore` joins
+the copy to its database as a new member, from a new copy of the database: the
+server deletes its copy and its state of the database's Raft group, and asks
+the group to remove it, which a majority of the group's voters must commit;
+once lifted, the copy is copied from the others and the group adds it again.
+If the removal fails, the copy stays deleted and in quarantine: run the call
+again once a majority answers. A secondary is simply copied again. A
+database's only primary, and `system`, cannot join as new. DozenDB refuses
+`replaceStateKeepStore` for now; a server without clustering has no cluster
+state to replace. The call fails with
+Neo4j's error 52N17, `Setting/removing the quarantine marker failed`, when
+the server or the database does not exist, the copy is in no quarantine
+there, or the server does not answer.
+
+`dbms.quarantineDatabase` puts the copy of a database on the server it runs
+on in quarantine, or lifts the quarantine with `false`, and returns
+`databaseName`, `quarantined` and `result`. Enterprise deprecated it in
+2025.01, and its Cypher 25 does not have it, nor any other way to put a copy
+in quarantine: call it with `CYPHER 5`. It needs an administrator and acts on
+the server it runs on only: connect to that server with `bolt://`. A copy in quarantine
 is stopped on that server and stays stopped: neither `START DATABASE` nor a
 restart starts it until the quarantine is lifted, while the other servers
 follow commands as usual. A primary in quarantine hands its leadership over

@@ -246,6 +246,24 @@ class DatabaseReconcilerTest {
         assertThat(local.registered).containsKey(films)
     }
 
+    // As after dbms.unquarantineDatabase's replace operations deleted the copy: it must not run
+    // the group before the group removed it.
+    @Test
+    fun `a copy in quarantine whose store and group are gone is copied only once lifted`() {
+        local.quarantines += films.databaseId().uuid()
+        graph.databases = listOf(desired(films, creator = self, created = true))
+
+        reconciler.reconcile()
+
+        assertThat(local.copies).isEmpty()
+        assertThat(local.registered).doesNotContainKey(films)
+        local.quarantines.clear()
+
+        reconciler.reconcile()
+
+        assertThat(local.copies).containsExactly(otherAddress to films)
+    }
+
     @Test
     fun `a creator copies a database that was created, as when it moved off it and back`() {
         graph.databases = listOf(desired(films, creator = self, created = true))

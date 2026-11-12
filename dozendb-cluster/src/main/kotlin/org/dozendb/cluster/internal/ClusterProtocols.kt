@@ -26,6 +26,7 @@ internal object ClusterProtocols {
             PullProtocol.NAME to PullProtocol.VERSION.toLong(),
             ReadBarrierProtocol.NAME to ReadBarrierProtocol.VERSION.toLong(),
             StatusCheckProtocol.NAME to StatusCheckProtocol.VERSION.toLong(),
+            QuarantineProtocol.NAME to QuarantineProtocol.VERSION.toLong(),
             EntryTermProtocol.NAME to EntryTermProtocol.VERSION.toLong(),
             SeedChecksums.NAME to SeedChecksums.VERSION.toLong(),
         )

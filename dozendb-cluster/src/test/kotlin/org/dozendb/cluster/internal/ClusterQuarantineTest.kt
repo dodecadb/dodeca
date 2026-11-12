@@ -1,20 +1,25 @@
 package org.dozendb.cluster.internal
 
+import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.dozendb.cluster.internal.ClusterHarness.Companion.AWAIT
+import org.dozendb.consensus.Role
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.dbms.api.DatabaseNotFoundException
 
 /**
  * `dbms.quarantineDatabase` in a cluster: the copy on the member it runs on stops there only, and
- * stays stopped, while the others serve the database, until its quarantine is lifted.
+ * stays stopped, while the others serve the database, until its quarantine is lifted, also with
+ * `dbms.unquarantineDatabase` from another member.
  */
 class ClusterQuarantineTest {
     // Kept when a test fails, for the members' logs.
@@ -62,11 +67,36 @@ class ClusterQuarantineTest {
         on: String = "neo4j",
     ): Map<String, Any?> =
         database(on).executeTransactionally(
-            "CALL dbms.quarantineDatabase(\$database, \$set, \$reason)",
+            // Enterprise's Cypher 25 has no dbms.quarantineDatabase.
+            "CYPHER 5 CALL dbms.quarantineDatabase(\$database, \$set, \$reason)",
             mapOf("database" to database, "set" to set, "reason" to reason),
         ) {
             it.next().toMap()
         }
+
+    /** Calls `dbms.unquarantineDatabase` on this member, for the copy of [database] on [server]. */
+    private fun ClusterHarness.Member.unquarantine(
+        server: String,
+        database: String,
+        operation: String = "keepStateKeepStore",
+    ) {
+        database("neo4j")
+            .executeTransactionally(
+                "CALL dbms.unquarantineDatabase(\$server, \$database, \$operation)",
+                mapOf("server" to server, "database" to database, "operation" to operation),
+            )
+    }
+
+    /**
+     * Files left in this member's store of [database] and in its Raft group's directory, which tell
+     * whether they were replaced.
+     */
+    private fun ClusterHarness.Member.mark(database: String): Pair<Path, Path> {
+        val id = database(database).databaseId().databaseId().uuid()
+        val data = home.resolve("data")
+        return Files.writeString(data.resolve("databases/$database/marker"), "") to
+            Files.writeString(data.resolve("raft/$id/marker"), "")
+    }
 
     /** The rows of SHOW DATABASE [database] on this member, by server id. */
     private fun ClusterHarness.Member.shown(database: String): Map<String, Map<String, Any?>> =
@@ -92,7 +122,12 @@ class ClusterQuarantineTest {
 
     /** Whether this member's copy of [database] runs; its Raft group may run without it. */
     private fun ClusterHarness.Member.runs(database: String): Boolean =
-        checkNotNull(dbms).database(database).isAvailable
+        try {
+            checkNotNull(dbms).database(database).isAvailable
+        } catch (_: DatabaseNotFoundException) {
+            // Not registered here, as while it is copied anew.
+            false
+        }
 
     @Test
     fun `a follower's copy in quarantine stops there only, and catches up once lifted`() {
@@ -153,6 +188,73 @@ class ClusterQuarantineTest {
                     .containsEntry("currentStatus", "online")
                 assertThat(member.count("films")).isEqualTo(3)
             }
+    }
+
+    @Test
+    fun `dbms_unquarantineDatabase lifts the quarantine of a copy on another member`() {
+        val cluster = cluster()
+        val member = cluster.members.first { it != cluster.awaitLeader("films") }
+        val caller = cluster.members.first { it != member }
+        val others = { cluster.running().filter { it != member } }
+        member.quarantine("films", true)
+        cluster.write("films", others)
+
+        caller.unquarantine(member.serverId, "films")
+
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(member.shown("films").getValue(member.serverId))
+                    .containsEntry("currentStatus", "online")
+                assertThat(member.count("films")).isEqualTo(2)
+            }
+        // By its name; the member's refusals reach the caller.
+        cluster.administer("RENAME SERVER '${member.serverId}' TO 'east'")
+        member.quarantine("films", true)
+        val refused = catchThrowable { caller.unquarantine("east", "neo4j") }
+        assertThat(generateSequence(refused) { it.cause }.mapNotNull { it.message }.toList())
+            .anySatisfy {
+                assertThat(it)
+                    .contains("Setting/removing the quarantine marker failed: ")
+                    .contains("Database 'neo4j' is not in quarantine on this server.")
+            }
+        caller.unquarantine("east", "films")
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(member.runs("films")).isTrue()
+            }
+    }
+
+    @Test
+    fun `replaceStateReplaceStore joins a primary as a new member of its group, from a new copy`() {
+        val cluster = cluster()
+        val member = cluster.members.first { it != cluster.awaitLeader("films") }
+        val caller = cluster.members.first { it != member }
+        val others = { cluster.running().filter { it != member } }
+        member.quarantine("films", true)
+        cluster.write("films", others)
+        val (store, raft) = member.mark("films")
+
+        caller.unquarantine(member.serverId, "films", "replaceStateReplaceStore")
+
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(member.runs("films")).isTrue()
+                assertThat(member.count("films")).isEqualTo(2)
+                assertThat(member.status("films")?.role).isIn(Role.Follower, Role.Leader)
+            }
+        assertThat(store).describedAs("the store was replaced").doesNotExist()
+        assertThat(raft).describedAs("the Raft state was replaced").doesNotExist()
+        // The group removed it, and added it as a new member.
+        assertThat(cluster.running().flatMap { it.debugEntries() }.map { it.message }).anySatisfy {
+            assertThat(it)
+                .startsWith("Adding member ${member.serverId}")
+                .endsWith("to the group of database films")
+        }
+        cluster.write("films")
+        await atMost AWAIT untilAsserted { assertThat(member.count("films")).isEqualTo(3) }
     }
 
     @Test

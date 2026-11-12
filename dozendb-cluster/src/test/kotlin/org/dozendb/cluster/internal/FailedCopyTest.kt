@@ -79,8 +79,8 @@ class FailedCopyTest {
                     .startsWith("By the server at ")
                     .contains("Database 'films' failed while running: ")
                     .endsWith(
-                        "lift the quarantine on this server with CALL " +
-                            "dbms.quarantineDatabase('films', false)"
+                        "lift the quarantine with CALL " +
+                            "dbms.unquarantineDatabase('${member.serverId}', 'films')"
                     )
             }
 
@@ -92,7 +92,9 @@ class FailedCopyTest {
 
         // Once repaired, the operator lifts the quarantine.
         fileSystems.getValue(member.index).failing = null
-        member.database().executeTransactionally("CALL dbms.quarantineDatabase('films', false)")
+        member
+            .database()
+            .executeTransactionally("CALL dbms.unquarantineDatabase('${member.serverId}', 'films')")
 
         await atMost
             AWAIT untilAsserted

@@ -15,11 +15,12 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.gqlstatus.ErrorGqlStatusObject
 import org.neo4j.monitoring.DatabaseHealth
 
 /**
- * `dbms.quarantineDatabase` without clustering, and the quarantine of a database that panics, as
- * Neo4j Enterprise documents them.
+ * `dbms.quarantineDatabase` and `dbms.unquarantineDatabase` without clustering, and the quarantine
+ * of a database that panics, as Neo4j Enterprise documents them.
  */
 class QuarantineTest {
     // Kept when a test fails, for the server's logs.
@@ -46,13 +47,28 @@ class QuarantineTest {
     ): Map<String, Any?> =
         server
             .rows(
-                if (reason == null) "CALL dbms.quarantineDatabase(\$name, \$set)"
-                else "CALL dbms.quarantineDatabase(\$name, \$set, \$reason)",
+                // Enterprise's Cypher 25 has no dbms.quarantineDatabase.
+                if (reason == null) "CYPHER 5 CALL dbms.quarantineDatabase(\$name, \$set)"
+                else "CYPHER 5 CALL dbms.quarantineDatabase(\$name, \$set, \$reason)",
                 on,
                 mapOf("name" to database, "set" to set) +
                     (reason?.let { mapOf("reason" to it) } ?: emptyMap()),
             )
             .single()
+
+    private fun unquarantine(server: String, database: String, operation: String? = null) {
+        this.server.rows(
+            if (operation == null) "CALL dbms.unquarantineDatabase(\$server, \$name)"
+            else "CALL dbms.unquarantineDatabase(\$server, \$name, \$operation)",
+            StandaloneServer.DEFAULT_DATABASE,
+            mapOf("server" to server, "name" to database) +
+                (operation?.let { mapOf("operation" to it) } ?: emptyMap()),
+        )
+    }
+
+    /** This server's [column] in SHOW SERVERS, `serverId` or `name`. */
+    private fun self(column: String = "serverId"): String =
+        server.rows("SHOW SERVERS YIELD *", StandaloneServer.SYSTEM).single()[column] as String
 
     private fun row(database: String): Map<String, Any?> =
         server
@@ -188,8 +204,8 @@ class QuarantineTest {
             .startsWith("By the server at ")
             .contains(
                 "Database 'films' failed while running: No space left on device. Once its " +
-                    "cause is dealt with, lift the quarantine on this server with CALL " +
-                    "dbms.quarantineDatabase('films', false)"
+                    "cause is dealt with, lift the quarantine with CALL " +
+                    "dbms.unquarantineDatabase('${self()}', 'films')"
             )
         assertThat(row("films")).containsEntry("currentStatus", "quarantined")
         await atMost Duration.ofSeconds(30) untilAsserted { assertThat(started("films")).isFalse() }
@@ -217,6 +233,80 @@ class QuarantineTest {
         server.administer("CREATE DATABASE films")
 
         assertThat(row("films")).containsEntry("currentStatus", "online")
+    }
+
+    @Test
+    fun `dbms_unquarantineDatabase lifts the quarantine on this server, named by its id or name`() {
+        quarantine("films", true)
+
+        unquarantine(self(), "films")
+
+        assertThat(row("films"))
+            .containsEntry("currentStatus", "online")
+            .containsEntry("statusMessage", "")
+        assertThat(films()).isEqualTo(1)
+        quarantine("films", true)
+        unquarantine(self("name"), "films", "keepStateKeepStore")
+        assertThat(row("films")).containsEntry("currentStatus", "online")
+    }
+
+    @Test
+    fun `dbms_unquarantineDatabase refuses what it cannot do, as Neo4j Enterprise does`() {
+        quarantine("films", true)
+
+        fun refusal(server: String, database: String, operation: String? = null): String {
+            val refused = catchThrowable { unquarantine(server, database, operation) }
+            val statuses =
+                generateSequence(refused) { it.cause }
+                    .filterIsInstance<ErrorGqlStatusObject>()
+                    .first()
+                    .let { first -> generateSequence(first) { it.cause().orElse(null) } }
+                    .map { it.gqlStatus() }
+                    .toList()
+            assertThat(statuses).startsWith("52N02", "52N17")
+            return generateSequence(refused) { it.cause }
+                .mapNotNull { it.message }
+                .first {
+                    it.startsWith("Setting/removing the quarantine marker failed: ")
+                }
+        }
+
+        assertThat(refusal("0c000000", "films")).contains("Cannot find server '0c000000'")
+        assertThat(refusal(self(), "neo4j")).contains("Database 'neo4j' is not in quarantine")
+        assertThat(refusal(self(), "books")).contains("Database does not exist: books")
+        assertThat(refusal(self(), "films", "keepEverything"))
+            .contains(
+                "Unknown operation 'keepEverything': the operations are keepStateKeepStore, " +
+                    "replaceStateKeepStore and replaceStateReplaceStore"
+            )
+        for (operation in listOf("replaceStateKeepStore", "replaceStateReplaceStore")) {
+            assertThat(refusal(self(), "films", operation))
+                .contains("a server without clustering has no cluster state to replace")
+        }
+        assertThat(row("films")).containsEntry("currentStatus", "quarantined")
+    }
+
+    @Test
+    fun `Cypher 25 has no dbms_quarantineDatabase, as Neo4j Enterprise's, and Cypher 5 warns`() {
+        val missing = catchThrowable {
+            server.rows("CYPHER 25 CALL dbms.quarantineDatabase('films', true)")
+        }
+        assertThat(generateSequence(missing) { it.cause }.mapNotNull { it.message }.toList())
+            .anySatisfy { assertThat(it).contains("dbms.quarantineDatabase") }
+        assertThat(row("films")).containsEntry("currentStatus", "online")
+
+        val warnings =
+            server.database().beginTx().use { tx ->
+                tx.execute("CYPHER 5 CALL dbms.quarantineDatabase('films', true)").use { result ->
+                    result.resultAsString()
+                    result.gqlStatusObjects.map { it.gqlStatus() to it.statusDescription() }
+                }
+            }
+        assertThat(warnings).anySatisfy { (status, description) ->
+            assertThat(status).startsWith("01N")
+            assertThat(description).contains("dbms.unquarantineDatabase")
+        }
+        assertThat(row("films")).containsEntry("currentStatus", "quarantined")
     }
 
     @Test

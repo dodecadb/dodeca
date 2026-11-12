@@ -90,6 +90,7 @@ import org.dozendb.core.edition.DozenDbQueryRouterBootstrap
 import org.dozendb.core.edition.HostingServer
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
+import org.dozendb.core.edition.Unquarantines
 import org.dozendb.core.edition.WantedDatabase
 import org.dozendb.core.routing.DozenDbRoutingService
 import org.dozendb.core.routing.LocalRoutingTables
@@ -168,6 +169,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     /** `dbms.cluster.statusCheck`, which also answers other members' parts in it. */
     private val statusChecks: StatusChecks
+
+    /** Lifts quarantines on other members, and on this one when another asks. */
+    private val quarantineLifts: QuarantineLifts
     private val membership: MembershipReconciler
     private val balancer: LeaderBalancer
     private val announcer: LeaderAnnouncer
@@ -219,6 +223,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
     private lateinit var systemGraph: Neo4jSystemGraph
     private lateinit var reconciler: DatabaseReconciler
+
+    /** Replaces the cluster state of copies in quarantine, as dbms.unquarantineDatabase asks. */
+    private lateinit var copyReplacement: CopyReplacement
     private lateinit var servers: ServerReconciler
     private lateinit var administration: ServerAdministration
     private lateinit var recreation: DatabaseRecreation
@@ -659,6 +666,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ::serverRecords,
             )
         consensus.registerBulkSource(StatusCheckProtocol.NAME, statusChecks)
+        quarantineLifts =
+            QuarantineLifts(
+                consensus,
+                { cluster.members().map { it.member } },
+                { quarantine },
+                QUARANTINE_LIFT_TIMEOUT,
+            )
+        consensus.registerBulkSource(QuarantineProtocol.NAME, quarantineLifts)
         globalModule.databaseEventListeners.registerDatabaseEventListener(
             object : DatabaseEventListenerAdapter() {
                 override fun databaseStart(eventContext: DatabaseEventContext) {
@@ -1096,23 +1111,34 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ::awaitSystemCurrent,
                 ::clusterPlacement,
             )
+        val localDatabases =
+            Neo4jLocalDatabases(
+                databaseManager,
+                repository,
+                localStores,
+                clusterHosting,
+                replication,
+                secondaries,
+                ::seeder,
+                ::entryTerm,
+                consensus::seed,
+                quarantines,
+                groups,
+                detachOnStart = { cluster.detachOnStart(it) },
+            )
+        copyReplacement =
+            CopyReplacement(
+                consensus,
+                groups,
+                localDatabases,
+                { cluster.members().map { it.member } },
+                QUARANTINE_LIFT_TIMEOUT,
+                globalModule.logService.getUserLog(CopyReplacement::class.java),
+            )
         reconciler =
             DatabaseReconciler(
                 systemGraph,
-                Neo4jLocalDatabases(
-                    databaseManager,
-                    repository,
-                    localStores,
-                    clusterHosting,
-                    replication,
-                    secondaries,
-                    ::seeder,
-                    ::entryTerm,
-                    consensus::seed,
-                    quarantines,
-                    groups,
-                    detachOnStart = { cluster.detachOnStart(it) },
-                ),
+                localDatabases,
                 memberId,
                 defaultDatabase,
                 ::copySources,
@@ -1414,7 +1440,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                     reconciler.request()
                 }
             }
+
+            override fun replace(id: NamedDatabaseId, keepStore: Boolean) =
+                copyReplacement.replace(id, keepStore)
         }
+
+    override fun remoteQuarantines(): Unquarantines.Remote = quarantineLifts
 
     /** Stops and starts databases through the database manager. */
     private fun databaseControl(): DatabaseControl =
@@ -1916,6 +1947,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
 
         /** How long a member that is asked what it reports may take to answer. */
         val PROBE_DEADLINE: Duration = Duration.ofSeconds(2)
+
+        /**
+         * How long a member asked to lift a quarantine may take, and how long replacing a copy's
+         * cluster state waits for its group to remove it.
+         */
+        val QUARANTINE_LIFT_TIMEOUT: Duration = Duration.ofMinutes(2)
 
         /**
          * How long routing waits for the members' answers when what they reported last cannot

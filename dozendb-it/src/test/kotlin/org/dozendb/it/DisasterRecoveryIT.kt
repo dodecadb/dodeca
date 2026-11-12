@@ -354,7 +354,8 @@ class DisasterRecoveryIT {
 
         val quarantined = members[1]
         quarantined.rows(
-            "CALL dbms.quarantineDatabase('films', true, 'Inspecting its files')",
+            // Enterprise's Cypher 25, the default, has no dbms.quarantineDatabase.
+            "CYPHER 5 CALL dbms.quarantineDatabase('films', true, 'Inspecting its files')",
             "system",
         )
         await withPollInterval
@@ -375,7 +376,11 @@ class DisasterRecoveryIT {
         write(members - quarantined, "films", "CREATE (:Film {i: 0})")
         awaitCount(members - quarantined, "films", "Film", 202)
 
-        quarantined.rows("CALL dbms.quarantineDatabase('films', false)", "system")
+        // Lifted from another server, as Enterprise's dbms.unquarantineDatabase does.
+        members[0].rows(
+            "CALL dbms.unquarantineDatabase('${quarantined.memberId()}', 'films')",
+            "system",
+        )
 
         awaitCount(members, "films", "Film", 202)
     }

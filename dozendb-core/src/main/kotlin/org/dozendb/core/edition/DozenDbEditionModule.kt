@@ -134,7 +134,22 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         private set
 
     /** Puts copies of databases in quarantine and lifts it. */
-    private lateinit var quarantine: DatabaseQuarantine
+    protected lateinit var quarantine: DatabaseQuarantine
+        private set
+
+    /** The databases registered on this server. */
+    private lateinit var databases: DatabaseRepository<StandaloneDatabaseContext>
+
+    // Once called: the cluster's servers and members are known only once it started.
+    private val unquarantines by lazy {
+        Unquarantines(
+            { databases.getSystemDatabaseContext().databaseFacade() },
+            servers(),
+            identityModule.serverId().uuid(),
+            quarantine,
+            remoteQuarantines(),
+        )
+    }
 
     /** Makes the databases follow the system graph without clustering, once created. */
     private var standaloneDatabases: StandaloneDatabases? = null
@@ -152,6 +167,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     ): DatabaseContextProvider<*> {
         val idCache = MapCachingDatabaseIdRepository()
         val repository = DatabaseRepository<StandaloneDatabaseContext>(idCache)
+        databases = repository
         val contextFactory =
             DozenDbDatabaseContextFactory(
                 globalModule,
@@ -204,6 +220,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 quarantines,
                 repository,
                 quarantineCopies(),
+                identityModule.serverId().uuid().toString(),
                 globalModule.globalClock,
                 globalModule.logService.getUserLog(DatabaseQuarantine::class.java),
             )
@@ -302,7 +319,17 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 if (id.isSystemDatabase) databaseManager.startDatabase(id)
                 else standaloneDatabases?.follow()
             }
+
+            override fun replace(id: NamedDatabaseId, keepStore: Boolean) =
+                throw IllegalStateException(
+                    "Database '${id.name()}': a server without clustering has no cluster state " +
+                        "to replace. Lift its quarantine with " +
+                        "${UnquarantineOperation.KEEP_STATE_KEEP_STORE.label}."
+                )
         }
+
+    /** How quarantines are lifted on other servers: without clustering, there are none. */
+    protected open fun remoteQuarantines(): Unquarantines.Remote? = null
 
     /**
      * The servers a database can be created from with existingDataSeedServer: without clustering,
@@ -660,8 +687,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         )
 
     /**
-     * Neo4j Community's procedures, `dbms.setConfigValue`, `dbms.setDefaultDatabase` and
-     * `dbms.quarantineDatabase`.
+     * Neo4j Community's procedures, `dbms.setConfigValue`, `dbms.setDefaultDatabase`,
+     * `dbms.quarantineDatabase` and `dbms.unquarantineDatabase`.
      */
     override fun registerEditionSpecificProcedures(
         globalProcedures: GlobalProcedures,
@@ -669,6 +696,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     ) {
         super.registerEditionSpecificProcedures(globalProcedures, databaseContextProvider)
         globalProcedures.registerComponent(DatabaseQuarantine::class.java, { quarantine }, true)
+        globalProcedures.registerComponent(Unquarantines::class.java, { unquarantines }, true)
         globalProcedures.registerProcedure(SettingsProcedures::class.java)
         globalProcedures.registerProcedure(DefaultDatabaseProcedures::class.java)
         globalProcedures.registerProcedure(MonitoringProcedures::class.java)

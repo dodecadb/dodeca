@@ -632,8 +632,11 @@ internal class DatabaseReconciler(
         val id = database.id
         if (databases.catchingUp(id)) return false
         val state = databases.registered()[id]
-        // Left as it is until its quarantine is lifted, which reconciles again.
+        // Left as it is until its quarantine is lifted, which reconciles again; also once its store
+        // and group are deleted, as when it joins as a new member: it must not run the group
+        // before its quarantine is lifted.
         if (state?.quarantined == true) return true
+        if (state == null && id.uuid in databases.quarantined() && !trusted(id)) return true
         val placed = database.hosts.isNotEmpty()
         val wanted =
             when (self) {

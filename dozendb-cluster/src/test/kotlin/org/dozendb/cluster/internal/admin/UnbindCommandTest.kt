@@ -85,7 +85,9 @@ class UnbindCommandTest {
         // Its copies are set aside, and the copies it makes anew are in no quarantine.
         member
             .database()
-            .executeTransactionally("CALL dbms.quarantineDatabase('neo4j', true, 'Inspecting it')")
+            .executeTransactionally(
+                "CYPHER 5 CALL dbms.quarantineDatabase('neo4j', true, 'Inspecting it')"
+            )
         member.stop()
         val archives = Files.createDirectories(root.resolve("archives"))
 

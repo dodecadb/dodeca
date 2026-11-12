@@ -203,7 +203,7 @@ places the database on servers (see [Servers](#servers)), and
   Enterprise documents a database that is not running because of a problem,
   such as one that failed to start. A database that fails while running, such
   as after a panic on a full disk, is put in quarantine, as in Enterprise:
-  `quarantined`, until `dbms.quarantineDatabase` lifts it (see
+  `quarantined`, until `dbms.unquarantineDatabase` lifts it (see
   [Disaster recovery](#disaster-recovery)). Neo4j Community shows a database
   that failed while running as `online`, although it serves nothing.
 - **`server.panic.shutdown_on_panic`** ends the server's process, with status
@@ -954,14 +954,16 @@ disaster recovery guide shows, with the same commands; see
   members, as the other
   `dbms.cluster.*` procedures; on a standalone server, drop the database and
   create it from a seed.
-- **`dbms.quarantineDatabase`** and copies that fail while running behave as in
-  Enterprise 5.26. Enterprise deprecated the procedure in 2025.01, and its
-  Cypher 25 has no command that puts a database in quarantine; DozenDB keeps
-  it in both Cypher versions, without a deprecation warning. It lacks
-  Enterprise's `dbms.unquarantineDatabase(server, database, operation)`
-  (2025.01): lift a quarantine with `dbms.quarantineDatabase(database,
-  false)` on the server, which leaves the store and cluster state as they
-  are. Quarantines are kept in `data/quarantine`, a file of DozenDB's own
+- **Quarantine.** `dbms.unquarantineDatabase(server, database, operation)`
+  (Enterprise 2025.01) and copies that fail while running behave as in
+  Enterprise 2026: the procedure lifts the quarantine of a copy on the server
+  named, by its name or id, from any server, and fails with Enterprise's
+  error 52N17. `replaceStateReplaceStore` deletes the copy and its Raft
+  state, has the database's group remove the server, and copies the database
+  anew, which the group adds; DozenDB refuses `replaceStateKeepStore` for now.
+  `dbms.quarantineDatabase` exists under
+  Cypher 5 only, deprecated, as in Enterprise, whose Cypher 25 has no way to
+  put a copy in quarantine. Quarantines are kept in `data/quarantine`, a file of DozenDB's own
   ([`FORMATS.md`](FORMATS.md)); that of `system` lasts until the server
   restarts.
 - **`dbms.cluster.protocols`** lists DozenDB's protocols

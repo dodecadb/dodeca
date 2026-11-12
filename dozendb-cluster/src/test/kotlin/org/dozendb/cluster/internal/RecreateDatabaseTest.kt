@@ -196,7 +196,9 @@ class RecreateDatabaseTest {
         val quarantined = cluster.members[1]
         quarantined
             .database()
-            .executeTransactionally("CALL dbms.quarantineDatabase('$FILMS', true, 'testing')")
+            .executeTransactionally(
+                "CYPHER 5 CALL dbms.quarantineDatabase('$FILMS', true, 'testing')"
+            )
 
         assertThat(refusal(cluster, "{seedingServers: []}"))
             .contains("its copies on ${quarantined.serverId} are in quarantine")
@@ -205,7 +207,9 @@ class RecreateDatabaseTest {
 
         quarantined
             .database()
-            .executeTransactionally("CALL dbms.quarantineDatabase('$FILMS', false)")
+            .executeTransactionally(
+                "CALL dbms.unquarantineDatabase('${quarantined.serverId}', '$FILMS')"
+            )
         cluster.awaitFilms(cluster.members, 3)
         cluster.administer("CALL dbms.cluster.recreateDatabase('$FILMS', {seedingServers: []})")
 

@@ -14,18 +14,21 @@ import org.neo4j.logging.InternalLog
 
 /**
  * Puts the copies of databases on this server in quarantine and lifts it, for
- * `dbms.quarantineDatabase`, and puts a copy that fails while running, as by a panic, in
- * quarantine, as Neo4j Enterprise does.
+ * `dbms.quarantineDatabase` and `dbms.unquarantineDatabase` (see [Unquarantines]), and puts a copy
+ * that fails while running, as by a panic, in quarantine, as Neo4j Enterprise does.
  *
  * A copy in quarantine is stopped here and stays stopped: the [DatabaseManager] starts none, so
  * neither START DATABASE nor a restart starts it until the quarantine is lifted, while the other
  * servers follow commands as usual. Lifting the quarantine brings the copy to the state the system
  * graph asks of it. The quarantines are kept in [quarantines].
+ *
+ * @property server this server's id, which the message of a quarantine after a panic names.
  */
 class DatabaseQuarantine(
     private val quarantines: Quarantines,
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
     private val copies: Copies,
+    private val server: String,
     private val clock: Clock,
     private val log: InternalLog,
 ) : DatabaseEventListenerAdapter() {
@@ -36,6 +39,15 @@ class DatabaseQuarantine(
 
         /** Brings the copy of [id] on this server to the state the system graph asks of it. */
         fun reconcile(id: NamedDatabaseId)
+
+        /**
+         * Replaces the cluster state of the copy of [id] here, which is in quarantine, so that the
+         * copy joins its database as a new member once the quarantine is lifted: from its own store
+         * if [keepStore], else from a new copy.
+         *
+         * @throws RuntimeException saying why, if it cannot, as without clustering.
+         */
+        fun replace(id: NamedDatabaseId, keepStore: Boolean)
     }
 
     /** What a call of `dbms.quarantineDatabase` did, in its columns. */
@@ -53,6 +65,7 @@ class DatabaseQuarantine(
      * it waits for the caller's transaction, so it then stops in the background once that is
      * closed.
      */
+    @Synchronized
     fun set(
         name: String,
         quarantined: Boolean,
@@ -60,27 +73,12 @@ class DatabaseQuarantine(
         reason: String,
         caller: Caller? = null,
     ): Outcome {
-        val id =
-            repository.databaseIdRepository().getByName(name).orElseThrow {
-                DatabaseNotFoundHelper.databaseDoesNotExist(name)
-            }
+        val id = databaseId(name)
         val uuid = id.databaseId().uuid()
         if (!quarantined) {
-            val lifted =
-                quarantines.remove(uuid)
-                    ?: return Outcome(id.name(), false, "The database is in no quarantine here")
-            log.info(
-                "Lifted the quarantine of '%s' on this server (%s), as %s asked",
-                id.name(),
-                lifted.message,
-                user,
-            )
-            // A failure from before, such as the panic that put it in quarantine, which Neo4j may
-            // record after the copy stopped, is no reason to keep it stopped: it is tried anew.
-            repository.getDatabaseContext(id).ifPresent { context ->
-                if (!context.database().isStarted) context.clearFailure()
+            if (!liftHere(id, user)) {
+                return Outcome(id.name(), false, "The database is in no quarantine here")
             }
-            copies.reconcile(id)
             return Outcome(id.name(), false, Quarantine(user, clock.instant(), LIFTED).message)
         }
         val context =
@@ -107,6 +105,56 @@ class DatabaseQuarantine(
     }
 
     /**
+     * Lifts the quarantine of the copy of the database [name] here, for
+     * `dbms.unquarantineDatabase`, as [user] asks, after replacing its cluster state as [operation]
+     * says (see [Copies.replace]).
+     *
+     * @throws RuntimeException saying why, if the copy is in no quarantine here or its cluster
+     *   state cannot be replaced; the quarantine then stays.
+     */
+    @Synchronized
+    fun lift(name: String, operation: UnquarantineOperation, user: String) {
+        val id = databaseId(name)
+        check(quarantines.of(id.databaseId().uuid()) != null) {
+            "Database '${id.name()}' is not in quarantine on this server."
+        }
+        if (operation != UnquarantineOperation.KEEP_STATE_KEEP_STORE) {
+            check(!id.isSystemDatabase) {
+                "The cluster state of database 'system' cannot be replaced: lift its quarantine " +
+                    "with ${UnquarantineOperation.KEEP_STATE_KEEP_STORE.label}."
+            }
+            copies.replace(id, operation == UnquarantineOperation.REPLACE_STATE_KEEP_STORE)
+        }
+        liftHere(id, user)
+    }
+
+    private fun databaseId(name: String): NamedDatabaseId =
+        repository.databaseIdRepository().getByName(name).orElseThrow {
+            DatabaseNotFoundHelper.databaseDoesNotExist(name)
+        }
+
+    /**
+     * Lifts the quarantine of the copy of [id] here, as [user] asks, and brings the copy to the
+     * state the system graph asks of it; false if it is in none.
+     */
+    private fun liftHere(id: NamedDatabaseId, user: String): Boolean {
+        val lifted = quarantines.remove(id.databaseId().uuid()) ?: return false
+        log.info(
+            "Lifted the quarantine of '%s' on this server (%s), as %s asked",
+            id.name(),
+            lifted.message,
+            user,
+        )
+        // A failure from before, such as the panic that put it in quarantine, which Neo4j may
+        // record after the copy stopped, is no reason to keep it stopped: it is tried anew.
+        repository.getDatabaseContext(id).ifPresent { context ->
+            if (!context.database().isStarted) context.clearFailure()
+        }
+        copies.reconcile(id)
+        return true
+    }
+
+    /**
      * Puts the copy of a database that panicked in quarantine, before any other listener can end
      * the server (`server.panic.shutdown_on_panic`), and stops it in the background: the panic may
      * come from a thread that stopping waits for.
@@ -122,8 +170,8 @@ class DatabaseQuarantine(
                 clock.instant(),
                 "Database '${id.name()}' failed while running" +
                     (cause?.let { ": ${describe(it)}" } ?: "") +
-                    ". Once its cause is dealt with, lift the quarantine on this server with " +
-                    "CALL dbms.quarantineDatabase('${id.name()}', false)",
+                    ". Once its cause is dealt with, lift the quarantine with CALL " +
+                    "dbms.unquarantineDatabase('$server', '${id.name()}')",
             )
         try {
             quarantines.put(id.databaseId().uuid(), quarantine)
