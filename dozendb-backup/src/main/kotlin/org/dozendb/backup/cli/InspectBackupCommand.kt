@@ -238,8 +238,20 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
         append('"')
     }
 
-    private companion object {
-        val TITLES =
+    companion object {
+        /**
+         * Lists the backups at [path], a folder or a file, with their metadata, as `backup inspect
+         * --show-metadata` does: for `backup --inspect-path`.
+         */
+        internal fun run(context: ExecutionContext, path: String, verbose: Boolean) {
+            val command = InspectBackupCommand(context)
+            command.pathOption = path
+            command.showMetadata = true
+            command.verbose = verbose
+            command.execute()
+        }
+
+        private val TITLES =
             listOf(
                 "FILE",
                 "DATABASE",
@@ -250,8 +262,8 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
                 "LOWEST TX",
                 "HIGHEST TX",
             )
-        val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
-        val LATEST: Comparator<Artifact> =
+        private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
+        private val LATEST: Comparator<Artifact> =
             compareBy({ it.header.time }, { it.header.highestAppendIndex })
     }
 }

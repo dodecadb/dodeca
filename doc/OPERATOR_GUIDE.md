@@ -1414,6 +1414,9 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   encrypted passwords, status, home database and roles among those, and
   `users=alice,bob` only those of them; `all` both; `none` nothing. Backups of
   `system` keep none: `system` holds them all.
+- `--inspect-path=/backups` lists the backups there with their metadata
+  instead of backing up, as `neo4j-admin backup inspect /backups
+  --show-metadata` does.
 - The command exits with 1 if a database could not be backed up, naming it,
   or if a server could not be reached although another one served.
 

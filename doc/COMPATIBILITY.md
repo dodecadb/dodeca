@@ -881,10 +881,12 @@ not promised. The differences:
 - Backups go to, and are restored, inspected, checked and aggregated from,
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
   them where they are, as it restores them, and never needs `--temp-path`.
-- Not supported: `--parallel-recovery` and `--inspect-path` of `backup`, and
-  the options Enterprise added since 2025.01: `--remote-address-resolution`, `--parallel-download`, `--skip-recovery` and
-  `--split-archive-part-size` of `backup`; nor
-  `server.backup.advertised_address`.
+- Not supported: the options Enterprise added to `backup` since 2025.01
+  `--remote-address-resolution`, `--parallel-download`, `--skip-recovery` and
+  `--split-archive-part-size`; nor `server.backup.advertised_address`.
+- `--parallel-recovery` of `backup`, experimental in Enterprise, is accepted
+  and changes nothing. `--inspect-path` lists the backups with their
+  metadata, as `neo4j-admin backup inspect --show-metadata` does.
   `server.split_archive.part_size`, which Neo4j Community declares, does not
   split backups.
 - `neo4j-admin database aggregate-backup`, the name of `neo4j-admin backup

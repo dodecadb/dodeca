@@ -87,9 +87,9 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     )
     private lateinit var from: String
 
+    // Required unless --inspect-path is given.
     @Option(
         names = ["--to-path"],
-        required = true,
         paramLabel = "<path>",
         description =
             [
@@ -99,7 +99,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     "differential backup continues the latest backup of the database there."
             ],
     )
-    private lateinit var toPathOption: String
+    private var toPathOption: String? = null
 
     private lateinit var toPath: Path
     private lateinit var fs: FileSystemAbstraction
@@ -163,6 +163,32 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                 )
         }
     }
+
+    @Option(
+        names = ["--inspect-path"],
+        paramLabel = "<path>",
+        description =
+            [
+                "List the backups in a folder, or a backup file, and show their metadata, as " +
+                    "neo4j-admin backup inspect --show-metadata does, instead of backing up. " +
+                    "Needs neither <database> nor --to-path."
+            ],
+    )
+    private var inspectPath: String? = null
+
+    @Option(
+        names = ["--parallel-recovery"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Accepted as by Neo4j Enterprise, where it is experimental. DozenDB recovers a " +
+                    "full backup's copy of the database as it always does."
+            ],
+    )
+    private var parallelRecovery = false
 
     @Option(
         names = ["--prefer-diff-as-parent"],
@@ -248,6 +274,16 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     private class Discontinued(message: String) : Exception(message)
 
     override fun execute() {
+        inspectPath?.let {
+            InspectBackupCommand.run(ctx, it, verbose)
+            return
+        }
+        val toPathOption =
+            toPathOption
+                ?: throw CommandLine.ParameterException(
+                    spec.commandLine(),
+                    "Missing required option: '--to-path=<path>'",
+                )
         if (skipEmptyDiffs && includeMetadata.include != MetadataScript.Include.NONE) {
             throw CommandFailedException(
                 "--skip-empty-diffs needs --include-metadata=none: an empty differential backup " +

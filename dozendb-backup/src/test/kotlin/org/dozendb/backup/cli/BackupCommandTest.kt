@@ -321,6 +321,23 @@ class BackupCommandTest {
     }
 
     @Test
+    fun `with --inspect-path, lists the backups there with their metadata instead`() {
+        val source = source().apply { start() }
+        assertThat(backup(source, "--type=FULL", "--parallel-recovery").exitCode).isZero
+        val (full) = artifacts()
+
+        val inspected = Admin.run(clientHome, ::BackupCommand, "--inspect-path=$backups")
+
+        assertThat(inspected.exitCode).describedAs("$inspected").isZero
+        assertThat(inspected.out)
+            .contains("| DATABASE |", "| HIGHEST TX |", full.path.toUri().toString(), " neo4j |")
+        assertThat(artifacts()).hasSize(1)
+        val missing = Admin.run(clientHome, ::BackupCommand, "--from=127.0.0.1:1")
+        assertThat(missing.exitCode).isNotZero
+        assertThat(missing.err).contains("Missing required option: '--to-path=<path>'")
+    }
+
+    @Test
     fun `a differential backup needs a backup to continue`() {
         val source = source().apply { start() }
 
