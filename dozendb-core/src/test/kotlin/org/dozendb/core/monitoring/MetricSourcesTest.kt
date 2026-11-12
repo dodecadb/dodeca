@@ -136,7 +136,7 @@ class MetricSourcesTest {
             assertThat(moved("log_appended_bytes_total")).isGreaterThan(0.0)
             assertThat(after["neo4j_database_neo4j_neo4j_count_node"]).isEqualTo(3.0)
             assertThat(after["neo4j_database_neo4j_ids_in_use_node"]).isEqualTo(3.0)
-            assertThat(after["neo4j_database_neo4j_store_size_total"]).isGreaterThan(0.0)
+            assertThat(after["neo4j_database_neo4j_store_size_full"]).isGreaterThan(0.0)
             assertThat(moved("index_range_populated_total")).isEqualTo(1.0)
             assertThat(moved("cypher_cache_executable_query_hits_total"))
                 .isGreaterThanOrEqualTo(1.0)

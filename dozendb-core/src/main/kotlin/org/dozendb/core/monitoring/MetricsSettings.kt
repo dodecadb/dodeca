@@ -29,7 +29,10 @@ import org.neo4j.io.ByteUnit
  */
 class MetricsSettings : SettingsDeclaration {
     companion object {
-        /** Enterprise's default filter, verbatim from its settings reference. */
+        /**
+         * Enterprise's default filter, verbatim from its settings reference of 2026.10, which
+         * changed it in 2025.03 and 2025.06.
+         */
         const val DEFAULT_FILTER =
             "*bolt.connections*,*bolt.messages_received*,*bolt.messages_started*," +
                 "*dbms.pool.bolt.free,*dbms.pool.bolt.total_size,*dbms.pool.bolt.total_used," +
@@ -37,26 +40,15 @@ class MetricsSettings : SettingsDeclaration {
                 "*cluster.raft.last_leader_message,*cluster.raft.replication_attempt," +
                 "*cluster.raft.replication_fail,*cluster.raft.last_applied," +
                 "*cluster.raft.last_appended,*cluster.raft.append_index," +
-                "*cluster.raft.commit_index,*cluster.raft.applied_index," +
-                "*cluster.internal.discovery.memberset.left," +
-                "*cluster.internal.discovery.crdt.gossip_id_data.size," +
-                "*cluster.internal.discovery.crdt.server_data.size," +
-                "*cluster.internal.discovery.crdt.database_data.size," +
-                "*cluster.internal.discovery.crdt.leader_data.size," +
-                "*cluster.internal.discovery.crdt.total_merge_operations," +
-                "*cluster.internal.discovery.crdt.total_update_operations," +
-                "*cluster.internal.discovery.gossip.incoming_queue_size," +
-                "*cluster.internal.discovery.gossip.total_received_data," +
-                "*cluster.internal.discovery.gossip.total_sent_data," +
-                "*cluster.internal.discovery.gossip.uncontactable_members_exist,*check_point.*," +
-                "*cypher.replan_events,*cypher.cache*,*ids_in_use*," +
+                "*cluster.raft.commit_index,*cluster.raft.applied_index,*check_point.*," +
+                "*cypher.replan_events,*cypher.cache*,*ids_in_use*,*.neo4j.count.*," +
                 "*pool.transaction.*.total_used,*pool.transaction.*.used_heap," +
                 "*pool.transaction.*.used_native,*store.size*,*transaction.active_read," +
                 "*transaction.active_write,*transaction.committed*," +
                 "*transaction.last_committed_tx_id,*transaction.peak_concurrent," +
                 "*transaction.rollbacks*,*page_cache.hit*,*page_cache.page_faults," +
-                "*page_cache.usage_ratio,*vm.file.descriptors.count,*vm.gc.time.*," +
-                "*vm.heap.used,*vm.memory.buffer.direct.used,*vm.memory.pool.g1_eden_space," +
+                "*page_cache.usage_ratio,*vm.file.descriptors.count,*vm.gc.time.*,*vm.heap.used," +
+                "*vm.memory.buffer.direct.used,*vm.memory.pool.g1_eden_space," +
                 "*vm.memory.pool.g1_old_gen,*vm.pause_time,*vm.thread*,*db.query.execution*," +
                 "*protocol*"
 
@@ -118,13 +110,13 @@ class MetricsSettings : SettingsDeclaration {
         @JvmField
         @field:Description(
             "Compresses rotated CSV files: `NONE`, `GZ` (`<name>.csv.1.gz`) or `ZIP` " +
-                "(`<name>.csv.1.zip`)."
+                "(`<name>.csv.1.zip`), Enterprise's default since 2025.01."
         )
         val csvRotationCompression: Setting<CsvCompression> =
             newBuilder(
                     "server.metrics.csv.rotation.compression",
                     ofEnum(CsvCompression::class.java),
-                    CsvCompression.NONE,
+                    CsvCompression.ZIP,
                 )
                 .build()
 

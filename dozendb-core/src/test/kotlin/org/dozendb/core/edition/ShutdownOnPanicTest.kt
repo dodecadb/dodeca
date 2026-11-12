@@ -8,6 +8,7 @@ import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.StandaloneServer
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.Config
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.monitoring.DatabaseHealth
 
@@ -39,8 +40,13 @@ class ShutdownOnPanicTest {
     }
 
     @Test
-    fun `a panic fails only the database by default`() {
-        panicking(emptyMap())
+    fun `a panic ends the server by default, as in Enterprise since 2025_01`() {
+        assertThat(Config.defaults().get(DozenDbSettings.shutdownOnPanic)).isTrue()
+    }
+
+    @Test
+    fun `a panic fails only the database without server panic shutdown_on_panic`() {
+        panicking(mapOf(DozenDbSettings.shutdownOnPanic to false))
 
         // Neo4j tells listeners of a panic before panic returns.
         assertThat(exits).isEmpty()

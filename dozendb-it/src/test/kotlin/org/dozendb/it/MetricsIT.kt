@@ -165,13 +165,9 @@ class MetricsIT {
         private val ENTERPRISE_NAMES =
             listOf(
                 Regex(
-                    """neo4j_database_\w+_store_size_total non-counter metrics should not have """ +
-                        """"_total" suffix"""
-                ),
-                Regex(
                     """neo4j_dbms_vm_(file_descriptors|memory_buffer_\w+)_count non-histogram and """ +
                         """non-summary metrics should not have "_count" suffix"""
-                ),
+                )
             )
     }
 }

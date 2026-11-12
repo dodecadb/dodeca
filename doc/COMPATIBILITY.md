@@ -208,9 +208,8 @@ places the database on servers (see [Servers](#servers)), and
   that failed while running as `online`, although it serves nothing.
 - **`server.panic.shutdown_on_panic`** ends the server's process, with status
   1, once a database panics, as in Enterprise, so that a process manager
-  starts it again. It is false by default, as it was in Enterprise before
-  2025.01, which made it true: set it to `true` to end the process as
-  Enterprise does by default.
+  starts it again. It is true by default, as in Enterprise since 2025.01: set
+  it to `false` to keep the server running, the database in quarantine.
 
 ## Constraints
 
@@ -979,11 +978,10 @@ as JSON lines since 2025.01.
   `neo4j.metrics`), with Enterprise's settings and defaults, but for the
   differences below. Neo4j Community refuses the `server.metrics.*` settings
   at startup with "Unrecognized setting".
-- **Defaults that Enterprise changed in 2025** keep their 5.26 values:
-  `server.metrics.csv.rotation.compression` is `NONE`, where Enterprise's is
-  `ZIP` since 2025.01; `server.metrics.filter` is 5.26's, which, unlike
-  Enterprise's of 2026.10, leaves out the `neo4j.count.*` metrics.
-  `server.metrics.deny_filter` (2025.10) is not supported.
+- **Defaults are Enterprise's of 2026.10**:
+  `server.metrics.csv.rotation.compression` is `ZIP`, as since 2025.01, and
+  `server.metrics.filter` is the list of 2025.06, with the `neo4j.count.*`
+  metrics. `server.metrics.deny_filter` (2025.10) is not supported.
 - **CSV files are on by default**, as in Enterprise: a server moving from
   Neo4j Community or from an earlier DozenDB starts writing a file per metric
   in `server.directories.metrics` (`metrics` under the home directory),
@@ -1007,8 +1005,8 @@ as JSON lines since 2025.01.
   after 10 seconds; a server that cannot be reached is logged once, until
   sending succeeds again.
 - **Names** are Enterprise's, `<prefix>.dbms.<name>` and
-  `<prefix>.database.<database>.<name>`, but for `store.size.total`, which
-  Enterprise renamed `store.size.full` in 2025.01.
+  `<prefix>.database.<database>.<name>`, with `store.size.full`, as
+  Enterprise renamed `store.size.total` in 2025.01.
   Metrics Enterprise does not have are named under a `dozendb` segment, such
   as `dozendb.cluster.raft.follower_lag_max`. Enterprise's exact Prometheus
   output is not documented; DozenDB's replaces characters other than letters,
@@ -1018,8 +1016,8 @@ as JSON lines since 2025.01.
   such characters, such as `my-db` and `my_db`, give the same Prometheus
   names: the second family is left out and a warning logged. Prometheus's
   `promtool check metrics` reads the output and flags only gauges whose
-  Enterprise names end like counters or summaries: `store.size.total`,
-  `vm.file.descriptors.count` and `vm.memory.buffer.<pool>.count`.
+  Enterprise names end like summaries: `vm.file.descriptors.count` and
+  `vm.memory.buffer.<pool>.count`.
 - **Metrics without a source in Neo4j Community or DozenDB** are not
   reported: `server.threads.jetty.*`, `cluster.discovery.*` and
   `cluster.internal.discovery.*`, Enterprise's Raft internals

@@ -56,6 +56,11 @@ class MetricsTest {
                 .contains("# TYPE neo4j_dbms_vm_threads gauge")
                 .contains("# TYPE neo4j_dbms_vm_pause_time_total counter")
                 .contains("neo4j_dbms_vm_memory_pool_g1_eden_space ")
+                // Enterprise 2026's default filter: the entity counts since 2025.03 or 2025.06,
+                // and the store size by its 2025.01 name.
+                .contains("neo4j_database_neo4j_neo4j_count_node ")
+                .contains("neo4j_database_neo4j_store_size_full ")
+                .doesNotContain("store_size_total")
                 // Not in the default filter.
                 .doesNotContain("neo4j_dbms_vm_heap_max")
 
@@ -165,8 +170,8 @@ class MetricsTest {
         assertThat(config.get(MetricsSettings.csvInterval)).isEqualTo(Duration.ofSeconds(30))
         assertThat(config.get(MetricsSettings.csvRotationSize)).isEqualTo(10L * 1024 * 1024)
         assertThat(config.get(MetricsSettings.csvRotationKeep)).isEqualTo(7)
-        assertThat(config.get(MetricsSettings.csvRotationCompression))
-            .isEqualTo(CsvCompression.NONE)
+        // Enterprise's since 2025.01.
+        assertThat(config.get(MetricsSettings.csvRotationCompression)).isEqualTo(CsvCompression.ZIP)
         assertThat(config.get(MetricsSettings.directory)).isEqualTo(root.resolve("metrics"))
         assertThatThrownBy {
                 Config.newBuilder()

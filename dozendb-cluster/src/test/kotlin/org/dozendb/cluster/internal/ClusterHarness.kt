@@ -248,6 +248,8 @@ internal class ClusterHarness(
                     // Neo4j preallocates every transaction log, 256 MB, on Linux: the tests'
                     // RAM disk would fill.
                     .set(GraphDatabaseSettings.preallocate_logical_logs, false)
+                    // A database that panics would end the tests' JVM.
+                    .set(DozenDbSettings.shutdownOnPanic, false)
                     .set(BoltConnector.enabled, false)
                     .set(BoltConnector.listen_address, SocketAddress("127.0.0.1", boltPort))
                     .set(BoltConnector.advertised_address, SocketAddress("127.0.0.1", boltPort))

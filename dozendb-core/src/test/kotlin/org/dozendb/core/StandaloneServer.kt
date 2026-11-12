@@ -125,6 +125,8 @@ class StandaloneServer(
                 // Neo4j preallocates every transaction log, 256 MB, on Linux: the tests' RAM disk
                 // would fill.
                 .set(GraphDatabaseSettings.preallocate_logical_logs, false)
+                // A database that panics would end the tests' JVM; tests of it turn it on.
+                .set(DozenDbSettings.shutdownOnPanic, false)
                 .set(BoltConnector.enabled, false)
                 .set(BoltConnector.listen_address, SocketAddress("localhost", 0))
                 .set(GraphDatabaseSettings.routing_listen_address, SocketAddress("localhost", 0))

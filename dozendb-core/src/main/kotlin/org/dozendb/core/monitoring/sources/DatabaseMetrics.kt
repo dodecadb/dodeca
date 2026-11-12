@@ -215,7 +215,8 @@ internal object DatabaseMetrics {
         val id = database.namedDatabaseId
         val total = Cached { sizes.getDatabaseTotalSize(id) }
         val data = Cached { sizes.getDatabaseDataSize(id) }
-        metrics.gauge("store.size.total", "Bytes of the database and its transaction logs.") {
+        // Enterprise renamed store.size.total in 2025.01.
+        metrics.gauge("store.size.full", "Bytes of the database and its transaction logs.") {
             total.get()
         }
         metrics.gauge("store.size.database", "Bytes of the database without transaction logs.") {

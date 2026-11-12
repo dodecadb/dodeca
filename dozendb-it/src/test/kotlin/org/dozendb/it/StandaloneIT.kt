@@ -122,9 +122,8 @@ class StandaloneIT {
     }
 
     @Test
-    fun `ends the server once a database panics, with server panic shutdown_on_panic`() {
+    fun `ends the server once a database panics, by default as in Enterprise since 2025_01`() {
         DozenDbContainer(DozenDbContainer.dozenDbImage, "panicking")
-            .withEnv("NEO4J_server_panic_shutdown__on__panic", "true")
             // Transaction logs on a small disk, which a large write fills: the append fails.
             .withTmpFs(mapOf("/data/transactions" to "rw,size=8m,mode=1777"))
             .withEnv("NEO4J_db_tx__log_preallocate", "false")

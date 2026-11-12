@@ -1925,7 +1925,9 @@ graph asks of it: it starts and catches up with the others.
 
 A copy that fails while running, as after a panic on a full disk, is put in
 quarantine by the server (`By the server at ...`), with the failure and the
-call that lifts it. Quarantines are kept across restarts in `data/quarantine`,
+call that lifts it. The server's process then ends, with status 1, so that a
+process manager starts it again, as Enterprise does since 2025.01; set
+`server.panic.shutdown_on_panic=false` to keep it running instead. Quarantines are kept across restarts in `data/quarantine`,
 a line per copy; deleting a line of the stopped server lifts that quarantine.
 The quarantine of `system` lasts until the server restarts, as in Enterprise.
 
@@ -2222,7 +2224,7 @@ and `NEO4J_server_metrics_prometheus_endpoint=0.0.0.0:2004`, and publish port
 | `server.metrics.csv.interval` | `30s` | |
 | `server.metrics.csv.rotation.size` | `10.00MiB` | `0` never rotates. |
 | `server.metrics.csv.rotation.keep_number` | `7` | |
-| `server.metrics.csv.rotation.compression` | `NONE` | `GZ` or `ZIP` compress rotated files. |
+| `server.metrics.csv.rotation.compression` | `ZIP` | `GZ` or `ZIP` compress rotated files; `NONE` leaves them as they are. |
 | `server.directories.metrics` | `metrics` | Relative to the home directory. |
 | `server.metrics.graphite.enabled` | `false` | See [Graphite](#graphite). |
 | `server.metrics.graphite.server` | `:2003` | A port without a host uses `server.default_listen_address`. |
