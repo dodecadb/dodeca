@@ -2215,8 +2215,8 @@ RULES`, `SHOW ROLES WITH AUTH RULES` and `SHOW AUTH RULE finance PRIVILEGES`
 show what the rules give, and `CALL dbms.showCurrentUser()` the roles a user
 has in a transaction; `SHOW USERS` shows only the roles granted to users.
 Roles that rules give cannot have `DENY` privileges. Without the setting,
-rules give nothing and property rules with tags are left out, which
-`debug.log` says.
+rules give nothing, and property rules with tags are left out, which
+`debug.log` says once.
 
 ### Moving roles from or to Neo4j Enterprise
 

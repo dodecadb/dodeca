@@ -5,7 +5,8 @@ Enterprise Edition, as one jar in Community's `lib/`:
 
 - many databases (`CREATE`, `DROP`, `START` and `STOP DATABASE`), local and
   remote database aliases, property existence, key and type constraints, user
-  status and home databases, and roles and privileges;
+  status, home databases and tags, roles and privileges, property-based access
+  control, and auth rules that give roles by users' tags;
 - clustering on Raft: replication with automatic failover, routing tables and
   server-side routing, writes on any member, servers and databases placed on
   them by their topologies, secondaries that pull transactions to serve
@@ -15,7 +16,7 @@ Enterprise Edition, as one jar in Community's `lib/`:
   Amazon S3, Google Cloud Storage and Azure Blob Storage for backups, dumps,
   seeds, imports and `LOAD CSV`;
 - metrics for Prometheus, JMX, CSV files and Graphite, the query log and the
-  security log;
+  security log, and TLS certificates reloaded while running;
 - incremental and resumable imports, `neo4j-admin database copy`, checkpoint
   policies with an I/O limit, and page cache warmup.
 

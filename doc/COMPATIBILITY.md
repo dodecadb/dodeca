@@ -406,8 +406,8 @@ abac.native.user_tags() TO regularUsers`.
 
 - **`dbms.security.abac.authorization_providers=native`** turns it on, as in
   Enterprise, where the setting is empty by default. Without it, auth rules
-  give no roles and property rules with tags are left out, which `debug.log`
-  says. DozenDB takes no other provider, as it has no OIDC; Enterprise's
+  give no roles, and property rules with tags are left out, which `debug.log`
+  says once. DozenDB takes no other provider, as it has no OIDC; Enterprise's
   `dbms.security.authorization_providers`, which must name `native` too, does
   not exist in DozenDB, whose only provider is native.
 - **Each transaction** starts with the roles granted to the user, and those
