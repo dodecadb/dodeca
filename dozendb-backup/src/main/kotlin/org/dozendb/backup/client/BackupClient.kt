@@ -80,9 +80,17 @@ internal class BackupClient(private val fs: FileSystemAbstraction, private val t
             Artifacts.readDifferential(input, readers, block)
         }
 
-    /** What [include] asks for of the users, roles and privileges of [database] on [server]. */
-    fun metadata(server: HostPort, database: String, include: MetadataScript.Include): String? =
-        fetch(server, Request.Metadata(database, include), BackupProtocol::readScript)
+    /**
+     * What [include] asks for of the users, roles and privileges of [database] on [server]; of the
+     * users, only [users] if given.
+     */
+    fun metadata(
+        server: HostPort,
+        database: String,
+        include: MetadataScript.Include,
+        users: List<String>? = null,
+    ): String? =
+        fetch(server, Request.Metadata(database, include, users), BackupProtocol::readScript)
 
     private companion object {
         // gRPC logs to java.util.logging, which a command prints; its INFO lines are noise there.

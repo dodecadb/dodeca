@@ -238,7 +238,13 @@ internal class BackupSource(
                 .databaseFacade()
                 .beginTx()
                 .use {
-                    MetadataScript.generate(it, request.database, request.include, log)
+                    MetadataScript.generate(
+                        it,
+                        request.database,
+                        request.include,
+                        log,
+                        request.users?.toSet(),
+                    )
                 }
         BackupProtocol.writeStatus(out, Status.OK)
         BackupProtocol.writeScript(out, script)

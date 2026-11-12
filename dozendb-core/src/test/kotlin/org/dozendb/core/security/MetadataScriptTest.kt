@@ -72,9 +72,13 @@ class MetadataScriptTest {
             .also { servers += it }
             .also { it.start() }
 
-    private fun script(include: Include, database: String = "films"): String? =
+    private fun script(
+        include: Include,
+        database: String = "films",
+        users: Set<String>? = null,
+    ): String? =
         source.database(SYSTEM).beginTx().use { tx ->
-            MetadataScript.generate(tx, database, include, NullLog.getInstance())
+            MetadataScript.generate(tx, database, include, NullLog.getInstance(), users)
         }
 
     private fun statements(script: String?): List<String> =
@@ -184,6 +188,10 @@ class MetadataScriptTest {
             .anyMatch { it.startsWith("CREATE USER `alice`") }
             .contains("GRANT ROLE `curator` TO `alice`")
         assertThat(script(Include.NONE)).isNull()
+        // Only the users listed, as --include-metadata=users=alice,dave asks: dave does not exist.
+        assertThat(statements(script(Include.USERS, users = setOf("alice", "dave"))))
+            .anyMatch { it.startsWith("CREATE USER `alice`") }
+            .noneMatch { it.startsWith("CREATE USER `carol`") || it.contains("`dave`") }
         assertThat(script(Include.ALL, SYSTEM)).isNull()
         assertThat(script(Include.ALL, "nothing")).isNull()
     }

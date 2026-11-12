@@ -58,8 +58,15 @@ internal object BackupProtocol {
          */
         data class Differential(val database: String, val after: Long, val checksum: Int) : Request
 
-        /** What [include] asks for of the users, roles and privileges of [database]. */
-        data class Metadata(val database: String, val include: MetadataScript.Include) : Request
+        /**
+         * What [include] asks for of the users, roles and privileges of [database]; of the users,
+         * only [users] if given.
+         */
+        data class Metadata(
+            val database: String,
+            val include: MetadataScript.Include,
+            val users: kotlin.collections.List<String>? = null,
+        ) : Request
     }
 
     /** A full copy's metadata: when the server took it, and which server. */
@@ -91,9 +98,14 @@ internal object BackupProtocol {
                 out.writeInt(request.checksum)
             }
             is Request.Metadata -> {
-                out.writeByte(KIND_METADATA)
+                // A kind of its own with users, which older servers refuse rather than ignore.
+                out.writeByte(if (request.users == null) KIND_METADATA else KIND_METADATA_USERS)
                 out.writeUTF(request.database)
                 out.writeUTF(request.include.name)
+                request.users?.let { users ->
+                    out.writeInt(users.size)
+                    users.forEach(out::writeUTF)
+                }
             }
         }
     }
@@ -109,13 +121,16 @@ internal object BackupProtocol {
                 KIND_FULL -> Request.Full(input.readUTF())
                 KIND_DIFFERENTIAL ->
                     Request.Differential(input.readUTF(), input.readLong(), input.readInt())
-                KIND_METADATA ->
+                KIND_METADATA,
+                KIND_METADATA_USERS ->
                     Request.Metadata(
                         input.readUTF(),
                         input.readUTF().let { include ->
                             MetadataScript.Include.entries.find { it.name == include }
                                 ?: throw IOException("unknown metadata $include")
                         },
+                        if (kind == KIND_METADATA) null
+                        else kotlin.collections.List(input.readInt()) { input.readUTF() },
                     )
                 else -> throw IOException("unknown backup request $kind")
             }
@@ -217,6 +232,7 @@ internal object BackupProtocol {
     private const val KIND_FULL = 2
     private const val KIND_DIFFERENTIAL = 3
     private const val KIND_METADATA = 4
+    private const val KIND_METADATA_USERS = 5
 
     private fun bytes(write: (DataOutputStream) -> Unit): ByteArray {
         val buffer = ByteArrayOutputStream()

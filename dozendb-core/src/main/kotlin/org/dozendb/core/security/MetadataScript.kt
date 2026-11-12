@@ -37,9 +37,16 @@ object MetadataScript {
     /**
      * The script for [database], as the system graph in [tx] has it, or null for none: nothing was
      * asked for, the database is `system` or there is no such database. The default database that
-     * the system graph names is the home of users without their own.
+     * the system graph names is the home of users without their own. [users], if given, are the
+     * only users it may hold, as `--include-metadata=users=alice,bob` asks.
      */
-    fun generate(tx: Transaction, database: String, include: Include, log: InternalLog): String? {
+    fun generate(
+        tx: Transaction,
+        database: String,
+        include: Include,
+        log: InternalLog,
+        users: Set<String>? = null,
+    ): String? {
         val name = NormalizedDatabaseName(database).name()
         if (include == Include.NONE || name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
             return null
@@ -94,7 +101,8 @@ object MetadataScript {
             }
         }
         if (include.users) {
-            for (user in users(tx).sortedBy { it.name }) {
+            for (user in
+                users(tx).filter { users == null || it.name in users }.sortedBy { it.name }) {
                 val record = graph.users[user.name] ?: continue
                 val home =
                     graph.databaseId(NormalizedDatabaseName(record.home ?: defaultDatabase).name())

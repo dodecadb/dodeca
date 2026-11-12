@@ -122,7 +122,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
 
     @Option(
         names = ["--include-metadata"],
-        paramLabel = "none|all|users|roles",
+        paramLabel = "none|all|users[=user1,user2]|roles",
         defaultValue = "all",
         showDefaultValue = ALWAYS,
         converter = [IncludeConverter::class],
@@ -132,19 +132,36 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     "roles and privileges, which a restore writes to " +
                     "data/scripts/<database>/restore_metadata.cypher. roles: the roles with " +
                     "privileges on the database or every database, and those privileges. users: " +
-                    "the users who can access the database, and their roles among those. all: " +
-                    "both. none: nothing. Never for the system database."
+                    "the users who can access the database, and their roles among those; " +
+                    "users=alice,bob: only those of them. all: both roles and users. none: " +
+                    "nothing. Never for the system database."
             ],
     )
-    private var includeMetadata = MetadataScript.Include.ALL
+    private var includeMetadata = IncludeMetadata(MetadataScript.Include.ALL)
 
-    /** `none|all|users|roles`, as Enterprise writes them. */
-    class IncludeConverter : CommandLine.ITypeConverter<MetadataScript.Include> {
-        override fun convert(value: String): MetadataScript.Include =
-            MetadataScript.Include.entries.find { it.name.equals(value, ignoreCase = true) }
+    /** What --include-metadata asks for: what to [include], and of the users only [users]. */
+    data class IncludeMetadata(
+        val include: MetadataScript.Include,
+        val users: List<String>? = null,
+    )
+
+    /** `none|all|users[=user1,user2]|roles`, as Enterprise writes them. */
+    class IncludeConverter : CommandLine.ITypeConverter<IncludeMetadata> {
+        override fun convert(value: String): IncludeMetadata {
+            val users = MetadataScript.Include.USERS.name
+            if (value.startsWith("$users=", ignoreCase = true)) {
+                val names = value.substringAfter('=').split(',').map { it.trim() }
+                if (names.none { it.isEmpty() }) {
+                    return IncludeMetadata(MetadataScript.Include.USERS, names.distinct())
+                }
+            }
+            return MetadataScript.Include.entries
+                .find { it.name.equals(value, ignoreCase = true) }
+                ?.let(::IncludeMetadata)
                 ?: throw CommandLine.TypeConversionException(
-                    "'$value' is not one of none, all, users and roles"
+                    "'$value' is not one of none, all, users, users=<user>[,<user>...] and roles"
                 )
+        }
     }
 
     @Option(
@@ -395,8 +412,8 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
      */
     private fun metadata(name: String, client: BackupClient, server: HostPort): String? {
         if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) return null
-        if (includeMetadata == MetadataScript.Include.NONE) return null
-        return client.metadata(server, name, includeMetadata)
+        if (includeMetadata.include == MetadataScript.Include.NONE) return null
+        return client.metadata(server, name, includeMetadata.include, includeMetadata.users)
     }
 
     private fun differential(

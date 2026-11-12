@@ -137,11 +137,14 @@ class BackupCommandTest {
         source.administer("GRANT MATCH {*} ON GRAPH neo4j TO curator")
         source.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
         source.administer("GRANT ROLE curator TO alice")
+        source.administer("CREATE USER bob SET PASSWORD 'bob-secret-1' CHANGE NOT REQUIRED")
+        source.administer("GRANT ROLE curator TO bob")
 
         for (arguments in
             listOf(
                 arrayOf("--type=FULL"),
                 arrayOf("--include-metadata=roles"),
+                arrayOf("--include-metadata=users=alice"),
                 arrayOf("--include-metadata=none"),
                 arrayOf("system"),
             )) {
@@ -150,7 +153,7 @@ class BackupCommandTest {
             val result = backup(source, *arguments)
             assertThat(result.exitCode).describedAs(result.toString()).isZero
         }
-        val (all, roles, none) = artifacts()
+        val (all, roles, alice, none) = artifacts()
 
         assertThat(all.header.metadataScript)
             .contains(
@@ -162,18 +165,23 @@ class BackupCommandTest {
         assertThat(roles.header.metadataScript)
             .contains("CREATE ROLE `curator` IF NOT EXISTS;\n")
             .doesNotContain("CREATE USER")
+        assertThat(alice.header.metadataScript)
+            .contains("GRANT ROLE `curator` TO `alice`;\n")
+            .doesNotContain("CREATE ROLE", "`bob`")
         assertThat(none.header.metadataScript).isNull()
         assertThat(artifacts("system").single().header.metadataScript).isNull()
         assertThat(backup(source, "--include-metadata=some").err)
-            .contains("'some' is not one of none, all, users and roles")
+            .contains("'some' is not one of none, all, users, users=<user>[,<user>...] and roles")
+        assertThat(backup(source, "--include-metadata=users=").err)
+            .contains("'users=' is not one of none, all, users, users=<user>[,<user>...] and roles")
 
-        // The restore of the chain writes out the latest metadata it holds, that of roles.
+        // The restore of the chain writes out the latest metadata it holds, alice's.
         val home = Files.createDirectories(root.resolve("restored"))
         val restore = Admin.run(home, ::RestoreCommand, "--from-path=${none.path}")
         val script = home.resolve("data/scripts/neo4j/restore_metadata.cypher")
 
         assertThat(restore.exitCode).describedAs(restore.toString()).isZero
-        assertThat(Files.readString(script)).isEqualTo(roles.header.metadataScript)
+        assertThat(Files.readString(script)).isEqualTo(alice.header.metadataScript)
         assertThat(restore.out)
             .contains(
                 "Wrote the users, roles and privileges of database 'neo4j' to $script.",

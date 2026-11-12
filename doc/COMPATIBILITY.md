@@ -884,8 +884,7 @@ not promised. The differences:
 - Not supported: `--parallel-recovery` and `--inspect-path` of `backup`, and
   the options Enterprise added since 2025.01: `--prefer-diff-as-parent`,
   `--remote-address-resolution`, `--parallel-download`, `--skip-recovery`,
-  `--skip-empty-diffs` and `--split-archive-part-size` of `backup`, and a list
-  of users in `--include-metadata=users=...`; nor
+  `--skip-empty-diffs` and `--split-archive-part-size` of `backup`; nor
   `server.backup.advertised_address`.
   `server.split_archive.part_size`, which Neo4j Community declares, does not
   split backups.
