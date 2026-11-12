@@ -110,6 +110,7 @@ import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
 import org.neo4j.dbms.api.DatabaseAliasExistsException
 import org.neo4j.dbms.api.DatabaseLimitReachedException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
+import org.neo4j.dbms.database.DefaultSystemGraphComponent
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseAccess
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseStatus
@@ -395,12 +396,13 @@ private class DatabaseCommands(
                     "${kind.lowercase()} are not supported."
             }
         }
-        if (plan.defaultLanguageVersion().isDefined) {
-            return failure(source, "DEFAULT LANGUAGE") {
-                "Failed to create the specified database '${show(databaseName, it)}': " +
-                    "a default language of its own is not supported."
-            }
-        }
+        // Without a language of its own, the database keeps the DBMS default it was created with,
+        // as Neo4j Enterprise documents: a later change of the setting does not change it.
+        val language =
+            plan.defaultLanguageVersion().valueOrNull()
+                ?: DefaultSystemGraphComponent.cypherVersionFromConfig(
+                    config.get(GraphDatabaseSettings.default_language)
+                )
         val name = admin.getNameFields("databaseName", databaseName, Function1(::validName))
         val key = parameter(name.nameKey())
         val free =
@@ -473,6 +475,7 @@ private class DatabaseCommands(
             SET database.access = 'READ_WRITE',
                 database.created_at = datetime(),
                 database.default = false,
+                database.${TopologyGraphDbmsModel.DATABASE_DEFAULT_LANGUAGE_PROPERTY} = ${'$'}language,
                 database.name = $key,
                 database.status = ${'$'}status,
                 database.uuid = randomUUID(),
@@ -497,9 +500,10 @@ private class DatabaseCommands(
             """
                 .trimIndent(),
             VirtualValues.map(
-                arrayOf(name.nameKey(), "namespace", "status"),
+                arrayOf(name.nameKey(), "language", "namespace", "status"),
                 arrayOf(
                     name.nameValue(),
+                    Values.utf8Value(language.persistedValue),
                     Values.utf8Value(TopologyGraphDbmsModel.DEFAULT_NAMESPACE),
                     Values.utf8Value(DatabaseStatus.ONLINE.statusName()),
                 ),
@@ -525,8 +529,9 @@ private class DatabaseCommands(
 
     /**
      * ALTER DATABASE: SET TOPOLOGY places the database on as many primaries as asked for (see
-     * [DatabasePlacement]), SET ACCESS makes it read-only or read-write. Options, such as
-     * `txLogEnrichment` for change data capture, are refused.
+     * [DatabasePlacement]), SET ACCESS makes it read-only or read-write, SET DEFAULT LANGUAGE sets
+     * the Cypher version its queries run in without a prefix. Options, such as `txLogEnrichment`
+     * for change data capture, are refused.
      */
     private fun alterDatabase(
         plan: AlterDatabase,
@@ -538,12 +543,6 @@ private class DatabaseCommands(
             return failure(source, "ALTER DATABASE options") {
                 "Failed to alter the specified database '${show(databaseName, it)}': options " +
                     "are not supported."
-            }
-        }
-        if (plan.defaultLanguageVersion().isDefined) {
-            return failure(source, "SET DEFAULT LANGUAGE") {
-                "Failed to alter the specified database '${show(databaseName, it)}': a default " +
-                    "language of its own is not supported."
             }
         }
         if (plan.replicas().isDefined) {
@@ -596,13 +595,19 @@ private class DatabaseCommands(
             """
             ${database(parameter(name.displayNameKey()))}
             SET database.access = coalesce(${'$'}access, database.access),
+                database.${TopologyGraphDbmsModel.DATABASE_DEFAULT_LANGUAGE_PROPERTY} =
+                    coalesce(${'$'}language, database.${TopologyGraphDbmsModel.DATABASE_DEFAULT_LANGUAGE_PROPERTY}),
                 database.updated_at = datetime()
             RETURN database.name AS name
             """
                 .trimIndent(),
             VirtualValues.map(
-                name.keys() + "access",
-                name.values() + (access?.let { Values.utf8Value(it.name) } ?: Values.NO_VALUE),
+                name.keys() + "access" + "language",
+                name.values() +
+                    (access?.let { Values.utf8Value(it.name) } ?: Values.NO_VALUE) +
+                    (plan.defaultLanguageVersion().valueOrNull()?.let {
+                        Values.utf8Value(it.persistedValue)
+                    } ?: Values.NO_VALUE),
             ),
             QueryHandler.handleNoResult(notFound("alter", databaseName))
                 .handleError(errors("ALTER DATABASE", "alter", databaseName)),
