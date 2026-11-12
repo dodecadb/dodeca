@@ -9,8 +9,9 @@ that documentation alone, Enterprise's operations manual and Cypher manual, so
 "as in Enterprise" means as the documentation describes. "Neo4j Community"
 means Neo4j Community Edition of the pinned version without DozenDB.
 
-Neo4j 2026 runs queries in Cypher 5 or Cypher 25, as `db.query.default_language`
-or a `CYPHER 5` or `CYPHER 25` prefix chooses. Where Enterprise answers
+Neo4j 2026 runs queries in Cypher 5 or Cypher 25, as a `CYPHER 5` or `CYPHER 25`
+prefix chooses, or else the database's default version (see
+[Databases](#databases)). Where Enterprise answers
 differently in the two, the sections below say what DozenDB does.
 
 ## Pinned versions
@@ -41,7 +42,7 @@ end its own way.
 |---|---|---|
 | Many databases: `CREATE`, `DROP`, `START` and `STOP DATABASE`, `WAIT` | Same, with differences | [Databases](#databases) |
 | Creating a database from a seed | Same, with differences | [Databases](#databases) |
-| Default Cypher versions of databases and aliases (`DEFAULT LANGUAGE`) | Not supported | [Not supported](#not-supported) |
+| Default Cypher versions of databases and aliases (`DEFAULT LANGUAGE`) | Same | [Databases](#databases) |
 | Composite databases | Not supported | [Not supported](#not-supported) |
 | Replica databases (cross-cluster database replication) | Not supported | [Not supported](#not-supported) |
 | Sharded property databases | Not supported | [Not supported](#not-supported) |
@@ -121,8 +122,7 @@ places the database on servers (see [Servers](#servers)), and
   Given both, the command fails.
 - **Not supported:** `CREATE COMPOSITE DATABASE`, `CREATE REPLICA DATABASE`,
   `ALTER DATABASE ... SET REPLICAS`, `DROP DATABASE ... DUMP DATA`,
-  `ALTER DATABASE ... SET OPTION`, `DEFAULT LANGUAGE` of `CREATE DATABASE` and
-  `SET DEFAULT LANGUAGE` of `ALTER DATABASE`, and `CREATE DATABASE ... OPTIONS`
+  `ALTER DATABASE ... SET OPTION`, and `CREATE DATABASE ... OPTIONS`
   with an option other than `existingData`, `seedURI`, `storeFormat` and,
   with clustering, `existingDataSeedServer` or `existingDataSeedInstance`:
   `seedConfig`, `seedCredentials`, `seedRestoreUntil`, `seedSourceDatabase`,
@@ -147,6 +147,15 @@ places the database on servers (see [Servers](#servers)), and
   `03N85` caught up, `01N80` failed, `01N81` still catching up when the time
   limit passed, and `01N82` not available, for a server that could not be
   asked. They name the server as `SHOW SERVERS` does.
+- **The default Cypher version** of a database is the version its queries run
+  in without a `CYPHER 5` or `CYPHER 25` prefix, as in Enterprise:
+  `CREATE [OR REPLACE] DATABASE ... DEFAULT LANGUAGE CYPHER 25` (`SET DEFAULT
+  LANGUAGE` in Cypher 25) gives it, and `ALTER DATABASE ... SET DEFAULT
+  LANGUAGE`, on `system` too, changes it. A database created without one
+  keeps `db.query.default_language` as it was then: changing the setting
+  changes no database that exists. `SHOW DATABASES ... YIELD defaultLanguage`
+  shows it. Every server runs queries in the new version a moment after it
+  has the change, as Enterprise documents ("expect a short delay").
 - **Creating a database from a seed**, `CREATE DATABASE ... OPTIONS
   {existingData: 'use', seedURI: '...'}`, works as in Enterprise with a dump or
   a full backup as the seed, from a file, a URL or cloud storage (see [Cloud
@@ -298,6 +307,14 @@ or code gives them.
   `AS COMMANDS`. `SHOW SUPPORTED PRIVILEGES` gives the documented rows
   verbatim and describes the others in DozenDB's words. `DROP ROLE` removes
   the role from its users.
+- **`ALTER DATABASE`, `SET DATABASE ACCESS` and `SET DATABASE DEFAULT
+  LANGUAGE`** are granted on the DBMS, and in Cypher 25 also on databases and
+  the home database, as in Enterprise 2025.08; `ALL DATABASE PRIVILEGES` does
+  not include them. Granted on a database, `ALTER DATABASE` and `SET DATABASE
+  ACCESS` show it in `SHOW DATABASES`, as on the DBMS they show every
+  database; `SET DATABASE DEFAULT LANGUAGE` shows none. Neo4j keeps them on
+  the DBMS as on every database, so `AS COMMANDS` gives them `ON DBMS` in
+  Cypher 5 and `ON DATABASE *` in Cypher 25.
 - **`SHOW ... PRIVILEGES AS [REVOKE] COMMANDS`** in Cypher 25 has
   Enterprise's columns `command`, `access`, `action`, `roles` and `immutable`,
   and `users` for the privileges of users: each command once, with the roles
@@ -343,8 +360,12 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
   DozenDB creates no aliases with `OIDC CREDENTIAL FORWARDING`, which fails
   (see [Not supported](#not-supported)); it shows that value only for such an
   alias in a store from Enterprise.
-- **`DEFAULT LANGUAGE`** and `SET DEFAULT LANGUAGE` of remote aliases fail,
-  as they do for databases.
+- **`DEFAULT LANGUAGE`** of `CREATE ALIAS ... AT` and `ALTER ALIAS ... SET
+  DATABASE DEFAULT LANGUAGE` give a remote alias its default Cypher version,
+  as for databases (see [Databases](#databases)): queries through the alias
+  are parsed in it here and sent to the other DBMS with it.
+  `SHOW ALIASES ... YIELD defaultLanguage` shows it. A local alias has none:
+  its queries run in its database's.
 - **Database commands given a local alias**, `START`, `STOP`,
   `DROP DATABASE` and `WAIT`, act on its database, as the documentation's
   "in all other Cypher commands in place of the target database" suggests;
@@ -856,7 +877,10 @@ not promised. The differences:
   aggregate-backup` since 2025.01, does not exist: DozenDB has
   `aggregate-backup` only.
 - The script that `--include-metadata` keeps, and `restore` writes to
-  `data/scripts/<database>/restore_metadata.cypher`, is DozenDB's own.
+  `data/scripts/<database>/restore_metadata.cypher`, is DozenDB's own. It
+  leaves out `ALTER DATABASE`, `SET DATABASE ACCESS` and `SET DATABASE
+  DEFAULT LANGUAGE` on the DBMS, as other privileges on the DBMS, and starts
+  those on the database, which only Cypher 25 grants, with `CYPHER 25`.
 - `neo4j-admin backup inspect` without `--show-metadata` lists only the files,
   as Enterprise did before 2025.07; Enterprise now shows the metadata always
   and ignores `--show-metadata`. DozenDB has no `RECOVERED` column
@@ -1302,9 +1326,6 @@ error, and their procedures do not exist.
 - **Composite databases.** `CREATE COMPOSITE DATABASE` and the other commands
   for composite databases fail. A dotted name is a name of its own (see
   [Database aliases](#database-aliases)).
-- **Default Cypher versions of databases and aliases**: `DEFAULT LANGUAGE`
-  and `SET DEFAULT LANGUAGE` of databases and remote aliases fail. Queries
-  use `db.query.default_language` or the version they ask for.
 - **Replica databases**, Enterprise's replication of databases between
   clusters: `CREATE REPLICA DATABASE` and `ALTER DATABASE ... SET REPLICAS`
   fail, and `dbms.promoteReplicaDatabase` does not exist.

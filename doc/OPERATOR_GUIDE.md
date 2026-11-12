@@ -15,6 +15,7 @@ Enterprise.
 - [Linearizable reads](#linearizable-reads)
 - [Where databases are led](#where-databases-are-led)
 - [Changing the default database](#changing-the-default-database)
+- [Moving databases to Cypher 25](#moving-databases-to-cypher-25)
 - [Upgrading DozenDB](#upgrading-dozendb)
 - [Backup and restore](#backup-and-restore)
 - [Importing and copying databases](#importing-and-copying-databases)
@@ -1267,6 +1268,24 @@ With clustering, the call changes the system graph on the leader of `system`,
 and every member follows it; on a follower it fails with
 `Neo.ClientError.Cluster.NotALeader`, which routing drivers retry on the
 leader.
+
+## Moving databases to Cypher 25
+
+Each database has a default Cypher version, which its queries run in without
+a `CYPHER 5` or `CYPHER 25` prefix. A database gets `db.query.default_language`
+when it is created, and keeps it: changing the setting later moves no
+database. To move one, as an administrator on `system`:
+
+```cypher
+ALTER DATABASE films SET DEFAULT LANGUAGE CYPHER 25
+```
+
+`SHOW DATABASES YIELD name, defaultLanguage` shows each database's. Servers
+pick the change up a moment later, and transactions that already ran a query
+keep their version. A remote alias has its own, which `ALTER ALIAS ... SET
+DATABASE DEFAULT LANGUAGE` changes; a local alias runs in its database's.
+`GRANT SET DATABASE DEFAULT LANGUAGE ON DBMS` lets a role change databases'
+versions without other database privileges.
 
 ## Upgrading DozenDB
 
