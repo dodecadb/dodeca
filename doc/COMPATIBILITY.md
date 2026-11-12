@@ -870,8 +870,8 @@ message that names the `priority_tag` setting replacing them.
 Backups and restores use Enterprise's commands, options and settings:
 `neo4j-admin database backup` and `restore`, `neo4j-admin backup aggregate`
 and `inspect`, `neo4j-admin database check --from-path`,
-`server.backup.enabled`, `server.backup.listen_address` and
-`dbms.ssl.policy.backup.*`. They work alike on standalone servers and cluster
+`server.backup.enabled`, `server.backup.listen_address`,
+`server.backup.advertised_address` and `dbms.ssl.policy.backup.*`. They work alike on standalone servers and cluster
 members; see [`OPERATOR_GUIDE.md`, "Backup and
 restore"](OPERATOR_GUIDE.md#backup-and-restore). A backup artifact is a file of
 DozenDB's own format, which Neo4j Community's `neo4j-admin database load` also
@@ -882,8 +882,10 @@ not promised. The differences:
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
   them where they are, as it restores them, and never needs `--temp-path`.
 - Not supported: the options Enterprise added to `backup` since 2025.01
-  `--remote-address-resolution`, `--parallel-download` and
-  `--split-archive-part-size`; nor `server.backup.advertised_address`.
+  `--parallel-download` and `--split-archive-part-size`.
+- `server.backup.advertised_address`, which Enterprise's backup pages do not
+  describe, defaults to the host of `server.default_advertised_address` and
+  the port of `server.backup.listen_address`.
 - `--parallel-recovery` of `backup`, experimental in Enterprise, is accepted
   and changes nothing. `--inspect-path` lists the backups with their
   metadata, as `neo4j-admin backup inspect --show-metadata` does.

@@ -3,6 +3,7 @@ package org.dozendb.backup.source
 import org.dozendb.backup.BackupProtocol
 import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.seed.StoreSeeder
+import org.dozendb.core.edition.BackupSources
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.LatestWrites
 import org.neo4j.configuration.Config
@@ -40,6 +41,9 @@ class BackupExtensionFactory :
 
         /** Provided by DozenDB's editions only. */
         fun latestWrites(): LatestWrites
+
+        /** Provided by DozenDB's editions only. */
+        fun backupSources(): BackupSources
 
         fun databaseContextProvider(): DatabaseContextProvider<*>
 
@@ -90,6 +94,7 @@ class BackupExtensionFactory :
                 fs,
                 dependencies.serverIdentity().serverId().uuid().toString(),
                 logProvider,
+                sources = dependencies::backupSources,
             )
         val listener =
             BackupListener(

@@ -31,6 +31,13 @@ object MemberMetadata {
     const val HTTPS_ADDRESS = "dozendb.httpsAddress"
 
     /**
+     * The member's advertised backup address, `server.backup.advertised_address`, for backups with
+     * `--remote-address-resolution`; absent while it serves no backups, and from members of
+     * versions before it.
+     */
+    const val BACKUP_ADDRESS = "dozendb.backupAddress"
+
+    /**
      * The member's `initial.server.tags`, separated by commas, which tags cannot contain: the tags
      * its server record takes when it is enabled.
      */

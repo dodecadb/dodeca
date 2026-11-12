@@ -18,6 +18,7 @@ import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.CommunityServer
 import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestPorts
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.pagecache.PageCacheWarmup
 import org.junit.jupiter.api.AfterEach
@@ -480,6 +481,44 @@ class BackupCommandTest {
             .contains("Could not back up database 'neo4j' from $unused: UNAVAILABLE")
             .contains("Every database was backed up, but some servers failed, as reported above")
         assertThat(artifacts()).hasSize(1)
+    }
+
+    @Test
+    fun `with --remote-address-resolution, backs up from the address the server advertises`() {
+        val source = source().apply { start() }
+
+        val result = backup(source, "--remote-address-resolution")
+
+        assertThat(result.exitCode).describedAs(result.toString()).isZero
+        val advertised = "localhost:${source.backupPort}"
+        assertThat(result.out)
+            .contains(
+                "Backing up database 'neo4j' from the servers that host it, as " +
+                    "127.0.0.1:${source.backupPort} resolved them: $advertised."
+            )
+            .contains("Backed up database 'neo4j' from $advertised to")
+        assertThat(artifacts()).hasSize(1)
+    }
+
+    @Test
+    fun `with --remote-address-resolution, the advertised address is the one tried`() {
+        val unused = TestPorts.free()
+        val source =
+            source(DozenDbSettings.backupAdvertisedAddress to SocketAddress("127.0.0.1", unused))
+                .apply { start() }
+
+        val result = backup(source, "--remote-address-resolution", "neo4j", "nope")
+
+        assertThat(result.exitCode).isEqualTo(1)
+        assertThat(result.err)
+            .contains("Could not back up database 'neo4j' from 127.0.0.1:$unused: UNAVAILABLE")
+            .contains(
+                "Could not resolve the servers of database 'nope' through " +
+                    "127.0.0.1:${source.backupPort}: there is no database 'nope'"
+            )
+            .contains("Could not back up database 'nope': no server resolved its servers")
+            .contains("Backup failed for databases: 'neo4j', 'nope'")
+        assertThat(artifacts()).isEmpty()
     }
 
     @Test

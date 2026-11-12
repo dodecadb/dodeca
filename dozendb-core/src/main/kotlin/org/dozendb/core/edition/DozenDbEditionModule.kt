@@ -302,6 +302,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         seedServers()?.let { globalModule.globalDependencies.satisfyDependency(it) }
         // For the server commands.
         globalModule.globalDependencies.satisfyDependency(servers())
+        // For backups with --remote-address-resolution.
+        globalModule.globalDependencies.satisfyDependency(backupSources())
         // For the database commands.
         globalModule.globalDependencies.satisfyDependency(placement())
         return repository
@@ -394,6 +396,22 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         val bound =
             globalModule.connectorPortRegister.getLocalAddress(ConnectorType.BOLT) ?: return null
         return SocketAddress(advertised.hostname, bound.port)
+    }
+
+    /**
+     * This server's advertised backup address, `server.backup.advertised_address` with the bound
+     * port of `server.backup.listen_address` for port 0; null while it serves no backups.
+     */
+    protected fun backupAddress(): SocketAddress? {
+        val bound =
+            globalModule.connectorPortRegister.getLocalAddress(ConnectorType.BACKUP) ?: return null
+        val advertised = globalModule.globalConfig.get(DozenDbSettings.backupAdvertisedAddress)
+        return SocketAddress(advertised.hostname, advertised.port.takeIf { it > 0 } ?: bound.port)
+    }
+
+    /** The servers that serve backups of a database: without clustering, this one. */
+    protected open fun backupSources(): BackupSources = BackupSources {
+        listOfNotNull(backupAddress()?.toString())
     }
 
     /** This server's advertised HTTP address, with the bound port if the configured one is 0. */

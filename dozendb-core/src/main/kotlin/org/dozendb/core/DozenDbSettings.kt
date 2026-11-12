@@ -10,10 +10,12 @@ import org.neo4j.configuration.SettingValueParsers.BOOL
 import org.neo4j.configuration.SettingValueParsers.INT
 import org.neo4j.configuration.SettingValueParsers.PATH
 import org.neo4j.configuration.SettingValueParsers.SECURE_STRING
+import org.neo4j.configuration.SettingValueParsers.SOCKET_ADDRESS
 import org.neo4j.configuration.SettingValueParsers.STRING
 import org.neo4j.configuration.SettingValueParsers.listOf
 import org.neo4j.configuration.SettingValueParsers.ofEnum
 import org.neo4j.configuration.SettingsDeclaration
+import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.string.SecureString
@@ -31,6 +33,19 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val maxDatabases: Setting<Int> =
             newBuilder("dbms.max_databases", INT, 100).addConstraint(min(2)).dynamic().build()
+
+        @JvmField
+        @field:Description(
+            "The address backup clients reach this server's backups on, which neo4j-admin " +
+                "database backup --remote-address-resolution backs up from. A port without a " +
+                "host uses server.default_advertised_address; port 0, the default, the port of " +
+                "server.backup.listen_address. Named like Neo4j Enterprise's setting."
+        )
+        val backupAdvertisedAddress: Setting<SocketAddress> =
+            newBuilder("server.backup.advertised_address", SOCKET_ADDRESS, SocketAddress(0))
+                .setDependency(GraphDatabaseSettings.default_advertised_address)
+                .immutable()
+                .build()
 
         @JvmField
         @field:Description(

@@ -129,6 +129,13 @@ class MemberDirectory(
     }
 
     /**
+     * The advertised backup address of [member]: this member's as it is now, another's as it last
+     * reported it; null if it serves no backups, or has not reported.
+     */
+    fun backupAddress(member: MemberId): HostPort? =
+        reported(member)?.get(MemberMetadata.BACKUP_ADDRESS)?.let { parsed(it) }
+
+    /**
      * What [member] reported when it last answered, such as its versions, or what this member
      * reports now; see [MemberMetadata].
      */

@@ -216,7 +216,7 @@ docker compose exec core1 cypher-shell -u neo4j -p change-this-password \
 | 7473 | `server.https.listen_address` | The same, over HTTPS, when `server.https.enabled` is set. |
 | 7700 | `server.dozendb.cluster.listen_address` | The other members: Raft, membership, probes, database copies, and secondaries' pulls. |
 | 7688 | `server.routing.listen_address` | The other members, with TLS between them: writes they forward (see [Writes on any member](#writes-on-any-member)). |
-| 6362 | `server.backup.listen_address` | `neo4j-admin database backup`; only from the server's own host by default (see [Serving backups](#serving-backups)). |
+| 6362 | `server.backup.listen_address` | `neo4j-admin database backup`, at `server.backup.advertised_address` with `--remote-address-resolution`; only from the server's own host by default (see [Serving backups](#serving-backups)). |
 | 2004 | `server.metrics.prometheus.endpoint` | Prometheus, when enabled; only from the server's own host by default (see [Metrics](#metrics)). |
 
 Members also connect out: to Graphite (2003) when it is enabled, to cloud
@@ -1354,6 +1354,12 @@ sends one, it waits until it holds every write that the cluster acknowledged
 when the backup started, so a backup from a follower is as recent as one from
 the leader.
 
+`server.backup.advertised_address` is the address that clients reach the
+backup port on, which servers give `--remote-address-resolution` (see
+[Taking backups](#taking-backups)). A port alone, such as `:6362`, takes the
+host of `server.default_advertised_address`; the default takes that host and
+the port the server listens on.
+
 The backup port has no user authentication: whoever reaches it can copy every
 database. A server serves backups on an address other than a loopback one only
 once `dbms.ssl.policy.backup.enabled` is set explicitly:
@@ -1383,6 +1389,12 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   `neo4j`. `"*"` backs up every database, `system` included.
 - `--from` lists servers, tried in order until one serves the backup of a
   database: name several members of a cluster.
+- `--remote-address-resolution` backs up each database from the servers that
+  host it instead, which the first server of `--from` that answers names by
+  their `server.backup.advertised_address`: the database's secondaries first,
+  then the primaries that do not lead it, then its leader, so that backups
+  load the leader last. A database that no server hosting it serves backups
+  of fails.
 - `--type=AUTO`, the default, takes a differential backup if `--to-path`
   holds a backup of the database to continue, and a full one otherwise.
   `DIFF` and `AUTO` take a full backup instead when the server no longer holds
@@ -1406,8 +1418,9 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   sent it, which is faster; restoring, seeding, checking or aggregating the
   backup recovers it then.
 - A full backup's copy of the database is otherwise recovered and checked
-  before it is kept, in `--temp-path` (default: `--to-path`, which must be local then) with
-  a page cache of `--pagecache`: it needs room for the database.
+  before it is kept, in `--temp-path` (default: `--to-path`, which must be
+  local then) with a page cache of `--pagecache`: it needs room for the
+  database.
   `--keep-failed=true` keeps the copy of a failed full backup there.
 - `--compress` (default `true`) compresses the artifacts.
 - `--include-metadata=all` (the default) keeps with each backup the Cypher that

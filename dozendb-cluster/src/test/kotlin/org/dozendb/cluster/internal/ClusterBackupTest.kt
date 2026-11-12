@@ -19,6 +19,7 @@ import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.cli.BackupCommand
 import org.dozendb.backup.cli.RestoreCommand
 import org.dozendb.core.DozenDbSettings
+import org.dozendb.core.edition.BackupSources
 import org.dozendb.core.edition.LatestWrites
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -280,6 +281,49 @@ class ClusterBackupTest {
         val (max, count) = restored(backup(secondary, "--type=FULL"))
         assertThat(count).isEqualTo(100)
         assertThat(max).isEqualTo(99)
+    }
+
+    @Test
+    fun `with --remote-address-resolution, backs up from a secondary, then followers, then the leader`() {
+        val cluster =
+            ClusterHarness(root, 3, settings = mapOf(ClusterSettings.defaultSecondaries to 1))
+                .also { harness = it }
+        val secondary = cluster.members[2]
+        secondary.settings =
+            mapOf(DozenDbSettings.initialServerModeConstraint to InstanceModeConstraint.SECONDARY)
+        cluster.start()
+        val primaries = cluster.members - secondary
+        val through = primaries.first()
+        val sources =
+            through.database(SYSTEM).dependencyResolver.resolveDependency(BackupSources::class.java)
+        fun address(member: ClusterHarness.Member) = "localhost:${member.backupPort()}"
+        // Once the server asked knows the secondary hosts the database.
+        await withPollInterval
+            Duration.ofMillis(100) atMost
+            ClusterHarness.AWAIT untilAsserted
+            {
+                val leader = cluster.awaitLeader { primaries }
+                assertThat(sources.of("neo4j"))
+                    .containsExactly(
+                        address(secondary),
+                        address(primaries.single { it != leader }),
+                        address(leader),
+                    )
+            }
+
+        val result =
+            admin(
+                Files.createDirectories(root.resolve("client")),
+                ::BackupCommand,
+                "--from=127.0.0.1:${through.backupPort()}",
+                "--to-path=$backups",
+                "--remote-address-resolution",
+            )
+
+        assertThat(result.exitCode).describedAs(result.toString()).isZero
+        assertThat(result.out)
+            .contains("resolved them: ${address(secondary)}, ")
+            .contains("Backed up database 'neo4j' from ${address(secondary)} to")
     }
 
     @Test

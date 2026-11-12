@@ -241,6 +241,7 @@ class StandaloneIT {
                 "dbms.integrations.cloud_storage.azb.authority_endpoint",
                 "server.backup.enabled",
                 "server.backup.listen_address",
+                "server.backup.advertised_address",
                 "dbms.dozendb.cluster.enabled",
                 "dbms.dozendb.cluster.initial_members",
                 "dbms.dozendb.cluster.election_timeout_min",

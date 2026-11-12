@@ -81,6 +81,13 @@ internal class BackupClient(private val fs: FileSystemAbstraction, private val t
         }
 
     /**
+     * The backup addresses of the servers that serve backups of [database], in the order to try
+     * them, as [server] knows them.
+     */
+    fun sources(server: HostPort, database: String): List<HostPort> =
+        fetch(server, Request.Sources(database), BackupProtocol::readNames).map(HostPort::parse)
+
+    /**
      * What [include] asks for of the users, roles and privileges of [database] on [server]; of the
      * users, only [users] if given.
      */

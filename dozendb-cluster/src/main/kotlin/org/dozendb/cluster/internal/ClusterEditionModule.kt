@@ -82,6 +82,7 @@ import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.DozenDb
+import org.dozendb.core.edition.BackupSources
 import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.DatabaseQuarantine
 import org.dozendb.core.edition.DatabaseState
@@ -136,6 +137,7 @@ import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.DatabaseTracers
 import org.neo4j.kernel.database.NamedDatabaseId
+import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.Version
 import org.neo4j.kernel.lifecycle.Lifecycle
@@ -297,6 +299,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         MemberMetadata.HTTPS_ADDRESS to it.toHostPort().toString()
                     },
                     routingHostPort()?.let { MemberMetadata.ROUTING_ADDRESS to it.toString() },
+                    backupAddress()?.let {
+                        MemberMetadata.BACKUP_ADDRESS to it.toHostPort().toString()
+                    },
                     (replicationService.defaultDatabaseId ?: clusterId)?.let {
                         MemberMetadata.CLUSTER_ID to it.toString()
                     },
@@ -1577,6 +1582,26 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         require(clusterServers.all().any { it.id.uuid == id && systemGraph.enabled(it.id) }) {
             "server $id is not an enabled server of this cluster: SHOW SERVERS lists the servers"
         }
+    }
+
+    /**
+     * The servers that serve backups of a database, as Neo4j Enterprise chooses them: its
+     * secondaries that pull, then its primaries that do not lead it, then the one that does, each
+     * by the backup address it reported.
+     */
+    override fun backupSources(): BackupSources = BackupSources { name ->
+        val database =
+            systemGraph.databaseId(NormalizedDatabaseName(name).name())?.let {
+                DatabaseRef(NormalizedDatabaseName(name).name(), it)
+            } ?: return@BackupSources emptyList()
+        val location = locations.of(database)
+        val primaries = location?.voters.orEmpty().map { it.id }
+        val leader = location?.leader
+        (locations.secondaries(database) +
+                primaries.filter { it != leader }.sorted() +
+                listOfNotNull(leader?.takeIf { it in primaries }))
+            .distinct()
+            .mapNotNull { directory.backupAddress(it)?.toString() }
     }
 
     /** Where the copies of databases go: on the servers the allocator chooses. */

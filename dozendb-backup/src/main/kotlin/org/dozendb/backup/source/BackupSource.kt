@@ -12,6 +12,7 @@ import org.dozendb.backup.BackupProtocol
 import org.dozendb.backup.BackupProtocol.Request
 import org.dozendb.backup.BackupProtocol.Status
 import org.dozendb.consensus.BulkSource
+import org.dozendb.core.edition.BackupSources
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.security.MetadataScript
 import org.dozendb.core.store.CommittedTransactions
@@ -27,6 +28,7 @@ import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
+import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLogProvider
 
 /**
@@ -41,6 +43,7 @@ internal class BackupSource(
     private val source: String,
     logProvider: InternalLogProvider,
     private val clock: Clock = Clock.systemUTC(),
+    private val sources: () -> BackupSources? = { null },
 ) : BulkSource {
     private val log = logProvider.getLog(BackupSource::class.java)
 
@@ -55,6 +58,7 @@ internal class BackupSource(
         try {
             when (decoded) {
                 is Request.List -> list(decoded, out)
+                is Request.Sources -> sources(decoded, out)
                 is Request.Full -> database(decoded.database, out)?.let { full(it, out) }
                 is Request.Differential ->
                     database(decoded.database, out)?.let { differential(it, decoded, out) }
@@ -65,6 +69,7 @@ internal class BackupSource(
             val what =
                 when (decoded) {
                     is Request.List -> "the list of databases"
+                    is Request.Sources -> "the servers that back up ${decoded.database}"
                     is Request.Full -> "a full backup of ${decoded.database}"
                     is Request.Differential -> "a differential backup of ${decoded.database}"
                     is Request.Metadata -> "the metadata of ${decoded.database}"
@@ -79,6 +84,26 @@ internal class BackupSource(
         val names = known().filter(pattern::matches).sorted()
         BackupProtocol.writeStatus(out, Status.OK)
         BackupProtocol.writeNames(out, names)
+    }
+
+    /** The backup addresses of the servers that host the database, in the order to try them. */
+    private fun sources(request: Request.Sources, out: OutputStream) {
+        val name = NormalizedDatabaseName(request.database).name()
+        val lookup = sources()
+        if (lookup == null) {
+            BackupProtocol.writeStatus(
+                out,
+                Status.FAILED,
+                "this server cannot tell which servers back up a database",
+            )
+            return
+        }
+        if (name !in known()) {
+            BackupProtocol.writeStatus(out, Status.NO_DATABASE, "there is no database '$name'")
+            return
+        }
+        BackupProtocol.writeStatus(out, Status.OK)
+        BackupProtocol.writeNames(out, lookup.of(name))
     }
 
     /**

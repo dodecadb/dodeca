@@ -53,6 +53,12 @@ internal object BackupProtocol {
         data class Full(val database: String) : Request
 
         /**
+         * The backup addresses of the servers that serve backups of [database], in the order to try
+         * them, for `--remote-address-resolution`.
+         */
+        data class Sources(val database: String) : Request
+
+        /**
          * The transactions of [database] after the one at append index [after], whose checksum is
          * [checksum].
          */
@@ -91,6 +97,10 @@ internal object BackupProtocol {
                 out.writeByte(KIND_FULL)
                 out.writeUTF(request.database)
             }
+            is Request.Sources -> {
+                out.writeByte(KIND_SOURCES)
+                out.writeUTF(request.database)
+            }
             is Request.Differential -> {
                 out.writeByte(KIND_DIFFERENTIAL)
                 out.writeUTF(request.database)
@@ -119,6 +129,7 @@ internal object BackupProtocol {
             when (val kind = input.readUnsignedByte()) {
                 KIND_LIST -> Request.List(input.readUTF())
                 KIND_FULL -> Request.Full(input.readUTF())
+                KIND_SOURCES -> Request.Sources(input.readUTF())
                 KIND_DIFFERENTIAL ->
                     Request.Differential(input.readUTF(), input.readLong(), input.readInt())
                 KIND_METADATA,
@@ -233,6 +244,7 @@ internal object BackupProtocol {
     private const val KIND_DIFFERENTIAL = 3
     private const val KIND_METADATA = 4
     private const val KIND_METADATA_USERS = 5
+    private const val KIND_SOURCES = 6
 
     private fun bytes(write: (DataOutputStream) -> Unit): ByteArray {
         val buffer = ByteArrayOutputStream()

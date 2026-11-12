@@ -87,6 +87,21 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     )
     private lateinit var from: String
 
+    @Option(
+        names = ["--remote-address-resolution"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Back up each database from the servers that host it, which the first of --from " +
+                    "that answers names, instead of from --from: its secondaries first, then " +
+                    "the primaries that do not lead it, then its leader."
+            ],
+    )
+    private var remoteAddressResolution = false
+
     // Required unless --inspect-path is given.
     @Option(
         names = ["--to-path"],
@@ -331,7 +346,13 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                 val names = names(client, servers) { serversFailed = true }
                 AdminResources(fs, config, logProvider).use { resources ->
                     for (name in names) {
-                        if (!backUp(name, client, servers, resources) { serversFailed = true }) {
+                        val sources =
+                            if (!remoteAddressResolution) servers
+                            else sources(name, client, servers) { serversFailed = true }
+                        if (
+                            sources == null ||
+                                !backUp(name, client, sources, resources) { serversFailed = true }
+                        ) {
                             failed += name
                         }
                     }
@@ -427,6 +448,48 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             names += matching
         }
         return names.toList()
+    }
+
+    /**
+     * The backup addresses of the servers that host [name], in the order to try them, from the
+     * first of [servers] that tells them; null, having said why, if none does or there are none.
+     */
+    private fun sources(
+        name: String,
+        client: BackupClient,
+        servers: List<HostPort>,
+        onServerFailed: () -> Unit,
+    ): List<HostPort>? {
+        for (server in servers) {
+            val sources =
+                try {
+                    client.sources(server, name)
+                } catch (e: Exception) {
+                    ctx.err()
+                        .println(
+                            "Could not resolve the servers of database '$name' through $server: " +
+                                "${e.message}"
+                        )
+                    if (e !is Refused) onServerFailed()
+                    continue
+                }
+            if (sources.isEmpty()) {
+                ctx.err()
+                    .println(
+                        "Could not back up database '$name': $server knows no server that hosts " +
+                            "it and serves backups"
+                    )
+                return null
+            }
+            ctx.out()
+                .println(
+                    "Backing up database '$name' from the servers that host it, as $server " +
+                        "resolved them: ${sources.joinToString()}."
+                )
+            return sources
+        }
+        ctx.err().println("Could not back up database '$name': no server resolved its servers")
+        return null
     }
 
     /** Backs up [name] from the first of [servers] that serves it; whether one did. */
