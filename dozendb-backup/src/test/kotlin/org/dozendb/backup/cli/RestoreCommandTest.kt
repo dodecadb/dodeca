@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.backup.Admin
+import org.dozendb.backup.Artifacts
 import org.dozendb.backup.CommunityServer
 import org.dozendb.backup.PhasedSource
 import org.junit.jupiter.api.BeforeAll
@@ -74,6 +75,48 @@ class RestoreCommandTest {
         assertThat(result.out)
             .contains("Restored database 'films'", "up to transaction ${until - 1},")
         assertThat(restored(home, "films")).isEqualTo(source.states[1])
+    }
+
+    @Test
+    fun `restores only the database --source-database names, from folders and files`() {
+        val mixed = Files.createDirectories(root.resolve("mixed"))
+        for (file in listOf(source.full, source.first, source.second)) {
+            Files.copy(file, mixed.resolve(file.fileName))
+        }
+        val films =
+            CommunityServer(root.resolve("films-source"), "films").start().use { server ->
+                CommunityServer.populate(server)
+                server.backupFull(mixed.resolve("films-1-full${Artifacts.EXTENSION}"))
+                CommunityServer.summary(server)
+            }
+        val home = root.resolve("source-database")
+        val layout = Neo4jLayout.of(home)
+
+        val folder = restore(home, "--from-path=$mixed", "--source-database=FILMS")
+
+        assertThat(folder.exitCode).describedAs("$folder").isZero
+        assertThat(folder.out).contains("Restored database 'films'").doesNotContain("'neo4j'")
+        assertThat(layout.databaseLayout("neo4j").databaseDirectory()).doesNotExist()
+        CommunityServer(home, "films").start().use {
+            assertThat(CommunityServer.summary(it)).isEqualTo(films)
+        }
+
+        val file = restore(home, "--from-path=${source.second}", "--source-database=neo4j")
+        assertThat(file.exitCode).describedAs("$file").isZero
+        assertThat(restored(home)).isEqualTo(source.states[2])
+
+        for ((arguments, message) in
+            listOf(
+                arrayOf("--from-path=${source.second}", "--source-database=films") to
+                    "${source.second} is a backup of database 'neo4j', not of 'films' as " +
+                        "--source-database names",
+                arrayOf("--from-path=${source.backups}", "--source-database=films") to
+                    "No backups of database 'films' found in ${source.backups}",
+            )) {
+            val result = restore(root.resolve("refused-source"), *arguments)
+            assertThat(result.exitCode).describedAs("$result").isNotZero
+            assertThat(result.err).contains(message)
+        }
     }
 
     @Test

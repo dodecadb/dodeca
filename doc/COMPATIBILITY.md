@@ -868,9 +868,9 @@ not promised. The differences:
 - Not supported: `--parallel-recovery` and `--inspect-path` of `backup`, and
   the options Enterprise added since 2025.01: `--prefer-diff-as-parent`,
   `--remote-address-resolution`, `--parallel-download`, `--skip-recovery`,
-  `--skip-empty-diffs` and `--split-archive-part-size` of `backup`, a list of
-  users in `--include-metadata=users=...`, and `--source-database` of
-  `restore`; nor `server.backup.advertised_address`.
+  `--skip-empty-diffs` and `--split-archive-part-size` of `backup`, and a list
+  of users in `--include-metadata=users=...`; nor
+  `server.backup.advertised_address`.
   `server.split_archive.part_size`, which Neo4j Community declares, does not
   split backups.
 - `neo4j-admin database aggregate-backup`, the name of `neo4j-admin backup
@@ -893,6 +893,9 @@ not promised. The differences:
 - `--temp-path` of `backup` and `backup aggregate` defaults to the backups'
   folder, which must then be local; with a folder in cloud storage, it must
   be given. `restore` accepts `--temp-path` without using it.
+- `restore` of a folder holding backups of several databases restores the
+  latest chain of each, where Enterprise requires `--source-database` to pick
+  one. Its value must be given, and a backup file of another database fails.
 - A backup is not restored with another Neo4j kernel version than the one it
   was taken with.
 - Serving backups on an address that is not a loopback one needs

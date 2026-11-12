@@ -77,6 +77,20 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
     private lateinit var fs: FileSystemAbstraction
 
     @Option(
+        names = ["--source-database"],
+        paramLabel = "<source-database-name>",
+        converter = [DatabaseNameConverter::class],
+        description =
+            [
+                "Restore only this database's backups: the latest chain of its backups in each " +
+                    "folder, and only files that are its backups. Neo4j Enterprise requires it " +
+                    "when a folder holds backups of several databases; without it, the latest " +
+                    "chain of each database in the folder is restored."
+            ],
+    )
+    private var sourceDatabase: NormalizedDatabaseName? = null
+
+    @Option(
         names = ["--restore-until"],
         paramLabel = "<recovery-criteria>",
         description =
@@ -221,8 +235,8 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
             val chains =
                 try {
                     if (fs.isDirectory(path)) {
-                        val found = find(listOf(path))
-                        found
+                        find(listOf(path))
+                            .filter { sourceDatabase == null || isSource(it.header.databaseName) }
                             .groupBy { it.header.databaseName }
                             .values
                             .map {
@@ -230,6 +244,14 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
                             }
                     } else {
                         val end = ArtifactChains.find(listOf(path), fs).artifacts.single()
+                        val source = sourceDatabase
+                        if (source != null && !isSource(end.header.databaseName)) {
+                            throw CommandFailedException(
+                                "${CommandPaths.display(path)} is a backup of database " +
+                                    "'${end.header.databaseName}', not of '${source.name()}' as " +
+                                    "--source-database names"
+                            )
+                        }
                         val candidates =
                             find(listOfNotNull(path.toAbsolutePath().parent)).filter {
                                 it.header.databaseName == end.header.databaseName
@@ -248,12 +270,16 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
             }
         }
         if (restores.isEmpty()) {
+            val of = sourceDatabase?.let { " of database '${it.name()}'" } ?: ""
             throw CommandFailedException(
-                "No backups found in ${fromPaths.joinToString { CommandPaths.display(it) }}"
+                "No backups$of found in ${fromPaths.joinToString { CommandPaths.display(it) }}"
             )
         }
         return restores
     }
+
+    private fun isSource(databaseName: String) =
+        NormalizedDatabaseName(databaseName).name() == sourceDatabase?.name()
 
     private fun find(paths: List<Path>) =
         ArtifactChains.find(paths, fs)

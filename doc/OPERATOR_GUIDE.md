@@ -1445,6 +1445,9 @@ neo4j-admin database restore --from-path=/backups/films-2026-10-21T13-52-10.back
   paths may be given, separated by commas. Each may be in cloud storage, as
   `s3://backups/films/`: the backups are read where they are, as they are
   restored, without a local copy.
+- `--source-database=films` restores only the backups of `films`: the latest
+  chain of its backups in a directory, and a backup file only if it is one of
+  them.
 - A name after the options restores a single backup under another name.
 - `--restore-until=123` stops before transaction 123, and
   `--restore-until="2026-10-21 13:00:00"` restores the transactions committed
