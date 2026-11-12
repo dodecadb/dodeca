@@ -39,3 +39,11 @@ class AggregateBackupCommandProvider : CommandProvider {
 
     override fun getPriority() = PRIORITY
 }
+
+class BackupAggregateCommandProvider : CommandProvider {
+    override fun createCommand(ctx: ExecutionContext) = BackupAggregateCommand(ctx)
+
+    override fun commandType() = CommandType.AGGREGATE_BACKUP
+
+    override fun getPriority() = PRIORITY
+}

@@ -310,8 +310,8 @@ class CloudStorageIT {
 
         assertThat(
                 client.adminOk(
-                    "database",
-                    "aggregate-backup",
+                    "backup",
+                    "aggregate",
                     "--from-path=$folder",
                     "--temp-path=/tmp/aggregate",
                     "neo4j",

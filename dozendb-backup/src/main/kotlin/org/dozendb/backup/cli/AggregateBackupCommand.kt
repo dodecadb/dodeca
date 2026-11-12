@@ -22,16 +22,32 @@ import picocli.CommandLine.Help.Visibility.ALWAYS
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 
+/** `neo4j-admin backup aggregate`, Neo4j Enterprise's name for it since 2025.01. */
+@Command(
+    name = "aggregate",
+    header = ["Aggregates a chain of backup artifacts into a single artifact."],
+    description = [AggregateCommand.DESCRIPTION],
+)
+class BackupAggregateCommand(context: ExecutionContext) : AggregateCommand(context) {
+    override fun commandConfigName(): Optional<String> = Optional.of("backup-aggregate")
+}
+
+/** `neo4j-admin database aggregate-backup`, deprecated in Neo4j Enterprise 2025.01. */
 @Command(
     name = "aggregate-backup",
-    header = ["Aggregates a chain of backup artifacts into a single artifact."],
-    description =
+    header =
         [
-            "Turns the latest chain of a full backup and the differential backups after it into " +
-                "one full backup, which the backups after the chain still continue."
+            "Deprecated: use neo4j-admin backup aggregate. Aggregates a chain of backup artifacts " +
+                "into a single artifact."
         ],
+    description = [AggregateCommand.DESCRIPTION],
 )
-class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
+class AggregateBackupCommand(context: ExecutionContext) : AggregateCommand(context) {
+    override fun commandConfigName(): Optional<String> = Optional.of("database-aggregate-backup")
+}
+
+/** Aggregates the latest chain of backups into one full backup, by either name of the command. */
+abstract class AggregateCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     @Parameters(
         arity = "0..1",
         paramLabel = "<database>",
@@ -84,7 +100,19 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
     )
     private var tempPath: Path? = null
 
-    override fun commandConfigName(): Optional<String> = Optional.of("database-aggregate-backup")
+    @Option(
+        names = ["--parallel-recovery"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Accepted as by Neo4j Enterprise, where it is experimental. DozenDB recovers the " +
+                    "aggregated backup as it always does."
+            ],
+    )
+    private var parallelRecovery = false
 
     override fun execute() {
         val config = createPrefilledConfigBuilder().build()
@@ -216,5 +244,11 @@ class AggregateBackupCommand(context: ExecutionContext) : AbstractAdminCommand(c
         } finally {
             fs.deleteRecursively(temporary)
         }
+    }
+
+    internal companion object {
+        const val DESCRIPTION =
+            "Turns the latest chain of a full backup and the differential backups after it into " +
+                "one full backup, which the backups after the chain still continue."
     }
 }

@@ -74,6 +74,30 @@ class AggregateBackupCommandTest {
     }
 
     @Test
+    fun `is neo4j-admin backup aggregate, and still database aggregate-backup, which is deprecated`() {
+        for (command in
+            listOf(listOf("backup", "aggregate"), listOf("database", "aggregate-backup"))) {
+            val source = PhasedSource.write(root.resolve(command.last()))
+
+            // --parallel-recovery as Enterprise has it, experimental; DozenDB recovers alike.
+            val result =
+                Admin.tool(
+                    root,
+                    *command.toTypedArray(),
+                    "--from-path=${source.second}",
+                    "--parallel-recovery",
+                )
+
+            assertThat(result.exitCode).describedAs("$command: $result").isZero
+            assertThat(result.out).contains("Aggregated the chain of 3 backups of 'neo4j' into ")
+        }
+        assertThat(Admin.tool(root, "backup", "aggregate", "--help").out)
+            .doesNotContain("Deprecated")
+        assertThat(Admin.tool(root, "database", "aggregate-backup", "--help").out)
+            .contains("Deprecated: use neo4j-admin backup aggregate.")
+    }
+
+    @Test
     fun `keeps the old chain if asked`() {
         val source = PhasedSource.write(root)
         val before = files(source.backups)

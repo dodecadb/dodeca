@@ -1419,9 +1419,10 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   backups that hold no transactions.
 - `neo4j-admin database check --from-path=/backups neo4j` restores the latest
   chain of `neo4j` in a temporary directory and checks its consistency.
-- `neo4j-admin database aggregate-backup --from-path=/backups neo4j` turns the
-  latest chain into one full backup; the backups after the chain still continue
-  it. `--keep-old-backup=true` keeps the chain's files. For a folder in cloud
+- `neo4j-admin backup aggregate --from-path=/backups neo4j` turns the latest
+  chain into one full backup; the backups after the chain still continue it.
+  `--keep-old-backup=true` keeps the chain's files. `neo4j-admin database
+  aggregate-backup`, its name before Neo4j 2025.01, still works, deprecated. For a folder in cloud
   storage, `--temp-path` must name a local directory with room for the
   database.
 
@@ -1724,7 +1725,7 @@ folder named without its `/` works too where a folder is expected.
 - `neo4j-admin database dump --to-path`, `load --from-path`, `check
   --from-path` (with a local `--temp-path`) and the files of `import full`.
 - `neo4j-admin database backup --to-path`, `restore --from-path`,
-  `aggregate-backup --from-path` and `neo4j-admin backup inspect`, as
+  `neo4j-admin backup aggregate --from-path` and `backup inspect`, as
   [Backup and restore](#backup-and-restore) describes.
 - `CREATE DATABASE ... OPTIONS {seedURI: ...}`, with `CloudSeedProvider`
   enabled, as it is by default.

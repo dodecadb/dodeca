@@ -852,8 +852,8 @@ message that names the `priority_tag` setting replacing them.
 ## Backup and restore
 
 Backups and restores use Enterprise's commands, options and settings:
-`neo4j-admin database backup`, `restore` and `aggregate-backup`, `neo4j-admin
-backup inspect`, `neo4j-admin database check --from-path`,
+`neo4j-admin database backup` and `restore`, `neo4j-admin backup aggregate`
+and `inspect`, `neo4j-admin database check --from-path`,
 `server.backup.enabled`, `server.backup.listen_address` and
 `dbms.ssl.policy.backup.*`. They work alike on standalone servers and cluster
 members; see [`OPERATOR_GUIDE.md`, "Backup and
@@ -873,9 +873,10 @@ not promised. The differences:
   `restore`; nor `server.backup.advertised_address`.
   `server.split_archive.part_size`, which Neo4j Community declares, does not
   split backups.
-- `neo4j-admin backup aggregate`, Enterprise's name for `neo4j-admin database
-  aggregate-backup` since 2025.01, does not exist: DozenDB has
-  `aggregate-backup` only.
+- `neo4j-admin database aggregate-backup`, the name of `neo4j-admin backup
+  aggregate` before 2025.01, works as it, deprecated as in Enterprise.
+  `--parallel-recovery`, experimental in Enterprise, is accepted and changes
+  nothing: the aggregated backup is recovered as always.
 - The script that `--include-metadata` keeps, and `restore` writes to
   `data/scripts/<database>/restore_metadata.cypher`, is DozenDB's own. It
   leaves out `ALTER DATABASE`, `SET DATABASE ACCESS` and `SET DATABASE
@@ -889,7 +890,7 @@ not promised. The differences:
   transaction logs still hold that backup's last transaction, with the same
   checksum; otherwise the command takes a full backup instead.
 - Backup files are named in UTC.
-- `--temp-path` of `backup` and `aggregate-backup` defaults to the backups'
+- `--temp-path` of `backup` and `backup aggregate` defaults to the backups'
   folder, which must then be local; with a folder in cloud storage, it must
   be given. `restore` accepts `--temp-path` without using it.
 - A backup is not restored with another Neo4j kernel version than the one it
