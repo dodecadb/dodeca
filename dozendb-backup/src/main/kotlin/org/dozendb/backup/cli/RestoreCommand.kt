@@ -399,22 +399,23 @@ class RestoreCommand(context: ExecutionContext) : AbstractAdminCommand(context) 
         }
     }
 
-    private fun describe(chain: ArtifactChain, prepared: StorePreparer.Prepared): String {
-        val last = prepared.lastRestored
-        val differentials =
-            when (val count = chain.differentials.size) {
-                0 -> ""
-                1 -> " and 1 differential backup"
-                else -> " and $count differential backups"
-            }
-        val committed = TIME.format(Instant.ofEpochMilli(last.commitTimestamp()).atOffset(UTC))
-        return "from ${CommandPaths.display(chain.full.path)}$differentials, up to transaction " +
-            "${last.id()}, committed " +
-            "at $committed UTC"
-    }
+    internal companion object {
+        private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
+        private const val METADATA_SCRIPT = "restore_metadata.cypher"
 
-    private companion object {
-        val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
-        const val METADATA_SCRIPT = "restore_metadata.cypher"
+        /** How [chain] was restored, as [prepared]: "from <full backup> and ..., up to ...". */
+        fun describe(chain: ArtifactChain, prepared: StorePreparer.Prepared): String {
+            val last = prepared.lastRestored
+            val differentials =
+                when (val count = chain.differentials.size) {
+                    0 -> ""
+                    1 -> " and 1 differential backup"
+                    else -> " and $count differential backups"
+                }
+            val committed = TIME.format(Instant.ofEpochMilli(last.commitTimestamp()).atOffset(UTC))
+            return "from ${CommandPaths.display(chain.full.path)}$differentials, up to transaction " +
+                "${last.id()}, committed " +
+                "at $committed UTC"
+        }
     }
 }

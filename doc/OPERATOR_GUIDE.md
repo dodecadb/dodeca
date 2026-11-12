@@ -1764,6 +1764,16 @@ cat films2-schema.cypher | bin/cypher-shell -d films2
   other directories, `--to-path-data` and `--to-path-txn` write the copy to
   others. `--from-pagecache` (8 MiB) sizes the page cache that reads the
   source.
+- **From and to backups.** `--source-format=backup
+  --source-location=/backups/films-2026-10-21T13-52-10.backup` copies the
+  database as that backup restores it, with the backups before it in its
+  folder. `--target-format=backup --target-location=/backups` writes the copy
+  as a full backup of `<toDatabase>` in that folder, uncompressed unless
+  `--compress` is given, and split with `--split-archive-part-size` as
+  `neo4j-admin database backup` splits backups. Either location may be in
+  cloud storage, as `s3://backups/films/`; the stores in between are staged in
+  `--temp-path`, by default the local `--target-location` or next to the
+  target database, which needs room for them. Users and roles are not copied.
 
 On a server of a cluster, a copy to a new name is prepared where
 `CREATE DATABASE` takes a seed from, and the command prints the statement that

@@ -1298,10 +1298,17 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
 - **Formats**: `--to-format` takes `same`, `standard` and `aligned`;
   `high_limit` and `block` are refused. A store in a format of an earlier
   Neo4j version is refused until it is migrated.
-- **Not supported**: `--target-format`, `--target-location`,
-  `--source-format`, `--source-location` and `--compress`, which Enterprise
-  added between 2025.12 and 2026.04 to copy from and to backups. The copy
-  reads and writes databases only.
+- **Backups**: `--source-format=backup` with `--source-location`, and
+  `--target-format=backup` with `--target-location`, `--compress` and
+  `--split-archive-part-size`, copy from and to DozenDB's backups. Where
+  Enterprise's pages are silent, DozenDB is strict: `--source-location` names
+  a backup file, not a folder, which must be a backup of `<fromDatabase>`;
+  `--compress` and `--split-archive-part-size` without `--target-format=backup`
+  are refused, as are `--to-path-data` and `--to-path-txn` with it. The backup
+  written is a full backup of `<toDatabase>` with a database id of its own,
+  named as `neo4j-admin database backup` names them, and holds no users and
+  roles. The stores in between are staged in `--temp-path`, by default the
+  local `--target-location`, or else next to the target database.
 - **Schema**: one statement per index and constraint, with its index
   configuration. Index providers are left out, so that the copy gets the
   current ones. Token lookup indexes are not in the statements: the copy

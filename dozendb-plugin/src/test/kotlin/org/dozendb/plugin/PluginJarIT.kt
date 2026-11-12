@@ -175,6 +175,7 @@ class PluginJarIT {
                 "org.dozendb.backup.cli.RestoreCommandProvider",
                 "org.dozendb.backup.cli.InspectBackupCommandProvider",
                 "org.dozendb.backup.cli.AggregateBackupCommandProvider",
+                "org.dozendb.backup.cli.BackupAggregateCommandProvider",
                 "org.dozendb.cluster.internal.admin.UnbindCommandProvider",
                 "org.dozendb.cluster.internal.admin.UnbindSystemCommandProvider",
                 "org.dozendb.core.importer.DozenDbImportCommandProvider",
@@ -184,6 +185,8 @@ class PluginJarIT {
             .containsExactly("org.dozendb.core.importer.DozenDbIncrementalImporterFactory")
         assertThat(services("org.neo4j.dbms.archive.CheckDatabase"))
             .containsExactly("org.dozendb.backup.cli.CheckBackup")
+        assertThat(services("org.dozendb.core.store.BackupArtifacts"))
+            .containsExactly("org.dozendb.backup.cli.CommandBackupArtifacts")
         assertThat(services("org.neo4j.wal.checkpoint.CheckPointThresholdPolicy"))
             .containsExactlyInAnyOrder(
                 "org.dozendb.core.checkpoint.ContinuousThresholdPolicy",

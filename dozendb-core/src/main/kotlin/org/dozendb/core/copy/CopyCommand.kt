@@ -1,21 +1,28 @@
 package org.dozendb.core.copy
 
+import java.io.IOException
 import java.nio.file.Path
 import java.util.Optional
+import org.dozendb.core.store.BackupArtifacts
 import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
+import org.neo4j.cli.CommandOptionDescriptions.SplitArchiveOption
 import org.neo4j.cli.CommandProvider
 import org.neo4j.cli.CommandType
 import org.neo4j.cli.Converters.ByteUnitConverter
 import org.neo4j.cli.Converters.DatabaseNameConverter
 import org.neo4j.cli.ExecutionContext
 import org.neo4j.cli.ExitCode
+import org.neo4j.commandline.Util
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.dbms.archive.Dumper.SplitFileOutput
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.database.NormalizedDatabaseName
+import org.neo4j.logging.Level
+import org.neo4j.logging.log4j.Log4jLogProvider
 import picocli.CommandLine.Command
 import picocli.CommandLine.Help.Visibility.ALWAYS
 import picocli.CommandLine.Option
@@ -116,10 +123,76 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         paramLabel = "<path>",
         description =
             [
-                "Path to a directory to be used as a staging area when the source and target databases are the same. Default is next to the database, on the same file system."
+                "Path to a directory to be used as a staging area when the source and target databases are the same, and for the stores of --source-format=backup and --target-format=backup. Default is next to the database, on the same file system, and for --target-format=backup --target-location, which must be local then."
             ],
     )
     private var tempPath: Path? = null
+
+    @Option(
+        names = ["--source-format"],
+        paramLabel = "<format>",
+        defaultValue = "database",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Source format: database, a stopped database, or backup, the backup --source-location names, restored first with the backups before it."
+            ],
+    )
+    private var sourceFormat = "database"
+
+    @Option(
+        names = ["--source-location"],
+        paramLabel = "<path>",
+        description =
+            [
+                "Backup file to copy from with --source-format=backup, local or in cloud storage, as s3://<bucket>/<folder>/<file>; the backups it continues must be in its folder. Cannot be combined with --from-path-data and --from-path-txn."
+            ],
+    )
+    private var sourceLocation: String? = null
+
+    @Option(
+        names = ["--target-format"],
+        paramLabel = "<format>",
+        defaultValue = "database",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Target format: database, a new database, or backup, a full backup of <toDatabase> in --target-location."
+            ],
+    )
+    private var targetFormat = "database"
+
+    @Option(
+        names = ["--target-location"],
+        paramLabel = "<path>",
+        description =
+            [
+                "Folder to write the backup to with --target-format=backup: a local one, which must exist, or one in cloud storage, as s3://<bucket>/<folder>/, which needs --temp-path."
+            ],
+    )
+    private var targetLocation: String? = null
+
+    @Option(
+        names = ["--compress"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description = ["Request backup artifact to be compressed, with --target-format=backup."],
+    )
+    private var compress = false
+
+    @Option(
+        names = [SplitArchiveOption.OPTION_NAME],
+        paramLabel = "<splitsize>",
+        converter = [ByteUnitConverter::class],
+        description =
+            [
+                SplitArchiveOption.BACKUP_DESCRIPTION +
+                    " Only with --target-format=backup, for which server.split_archive.part_size gives the default."
+            ],
+    )
+    private var splitArchivePartSize = 0L
 
     @Option(
         names = ["--from-path-data"],
@@ -275,20 +348,112 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                 ExitCode.USAGE,
             )
         }
+        val fromBackup = format("--source-format", sourceFormat)
+        val toBackup = format("--target-format", targetFormat)
+        checkFormats(fromBackup, toBackup)
         val config = createPrefilledConfigBuilder().build()
-        val workingDirectory = Path.of("").toAbsolutePath()
+        val partSize =
+            if (!toBackup) 0L
+            else
+                try {
+                    SplitFileOutput.determineSplitArtifactSize(config, splitArchivePartSize)
+                } catch (e: IllegalArgumentException) {
+                    throw CommandFailedException(
+                        "Invalid split archive part size, as --split-archive-part-size or " +
+                            "server.split_archive.part_size give it: ${e.message}",
+                        e,
+                    )
+                }
+        val artifacts =
+            if (!fromBackup && !toBackup) null
+            else
+                BackupArtifacts.load()
+                    ?: throw CommandFailedException(
+                        "--source-format=backup and --target-format=backup need DozenDB's backup " +
+                            "module, which is not on the classpath."
+                    )
+        val from = fromDatabase.name()
+        val to = layout(config, toPathData, toPathTxn, toDatabase.name())
+        val staging =
+            staging(toBackup, to)?.let { ctx.fs().createTempDirectory(it, ".dozendb-copy-") }
+        try {
+            (if (verbose) Util.configuredLogProvider(ctx.out(), true)
+                else Log4jLogProvider(ctx.out(), Level.WARN))
+                .use { logProvider ->
+                    val source =
+                        if (artifacts == null || !fromBackup)
+                            layout(config, fromPathData, fromPathTxn, from)
+                        else {
+                            val restored =
+                                Neo4jLayout.ofFlat(staging!!.resolve("source")).databaseLayout(from)
+                            val how =
+                                artifacts.restore(
+                                    sourceLocation!!,
+                                    "--source-location",
+                                    from,
+                                    restored,
+                                    config,
+                                    ctx.fs(),
+                                    logProvider,
+                                )
+                            ctx.out().println("Restored database '$from' $how, to copy it.")
+                            restored
+                        }
+                    val target =
+                        if (toBackup)
+                            Neo4jLayout.ofFlat(staging!!.resolve("target"))
+                                .databaseLayout(toDatabase.name())
+                        else to
+                    copy(config, filters, source, target)
+                    if (artifacts != null && toBackup) {
+                        val written =
+                            artifacts.write(
+                                target,
+                                toDatabase.name(),
+                                "a copy of database '$from'",
+                                targetLocation!!,
+                                "--target-location",
+                                compress,
+                                partSize,
+                                config,
+                                ctx.fs(),
+                                logProvider,
+                            )
+                        ctx.out()
+                            .println(
+                                "Wrote the copy of database '$from' as a full backup of " +
+                                    "'${toDatabase.name()}' to ${written.file}, up to transaction " +
+                                    "${written.lastTransaction}."
+                            )
+                    }
+                }
+        } catch (e: IOException) {
+            throw CommandFailedException(e.message, e)
+        } catch (e: IllegalArgumentException) {
+            throw CommandFailedException(e.message, e)
+        } finally {
+            staging?.let(ctx.fs()::deleteRecursively)
+        }
+    }
+
+    private fun copy(
+        config: Config,
+        filters: CopyFilters,
+        from: DatabaseLayout,
+        to: DatabaseLayout,
+    ) {
         try {
             StoreCopier(ctx.fs(), config, ctx.out(), ctx.err(), verbose)
                 .copy(
                     StoreCopier.Request(
-                        from = layout(config, fromPathData, fromPathTxn, fromDatabase.name()),
-                        to = layout(config, toPathData, toPathTxn, toDatabase.name()),
+                        from = from,
+                        to = to,
                         filters = filters,
                         compact = compactNodeStore,
                         toFormat = toFormat,
                         fromPageCache = fromPageCache,
                         copySchema = copySchema,
-                        schemaDirectory = toPathSchema ?: workingDirectory,
+                        schemaDirectory = toPathSchema ?: Path.of("").toAbsolutePath(),
                         tempPath = tempPath,
                         force = force,
                     )
@@ -296,6 +461,76 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         } catch (e: StoreCopyException) {
             throw CommandFailedException(e.message, e, e.exitCode)
         }
+    }
+
+    /** Whether [value] of [option] is `backup`, not `database`. */
+    private fun format(option: String, value: String): Boolean =
+        when (value.lowercase()) {
+            "database" -> false
+            "backup" -> true
+            else ->
+                throw CommandFailedException(
+                    "Invalid $option $value: give database or backup.",
+                    ExitCode.USAGE,
+                )
+        }
+
+    private fun checkFormats(fromBackup: Boolean, toBackup: Boolean) {
+        fun usage(message: String): Nothing = throw CommandFailedException(message, ExitCode.USAGE)
+        if (fromBackup != (sourceLocation != null)) {
+            usage("--source-location and --source-format=backup go together.")
+        }
+        if (fromBackup && (fromPathData != null || fromPathTxn != null)) {
+            usage(
+                "--source-format=backup cannot be combined with --from-path-data and " +
+                    "--from-path-txn: the source is the backup --source-location names."
+            )
+        }
+        if (toBackup != (targetLocation != null)) {
+            usage("--target-location and --target-format=backup go together.")
+        }
+        if (toBackup && (toPathData != null || toPathTxn != null)) {
+            usage(
+                "--target-format=backup cannot be combined with --to-path-data and " +
+                    "--to-path-txn: the target is the folder --target-location names."
+            )
+        }
+        if (!toBackup && compress) usage("--compress goes with --target-format=backup.")
+        if (!toBackup && splitArchivePartSize != 0L) {
+            usage("${SplitArchiveOption.OPTION_NAME} goes with --target-format=backup.")
+        }
+    }
+
+    /**
+     * Where the stores of a backup source and a backup target are staged: --temp-path, else for a
+     * backup target its local --target-location, else next to the target database [to]; null when
+     * neither is a backup.
+     */
+    private fun staging(toBackup: Boolean, to: DatabaseLayout): Path? {
+        if (sourceLocation == null && !toBackup) return null
+        tempPath?.let {
+            if (!ctx.fs().isDirectory(it)) {
+                throw CommandFailedException("--temp-path $it is not an existing directory.")
+            }
+            return it
+        }
+        if (!toBackup) {
+            return to.neo4jLayout.databasesDirectory().also { ctx.fs().mkdirs(it) }
+        }
+        val location = targetLocation!!
+        if (location.contains("://")) {
+            throw CommandFailedException(
+                "--target-location $location is in cloud storage: give --temp-path, a local " +
+                    "directory for the copy before it is uploaded."
+            )
+        }
+        val local = Path.of(location)
+        if (!ctx.fs().isDirectory(local)) {
+            throw CommandFailedException(
+                "--target-location $location is not an existing directory."
+            )
+        }
+        return local
     }
 
     private fun filters(): CopyFilters {
