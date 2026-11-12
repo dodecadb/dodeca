@@ -338,6 +338,34 @@ class BackupCommandTest {
     }
 
     @Test
+    fun `with --skip-recovery, a full backup is kept unrecovered, and its restore recovers it`() {
+        val source = source().apply { start() }
+        CommunityServer.populate(source.database())
+        val expected = CommunityServer.summary(source.database())
+
+        val full = backup(source, "--type=FULL", "--skip-recovery")
+
+        assertThat(full.exitCode).describedAs("$full").isZero
+        assertThat(full.out).contains("not recovered: restoring it recovers it")
+        assertThat(artifacts().single().header.recovered).isFalse
+        source.rows("CREATE (:Batch)")
+        assertThat(backup(source).exitCode).isZero
+        val (_, differential) = artifacts()
+        val restored = restored(differential)
+        assertThat(CommunityServer.summary(restored.database())).isEqualTo(expected)
+        assertThat(count(restored, "Batch")).isEqualTo(1)
+        // Recovered, as without it; differential backups hold no store.
+        assertThat(backup(source, "--type=FULL").exitCode).isZero
+        val inspected = Admin.run(clientHome, ::InspectBackupCommand, "$backups", "--show-metadata")
+        assertThat(inspected.out.lines()).anyMatch {
+            it.endsWith("| HIGHEST TX | RECOVERED |")
+        }
+        assertThat(inspected.out.lines().filter { it.contains(".backup") })
+            .anyMatch { it.endsWith("|     false |") }
+            .anyMatch { it.endsWith("|      true |") }
+    }
+
+    @Test
     fun `a differential backup needs a backup to continue`() {
         val source = source().apply { start() }
 

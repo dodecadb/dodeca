@@ -170,6 +170,7 @@ internal object ArtifactContainer {
             storeId = metadata.storeId,
             time = metadata.backupTime.toInstant(UTC),
             full = metadata.isFull,
+            recovered = metadata.isFull && metadata.isRecovered,
             compressed = compressed,
             lowestAppendIndex = metadata.lowestAppendIndex,
             highestAppendIndex = metadata.highestAppendIndex,
@@ -209,7 +210,7 @@ internal object ArtifactContainer {
         data.writeLong(header.lowestAppendIndex)
         data.writeLong(header.highestAppendIndex)
         val flags = BitSet(3)
-        flags.set(0, header.full) // recovered: a full backup holds a recovered store
+        flags.set(0, header.recovered)
         flags.set(1, header.compressed)
         flags.set(2, header.full)
         val flagBytes = flags.toByteArray()

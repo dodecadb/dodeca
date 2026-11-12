@@ -882,7 +882,7 @@ not promised. The differences:
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
   them where they are, as it restores them, and never needs `--temp-path`.
 - Not supported: the options Enterprise added to `backup` since 2025.01
-  `--remote-address-resolution`, `--parallel-download`, `--skip-recovery` and
+  `--remote-address-resolution`, `--parallel-download` and
   `--split-archive-part-size`; nor `server.backup.advertised_address`.
 - `--parallel-recovery` of `backup`, experimental in Enterprise, is accepted
   and changes nothing. `--inspect-path` lists the backups with their
@@ -900,8 +900,9 @@ not promised. The differences:
   those on the database, which only Cypher 25 grants, with `CYPHER 25`.
 - `neo4j-admin backup inspect` without `--show-metadata` lists only the files,
   as Enterprise did before 2025.07; Enterprise now shows the metadata always
-  and ignores `--show-metadata`. DozenDB has no `RECOVERED` column
-  (Enterprise 2025.06).
+  and ignores `--show-metadata`. Its `RECOVERED` column, as Enterprise's since
+  2025.06, is `false` for a full backup taken with `--skip-recovery`, and for
+  every differential backup, which holds no store.
 - A differential backup continues the latest backup only while the source's
   transaction logs still hold that backup's last transaction, with the same
   checksum; otherwise the command takes a full backup instead.

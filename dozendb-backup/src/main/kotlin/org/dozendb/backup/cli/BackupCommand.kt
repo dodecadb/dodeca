@@ -206,6 +206,20 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     private var preferDiffAsParent = false
 
     @Option(
+        names = ["--skip-recovery"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Keep a full backup's copy of the database as the server sent it, unrecovered: " +
+                    "the backup is faster, and restoring it recovers it."
+            ],
+    )
+    private var skipRecovery = false
+
+    @Option(
         names = ["--skip-empty-diffs"],
         arity = "0..1",
         paramLabel = "true|false",
@@ -590,17 +604,22 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
         try {
             val layout = Neo4jLayout.ofFlat(staging).databaseLayout(name)
             val copy = client.full(server, name, layout)
-            val last = resources.preparer().recoverCopy(layout, "the copy of '$name' from $server")
-            if (
-                last.id() != copy.last.transactionId ||
-                    last.appendIndex() != copy.last.appendIndex ||
-                    last.checksum() != copy.last.checksum
-            ) {
-                throw IOException(
-                    "the copy of '$name' from $server recovered up to transaction ${last.id()} " +
-                        "with checksum ${last.checksum()}, not to ${copy.last.transactionId} with " +
-                        "${copy.last.checksum} as the server sent it"
-                )
+            // With --skip-recovery, as the server sent it, which restoring it recovers.
+            val last = copy.last
+            if (!skipRecovery) {
+                val recovered =
+                    resources.preparer().recoverCopy(layout, "the copy of '$name' from $server")
+                if (
+                    recovered.id() != last.transactionId ||
+                        recovered.appendIndex() != last.appendIndex ||
+                        recovered.checksum() != last.checksum
+                ) {
+                    throw IOException(
+                        "the copy of '$name' from $server recovered up to transaction " +
+                            "${recovered.id()} with checksum ${recovered.checksum()}, not to " +
+                            "${last.transactionId} with ${last.checksum} as the server sent it"
+                    )
+                }
             }
             val header =
                 ArtifactHeader(
@@ -617,12 +636,13 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     full = true,
                     compressed = compress,
                     lowestAppendIndex = 1,
-                    highestAppendIndex = last.appendIndex(),
+                    highestAppendIndex = last.appendIndex,
                     previousChecksum = null,
-                    lastChecksum = last.checksum(),
-                    lastCommitTime = Instant.ofEpochMilli(last.commitTimestamp()),
+                    lastChecksum = last.checksum,
+                    lastCommitTime = last.commitTime,
                     source = copy.metadata.source,
                     metadataScript = script,
+                    recovered = !skipRecovery,
                 )
             val file =
                 Artifacts.writeNew(toPath, header.databaseName, header.time, fs) {
@@ -632,8 +652,9 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             ctx.out()
                 .println(
                     "Backed up database '$name' from $server to ${CommandPaths.display(file)}: " +
-                        "a full backup up to " +
-                        "transaction ${last.id()}, committed at ${format(header.lastCommitTime!!)}."
+                        "a full backup up to transaction ${last.transactionId}, committed at " +
+                        "${format(header.lastCommitTime!!)}" +
+                        (if (skipRecovery) ", not recovered: restoring it recovers it." else ".")
                 )
         } finally {
             if (succeeded || !keepFailed) {

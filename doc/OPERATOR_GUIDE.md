@@ -1402,8 +1402,11 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   `--temp-path` must name a local directory, and the command lists the folder
   before it backs anything up, so that missing credentials or a missing bucket
   fail it at once.
-- A full backup's copy of the database is recovered and checked before it is
-  kept, in `--temp-path` (default: `--to-path`, which must be local then) with
+- `--skip-recovery` keeps a full backup's copy of the database as the server
+  sent it, which is faster; restoring, seeding, checking or aggregating the
+  backup recovers it then.
+- A full backup's copy of the database is otherwise recovered and checked
+  before it is kept, in `--temp-path` (default: `--to-path`, which must be local then) with
   a page cache of `--pagecache`: it needs room for the database.
   `--keep-failed=true` keeps the copy of a failed full backup there.
 - `--compress` (default `true`) compresses the artifacts.
@@ -1424,8 +1427,8 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
 
 - `neo4j-admin backup inspect /backups` lists the backups there.
   `--show-metadata` adds each one's database and its id, time, whether it is
-  full and compressed, and the range of transactions it holds (by append
-  index). `--latest-backup` and `--latest-chain` narrow the list, `--database`
+  full and compressed, the range of transactions it holds (by append index),
+  and whether its store is recovered. `--latest-backup` and `--latest-chain` narrow the list, `--database`
   picks a database, `--format=JSON` prints JSON, and `--empty` includes
   backups that hold no transactions.
 - `neo4j-admin database check --from-path=/backups neo4j` restores the latest

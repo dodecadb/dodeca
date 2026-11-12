@@ -73,10 +73,11 @@ class InspectBackupCommandTest {
                     "true",
                     "1",
                     "${full.highestAppendIndex}",
+                    "true",
                 )
             )
         assertThat(rows.single { it[0] == uri(source.empty) }.drop(4))
-            .containsExactly("false", "true", "0", "0")
+            .containsExactly("false", "true", "0", "0", "false")
         assertThat(rows).hasSize(4)
     }
 
@@ -106,7 +107,7 @@ class InspectBackupCommandTest {
                     "\"databaseId\":\"${first.databaseId.uuid()}\"," +
                     "\"time\":\"${first.time.toString().removeSuffix("Z")}\",\"full\":false," +
                     "\"compressed\":true,\"lowestTx\":${first.lowestAppendIndex}," +
-                    "\"highestTx\":${first.highestAppendIndex}}]"
+                    "\"highestTx\":${first.highestAppendIndex},\"recovered\":false}]"
             )
     }
 }

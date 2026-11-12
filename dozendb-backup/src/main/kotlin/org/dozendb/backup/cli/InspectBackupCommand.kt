@@ -185,6 +185,7 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
             header.compressed.toString(),
             header.lowestAppendIndex.toString(),
             header.highestAppendIndex.toString(),
+            header.recovered.toString(),
         )
     }
 
@@ -219,6 +220,7 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
                         "compressed" to values[5],
                         "lowestTx" to values[6],
                         "highestTx" to values[7],
+                        "recovered" to values[8],
                     )
                 }
             fields.joinToString(",", "{", "}") { (key, value) -> "\"$key\":$value" }
@@ -261,6 +263,7 @@ class InspectBackupCommand(context: ExecutionContext) : AbstractAdminCommand(con
                 "COMPRESSED",
                 "LOWEST TX",
                 "HIGHEST TX",
+                "RECOVERED",
             )
         private val TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")
         private val LATEST: Comparator<Artifact> =

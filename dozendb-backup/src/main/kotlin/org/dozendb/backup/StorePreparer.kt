@@ -92,9 +92,11 @@ class StorePreparer(
         target: DatabaseLayout,
         detach: Boolean,
     ): Prepared {
-        unpack(archive, target)
+        val unpackedRecovered = unpack(archive, target)
         checkVersion(archive, target)
         val engine = StorageEngineFactory.selectStorageEngine(fs, target).orElseThrow()
+        // A full backup taken with --skip-recovery.
+        if (!unpackedRecovered) recover(target, engine)
         val tail =
             LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
                 .getTailMetadata(target, EmptyMemoryTracker.INSTANCE)
@@ -275,7 +277,11 @@ class StorePreparer(
         )
     }
 
-    private fun unpack(archive: Path, target: DatabaseLayout) {
+    /**
+     * Puts the store of [archive], a dump or a full backup, in [target]; returns whether it is
+     * recovered, as a dump is.
+     */
+    private fun unpack(archive: Path, target: DatabaseLayout): Boolean {
         val description =
             fs.openAsInputStream(archive).use { input ->
                 val magic = input.readNBytes(ArchiveFormat.MAGIC_PREFIX_LENGTH)
@@ -300,6 +306,7 @@ class StorePreparer(
         } catch (e: IncorrectFormat) {
             throw IOException("$archive is not a dump or a backup", e)
         }
+        return description?.isRecovered ?: true
     }
 
     private fun checkVersion(archive: Any, target: DatabaseLayout) {

@@ -19,6 +19,8 @@ import org.neo4j.storageengine.api.StoreId
  * @property source the server that served the backup.
  * @property metadataScript the Cypher that gives a DBMS back the database's users, roles and
  *   privileges, as `--include-metadata` asked for them; null without.
+ * @property recovered whether a full backup's store is recovered; one taken with `--skip-recovery`
+ *   is not, and restoring it recovers it. Never for a differential backup, which holds no store.
  */
 data class ArtifactHeader(
     val databaseName: String,
@@ -34,9 +36,11 @@ data class ArtifactHeader(
     val lastCommitTime: Instant?,
     val source: String,
     val metadataScript: String? = null,
+    val recovered: Boolean = full,
 ) {
     init {
         require(time.nano == 0) { "time $time is not in whole seconds" }
+        require(full || !recovered) { "a differential backup holds no store to recover" }
         if (empty) {
             require(!full) { "a full backup holds at least one transaction" }
             require(previousChecksum == null && lastChecksum == null && lastCommitTime == null) {
