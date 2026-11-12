@@ -7,10 +7,12 @@ import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_CREDENTIALS_EXPIRE
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_CREDENTIALS_PROPERTY as USER_CREDENTIALS
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY as USER_NAME
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_TAGS_PROPERTY as USER_TAGS
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLog
 import org.neo4j.server.security.SystemGraphCredential
+import org.neo4j.server.security.systemgraph.versions.SupportedCommunitySecurityComponentVersion.UsersTagFormatter
 import org.neo4j.util.Stringifier
 
 /**
@@ -22,8 +24,8 @@ import org.neo4j.util.Stringifier
  * The roles are those with privileges on the database, on every database or on users' home
  * databases, which they get again; privileges on the DBMS or on other databases are left out, as
  * Neo4j's docs say. The users are those whose roles give them access to the database, suspended or
- * not, with their encrypted passwords, status and home database, and the roles of the script they
- * have. Every statement can run again: roles and users are created if they do not exist.
+ * not, with their encrypted passwords, status, home database and tags, and the roles of the script
+ * they have. Every statement can run again: roles and users are created if they do not exist.
  */
 object MetadataScript {
     /** What `--include-metadata` asks for. */
@@ -131,9 +133,14 @@ object MetadataScript {
                             else name(it)
                         " SET HOME DATABASE $target"
                     } ?: ""
-                statements +=
+                val tags =
+                    if (user.tags.isEmpty()) ""
+                    else UsersTagFormatter.tagsClause(user.tags.toTypedArray())
+                val create =
                     "CREATE USER ${name(user.name)} IF NOT EXISTS SET ENCRYPTED PASSWORD " +
-                        "'$credentials' $change SET STATUS $status$homeClause"
+                        "'$credentials' $change SET STATUS $status$homeClause$tags"
+                // Only Cypher 25 has tags.
+                statements += if (tags.isEmpty()) create else "CYPHER 25 $create"
                 for (role in record.roles.filter { it in roles }.sorted()) {
                     statements += "GRANT ROLE ${name(role)} TO ${name(user.name)}"
                 }
@@ -142,11 +149,12 @@ object MetadataScript {
         return statements.joinToString("") { "$it;\n" }
     }
 
-    /** A user's native credentials, as the system graph keeps them. */
+    /** A user's native credentials and tags, as the system graph keeps them. */
     private class User(
         val name: String,
         val credentials: String?,
         val passwordChangeRequired: Boolean,
+        val tags: List<String>,
     )
 
     private fun users(tx: Transaction): List<User> =
@@ -156,6 +164,8 @@ object MetadataScript {
                     it.getProperty(USER_NAME) as String,
                     it.getProperty(USER_CREDENTIALS, null) as String?,
                     it.getProperty(USER_EXPIRED, false) as Boolean,
+                    (it.getProperty(USER_TAGS, null) as Array<*>?)?.map { tag -> tag as String }
+                        ?: emptyList(),
                 )
             }
         }

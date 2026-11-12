@@ -51,7 +51,8 @@ end its own way.
 | User status and home databases | Same | [Users](#users) |
 | Users and roles as commands (`SHOW USERS AS COMMANDS`, `SHOW ROLES AS COMMANDS`) | Same | [Users](#users) |
 | Roles and privileges, impersonation | Same, with differences | [Roles and privileges](#roles-and-privileges) |
-| Attribute-based access control: auth rules, user tags | Not supported | [Not supported](#not-supported) |
+| User tags (`SET TAGS`, `ADD TAGS`, `ALTER USERS`) | Same | [Users](#users) |
+| Attribute-based access control: auth rules | Not supported | [Not supported](#not-supported) |
 | LDAP, single sign-on and Kerberos | Not supported | [Not supported](#not-supported) |
 | Local and remote database aliases | Same, with differences | [Database aliases](#database-aliases) |
 | Clustering: replication, failover, routing | Own design, same for clients | [Clustering](#clustering) |
@@ -259,8 +260,21 @@ sessions that name none, also through routing. `SHOW USERS` and
 to set either, and its `SHOW CURRENT USER` shows null for them and for the
 roles. Only native
 authentication exists: `SET AUTH` with another provider than native, and
-`REMOVE AUTH`, fail, and so do `SET TAGS`, `ADD TAGS` and `REMOVE TAGS`, as
-there are no user tags (see [Not supported](#not-supported)).
+`REMOVE AUTH`, fail (see [Not supported](#not-supported)).
+
+User tags work as in Enterprise 2026.06: `SET TAGS` replaces a user's tags,
+`ADD TAGS` adds to them, and `REMOVE TAGS` and `REMOVE ALL TAGS` remove them,
+in `CREATE USER`, `ALTER USER`, and `ALTER USERS`, which alters several users
+at once and with `IF EXISTS` leaves out those that do not exist. Changing
+tags takes `SET USER METADATA`. `SHOW USERS`, `SHOW CURRENT USER` and `SHOW
+USERS AS COMMANDS` show them only with `SHOW USER METADATA`, and null
+otherwise. `USER METADATA MANAGEMENT` includes both, and `ALL DBMS
+PRIVILEGES`, so `admin`, includes it; `USER MANAGEMENT` does not. Where the
+docs say nothing: tags are Cypher 25's only, as Neo4j's parser has them; each
+tag is kept once, in the order it was first set or added; `ALTER USERS`
+changes all its users or, if one does not exist, none; a parameter must be a
+non-empty string or a list of them, as literals must; and backups with
+`--include-metadata` keep the tags of users.
 
 In Cypher 25, `SHOW USERS [WITH AUTH] AS COMMANDS` gives the `CREATE USER`
 commands that make the users again, with their encrypted passwords (`SET
@@ -1413,8 +1427,7 @@ error, and their procedures do not exist.
 - **Graph types**, Cypher 25's `ALTER CURRENT GRAPH TYPE` and the commands
   around it. DozenDB adds nothing to Neo4j Community there.
 - **Attribute-based access control**: auth rules (`SHOW ROLES WITH AUTH
-  RULES` fails), native user tags (`SET TAGS`, `ADD TAGS` and `REMOVE TAGS`
-  fail), and `abac` functions in property rules, which are refused.
+  RULES` fails), and `abac` functions in property rules, which are refused.
 - **LDAP, single sign-on and Kerberos.** Users log in with native users and
   passwords only: `dbms.security.authentication_providers`,
   `authorization_providers`, `dbms.security.ldap.*`, `dbms.security.oidc.*`,

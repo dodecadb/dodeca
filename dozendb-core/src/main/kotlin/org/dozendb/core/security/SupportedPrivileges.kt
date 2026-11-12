@@ -166,6 +166,18 @@ object SupportedPrivileges {
                 "enables the specified roles to list users as commands, with show user",
             ),
             dbms("alter user", "enables the specified roles to modify users"),
+            dbms(
+                "user metadata management",
+                "enables the specified roles to set, remove, and view attributes and tags on users",
+            ),
+            dbms(
+                "set user metadata",
+                "enables the specified roles to set, add, and remove attributes and tags on users",
+            ),
+            dbms(
+                "show user metadata",
+                "enables the specified roles to view attributes and tags on users",
+            ),
             dbms("set user status", "enables the specified roles to suspend and activate users"),
             dbms("set passwords", "enables the specified roles to set the passwords of users"),
             dbms("set auth", "enables the specified roles to set the authentication of users"),

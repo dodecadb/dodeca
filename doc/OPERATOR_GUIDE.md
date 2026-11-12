@@ -1456,7 +1456,7 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   gives a DBMS back the users, roles and privileges of the database: `roles`
   the roles with privileges on it, on every database or on the home database,
   and those privileges; `users` the users who can access it, with their
-  encrypted passwords, status, home database and roles among those, and
+  encrypted passwords, status, home database, tags and roles among those, and
   `users=alice,bob` only those of them; `all` both; `none` nothing. Backups of
   `system` keep none: `system` holds them all.
 - `--inspect-path=/backups` lists the backups there with their metadata

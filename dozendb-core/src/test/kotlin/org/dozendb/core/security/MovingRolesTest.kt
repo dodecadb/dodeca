@@ -48,7 +48,7 @@ class MovingRolesTest {
         mapOf(
             "users" to
                 rows(
-                        "SHOW USERS YIELD user, roles, passwordChangeRequired, suspended, home",
+                        "SHOW USERS YIELD user, roles, passwordChangeRequired, suspended, home, tags",
                         SYSTEM,
                     )
                     .toSet(),
@@ -57,15 +57,15 @@ class MovingRolesTest {
         )
 
     @Test
-    fun `moves users with their passwords, roles and privileges to another DBMS as commands`() {
+    fun `moves users with their passwords and tags, roles and privileges to another DBMS`() {
         val from = server("from")
         from.administer("CREATE ROLE curator")
         from.administer("GRANT MATCH {title} ON GRAPH neo4j NODES Movie TO curator")
         from.administer("DENY READ {budget} ON GRAPH * NODES * TO curator")
         from.administer("CYPHER 25 GRANT SHOW USER CREDENTIALS ON DBMS TO curator")
         from.administer(
-            "CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED " +
-                "SET HOME DATABASE neo4j"
+            "CYPHER 25 CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED " +
+                "SET HOME DATABASE neo4j SET TAGS ['finance', 'auditor']"
         )
         from.administer("CREATE USER bob SET PASSWORD 'bob-secret-1' SET STATUS SUSPENDED")
         from.administer("GRANT ROLE curator, reader TO alice")

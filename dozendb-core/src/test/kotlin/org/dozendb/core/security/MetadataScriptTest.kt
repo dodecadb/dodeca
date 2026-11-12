@@ -47,8 +47,8 @@ class MetadataScriptTest {
                 "GRANT ACCESS ON DATABASE films TO `film_fan`",
                 "CREATE ROLE other",
                 "GRANT MATCH {*} ON GRAPH neo4j TO other",
-                "CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED " +
-                    "SET HOME DATABASE films",
+                "CYPHER 25 CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED " +
+                    "SET HOME DATABASE films SET TAGS ['finance', \"it's\"]",
                 "GRANT ROLE curator, other, `film_fan` TO alice",
                 "CREATE USER bob SET PASSWORD 'bob-secret-1' CHANGE NOT REQUIRED",
                 "GRANT ROLE other TO bob",
@@ -88,7 +88,7 @@ class MetadataScriptTest {
     fun `keeps the roles that concern the database, their privileges there and their users`() {
         val statements = statements(script(Include.ALL))
         val credentials = { user: String ->
-            statements.single { it.startsWith("CREATE USER `$user`") }
+            statements.single { it.removePrefix("CYPHER 25 ").startsWith("CREATE USER `$user`") }
         }
 
         assertThat(statements)
@@ -112,8 +112,9 @@ class MetadataScriptTest {
             .noneMatch { "`bob`" in it }
         assertThat(credentials("alice"))
             .matches(
-                "CREATE USER `alice` IF NOT EXISTS SET ENCRYPTED PASSWORD '1,[0-9a-f]+,[0-9a-f]+' " +
-                    "CHANGE NOT REQUIRED SET STATUS ACTIVE SET HOME DATABASE \\\$database"
+                "CYPHER 25 CREATE USER `alice` IF NOT EXISTS SET ENCRYPTED PASSWORD " +
+                    "'1,[0-9a-f]+,[0-9a-f]+' CHANGE NOT REQUIRED SET STATUS ACTIVE " +
+                    "SET HOME DATABASE \\\$database SET TAGS \\['finance', \"it's\"]"
             )
         assertThat(credentials("carol"))
             .contains("CHANGE REQUIRED SET STATUS SUSPENDED")
@@ -144,7 +145,7 @@ class MetadataScriptTest {
             .containsExactlyInAnyOrderElementsOf(commands(source, "curator"))
         assertThat(
                 target.rows(
-                    "SHOW USERS YIELD user, roles, suspended, home RETURN * ORDER BY user",
+                    "SHOW USERS YIELD user, roles, suspended, home, tags RETURN * ORDER BY user",
                     SYSTEM,
                 )
             )
@@ -154,18 +155,21 @@ class MetadataScriptTest {
                     "roles" to listOf("curator", "film_fan", "PUBLIC"),
                     "suspended" to false,
                     "home" to "archive",
+                    "tags" to listOf("finance", "it's"),
                 ),
                 mapOf(
                     "user" to "carol",
                     "roles" to listOf("curator", "PUBLIC"),
                     "suspended" to true,
                     "home" to null,
+                    "tags" to emptyList<String>(),
                 ),
                 mapOf(
                     "user" to "neo4j",
                     "roles" to listOf("admin", "PUBLIC"),
                     "suspended" to false,
                     "home" to null,
+                    "tags" to emptyList<String>(),
                 ),
             )
         // The encrypted password logs alice in.
@@ -182,16 +186,20 @@ class MetadataScriptTest {
 
     @Test
     fun `keeps what is asked for, and nothing for system or no database`() {
-        assertThat(statements(script(Include.ROLES))).noneMatch { it.startsWith("CREATE USER") }
+        // Alice's has tags, which only Cypher 25 has.
+        val creates = { user: String ->
+            { statement: String -> statement.removePrefix("CYPHER 25 ").startsWith("CREATE $user") }
+        }
+        assertThat(statements(script(Include.ROLES))).noneMatch(creates("USER"))
         assertThat(statements(script(Include.USERS)))
             .noneMatch { it.startsWith("CREATE ROLE") || it.startsWith("GRANT ACCESS") }
-            .anyMatch { it.startsWith("CREATE USER `alice`") }
+            .anyMatch(creates("USER `alice`"))
             .contains("GRANT ROLE `curator` TO `alice`")
         assertThat(script(Include.NONE)).isNull()
         // Only the users listed, as --include-metadata=users=alice,dave asks: dave does not exist.
         assertThat(statements(script(Include.USERS, users = setOf("alice", "dave"))))
-            .anyMatch { it.startsWith("CREATE USER `alice`") }
-            .noneMatch { it.startsWith("CREATE USER `carol`") || it.contains("`dave`") }
+            .anyMatch(creates("USER `alice`"))
+            .noneMatch { creates("USER `carol`")(it) || it.contains("`dave`") }
         assertThat(script(Include.ALL, SYSTEM)).isNull()
         assertThat(script(Include.ALL, "nothing")).isNull()
     }

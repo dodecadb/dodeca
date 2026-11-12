@@ -6,6 +6,7 @@
  * 2026-11-11: Neo4j 2026's ShowCurrentUserCommunityCommand, ported to Kotlin, which shows the
  * roles, status and home database of the current user where Community shows null; run through
  * the fallback pipe mapper of Neo4j's interpreted runtime.
+ * 2026-11-12: tags only with SHOW USER METADATA.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -38,7 +39,6 @@ import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_HOME_DB_PROPERTY
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_SUSPENDED_PROPERTY
-import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_TAGS_PROPERTY
 import org.neo4j.exceptions.InternalException
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Node
@@ -117,7 +117,9 @@ private class CurrentUserCommand(
     ): ClosingIterator<ScalaMap<String, AnyValue>> {
         val query = state.query()
         mustRunOnSystemCheck(query, "SHOW CURRENT USER")
-        val name = query.transactionalContext().securityContext().subject().executingUser()
+        val securityContext = query.transactionalContext().securityContext()
+        val name = securityContext.subject().executingUser()
+        val tags = UserTags.visible(securityContext)
         val columns = CollectionConverters.asJava(requestedColumnsNames())
         // The transaction of the query may not read the system graph; Neo4j's command opens its
         // own.
@@ -128,7 +130,7 @@ private class CurrentUserCommand(
                 query.systemGraph().beginTx().use { tx ->
                     try {
                         tx.findNode(USER_LABEL, USER_NAME_PROPERTY, name)?.let { user ->
-                            columns.associateWith { column -> value(user, name, column) }
+                            columns.associateWith { column -> value(user, name, column, tags) }
                         }
                     } catch (_: NotFoundException) {
                         null // Dropped while it was read.
@@ -142,7 +144,8 @@ private class CurrentUserCommand(
         }
     }
 
-    private fun value(user: Node, name: String, column: String): AnyValue =
+    /** The [column] of [user], [name], whose tags are shown if [tags]. */
+    private fun value(user: Node, name: String, column: String, tags: Boolean): AnyValue =
         when (column) {
             ShowCurrentUserClause.userColumn() -> Values.utf8Value(name)
             ShowCurrentUserClause.rolesColumn() -> strings(roles(user))
@@ -153,11 +156,7 @@ private class CurrentUserCommand(
             ShowCurrentUserClause.homeColumn() ->
                 Values.of(user.getProperty(USER_HOME_DB_PROPERTY, null))
             ShowCurrentUserClause.tagsColumn() ->
-                when (val tags = user.getProperty(USER_TAGS_PROPERTY, null)) {
-                    is Array<*> -> strings(tags.map { it as String })
-                    is String -> strings(listOf(tags))
-                    else -> strings(emptyList())
-                }
+                if (tags) strings(UserTags.read(user)) else Values.NO_VALUE
             else ->
                 throw InternalException.internalError(
                     javaClass.simpleName,

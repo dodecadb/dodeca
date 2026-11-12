@@ -378,9 +378,9 @@ class ShowPrivilegesTest {
                     "enables the specified roles to show the specified configuration settings",
                 ),
             )
-        // DozenDB has no secrets manager, and no user metadata yet. The example lacks SHOW USER
-        // CREDENTIALS, which Enterprise grants since 2026.09.
-        val missing = setOf("write secrets", "user metadata management", "show user metadata")
+        // DozenDB has no secrets manager. The example lacks SHOW USER CREDENTIALS, which
+        // Enterprise grants since 2026.09.
+        val missing = setOf("write secrets")
         val credentials =
             supported(
                 "show user credentials",

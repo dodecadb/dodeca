@@ -8,6 +8,7 @@
  * 2026-10-23: SHOW USERS and SHOW CURRENT USER show the roles of the users.
  * 2026-11-11: ported to Neo4j 2026, whose SHOW USERS lists the users in Java and runs SHOW CURRENT
  * USER outside the administration commands; user tags are refused.
+ * 2026-11-12: user tags, with ALTER USERS, shown with SHOW USER METADATA.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -25,22 +26,30 @@ import org.neo4j.cypher.internal.AdministrationShowCommandUtils
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.ExternalAuth
+import org.neo4j.cypher.internal.ast.UserTagsAction
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AlterUser
+import org.neo4j.cypher.internal.logical.plans.AlterUsers
 import org.neo4j.cypher.internal.logical.plans.CreateUser
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.ShowUsers
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.PredicateExecutionPlan
 import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
+import org.neo4j.cypher.internal.procs.SystemGraphWriteExecutionPlan
+import org.neo4j.cypher.internal.procs.WriteEffect
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY
 import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.SecurityAuthorizationHandler
+import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.server.security.systemgraph.ShowUsersOutput
 import org.neo4j.server.security.systemgraph.UserSecurityGraphComponent
+import org.neo4j.values.virtual.MapValue
 import org.neo4j.values.virtual.VirtualValues
+import scala.Function1
 import scala.Function2
 import scala.Function3
 import scala.Option
@@ -50,10 +59,10 @@ import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
 
 /**
- * CREATE USER and ALTER USER with `SET STATUS` and `SET HOME DATABASE`, which Neo4j Community
- * refuses, through Neo4j's own plans that store them; and SHOW USERS, which shows them, and the
- * users' roles, where Community shows null. Only native authentication is supported, without user
- * tags.
+ * CREATE USER and ALTER USER with `SET STATUS`, `SET HOME DATABASE` and tags, which Neo4j Community
+ * refuses, through Neo4j's own plans that store them; ALTER USERS, which sets the tags of many
+ * users; and SHOW USERS, which shows them, and the users' roles, where Community shows null. Only
+ * native authentication is supported.
  */
 internal class UserCommands(
     private val engine: ExecutionEngine,
@@ -85,6 +94,7 @@ internal class UserCommands(
         when (plan) {
             is CreateUser -> Planner { createUser(plan, it) }
             is AlterUser -> Planner { alterUser(plan, it) }
+            is AlterUsers -> Planner { alterUsers(plan, it) }
             is ShowUsers -> Planner { showUsers(plan, it) }
             else -> null
         }
@@ -94,8 +104,7 @@ internal class UserCommands(
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
         val source = compile(plan.source(), context)
-        val unsupported =
-            external(plan.externalAuths()) + listOfNotNull(TAGS.takeIf { plan.tags().isDefined })
+        val unsupported = external(plan.externalAuths())
         if (unsupported.isNotEmpty()) {
             return failure(source, "create", plan.userName(), unsupported)
         }
@@ -106,7 +115,7 @@ internal class UserCommands(
             plan.nativeAuth(),
             plan.externalAuths(),
             admin.`makeCreateUserExecutionPlan$default$6`(),
-            admin.`makeCreateUserExecutionPlan$default$7`(),
+            tagWriter(listOfNotNull(plan.tags().getOrElse { null }), "create", context),
             Option.apply(source),
             engine,
             authorization,
@@ -121,10 +130,7 @@ internal class UserCommands(
         val source = compile(plan.source(), context)
         val unsupported =
             external(plan.externalAuths()) +
-                listOfNotNull(
-                    "`REMOVE AUTH`".takeUnless { plan.removeAuth().isEmpty },
-                    TAGS.takeUnless { plan.tags().isEmpty },
-                )
+                listOfNotNull("`REMOVE AUTH`".takeUnless { plan.removeAuth().isEmpty })
         if (unsupported.isNotEmpty()) {
             return failure(source, "alter", plan.userName(), unsupported)
         }
@@ -136,12 +142,62 @@ internal class UserCommands(
             plan.externalAuths(),
             plan.removeAuth(),
             admin.`makeAlterUserExecutionPlan$default$7`(),
-            admin.`makeAlterUserExecutionPlan$default$8`(),
+            tagWriter(CollectionConverters.asJava(plan.tags()), "alter", context),
             Option.apply(source),
             engine,
             authorization,
             userSecurity,
             config,
+        )
+    }
+
+    /** What writes the tags of [actions] once Neo4j's plan created or altered the user. */
+    private fun tagWriter(
+        actions: List<UserTagsAction>,
+        operation: String,
+        context: AdministrationCommandRuntimeContext,
+    ): Option<Function3<Transaction, String, MapValue, Any>> {
+        if (actions.isEmpty()) return Option.empty()
+        val version = context.runtimeContext().cypherVersion()
+        return Option.apply(
+            Function3 { tx, user, params ->
+                UserTags.write(tx, user, actions, params, version, operation)
+            }
+        )
+    }
+
+    /**
+     * ALTER USERS: the tags of each user named, all or none, failing as ALTER USER does for a user
+     * that does not exist, unless `IF EXISTS`, which leaves it out.
+     */
+    private fun alterUsers(
+        plan: AlterUsers,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val actions = CollectionConverters.asJava(plan.tags())
+        val version = context.runtimeContext().cypherVersion()
+        return SystemGraphWriteExecutionPlan(
+            "AlterUsers",
+            authorization,
+            Option.apply(compile(plan.source(), context)),
+            WriteEffect.Counted.apply(
+                Function3<Transaction, SecurityContext, MapValue, Any> { tx, _, params ->
+                    val users =
+                        CollectionConverters.asJava(plan.userNames()).mapNotNull { name ->
+                            val user = admin.runtimeStringValue(name, params, IDENTITY)
+                            tx.findNode(USER_LABEL, USER_NAME_PROPERTY, user)
+                                ?: if (plan.ifExists()) null
+                                else
+                                    throw InvalidArgumentException.alterMissingUser(
+                                        user,
+                                        admin.getParameterName(name).getOrElse { null },
+                                    )
+                        }
+                    users.distinct().count { UserTags.write(it, actions, params, version, "alter") }
+                }
+            ),
+            SystemGraphWriteExecutionPlan.`$lessinit$greater$default$5`(),
+            SystemGraphWriteExecutionPlan.`$lessinit$greater$default$6`(),
         )
     }
 
@@ -206,9 +262,15 @@ internal class UserCommands(
             VirtualValues.EMPTY_MAP,
             Option.apply(compile(plan.source(), context)),
             SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
-            ParameterTransformer.apply { tx, _, _ ->
+            ParameterTransformer.apply { tx, securityContext, _ ->
                 userSecurity
-                    .showUsers(tx, plan.withAuth(), true, plan.asCommands(), true)
+                    .showUsers(
+                        tx,
+                        plan.withAuth(),
+                        UserTags.visible(securityContext),
+                        plan.asCommands(),
+                        true,
+                    )
                     .toMapValue()
             },
             SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
@@ -220,6 +282,6 @@ internal class UserCommands(
         CollectionConverters.asScala(items.toList()).toSeq()
 
     private companion object {
-        const val TAGS = "`SET TAGS`, `ADD TAGS` and `REMOVE TAGS`"
+        val IDENTITY = Function1<String, String> { it }
     }
 }
