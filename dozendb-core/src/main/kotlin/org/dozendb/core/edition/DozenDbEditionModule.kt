@@ -9,6 +9,7 @@
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbEditionModule, now a subclass of Neo4j's
  * CommunityEditionModule that keeps Community's user security component as a dependency, which
  * ALTER USER needs.
+ * 2026-11-11: Neo4j 2026's fleet discovery is off unless the operator turns it on.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -107,6 +108,9 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         // Neo4j sends usage data to udc.neo4j.com unless told not to, and would report this server
         // as Neo4j Enterprise: DozenDB sends it only when the operator turns it on.
         globalModule.globalConfig.setIfNotSet(GraphDatabaseSettings.udc_enabled, false)
+        // Neo4j 2026 announces each server on the local network for Neo4j's fleet tools, as Neo4j
+        // Enterprise here: DozenDB announces it only when the operator turns it on.
+        globalModule.globalConfig.setIfNotSet(BoltConnector.enable_discovery, false)
         // Refuses initial.server.* settings that no server could be enabled with.
         ServerOptions.initial(globalModule.globalConfig)
     }

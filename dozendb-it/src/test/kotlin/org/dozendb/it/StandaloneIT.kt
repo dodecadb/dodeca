@@ -176,6 +176,16 @@ class StandaloneIT {
         assertThat(dozenDb.rows(edition)).containsExactly(mapOf("edition" to "enterprise"))
     }
 
+    /** Neo4j would announce this server on the local network as Neo4j Enterprise. */
+    @Test
+    fun `announces itself on the local network only when asked`() {
+        val setting =
+            "SHOW SETTINGS YIELD name, value WHERE name = 'server.fleet_discovery.enabled' " +
+                "RETURN value"
+        assertThat(community.rows(setting, "system")).containsExactly(mapOf("value" to "true"))
+        assertThat(dozenDb.rows(setting, "system")).containsExactly(mapOf("value" to "false"))
+    }
+
     /** Neo4j would report this server to udc.neo4j.com as Neo4j Enterprise. */
     @Test
     fun `sends Neo4j usage data only when asked`() {
