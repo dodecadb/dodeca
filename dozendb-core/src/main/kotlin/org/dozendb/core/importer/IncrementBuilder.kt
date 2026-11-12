@@ -5,13 +5,13 @@ import java.io.DataOutputStream
 import java.io.PrintStream
 import java.nio.file.Files
 import org.dozendb.core.importer.IncrementalImporter.Companion.describe
+import org.eclipse.collections.api.factory.primitive.LongSets
 import org.eclipse.collections.impl.list.mutable.primitive.LongArrayList
 import org.neo4j.batchimport.api.Configuration
 import org.neo4j.batchimport.api.InputIterable
 import org.neo4j.batchimport.api.input.Collector
 import org.neo4j.batchimport.api.input.Group
 import org.neo4j.batchimport.api.input.Input
-import org.neo4j.batchimport.api.input.InputEntityVisitor
 import org.neo4j.cli.ExitCode
 import org.neo4j.internal.batchimport.cache.NumberArrayFactories
 import org.neo4j.internal.batchimport.cache.idmapping.IdMapper
@@ -41,7 +41,7 @@ internal class IncrementBuilder(
     private val memoryTracker: MemoryTracker,
     private val out: PrintStream,
 ) {
-    private val factory = NumberArrayFactories.AUTO_WITHOUT_PAGECACHE
+    private val factory = NumberArrayFactories.AUTO_WITHOUT_SWAP
     private val existing = state.groups.sumOf { it.existing }
     private val keyedGroups = state.groups.associateBy { it.name }
     private val tokens = Tokens()
@@ -49,25 +49,28 @@ internal class IncrementBuilder(
     /** Builds the increment and returns the state that records it. */
     fun build(): IncrementState {
         val estimate = maxOf(existing * 2, 1_000_000)
-        val mapper =
-            when (state.keyType) {
-                KeyType.TEXT ->
-                    IdMappers.strings(
-                        factory,
-                        input.groups(),
-                        importConfig.strictNodeCheck(),
-                        memoryTracker,
-                        estimate,
-                    )
-                KeyType.INTEGER -> IdMappers.longs(factory, input.groups(), memoryTracker, estimate)
-            }
-        return mapper.use {
-            KeyStore(increment.ids, factory, memoryTracker).use { keys -> build(mapper, keys) }
+        return KeyStore(increment.ids, factory, memoryTracker).use { keys ->
+            val mapper =
+                when (state.keyType) {
+                    KeyType.TEXT ->
+                        IdMappers.strings(
+                            factory,
+                            input.groups(),
+                            importConfig.strictNodeCheck(),
+                            memoryTracker,
+                            estimate,
+                            keys,
+                        )
+                    KeyType.INTEGER ->
+                        IdMappers.longs(factory, input.groups(), memoryTracker, estimate)
+                }
+            mapper.use { build(mapper, keys) }
         }
     }
 
     private fun build(mapper: IdMapper, keys: KeyStore): IncrementState {
-        val newNodes = readNodes(mapper, keys)
+        val setter = mapper.newSetter(IdMapper.WORKER_ID_AGNOSTIC)
+        val newNodes = readNodes(setter, keys)
         val nodeIds = factory.newLongArray(maxOf(existing, 1), -1, memoryTracker)
         try {
             var place = 0L
@@ -81,14 +84,15 @@ internal class IncrementBuilder(
                         )
                 readKeys(increment.keys(i)) { key, nodeId ->
                     val mapped = mapperKey(key)
-                    mapper.put(mapped, place, group)
+                    setter.put(mapped, place, group)
                     keys.add(place, mapped)
                     nodeIds.set(place, nodeId)
                     place++
                 }
             }
+            setter.close()
             keys.complete()
-            mapper.prepare(keys, collector, ProgressMonitorFactory.NONE)
+            mapper.prepare(keys, collector, ProgressMonitorFactory.NONE, LongSets.immutable.empty())
             val skipped = writeDuplicates(mapper)
             val relationships =
                 readRelationships(mapper) { place ->
@@ -112,8 +116,8 @@ internal class IncrementBuilder(
         }
     }
 
-    /** Writes the new nodes, giving the keyed ones to [mapper]; returns how many there are. */
-    private fun readNodes(mapper: IdMapper, keys: KeyStore): Long {
+    /** Writes the new nodes, giving the keyed ones to [setter]; returns how many there are. */
+    private fun readNodes(setter: IdMapper.Setter, keys: KeyStore): Long {
         var ordinal = 0L
         EntityWriter(increment.nodes).use { writer ->
             read(input.nodes(collector)) { node ->
@@ -124,7 +128,7 @@ internal class IncrementBuilder(
                     val key = key(id, keyed.keyType, group)
                     if (keyed.label !in labels) labels += keyed.label
                     val mapped = mapperKey(key)
-                    mapper.put(mapped, existing + ordinal, group)
+                    setter.put(mapped, existing + ordinal, group)
                     keys.add(existing + ordinal, mapped)
                 }
                 writer.write(
@@ -159,7 +163,7 @@ internal class IncrementBuilder(
     private fun readRelationships(mapper: IdMapper, end: (place: Long) -> Long): Long {
         var count = 0L
         EntityWriter(increment.relationships).use { writer ->
-            mapper.newGetter().use { getter ->
+            mapper.newGetter(IdMapper.WORKER_ID_AGNOSTIC).use { getter ->
                 fun resolve(id: Any?, group: Group?): Long? {
                     if (id == null || group == null) return null
                     val keyed = keyedGroups[group.name()] ?: return null
@@ -185,6 +189,8 @@ internal class IncrementBuilder(
                             relationship.endIdGroup,
                             if (start == null) relationship.objectStartId
                             else relationship.objectEndId,
+                            relationship.sourceDescription,
+                            relationship.lineNumber,
                         )
                     } else {
                         writer.write(
@@ -211,12 +217,10 @@ internal class IncrementBuilder(
                 ExitCode.DATAERR,
             )
 
-    private fun properties(entity: InputEntity): List<Property> {
-        val values = entity.properties
-        return (values.indices step 2).map { i ->
-            Property(tokens.keys.of(values[i] as String), EntityWriter.storable(values[i + 1]))
+    private fun properties(entity: InputEntity): List<Property> =
+        entity.properties.map {
+            Property(tokens.keys.of(it.keyName()), EntityWriter.storable(it.value()))
         }
-    }
 
     /** [key] as the ID mapper takes keys: as text, or as a Long for an integer mapper. */
     private fun mapperKey(key: Any): Any =
@@ -227,16 +231,11 @@ internal class IncrementBuilder(
 
     /** Reads [entities] one by one, single-threaded. */
     private fun read(entities: InputIterable, visit: (InputEntity) -> Unit) {
-        lateinit var entity: InputEntity
-        val visitor =
-            object : InputEntityVisitor.Adapter() {
-                override fun endOfEntity() = visit(entity)
-            }
-        entity = InputEntity(visitor)
+        val entity = InputEntity()
         entities.iterator().use { iterator ->
             iterator.newChunk().use { chunk ->
                 while (iterator.next(chunk)) {
-                    @Suppress("ControlFlowWithEmptyBody") while (chunk.next(entity)) {}
+                    while (chunk.next(entity)) visit(entity)
                 }
             }
         }

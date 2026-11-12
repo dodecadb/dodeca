@@ -12,18 +12,20 @@ import org.neo4j.kernel.impl.api.CompleteTransaction
 import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.api.TransactionCommitProcess
 import org.neo4j.kernel.impl.api.txid.IdStoreTransactionIdGenerator
-import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
-import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
-import org.neo4j.kernel.impl.transaction.log.NoSuchLogEntryException
-import org.neo4j.kernel.impl.transaction.log.TransactionCommitmentFactory
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.kernel.impl.transaction.tracing.TransactionWriteEvent
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.monitoring.DatabaseHealth
 import org.neo4j.storageengine.api.CommandBatch
+import org.neo4j.storageengine.api.Leases
 import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.TransactionApplicationMode
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.CompleteCommandBatch
+import org.neo4j.wal.LogicalTransactionStore
+import org.neo4j.wal.NoSuchLogEntryException
+import org.neo4j.wal.TransactionCommitmentFactory
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /**
  * Applies committed entries of a replicated database, on every member, in log order.
@@ -97,6 +99,7 @@ internal class DatabaseStateMachine(
                 last.id(),
                 now,
                 LeaseService.NO_LEASE,
+                Leases.NO_LEASES,
                 last.kernelVersion(),
                 Subject.SYSTEM,
             )
@@ -112,6 +115,7 @@ internal class DatabaseStateMachine(
                     ),
                     TransactionWriteEvent.NULL,
                     TransactionApplicationMode.EXTERNAL,
+                    EmptyMemoryTracker.INSTANCE,
                 )
             }
         }
@@ -212,6 +216,7 @@ internal class DatabaseStateMachine(
                         transaction,
                         TransactionWriteEvent.NULL,
                         TransactionApplicationMode.EXTERNAL,
+                        EmptyMemoryTracker.INSTANCE,
                     )
                 afterApply()
                 return ApplyOutcome.encode(

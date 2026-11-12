@@ -29,15 +29,17 @@ import org.neo4j.kernel.impl.api.InternalTransactionCommitProcess
 import org.neo4j.kernel.impl.api.TransactionCommitProcess
 import org.neo4j.kernel.impl.api.TransactionalProcessFactory
 import org.neo4j.kernel.impl.api.txid.IdStoreTransactionIdGenerator
-import org.neo4j.kernel.impl.transaction.log.TransactionAppender
-import org.neo4j.kernel.impl.transaction.log.TransactionCommitmentFactory
 import org.neo4j.kernel.impl.transaction.tracing.TransactionWriteEvent
 import org.neo4j.logging.InternalLog
+import org.neo4j.logging.LogProvider
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.monitoring.DatabaseHealth
 import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.TransactionApplicationMode
 import org.neo4j.storageengine.api.TransactionIdStore
 import org.neo4j.storageengine.api.cursor.StoreCursors
+import org.neo4j.wal.TransactionAppender
+import org.neo4j.wal.TransactionCommitmentFactory
 
 /**
  * One database that this member hosts as a secondary. It takes no writes: a transaction that writes
@@ -97,6 +99,7 @@ internal class SecondaryDatabase(
                 preAllocateSpaceInStoreFiles: Boolean,
                 commandCommitListeners: CommandCommitListeners,
                 prefetchPages: Boolean,
+                logProvider: LogProvider,
             ): TransactionCommitProcess {
                 applyProcess =
                     InternalTransactionCommitProcess(
@@ -104,10 +107,10 @@ internal class SecondaryDatabase(
                         storageEngine,
                         preAllocateSpaceInStoreFiles,
                         commandCommitListeners,
-                    ) {
-                        prefetchPages
-                    }
-                return TransactionCommitProcess { _, _, _ ->
+                        { prefetchPages },
+                        logProvider,
+                    )
+                return TransactionCommitProcess { _, _, _, _ ->
                     throw CommitFailure.NOT_LEADER.exception(refusal())
                 }
             }
@@ -235,7 +238,12 @@ internal class SecondaryDatabase(
                 last = next
             }
             checkNotNull(applyProcess) { "no commit process" }
-                .commit(first, TransactionWriteEvent.NULL, TransactionApplicationMode.EXTERNAL)
+                .commit(
+                    first,
+                    TransactionWriteEvent.NULL,
+                    TransactionApplicationMode.EXTERNAL,
+                    EmptyMemoryTracker.INSTANCE,
+                )
         } finally {
             opened.asReversed().forEach { it.close() }
         }

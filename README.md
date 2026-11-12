@@ -41,9 +41,9 @@ Under development. Not ready for production use.
 
 ## Requirements
 
-- Neo4j Community 5.26.27, exactly: each DozenDB build runs on the Neo4j
+- Neo4j Community 2026.10.2, exactly: each DozenDB build runs on the Neo4j
   version it was built for.
-- Java 17 or 21, as Neo4j 5.26.
+- Java 21 or 25, as Neo4j 2026.
 - To build: [mise](https://mise.jdx.dev), which provides the JDK
   (`mise.toml`), `unzip`, which the Maven wrapper unpacks Maven with, and
   Docker for the integration tests.
@@ -51,8 +51,8 @@ Under development. Not ready for production use.
 ## Installing
 
 Each [release](https://github.com/dozendb/dozendb/releases) has the jar,
-`dozendb-<version>-neo4j-5.26.27.jar`, and an image. Copy the jar into the
-`lib/` directory of Neo4j Community 5.26.27, the version its name gives, and
+`dozendb-<version>-neo4j-2026.10.2.jar`, and an image. Copy the jar into the
+`lib/` directory of Neo4j Community 2026.10.2, the version its name gives, and
 start Neo4j. The image is Neo4j's official Community image with the jar in
 its `lib/`, and runs as Neo4j's does:
 

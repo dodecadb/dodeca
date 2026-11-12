@@ -138,7 +138,7 @@ class LeaderBalancingIT {
         assertThat(unknown).isEmpty()
         // Members that stop gracefully, and those still running, log no errors.
         for (member in members) {
-            assertThat(member.debugLog().lineSequence().filter { " ERROR " in it }.toList())
+            assertThat(member.debugEntries().filter { it.level == "ERROR" })
                 .describedAs("errors in the debug log of ${member.alias}")
                 .isEmpty()
         }

@@ -218,7 +218,7 @@ class PrivilegeTextTest {
                         PrivilegeScope.AllDatabases,
                         PrivilegeResource.AllProperties,
                         PrivilegeSegment.NodePattern(
-                            PatternSegment.ValuePatternSegment(
+                            PatternSegment.NodeValuePatternSegment(
                                 setOf("Person", "Admin"),
                                 "age",
                                 Values.longValue(18),

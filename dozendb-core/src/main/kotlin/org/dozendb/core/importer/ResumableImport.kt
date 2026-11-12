@@ -17,6 +17,9 @@ import org.neo4j.batchimport.api.input.Input
 import org.neo4j.configuration.Config
 import org.neo4j.internal.batchimport.DataStatistics
 import org.neo4j.internal.batchimport.ImportLogic
+import org.neo4j.internal.batchimport.ImporterSchemaCommandExecutor
+import org.neo4j.internal.batchimport.ParallelBatchImporter
+import org.neo4j.internal.batchimport.SchemaMonitors
 import org.neo4j.internal.batchimport.staging.ExecutionMonitor
 import org.neo4j.internal.batchimport.store.BatchingNeoStores
 import org.neo4j.io.fs.FileSystemAbstraction
@@ -24,14 +27,15 @@ import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.recordstorage.RecordDatabaseLayout
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
+import org.neo4j.kernel.DatabaseCreationOptions
 import org.neo4j.kernel.api.index.IndexDirectoryStructure
-import org.neo4j.kernel.database.MetadataCache
 import org.neo4j.kernel.impl.store.StoreType
-import org.neo4j.kernel.impl.transaction.log.EmptyLogTailMetadata
 import org.neo4j.logging.internal.LogService
 import org.neo4j.memory.MemoryTracker
 import org.neo4j.scheduler.JobScheduler
 import org.neo4j.storageengine.api.LogFilesInitializer
+import org.neo4j.storageengine.api.LogMetadataProviderImpl
+import org.neo4j.wal.EmptyLogTailMetadata
 
 /** A full import that cannot resume as asked, with the reason, which `neo4j-admin` prints. */
 internal class ImportResumeException(message: String) : RuntimeException(message)
@@ -190,15 +194,24 @@ internal class ResumableBatchImporter(
     private val progress = ImportProgress(layout)
     private val name = layout.databaseName
 
+    override fun doDryRun(input: Input, output: PrintStream) {
+        ParallelBatchImporter.outputEstimates(input, config.maxNumberOfWorkerThreads(), output)
+    }
+
     override fun doImport(input: Input) {
-        if (!input.schemaCommands().isEmpty()) {
+        // Neo4j's refuses the commands of a schema file too.
+        if (
+            ImporterSchemaCommandExecutor.validateSupported(input.schemaCommandSource())
+                .isNotEmpty()
+        ) {
             throw UnsupportedOperationException(
-                "Record format batch import does not support schema changes"
+                "A full import into the record format does not create indexes or constraints: " +
+                    "create them once the import completes."
             )
         }
         val state = progress.read()
         if (state != null) checkResumable(state)
-        val tail = EmptyLogTailMetadata(dbConfig)
+        val logMetadata = LogMetadataProviderImpl(EmptyLogTailMetadata(dbConfig))
         ImportLogic.instantiateNeoStores(
                 fs,
                 layout,
@@ -206,11 +219,12 @@ internal class ResumableBatchImporter(
                 config,
                 logService,
                 additionalInitialIds,
-                tail,
+                logMetadata,
                 dbConfig,
                 scheduler,
                 memoryTracker,
                 contextFactory,
+                DatabaseCreationOptions.EMPTY_CREATION_OPTIONS,
             )
             .use { store ->
                 ImportLogic(
@@ -235,10 +249,9 @@ internal class ResumableBatchImporter(
                                     ImportProgress.State(ImportProgress.Stage.STARTED, this.input)
                                 )
                                 logic.initialize(input)
-                                logic.importNodes()
+                                logic.importNodes(SchemaMonitors.NO_SCHEMA)
                                 interruption(Point.NODES_IMPORTED)
-                                logic.prepareIdMapper()
-                                logic.importRelationships()
+                                logic.importRelationships(SchemaMonitors.NO_SCHEMA)
                                 checkpoint(store)
                                 progress.record(
                                     ImportProgress.State(
@@ -287,12 +300,13 @@ internal class ResumableBatchImporter(
                         logFilesInitializer.initializeLogFiles(
                             layout,
                             store.neoStores.metaDataStore,
-                            MetadataCache(tail),
+                            logMetadata,
                             fs,
                             CHECKPOINT,
+                            dbConfig,
                         )
                         interruption(Point.LOG_INITIALIZED)
-                        logic.buildAuxiliaryStores()
+                        logic.buildAuxiliaryStores(logMetadata)
                         interruption(Point.POST_PROCESSED)
                         logic.success()
                     }
@@ -344,7 +358,7 @@ internal class ResumableBatchImporter(
             IndexDirectoryStructure.baseSchemaIndexFolder(layout.databaseDirectory())
         )
         for (file in listOf(layout.countStore(), layout.relationshipGroupDegreesStore())) {
-            if (fs.fileExists(file)) fs.deleteFile(file)
+            file.delete(fs)
         }
         fs.deleteRecursively(layout.transactionLogsDirectory)
         fs.mkdirs(layout.transactionLogsDirectory)

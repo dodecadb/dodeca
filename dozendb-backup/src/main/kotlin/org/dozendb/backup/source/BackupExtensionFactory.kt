@@ -18,7 +18,7 @@ import org.neo4j.kernel.extension.context.ExtensionContext
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.internal.LogService
-import org.neo4j.ssl.config.SslPolicyLoader
+import org.neo4j.ssl.config.SslPolicyProvider
 
 /**
  * Serves backups on DozenDB's servers, when `server.backup.enabled`, with a [BackupListener], and
@@ -32,7 +32,7 @@ class BackupExtensionFactory :
     interface Dependencies {
         fun config(): Config
 
-        fun sslPolicyLoader(): SslPolicyLoader
+        fun sslPolicyProvider(): SslPolicyProvider
 
         fun connectorPortRegister(): ConnectorPortRegister
 
@@ -87,7 +87,7 @@ class BackupExtensionFactory :
         val listener =
             BackupListener(
                 config,
-                dependencies.sslPolicyLoader(),
+                dependencies.sslPolicyProvider(),
                 dependencies.connectorPortRegister(),
                 logProvider,
             ) { name ->

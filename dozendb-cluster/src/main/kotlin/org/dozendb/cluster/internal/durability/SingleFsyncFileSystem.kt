@@ -11,7 +11,7 @@ import kotlin.concurrent.withLock
 import org.neo4j.io.fs.DelegatingStoreChannel
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.fs.StoreChannel
-import org.neo4j.kernel.impl.transaction.log.files.TransactionLogFilesHelper
+import org.neo4j.wal.files.TransactionLogFilesHelper
 
 /** Decides, per database, whether commits rely on the Raft log alone for durability. */
 internal fun interface FsyncPolicy {

@@ -5,7 +5,6 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.core.importer.IncrementalImporter.Companion.key
 import org.dozendb.core.importer.IncrementalImporter.Companion.keyType
 import org.junit.jupiter.api.Test
-import org.neo4j.batchimport.api.input.Group
 import org.neo4j.batchimport.api.input.IdType
 import org.neo4j.dbms.database.DbmsRuntimeVersion
 import org.neo4j.kernel.KernelVersion
@@ -33,16 +32,16 @@ class IncrementalKeysTest {
 
     @Test
     fun `an ID space's own ID type decides how its keys compare`() {
-        assertThat(keyType(null, IdType.STRING)).isEqualTo(KeyType.TEXT)
-        assertThat(keyType(null, IdType.INTEGER)).isEqualTo(KeyType.INTEGER)
-        assertThat(keyType(Group(1, "Movie", "int"), IdType.STRING)).isEqualTo(KeyType.INTEGER)
-        assertThat(keyType(Group(1, "Movie", "string"), IdType.STRING)).isEqualTo(KeyType.TEXT)
-        assertThatThrownBy { keyType(Group(1, "Movie", "date"), IdType.STRING) }
+        assertThat(keyType(null, null, IdType.STRING)).isEqualTo(KeyType.TEXT)
+        assertThat(keyType(null, null, IdType.INTEGER)).isEqualTo(KeyType.INTEGER)
+        assertThat(keyType("Movie", "int", IdType.STRING)).isEqualTo(KeyType.INTEGER)
+        assertThat(keyType("Movie", "string", IdType.STRING)).isEqualTo(KeyType.TEXT)
+        assertThatThrownBy { keyType("Movie", "date", IdType.STRING) }
             .hasMessage(
                 "ID space 'Movie' has IDs of type date, which incremental import cannot match " +
                     "with existing nodes: use string, long, int, short or byte."
             )
-        assertThatThrownBy { keyType(Group(1, "Movie", "string"), IdType.INTEGER) }
+        assertThatThrownBy { keyType("Movie", "string", IdType.INTEGER) }
             .hasMessage("ID space 'Movie' has text IDs, which --id-type=integer does not take.")
     }
 

@@ -9,6 +9,13 @@ import org.neo4j.graphdb.Transaction
  * named at the first start, or the one `dbms.setDefaultDatabase` named since.
  */
 object DefaultDatabase {
+    /**
+     * The property of the `Database` node of the default database, true there. Neo4j 2026
+     * deprecates it, as Community's default database is the configured one alone; DozenDB's is the
+     * system graph's, as Neo4j Enterprise's.
+     */
+    @Suppress("DEPRECATION") const val PROPERTY = TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY
+
     /** The name of the default database that [system]'s graph names; null if none. */
     fun name(system: GraphDatabaseService): String? = system.beginTx().use(::name)
 
@@ -16,7 +23,7 @@ object DefaultDatabase {
     fun name(tx: Transaction): String? =
         tx.findNodes(
                 TopologyGraphDbmsModel.DATABASE_LABEL,
-                TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY,
+                PROPERTY,
                 true,
             )
             .use { nodes ->

@@ -8,6 +8,7 @@ import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.cluster.internal.replication.SystemGraph
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.edition.DefaultDatabase
 import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
@@ -75,8 +76,7 @@ internal class Neo4jSystemGraph(
             hosts = Placements.hosts(node, CopyMode.PRIMARY).mapTo(HashSet(), ::MemberId),
             secondaries = Placements.hosts(node, CopyMode.SECONDARY).mapTo(HashSet(), ::MemberId),
             created = created(node),
-            default =
-                node.getProperty(TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY, false) == true,
+            default = node.getProperty(DefaultDatabase.PROPERTY, false) == true,
             recreatedFrom =
                 (node.getProperty(RECREATED_FROM_PROPERTY, null) as? String)?.let {
                     runCatching { UUID.fromString(it) }.getOrNull()

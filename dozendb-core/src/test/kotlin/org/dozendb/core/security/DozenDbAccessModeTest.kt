@@ -6,12 +6,13 @@ import kotlin.random.Random
 import org.assertj.core.api.Assertions.assertThat
 import org.eclipse.collections.impl.factory.primitive.IntObjectMaps
 import org.junit.jupiter.api.Test
+import org.neo4j.internal.kernel.api.LabelsSupplier
 import org.neo4j.internal.kernel.api.RelTypeSupplier
 import org.neo4j.internal.kernel.api.TokenSet
 import org.neo4j.internal.kernel.api.security.AccessMode
 import org.neo4j.internal.kernel.api.security.LoginContext.IdLookup
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
-import org.neo4j.internal.kernel.api.security.ReadSecurityPropertyProvider
+import org.neo4j.internal.kernel.api.security.SelectedPropertiesProvider
 import org.neo4j.storageengine.api.PropertySelection
 import org.neo4j.string.Globbing
 import org.neo4j.token.api.TokenConstants
@@ -73,6 +74,8 @@ class DozenDbAccessModeTest {
         }
     }
 
+    private fun labels(ids: IntArray) = LabelsSupplier { tokenSet(ids).get() }
+
     private fun type(id: Int) = RelTypeSupplier { id }
 
     @Test
@@ -111,12 +114,19 @@ class DozenDbAccessModeTest {
                 val keyId = Lookup().getPropertyKeyId(key)
                 expect(
                     "read $key of $labels",
-                    mode.allowsReadNodeProperty(tokenSet(ids), keyId),
+                    reads(mode, ids, key, emptyMap(), PropertySelection::selection),
+                    graph.readNodeProperty(labels, key, none),
+                )
+                expect(
+                    "read only $key of $labels",
+                    mode.allowsReadNodeProperties(labels(ids), intArrayOf(keyId)) {
+                        provider(emptyMap())
+                    },
                     graph.readNodeProperty(labels, key, none),
                 )
                 expect(
                     "set $key of $labels",
-                    mode.allowsSetProperty(tokenSet(ids), keyId),
+                    mode.allowsSetProperty(labels(ids), keyId),
                     graph.setNodeProperty(labels, key),
                 )
             }
@@ -152,16 +162,29 @@ class DozenDbAccessModeTest {
         }
         for (key in KEYS) {
             val id = Lookup().getPropertyKeyId(key)
-            soundly(
-                "read $key everywhere",
-                mode.allowsReadPropertyAllLabels(id),
-                LABEL_SETS.all { graph.readNodeProperty(it, key, none) },
-            )
-            soundly(
-                "read $key of every type",
-                mode.allowsReadPropertyAllRelTypes(id),
-                TYPES.all { graph.readRelationshipProperty(it, key) },
-            )
+            for (label in LABELS) {
+                soundly(
+                    "traverse and read $key of all with $label",
+                    mode.allowsTraverseAndReadAllMatchingNodeProperties(
+                        intArrayOf(Lookup().getLabelId(label)),
+                        intArrayOf(id),
+                    ),
+                    LABEL_SETS.filter { label in it }
+                        .all {
+                            graph.traverseNode(it, none) && graph.readNodeProperty(it, key, none)
+                        },
+                )
+            }
+            for (type in TYPES) {
+                soundly(
+                    "traverse and read $key of all of $type",
+                    mode.allowsTraverseAndReadAllMatchingRelProperties(
+                        intArrayOf(Lookup().getRelTypeId(type)),
+                        intArrayOf(id),
+                    ),
+                    graph.traverseRelationship(type) && graph.readRelationshipProperty(type, key),
+                )
+            }
             soundly(
                 "list $key",
                 !mode.allowsSeePropertyKeyToken(id),
@@ -202,7 +225,20 @@ class DozenDbAccessModeTest {
                 val keyId = Lookup().getPropertyKeyId(key)
                 expect(
                     "read $key of $type",
-                    mode.allowsReadRelationshipProperty(type(id), keyId),
+                    mode.allowsReadRelProperties(type(id), intArrayOf(keyId)) {
+                        provider(emptyMap())
+                    },
+                    graph.readRelationshipProperty(type, key),
+                )
+                expect(
+                    "read $key of $type, as the kernel asks",
+                    mode
+                        .allowedToReadRelationshipProperties(
+                            type(id),
+                            { provider(emptyMap()) },
+                            PropertySelection.selection(keyId),
+                        )
+                        .test(keyId),
                     graph.readRelationshipProperty(type, key),
                 )
                 expect(
@@ -297,26 +333,36 @@ class DozenDbAccessModeTest {
                 }
             }
             for (key in KEYS) {
-                if (mode.allowsReadPropertyAllLabels(Lookup().getPropertyKeyId(key))) {
-                    assertThat(
-                            nodes.all { (labels, p) ->
-                                graph.readNodeProperty(labels, key) { p[it] ?: Values.NO_VALUE }
-                            }
+                for (label in LABELS) {
+                    val all =
+                        mode.allowsTraverseAndReadAllMatchingNodeProperties(
+                            intArrayOf(Lookup().getLabelId(label)),
+                            intArrayOf(Lookup().getPropertyKeyId(key)),
                         )
-                        .describedAs("read $key of all, $context")
+                    if (!all) continue
+                    assertThat(
+                            nodes
+                                .filter { label in it.first }
+                                .all { (labels, p) ->
+                                    val known = { k: String -> p[k] ?: Values.NO_VALUE }
+                                    graph.traverseNode(labels, known) &&
+                                        graph.readNodeProperty(labels, key, known)
+                                }
+                        )
+                        .describedAs("traverse and read $key of all with $label, $context")
                         .isTrue
                 }
             }
         }
     }
 
-    /** The values of [properties] that [selection] asks for, as Neo4j's kernel gives them. */
-    private fun provider(properties: Map<String, Value?>, selection: (Int) -> Boolean) =
-        ReadSecurityPropertyProvider {
+    /** The values of [properties] that a selection asks for, as Neo4j's kernel gives them. */
+    private fun provider(properties: Map<String, Value?>) =
+        SelectedPropertiesProvider { selection ->
             IntObjectMaps.mutable.empty<Value>().also { values ->
                 for ((key, value) in properties) {
                     val id = Lookup().getPropertyKeyId(key)
-                    if (value != null && selection(id)) values.put(id, value)
+                    if (value != null && selection.test(id)) values.put(id, value)
                 }
             }
         }
@@ -326,19 +372,7 @@ class DozenDbAccessModeTest {
         mode: DozenDbAccessMode,
         ids: IntArray,
         properties: Map<String, Value?>,
-    ): Boolean {
-        if (mode.allowsTraverseAllLabels()) return true
-        if (mode.hasTraversePropertyRules()) {
-            val keys = mode.getTraverseSecurityProperties(ids)
-            if (keys.notEmpty()) {
-                return mode.allowsTraverseNodeWithPropertyRules(
-                    provider(properties, keys::contains),
-                    *ids,
-                )
-            }
-        }
-        return mode.allowsTraverseNode(*ids)
-    }
+    ): Boolean = mode.allowsTraverseNode(labels(ids), provider(properties))
 
     /**
      * Whether the kernel reads [key] of a node, as `DefaultPropertyCursor` asks, reading the
@@ -352,15 +386,9 @@ class DozenDbAccessModeTest {
         selection: (Int) -> PropertySelection,
     ): Boolean {
         val id = Lookup().getPropertyKeyId(key)
-        val provider =
-            if (!mode.hasPropertyReadRules()) {
-                null
-            } else {
-                mode.getSecurityPropertySelection(selection(id))?.let {
-                    provider(properties, it::test)
-                }
-            }
-        return mode.allowsReadNodeProperty(tokenSet(ids), id, provider)
+        return mode
+            .allowedToReadNodeProperties(labels(ids), { provider(properties) }, selection(id))
+            .test(id)
     }
 
     @Test
@@ -429,8 +457,12 @@ class DozenDbAccessModeTest {
             listOf(
                 PropertySelection::selection,
                 { _ -> PropertySelection.ALL_PROPERTIES },
-                { key -> PropertySelection.ALL_PROPERTIES.excluding { it != key } },
-                { key -> PropertySelection.ALL_PROPERTIES.excluding { it == key + 1 } },
+                { key ->
+                    PropertySelection.ALL_PROPERTIES.excluding(
+                        *KEYS.indices.filter { it != key }.toIntArray()
+                    )
+                },
+                { key -> PropertySelection.ALL_PROPERTIES.excluding(key + 1) },
             )
         val LABELS = listOf("A", "B", "C")
         val LABEL_SETS =

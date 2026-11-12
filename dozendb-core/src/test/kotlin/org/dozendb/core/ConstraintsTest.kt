@@ -9,7 +9,6 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
-import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.internal.kernel.api.exceptions.schema.CreateConstraintFailureException
 import org.neo4j.internal.schema.EndpointType
@@ -54,19 +53,10 @@ class ConstraintsTest {
         )
     }
 
-    /**
-     * Neither can be created from Cypher 5; only Neo4j's kernel API offers them, behind an internal
-     * setting.
-     */
+    /** Neither can be created from Cypher; only Neo4j's kernel API offers them. */
     @Test
     fun `label existence and endpoint label constraints, which are not enforced, cannot be created`() {
-        val server =
-            start(
-                mapOf(
-                    GraphDatabaseInternalSettings
-                        .relationship_endpoint_label_and_node_label_existence_constraints to true
-                )
-            )
+        val server = start()
 
         server.database().beginTx().use { tx ->
             val kernel = (tx as InternalTransaction).kernelTransaction()

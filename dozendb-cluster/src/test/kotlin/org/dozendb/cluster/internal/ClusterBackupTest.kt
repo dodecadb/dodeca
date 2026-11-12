@@ -187,7 +187,7 @@ class ClusterBackupTest {
         database()
             .dependencyResolver
             .resolveDependency(TransactionIdStore::class.java)
-            .lastClosedTransactionId
+            .highestGapFreeClosedTransactionId
 
     @Test
     fun `backups from any member hold every write acknowledged before them, and chain`() {

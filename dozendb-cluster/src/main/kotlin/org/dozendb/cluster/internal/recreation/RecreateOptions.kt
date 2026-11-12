@@ -1,6 +1,6 @@
 package org.dozendb.cluster.internal.recreation
 
-import org.neo4j.exceptions.InvalidArgumentException
+import org.dozendb.core.Gql
 
 /**
  * The options of `dbms.cluster.recreateDatabase`, as Neo4j Enterprise documents them.
@@ -35,11 +35,10 @@ internal data class RecreateOptions(
          * values of the wrong type, neither seed nor both with servers named, and secondaries
          * without primaries.
          */
-        @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these refusals.
         fun parse(options: Map<String, Any?>, failed: String): RecreateOptions {
             val unknown = options.keys.filter { it !in KEYS }
             if (unknown.isNotEmpty()) {
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failed: unknown option${if (unknown.size == 1) "" else "s"} " +
                         "${unknown.joinToString { "'$it'" }}. The options are " +
                         "${KEYS.joinToString { "'$it'" }}."
@@ -47,29 +46,28 @@ internal data class RecreateOptions(
             }
             val seedUri =
                 options[SEED_URI]?.let {
-                    it as? String
-                        ?: throw InvalidArgumentException("$failed: $SEED_URI must be a string.")
+                    it as? String ?: throw Gql.refused("$failed: $SEED_URI must be a string.")
                 }
             val seedingServers =
                 options[SEEDING_SERVERS]?.let { value ->
                     (value as? List<*>)?.map {
                         it as? String
-                            ?: throw InvalidArgumentException(
+                            ?: throw Gql.refused(
                                 "$failed: $SEEDING_SERVERS must be a list of server ids."
                             )
                     }
-                        ?: throw InvalidArgumentException(
+                        ?: throw Gql.refused(
                             "$failed: $SEEDING_SERVERS must be a list of server ids."
                         )
                 }
             if (seedUri == null && seedingServers == null) {
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failed: give $SEEDING_SERVERS, the servers whose stores to recreate it " +
                         "from, or $SEED_URI, a backup or dump to recreate it from."
                 )
             }
             if (seedUri != null && !seedingServers.isNullOrEmpty()) {
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failed: with $SEED_URI, $SEEDING_SERVERS must be empty: the seed is then " +
                         "the fallback when none of the servers hosting a copy holds a store."
                 )
@@ -77,7 +75,7 @@ internal data class RecreateOptions(
             val primaries = count(options, PRIMARIES, 1..MAXIMUM_PRIMARIES, failed)
             val secondaries = count(options, SECONDARIES, 0..MAXIMUM_SECONDARIES, failed)
             if (secondaries != null && primaries == null) {
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failed: $SECONDARIES needs $PRIMARIES, which give the new topology."
                 )
             }
@@ -99,11 +97,9 @@ internal data class RecreateOptions(
             val value = options[key] ?: return null
             val number =
                 (value as? Number)?.toLong()?.takeIf { value !is Double && value !is Float }
-                    ?: throw InvalidArgumentException("$failed: $key must be an integer.")
+                    ?: throw Gql.refused("$failed: $key must be an integer.")
             if (number !in range.first..range.last) {
-                throw InvalidArgumentException(
-                    "$failed: $key is $number, not ${range.first} to ${range.last}."
-                )
+                throw Gql.refused("$failed: $key is $number, not ${range.first} to ${range.last}.")
             }
             return number.toInt()
         }

@@ -17,7 +17,6 @@ import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.internal.kernel.api.connectioninfo.ClientConnectionInfo
-import org.neo4j.internal.kernel.api.security.AccessMode
 import org.neo4j.internal.kernel.api.security.AdminAccessMode
 import org.neo4j.internal.kernel.api.security.AdminActionOnResource
 import org.neo4j.internal.kernel.api.security.CommunitySecurityLog
@@ -26,6 +25,7 @@ import org.neo4j.internal.kernel.api.security.PermissionState
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.internal.kernel.api.security.Segment
+import org.neo4j.internal.kernel.api.security.StaticAccessMode
 import org.neo4j.kernel.api.security.AuthManager
 import org.neo4j.kernel.api.security.AuthToken
 import org.neo4j.kernel.database.DatabaseReferenceRepository
@@ -217,7 +217,13 @@ class AccessControlTest {
         val references = dependencies.resolveDependency(DatabaseReferenceRepository::class.java)
         fun reference(name: String) = references.getByAlias(name).orElseThrow()
         val log = CommunitySecurityLog.NULL_LOG
-        val context = login.authorize(LoginContext.IdLookup.EMPTY, reference("neo4j"), log)
+        val context =
+            login.authorize(
+                LoginContext.IdLookup.EMPTY,
+                reference("neo4j"),
+                log,
+                System.currentTimeMillis(),
+            )
         val createUser =
             AdminActionOnResource(
                 PrivilegeAction.CREATE_USER,
@@ -228,8 +234,8 @@ class AccessControlTest {
         for (variant in
             listOf(
                 context,
-                context.withMode(AccessMode.Static.FULL),
-                context.withMode(AccessMode.Static.READ).withMode(AccessMode.Static.FULL),
+                context.withMode(StaticAccessMode.FULL),
+                context.withMode(StaticAccessMode.READ).withMode(StaticAccessMode.FULL),
             )) {
             assertThat(variant).isInstanceOf(DozenDbSecurityContext::class.java)
             assertThat(variant.allowsAdminAction(createUser)).isEqualTo(PermissionState.NOT_GRANTED)
@@ -239,11 +245,23 @@ class AccessControlTest {
             assertThat(variant.databaseAccessMode().canSeeDatabase(reference("neo4j"))).isTrue
             assertThat(variant.roles()).containsExactly("PUBLIC")
             assertThat(variant.isAuthDisabled).isFalse
-            assertThat(variant.authorize(LoginContext.IdLookup.EMPTY, reference("neo4j"), log))
+            assertThat(
+                    variant.authorize(
+                        LoginContext.IdLookup.EMPTY,
+                        reference("neo4j"),
+                        log,
+                        System.currentTimeMillis(),
+                    )
+                )
                 .isSameAs(variant)
             assertThat(
                     catchThrowable {
-                        variant.authorize(LoginContext.IdLookup.EMPTY, reference("films"), log)
+                        variant.authorize(
+                            LoginContext.IdLookup.EMPTY,
+                            reference("films"),
+                            log,
+                            System.currentTimeMillis(),
+                        )
                     }
                 )
                 .hasMessage("Database access is not allowed for user 'alice' with roles [PUBLIC].")
@@ -251,7 +269,7 @@ class AccessControlTest {
         // Boosted procedures run with every administration action, and only them.
         val boosted = context.withMode(AdminAccessMode.FULL)
         assertThat(boosted.allowsAdminAction(createUser)).isEqualTo(PermissionState.EXPLICIT_GRANT)
-        assertThat(boosted.withMode(AccessMode.Static.READ).allowsAdminAction(createUser))
+        assertThat(boosted.withMode(StaticAccessMode.READ).allowsAdminAction(createUser))
             .isEqualTo(PermissionState.EXPLICIT_GRANT)
         assertThat(boosted.databaseAccessMode().canAccessDatabase(reference("films"))).isFalse
     }

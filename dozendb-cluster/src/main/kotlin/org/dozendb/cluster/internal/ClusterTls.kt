@@ -6,7 +6,7 @@ import org.neo4j.configuration.ssl.ClientAuth
 import org.neo4j.configuration.ssl.SslPolicyConfig
 import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.logging.Log
-import org.neo4j.ssl.config.SslPolicyLoader
+import org.neo4j.ssl.config.SslPolicyProvider
 
 /**
  * TLS between members, configured with Neo4j's SSL policy of the cluster scope,
@@ -17,11 +17,11 @@ internal object ClusterTls {
     private val policy = SslPolicyConfig.forScope(SslPolicyScope.CLUSTER)
 
     /**
-     * The TLS that [config] asks for, with the cluster policy that [policies] loaded, or null for
-     * plaintext. Warns in [log] about choices that let any host that reaches the Raft port act as a
-     * member.
+     * The TLS that [config] asks for, with the cluster policy that [policies] loaded at start, or
+     * null for plaintext. Warns in [log] about choices that let any host that reaches the Raft port
+     * act as a member.
      */
-    fun of(config: Config, policies: SslPolicyLoader, log: Log): TlsConfig? {
+    fun of(config: Config, policies: SslPolicyProvider, log: Log): TlsConfig? {
         val enabled = policy.enabled.name()
         require(config.isExplicitlySet(policy.enabled)) {
             "Clustering needs a choice for the traffic between members: set $enabled=true to " +

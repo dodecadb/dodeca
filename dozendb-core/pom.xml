@@ -52,6 +52,27 @@
       </resource>
     </resources>
     <plugins>
+      <!-- The tests again, with Cypher 25 the default Cypher version: queries that name none run
+           as Cypher 5, Neo4j's default, first, then as Cypher 25, which the neo4j.conf that Neo4j
+           ships sets since 2026.02. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-surefire-plugin</artifactId>
+        <executions>
+          <execution>
+            <id>cypher-25</id>
+            <goals>
+              <goal>test</goal>
+            </goals>
+            <configuration>
+              <reportsDirectory>${project.build.directory}/surefire-reports-cypher-25</reportsDirectory>
+              <systemPropertyVariables>
+                <dozendb.test.cypher>Cypher25</dozendb.test.cypher>
+              </systemPropertyVariables>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
       <!-- Publishes the constraint checks for the clustered tests. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>

@@ -39,14 +39,17 @@ internal class PhasedSource private constructor(val backups: Path) {
                 val fullHeader = server.backupFull(source.full)
                 server.stop()
                 DefaultFileSystemAbstraction().use { fs ->
-                    Dumper(fs).dump(
-                        server.layout.databaseDirectory(),
-                        server.layout.transactionLogsDirectory,
-                        Files.newOutputStream(source.dump),
-                        DumpFormatSelector.selectFormat(),
-                    ) {
-                        it.fileName == server.layout.databaseLockFile().fileName
-                    }
+                    Dumper(fs)
+                        .dump(
+                            Dumper.FileOutput.of(fs, source.dump),
+                            DumpFormatSelector.selectWriteFormat(),
+                            Dumper.collectManifest(
+                                server.layout.databaseDirectory(),
+                                server.layout.transactionLogsDirectory,
+                            ) {
+                                it.fileName == server.layout.databaseLockFile().fileName
+                            },
+                        )
                 }
                 server.start()
                 val starts = mutableListOf<CommittedTransaction>()

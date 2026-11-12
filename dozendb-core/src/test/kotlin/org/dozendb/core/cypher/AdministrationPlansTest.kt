@@ -49,7 +49,6 @@ class AdministrationPlansTest {
                 "CreateUser",
                 "AlterUser",
                 "ShowUsers",
-                "ShowCurrentUser",
                 // Roles
                 "ShowRoles",
                 "CreateRole",
@@ -73,7 +72,6 @@ class AdministrationPlansTest {
                 "DenyDbmsAction",
                 "RevokeDbmsAction",
                 "AssertDbmsPrivilegeCanBeMutated",
-                "AssertDbmsActionIsAssignable",
                 "GrantDatabaseAction",
                 "DenyDatabaseAction",
                 "RevokeDatabaseAction",
@@ -87,6 +85,7 @@ class AdministrationPlansTest {
                 "RevokeLoadAction",
                 "AssertLoadPrivilegeCanBeMutated",
                 "AssertMutablePrivilegesCanBeAssignedToRole",
+                "EnsureRoleNotGrantedToAnyAuthRules",
                 "ShowPrivileges",
                 "ShowPrivilegeCommands",
                 "ShowSupportedPrivileges",
@@ -102,6 +101,9 @@ class AdministrationPlansTest {
                 "AssertManagementActionNotBlocked",
                 "EnsureNameIsNotAmbiguous",
                 "EnsureDatabaseSafeToDelete",
+                "AssertNotShardedDatabase",
+                "AssertNotInvalidActionOnShard",
+                "AssertNotStandard",
                 "WaitForCompletion",
                 // Aliases
                 "CreateLocalDatabaseAlias",
@@ -138,10 +140,27 @@ class AdministrationPlansTest {
                 "RenameUser",
                 "DropUser",
                 "SetOwnPassword",
-                "ShowDatabase",
+                "AlterUsers",
+                "AssertCanAlterDatabase",
+                "AssertNotGraphShard",
+                "AssertNotPropertyShard",
+                "AssertNotVirtualSpd",
             )
 
         /** Planned by neither, so they fail as they do in Community: why. */
-        val REFUSED = mapOf("EnsureAliasIsNotRemote" to "Neo4j 5.26 does not plan it")
+        val REFUSED =
+            mapOf(
+                "EnsureAliasIsNotRemote" to "Neo4j does not plan it",
+                "CreateShardedDatabase" to "Neo4j Enterprise's sharded databases",
+                "AlterShardedDatabase" to "Neo4j Enterprise's sharded databases",
+                "CreateAuthRule" to "Neo4j Enterprise's auth rules",
+                "AlterAuthRule" to "Neo4j Enterprise's auth rules",
+                "RenameAuthRule" to "Neo4j Enterprise's auth rules",
+                "DropAuthRule" to "Neo4j Enterprise's auth rules",
+                "ShowAuthRules" to "Neo4j Enterprise's auth rules",
+                "GrantRoleToAuthRule" to "Neo4j Enterprise's auth rules",
+                "RevokeRoleFromAuthRule" to "Neo4j Enterprise's auth rules",
+                "EnsureRoleHasNoDeniedPrivileges" to "Neo4j Enterprise's auth rules, only",
+            )
     }
 }

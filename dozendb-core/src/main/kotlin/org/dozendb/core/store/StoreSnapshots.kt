@@ -5,10 +5,10 @@ import org.dozendb.core.checkpoint.CheckpointIoController
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.impl.store.DefaultStoreSnapshotFactory
-import org.neo4j.kernel.impl.transaction.log.files.LogFiles
 import org.neo4j.storageengine.api.StoreSnapshot
 import org.neo4j.storageengine.api.TransactionId
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.WALService
 
 /**
  * Copies of a running database's store, as crash images that Neo4j recovery completes: Neo4j's
@@ -73,16 +73,16 @@ object StoreSnapshots {
         val transactionIds = dependencies.resolveDependency(TransactionIdStore::class.java)
         val committed = transactionIds.lastCommittedTransactionId
         val deadline = System.nanoTime() + timeout.toNanos()
-        while (transactionIds.lastClosedTransactionId < committed) {
+        while (transactionIds.highestGapFreeClosedTransactionId < committed) {
             check(System.nanoTime() < deadline) {
                 "transaction $committed of ${database.namedDatabaseId.name()} did not close " +
                     "within $timeout"
             }
             Thread.sleep(POLL_MILLIS)
         }
-        val closed = transactionIds.lastClosedTransaction
+        val closed = transactionIds.highestGapFreeClosedTransaction
         val end = closed.logPosition()
-        val logFiles = dependencies.resolveDependency(LogFiles::class.java)
+        val logFiles = dependencies.resolveDependency(WALService::class.java)
         val checkpoint =
             logFiles.checkpointFile.findLatestCheckpoint().orElseThrow {
                 IllegalStateException("${database.namedDatabaseId.name()} has no checkpoint")
@@ -93,7 +93,7 @@ object StoreSnapshots {
                 checkpoint.oldestNotVisibleTransactionLogPosition().logVersion,
             )
         val directory = database.databaseLayout.transactionLogsDirectory
-        for (path in logFiles.checkpointFile.detachedCheckpointFiles.sorted()) {
+        for (path in logFiles.checkpointFile.matchedFiles.sorted()) {
             archive.file(StoreArchive.Root.TRANSACTION_LOGS, directory.relativize(path), path)
         }
         val logFile = logFiles.logFile

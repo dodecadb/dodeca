@@ -23,6 +23,7 @@ import org.neo4j.cypher.internal.javacompat.CommunityCypherEngineProvider
 import org.neo4j.cypher.internal.javacompat.GraphDatabaseCypherService
 import org.neo4j.cypher.internal.runtime.CypherRuntimeConfiguration
 import org.neo4j.kernel.impl.query.QueryEngineProvider
+import org.neo4j.kernel.internal.GraphDatabaseAPI
 
 /** Neo4j Community's Cypher engine, with DozenDB's administration commands on `system`. */
 class DozenDbCypherEngineProvider : CommunityCypherEngineProvider() {
@@ -33,6 +34,7 @@ class DozenDbCypherEngineProvider : CommunityCypherEngineProvider() {
         plannerConfig: CypherPlannerConfiguration,
         runtimeConfig: CypherRuntimeConfiguration,
         queryCaches: CypherQueryCaches,
+        graphDatabaseAPI: GraphDatabaseAPI,
     ): CompilerFactory =
         DozenDbCompilerFactory(
             queryService,

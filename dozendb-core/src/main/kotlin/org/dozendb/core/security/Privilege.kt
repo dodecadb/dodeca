@@ -121,8 +121,35 @@ sealed interface PrivilegeSegment {
         override fun toString() = "RELATIONSHIP(${type ?: "*"})"
     }
 
-    /** Nodes whose property satisfies a rule: `FOR (n:A) WHERE n.p > 1`. */
-    data class NodePattern(val pattern: PatternSegment) : PrivilegeSegment {
+    /**
+     * Nodes whose property satisfies a rule: `FOR (n:A) WHERE n.p > 1`. Equal by the rule, which
+     * Neo4j's segments are not: they compare by identity since Neo4j 2026.
+     */
+    class NodePattern(val pattern: PatternSegment) : PrivilegeSegment {
+        private val rule: List<Any?> =
+            when (pattern) {
+                is PatternSegment.ValuePatternSegment ->
+                    listOf(
+                        pattern.javaClass,
+                        pattern.elementTypes(),
+                        pattern.property(),
+                        pattern.operator(),
+                        pattern.value(),
+                    )
+                is PatternSegment.NullPatternSegment ->
+                    listOf(
+                        pattern.javaClass,
+                        pattern.elementTypes(),
+                        pattern.property(),
+                        pattern.operator(),
+                    )
+                else -> listOf(pattern)
+            }
+
+        override fun equals(other: Any?): Boolean = other is NodePattern && other.rule == rule
+
+        override fun hashCode(): Int = rule.hashCode()
+
         override fun toString() = pattern.toString()
     }
 

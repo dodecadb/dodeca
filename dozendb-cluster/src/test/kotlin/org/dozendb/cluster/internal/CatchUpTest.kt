@@ -14,11 +14,11 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.io.fs.FileUtils
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
-import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.StoreId
+import org.neo4j.storageengine.api.StoreIdProvider
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /** Members that missed entries the log no longer holds, or lost their database, catch up. */
 class CatchUpTest {
@@ -169,10 +169,7 @@ class CatchUpTest {
     }
 
     private fun ClusterHarness.Member.storeId(name: String): StoreId =
-        database(name)
-            .dependencyResolver
-            .resolveDependency(StorageEngine::class.java)
-            .retrieveStoreId()
+        database(name).dependencyResolver.resolveDependency(StoreIdProvider::class.java).storeId
 
     @Test
     fun `a member that missed no discarded entries catches up from the log`() {

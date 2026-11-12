@@ -1,6 +1,7 @@
 package org.dozendb.cluster.internal.topology
 
 import java.util.Optional
+import java.util.OptionalLong
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.servers.CopyMode
@@ -46,8 +47,8 @@ internal object DatabaseRows {
      * A copy that does not run of a database recreated from its seeders has the status of the
      * [recreation] as its message: what naming its creator waits for, or why it failed. With
      * [txInfo], each row of a member that answers has the copy's last transaction id and how far it
-     * is behind the newest copy's. The values that belong to the database itself, such as its type
-     * and store, are those of [own], Neo4j Community's row for this member.
+     * is behind the newest copy's. The values that belong to the database itself, such as its type,
+     * store and requested status, are those of [own], this member's row as a single server.
      */
     fun rows(
         own: DatabaseDetails,
@@ -103,16 +104,27 @@ internal object DatabaseRows {
                 copy.mode == CopyMode.PRIMARY && copy.member == leader && running && !copy.readOnly,
                 status,
                 message,
-                Optional.ofNullable(lastCommitted),
-                if (txInfo) Optional.ofNullable(lastCommitted?.let { it - newest!! })
-                else Optional.of(0L),
+                lastCommitted?.let { OptionalLong.of(it) } ?: OptionalLong.empty(),
+                when {
+                    !txInfo -> OptionalLong.of(0L)
+                    lastCommitted == null -> OptionalLong.empty()
+                    else -> OptionalLong.of(lastCommitted - newest!!)
+                },
+                OptionalLong.empty(),
                 own.namedDatabaseId(),
+                own.requestedStatus(),
                 own.type(),
                 own.options(),
                 own.storeId(),
                 own.externalStoreId(),
+                own.requestedPrimariesCount(),
                 online[CopyMode.PRIMARY] ?: 0,
+                own.requestedSecondariesCount(),
                 online[CopyMode.SECONDARY] ?: 0,
+                own.creationTime(),
+                own.lastStartTime(),
+                own.lastStopTime(),
+                own.cypherVersion(),
             )
         }
     }

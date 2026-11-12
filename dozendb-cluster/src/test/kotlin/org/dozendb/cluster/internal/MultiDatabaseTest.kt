@@ -1,6 +1,5 @@
 package org.dozendb.cluster.internal
 
-import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
@@ -27,8 +26,8 @@ import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.kernel.database.NamedDatabaseId
-import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.StoreId
+import org.neo4j.storageengine.api.StoreIdProvider
 
 /** Databases created, stopped, started and dropped on the system leader follow on every member. */
 class MultiDatabaseTest {
@@ -61,10 +60,7 @@ class MultiDatabaseTest {
             ?.database()
 
     private fun ClusterHarness.Member.storeId(name: String): StoreId =
-        database(name)
-            .dependencyResolver
-            .resolveDependency(StorageEngine::class.java)
-            .retrieveStoreId()
+        database(name).dependencyResolver.resolveDependency(StoreIdProvider::class.java).storeId
 
     private fun ClusterHarness.Member.films(): Long =
         database(FILMS).executeTransactionally("MATCH (f:Film) RETURN count(f) AS c", emptyMap()) {
@@ -258,9 +254,7 @@ class MultiDatabaseTest {
         assertThat(entered.await(1, TimeUnit.MINUTES)).isTrue()
         stopping.stop()
 
-        assertThat(Files.readAllLines(stopping.home.resolve("logs/debug.log"))).noneMatch {
-            " ERROR " in it
-        }
+        assertThat(stopping.debugEntries().filter { it.level == "ERROR" }).isEmpty()
     }
 
     @Test

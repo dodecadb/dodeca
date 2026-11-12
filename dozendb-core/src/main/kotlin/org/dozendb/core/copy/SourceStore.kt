@@ -1,6 +1,5 @@
 package org.dozendb.core.copy
 
-import org.eclipse.collections.api.factory.Sets
 import org.neo4j.configuration.Config
 import org.neo4j.internal.id.ScanOnOpenReadOnlyIdGeneratorFactory
 import org.neo4j.internal.recordstorage.RecordStorageReader
@@ -11,18 +10,17 @@ import org.neo4j.internal.schema.IndexDescriptor
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.recordstorage.RecordDatabaseLayout
-import org.neo4j.io.mem.MemoryAllocator
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.impl.muninn.MuninnPageCache
 import org.neo4j.io.pagecache.impl.muninn.StandalonePageCacheFactory
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
+import org.neo4j.kernel.DatabaseCreationOptions
 import org.neo4j.kernel.impl.store.NeoStores
 import org.neo4j.kernel.impl.store.StoreFactory
 import org.neo4j.kernel.impl.store.cursor.CachedStoreCursors
 import org.neo4j.kernel.impl.store.format.RecordFormatSelector
 import org.neo4j.kernel.impl.store.format.RecordFormats
-import org.neo4j.kernel.impl.transaction.log.LogTailLogVersionsMetadata
 import org.neo4j.logging.NullLogProvider
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.scheduler.JobScheduler
@@ -47,9 +45,7 @@ internal class SourceStore(
             fs,
             scheduler,
             PageCacheTracer.NULL,
-            MuninnPageCache.config(
-                MemoryAllocator.createAllocator(pageCacheSize, EmptyMemoryTracker.INSTANCE)
-            ),
+            MuninnPageCache.forMemory(pageCacheSize),
         )
 
     /** The store's record format. */
@@ -86,8 +82,7 @@ internal class SourceStore(
                         NullLogProvider.getInstance(),
                         contextFactory,
                         true,
-                        LogTailLogVersionsMetadata.EMPTY_LOG_TAIL,
-                        Sets.immutable.empty(),
+                        DatabaseCreationOptions.EMPTY_CREATION_OPTIONS,
                     )
                     .openAllNeoStores()
             try {

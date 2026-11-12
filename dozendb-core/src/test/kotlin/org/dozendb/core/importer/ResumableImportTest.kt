@@ -3,6 +3,7 @@ package org.dozendb.core.importer
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.io.PrintStream
+import java.lang.management.ManagementFactory
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.TimeUnit
@@ -124,6 +125,7 @@ internal class ResumableImportTest {
             ProcessBuilder(
                     Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                     "-Xmx512m",
+                    *moduleAccess(),
                     "-cp",
                     System.getProperty("java.class.path"),
                     CrashingImport::class.java.name,
@@ -137,6 +139,16 @@ internal class ResumableImportTest {
         check(process.waitFor(5, TimeUnit.MINUTES)) { "the import did not end" }
         return Result(process.exitValue(), Files.readString(output), "")
     }
+
+    /**
+     * The module access this JVM was started with, which Neo4j needs as `neo4j-admin` gives it, as
+     * the build has it for the tests.
+     */
+    private fun moduleAccess(): Array<String> =
+        ManagementFactory.getRuntimeMXBean()
+            .inputArguments
+            .filter { it.startsWith("--add-opens=") || it.startsWith("--enable-native-access=") }
+            .toTypedArray()
 
     private fun layout(name: String): DatabaseLayout =
         Neo4jLayout.of(Config.defaults(GraphDatabaseSettings.neo4j_home, server.home))
@@ -272,7 +284,9 @@ internal class ResumableImportTest {
             Files.walk(layout.databaseDirectory().resolve("schema")).use { files ->
                 files.filter(Files::isRegularFile).toList()
             } +
-                listOf(layout.countStore(), layout.relationshipGroupDegreesStore()) +
+                listOf(layout.countStore(), layout.relationshipGroupDegreesStore()).map {
+                    it.baseSegment()
+                } +
                 Files.list(layout.transactionLogsDirectory).use { it.toList() }
         assertThat(torn).hasSizeGreaterThan(4)
         for (file in torn) {

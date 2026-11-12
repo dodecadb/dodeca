@@ -108,7 +108,7 @@ internal object DatabaseMetrics {
             ids.lastCommittedTransactionId
         }
         metrics.counter("transaction.last_closed_tx_id", "The last closed transaction id.") {
-            ids.lastClosedTransactionId
+            ids.highestGapFreeClosedTransactionId
         }
     }
 

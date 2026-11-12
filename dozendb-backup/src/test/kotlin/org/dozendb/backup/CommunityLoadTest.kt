@@ -77,7 +77,8 @@ class CommunityLoadTest {
             .contains("Format: Neo4j Differential Backup", "Files: ${transactions.size}\n")
         val fromPath = load(target.home, "--from-path=${artifact.parent}", "neo4j")
         assertThat(fromPath.exitCode).isNotZero
-        assertThat(fromPath.err).contains("No matching archives found")
+        assertThat(fromPath.err)
+            .contains("No matching archives ('neo4j.dump' or a full backup of 'neo4j') found")
         val fromStdin =
             Files.newInputStream(artifact).use {
                 Admin.run(target.home, ::LoadCommand, "--from-stdin", "neo4j", input = it)

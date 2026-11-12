@@ -2,7 +2,6 @@ package org.dozendb.cluster.internal.routing
 
 import java.util.Optional
 import org.neo4j.kernel.database.DatabaseReference
-import org.neo4j.kernel.database.DatabaseReferenceImpl
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.database.NormalizedCatalogEntry
 import org.neo4j.kernel.database.NormalizedDatabaseName
@@ -30,30 +29,6 @@ internal class ConfirmedReferences(
 
     override fun getByAlias(databaseAlias: String): Optional<DatabaseReference> = confirmed {
         delegate.getByAlias(databaseAlias)
-    }
-
-    override fun getInternalByAlias(
-        databaseAlias: NormalizedDatabaseName
-    ): Optional<DatabaseReferenceImpl.Internal> = confirmed {
-        delegate.getInternalByAlias(databaseAlias)
-    }
-
-    override fun getInternalByAlias(
-        databaseAlias: String
-    ): Optional<DatabaseReferenceImpl.Internal> = confirmed {
-        delegate.getInternalByAlias(databaseAlias)
-    }
-
-    override fun getExternalByAlias(
-        databaseAlias: NormalizedDatabaseName
-    ): Optional<DatabaseReferenceImpl.External> = confirmed {
-        delegate.getExternalByAlias(databaseAlias)
-    }
-
-    override fun getExternalByAlias(
-        databaseAlias: String
-    ): Optional<DatabaseReferenceImpl.External> = confirmed {
-        delegate.getExternalByAlias(databaseAlias)
     }
 
     private fun <T : Any> confirmed(lookup: () -> Optional<T>): Optional<T> {

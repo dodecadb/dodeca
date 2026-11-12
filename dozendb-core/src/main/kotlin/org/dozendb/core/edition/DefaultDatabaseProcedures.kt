@@ -1,10 +1,11 @@
 package org.dozendb.core.edition
 
 import java.util.stream.Stream
+import org.dozendb.core.Gql
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.api.DatabaseNotFoundException
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
-import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.gqlstatus.GqlHelper
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.Transaction
@@ -56,7 +57,7 @@ class DefaultDatabaseProcedures {
         val defaults =
             tx.findNodes(
                     TopologyGraphDbmsModel.DATABASE_LABEL,
-                    TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY,
+                    DefaultDatabase.PROPERTY,
                     true,
                 )
                 .use { it.asSequence().toList() }
@@ -64,7 +65,7 @@ class DefaultDatabaseProcedures {
         defaults.forEach(tx::acquireWriteLock)
         if (
             defaults.any {
-                it.getProperty(TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY) != true
+                it.getProperty(DefaultDatabase.PROPERTY) != true
             }
         ) {
             return change(tx, name, failed)
@@ -76,13 +77,12 @@ class DefaultDatabaseProcedures {
                     TopologyGraphDbmsModel.DatabaseStatus.OFFLINE.statusName()
             }
             ?.let { throw refused("$failed: stop the default database '${nameOf(it)}' first.") }
-        defaults.forEach { it.setProperty(TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY, false) }
-        database.setProperty(TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY, true)
+        defaults.forEach { it.setProperty(DefaultDatabase.PROPERTY, false) }
+        database.setProperty(DefaultDatabase.PROPERTY, true)
         return true
     }
 
     /** The `Database` node of the standard database [name]; refuses an alias and a stranger. */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for it.
     private fun database(tx: Transaction, name: String, failed: String): Node {
         val names =
             tx.findNodes(
@@ -95,7 +95,10 @@ class DefaultDatabaseProcedures {
                 .use { it.asSequence().toList() }
         val databaseName =
             names.singleOrNull()
-                ?: throw DatabaseNotFoundException("$failed: Database does not exist.")
+                ?: throw DatabaseNotFoundException(
+                    GqlHelper.getGql22000_22N51(name),
+                    "$failed: Database does not exist.",
+                )
         val target =
             databaseName
                 .getSingleRelationship(
@@ -113,12 +116,14 @@ class DefaultDatabaseProcedures {
             )
         }
         return target?.takeIf { it.hasLabel(TopologyGraphDbmsModel.DATABASE_LABEL) }
-            ?: throw DatabaseNotFoundException("$failed: Database does not exist.")
+            ?: throw DatabaseNotFoundException(
+                GqlHelper.getGql22000_22N51(name),
+                "$failed: Database does not exist.",
+            )
     }
 
     private fun nameOf(database: Node): Any? =
         database.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null)
 
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these refusals.
-    private fun refused(message: String) = InvalidArgumentException(message)
+    private fun refused(message: String) = Gql.refused(message)
 }

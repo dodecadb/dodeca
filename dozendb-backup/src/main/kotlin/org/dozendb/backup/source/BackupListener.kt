@@ -11,7 +11,7 @@ import org.neo4j.configuration.connectors.ConnectorPortRegister
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.InternalLogProvider
-import org.neo4j.ssl.config.SslPolicyLoader
+import org.neo4j.ssl.config.SslPolicyProvider
 
 /**
  * Serves backups on `server.backup.listen_address`, with the sources that [sources] finds by name,
@@ -19,7 +19,7 @@ import org.neo4j.ssl.config.SslPolicyLoader
  */
 internal class BackupListener(
     private val config: Config,
-    private val policies: SslPolicyLoader,
+    private val policies: SslPolicyProvider,
     private val ports: ConnectorPortRegister,
     logProvider: InternalLogProvider,
     private val sources: (String) -> BulkSource?,

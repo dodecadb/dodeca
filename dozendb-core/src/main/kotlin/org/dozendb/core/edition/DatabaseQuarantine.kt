@@ -2,10 +2,10 @@ package org.dozendb.core.edition
 
 import java.time.Clock
 import java.time.Duration
-import org.neo4j.dbms.api.DatabaseNotFoundException
+import org.dozendb.core.Gql
+import org.neo4j.dbms.api.DatabaseNotFoundHelper
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
-import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.kernel.database.NamedDatabaseId
@@ -53,7 +53,6 @@ class DatabaseQuarantine(
      * it waits for the caller's transaction, so it then stops in the background once that is
      * closed.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these refusals.
     fun set(
         name: String,
         quarantined: Boolean,
@@ -63,7 +62,7 @@ class DatabaseQuarantine(
     ): Outcome {
         val id =
             repository.databaseIdRepository().getByName(name).orElseThrow {
-                DatabaseNotFoundException("Database does not exist: $name")
+                DatabaseNotFoundHelper.databaseDoesNotExist(name)
             }
         val uuid = id.databaseId().uuid()
         if (!quarantined) {
@@ -86,7 +85,7 @@ class DatabaseQuarantine(
         }
         val context =
             repository.getDatabaseContext(id).orElseThrow {
-                InvalidArgumentException(
+                Gql.refused(
                     "Database '${id.name()}' is not hosted on this server: put the copy of a " +
                         "server in quarantine on that server, connected to it with bolt://."
                 )

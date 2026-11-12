@@ -20,9 +20,8 @@ import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.api.KernelTransactions
 import org.neo4j.kernel.impl.locking.LockManager
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.memory.MemoryPools
 import org.neo4j.memory.ScopedMemoryPool
 import org.neo4j.procedure.Admin
@@ -36,6 +35,8 @@ import org.neo4j.procedure.builtin.ProceduresTimeFormatHelper.formatTime
 import org.neo4j.procedure.builtin.QueryId
 import org.neo4j.procedure.builtin.TransactionId
 import org.neo4j.scheduler.JobScheduler
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /** Neo4j Enterprise's procedures for looking into a running server, as its manual lists them. */
 class MonitoringProcedures {
@@ -264,7 +265,7 @@ class MonitoringProcedures {
     )
     @Procedure(name = "dbms.listActiveLocks", mode = Mode.DBMS)
     fun listActiveLocks(@Name("queryId") queryId: String): Stream<ActiveLockRow> {
-        val id = QueryId.parse(queryId)
+        val id = QueryId.parse(queryId, "queryId", "dbms.listActiveLocks")
         val contexts =
             checkNotNull(graph)
                 .dependencyResolver
@@ -290,7 +291,7 @@ class MonitoringProcedures {
                 handle.executingQuery().map { it.internalQueryId() == id }.orElse(false)
             } ?: return Stream.empty()
         if (!visible(database, handle)) return Stream.empty()
-        return handle.activeLocks().stream().map {
+        return handle.activeLocks(EmptyMemoryTracker.INSTANCE).stream().map {
             ActiveLockRow(it.lockType().name, it.resourceType().name, it.resourceId())
         }
     }

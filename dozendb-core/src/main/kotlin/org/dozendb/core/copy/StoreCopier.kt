@@ -9,8 +9,10 @@ import java.time.Instant
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.importer.ScratchDbms
 import org.dozendb.core.store.StorePlacement
+import org.neo4j.batchimport.api.BatchImporter
 import org.neo4j.batchimport.api.Configuration
 import org.neo4j.batchimport.api.IndexConfig
+import org.neo4j.batchimport.api.Monitor
 import org.neo4j.batchimport.api.input.Collector
 import org.neo4j.cli.ExitCode
 import org.neo4j.commandline.dbms.LockChecker
@@ -28,11 +30,12 @@ import org.neo4j.io.locker.FileLockException
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.context.FixedVersionContextSupplier
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
+import org.neo4j.kernel.DatabaseCreationOptions
 import org.neo4j.kernel.database.DatabaseTracers
+import org.neo4j.kernel.impl.index.schema.DefaultIndexProvidersAccess
 import org.neo4j.kernel.impl.index.schema.IndexImporterFactoryImpl
 import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory
 import org.neo4j.kernel.impl.store.format.RecordFormatSelector
-import org.neo4j.kernel.impl.transaction.log.files.TransactionLogInitializer
 import org.neo4j.kernel.recovery.LogTailExtractor
 import org.neo4j.kernel.recovery.Recovery
 import org.neo4j.logging.NullLogProvider
@@ -40,6 +43,8 @@ import org.neo4j.logging.internal.SimpleLogService
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.files.LogTailMetadataFactoryImpl
+import org.neo4j.wal.files.TransactionLogInitializer
 
 /**
  * The marker a copy leaves next to the database [layout] it made on a clustered server, which the
@@ -241,29 +246,50 @@ internal class StoreCopier(
                             .set(GraphDatabaseSettings.db_format, format)
                             .build()
                     input = StoreInput(source, request.filters, request.compact, report)
-                    StorageEngineFactory.selectStorageEngine(dbConfig)
+                    val engine = StorageEngineFactory.selectStorageEngine(dbConfig)
+                    val contextFactory =
+                        CursorContextFactory(
+                            PageCacheTracer.NULL,
+                            FixedVersionContextSupplier(TransactionIdStore.BASE_TX_ID),
+                        )
+                    val logService = SimpleLogService(NullLogProvider.getInstance())
+                    engine
                         .batchImporter(
                             target,
                             fs,
+                            false,
                             PageCacheTracer.NULL,
                             IMPORT_CONFIG,
-                            SimpleLogService(NullLogProvider.getInstance()),
+                            logService,
                             out,
                             verbose,
                             DefaultAdditionalIds.EMPTY,
+                            LogTailMetadataFactoryImpl(fs),
                             dbConfig,
-                            PrintingImportLogicMonitor(out, err),
+                            PrintingImportLogicMonitor(out, err, Monitor.NO_MONITOR),
                             scheduler,
                             Collector.STRICT,
                             TransactionLogInitializer.getLogFilesInitializer(),
                             IndexImporterFactoryImpl(),
                             EmptyMemoryTracker.INSTANCE,
-                            CursorContextFactory(
-                                PageCacheTracer.NULL,
-                                FixedVersionContextSupplier(TransactionIdStore.BASE_TX_ID),
-                            ),
+                            contextFactory,
+                            {
+                                DefaultIndexProvidersAccess(
+                                    engine,
+                                    fs,
+                                    dbConfig,
+                                    scheduler,
+                                    logService,
+                                    PageCacheTracer.NULL,
+                                    contextFactory,
+                                )
+                            },
+                            0,
+                            null,
+                            DatabaseCreationOptions.EMPTY_CREATION_OPTIONS,
+                            BatchImporter.HardwareValidation.WARNING,
                         )
-                        .doImport(input)
+                        .use { it.doImport(input) }
                     statements =
                         SchemaStatements(
                             source.indexes,
@@ -433,7 +459,7 @@ internal class StoreCopier(
 
         /** Neo4j's import defaults, with the token lookup indexes built. */
         val IMPORT_CONFIG: Configuration =
-            object : Configuration.Overridden(Configuration.defaultConfiguration()) {
+            object : Configuration.Overridden(Configuration.DEFAULT) {
                 override fun indexConfig(): IndexConfig =
                     IndexConfig.create().withLabelIndex().withRelationshipTypeIndex()
             }

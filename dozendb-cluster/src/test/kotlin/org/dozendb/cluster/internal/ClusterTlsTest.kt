@@ -15,7 +15,7 @@ import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.logging.NullLogProvider
 import org.neo4j.logging.log4j.Log4jLogProvider
-import org.neo4j.ssl.config.SslPolicyLoader
+import org.neo4j.ssl.config.DefaultSslPolicyProvider
 
 class ClusterTlsTest {
     @TempDir lateinit var home: Path
@@ -31,9 +31,11 @@ class ClusterTlsTest {
         val config = builder.build()
         return ClusterTls.of(
             config,
-            SslPolicyLoader.create(
+            DefaultSslPolicyProvider(
                 DefaultFileSystemAbstraction(),
                 config,
+                false,
+                false,
                 NullLogProvider.getInstance(),
             ),
             Log4jLogProvider(output).getLog(ClusterTls::class.java),
@@ -55,16 +57,18 @@ class ClusterTlsTest {
     }
 
     @Test
-    fun `the cluster policy configures mutual TLS, by default without hostname verification`() {
+    fun `the cluster policy configures mutual TLS, by default with hostname verification`() {
         val tls = checkNotNull(tls(policy.enabled to true))
 
         assertThat(tls.privateKey).isEqualTo(certificate.privateKey)
         assertThat(tls.certificateChain).containsExactly(certificate.certificate)
         assertThat(tls.trustManagers).isNotEmpty()
         assertThat(tls.requireClientCertificates).isTrue()
-        assertThat(tls.verifyHostname).isFalse()
+        // Neo4j 2026's default; Neo4j 5.26's was false.
+        assertThat(tls.verifyHostname).isTrue()
         assertThat(tls.protocols).containsExactly("TLSv1.2", "TLSv1.3")
-        assertThat(tls.cipherSuites).isNull()
+        // Neo4j 2026 lists the JDK's default suites, where Neo4j 5.26 left them unset.
+        assertThat(tls.cipherSuites).contains("TLS_AES_128_GCM_SHA256", "TLS_AES_256_GCM_SHA384")
         assertThat(output.toString()).isEmpty()
     }
 
@@ -74,13 +78,13 @@ class ClusterTlsTest {
             checkNotNull(
                 tls(
                     policy.enabled to true,
-                    policy.verify_hostname to true,
+                    policy.verify_hostname to false,
                     policy.tls_versions to listOf("TLSv1.3"),
                     policy.ciphers to listOf("TLS_AES_128_GCM_SHA256"),
                 )
             )
 
-        assertThat(tls.verifyHostname).isTrue()
+        assertThat(tls.verifyHostname).isFalse()
         assertThat(tls.protocols).containsExactly("TLSv1.3")
         assertThat(tls.cipherSuites).containsExactly("TLS_AES_128_GCM_SHA256")
     }

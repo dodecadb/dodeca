@@ -4,7 +4,7 @@
 
 DozenDB reimplements what Neo4j keeps for its Enterprise Edition from Neo4j's
 public documentation alone: the operations manual and the Cypher manual of
-Neo4j Enterprise 5.26. Never read, copy or decompile Neo4j Enterprise's code,
+Neo4j Enterprise 2026. Never read, copy or decompile Neo4j Enterprise's code,
 binaries or anything derived from them, not even to compare behaviour, and do
 not contribute what you wrote after reading it. Neo4j Community's code is
 GPL-licensed and may be read, and built on as

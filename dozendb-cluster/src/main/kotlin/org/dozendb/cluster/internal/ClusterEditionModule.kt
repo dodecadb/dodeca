@@ -91,6 +91,10 @@ import org.dozendb.core.edition.HostingServer
 import org.dozendb.core.edition.LatestWrites
 import org.dozendb.core.edition.SeedServers
 import org.dozendb.core.edition.WantedDatabase
+import org.dozendb.core.routing.DozenDbRoutingService
+import org.dozendb.core.routing.LocalRoutingTables
+import org.dozendb.core.routing.SingleAddressRoutingTable
+import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.MemberLogins
 import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
@@ -116,12 +120,7 @@ import org.neo4j.dbms.database.TopologyInfoService
 import org.neo4j.dbms.database.readonly.SystemGraphReadOnlyDatabaseLookupFactory
 import org.neo4j.dbms.database.readonly.SystemGraphReadOnlyListener
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
-import org.neo4j.dbms.routing.DefaultDatabaseAvailabilityChecker
-import org.neo4j.dbms.routing.DefaultRoutingService
-import org.neo4j.dbms.routing.RoutingOption
 import org.neo4j.dbms.routing.RoutingService
-import org.neo4j.dbms.routing.RoutingTableTTLProvider
-import org.neo4j.dbms.routing.SingleAddressRoutingTableProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.fabric.bookmark.LocalGraphTransactionIdTracker
 import org.neo4j.fabric.executor.Location
@@ -141,7 +140,7 @@ import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.InternalLogProvider
 import org.neo4j.router.transaction.DatabaseTransactionFactory
-import org.neo4j.server.security.systemgraph.CommunityDefaultDatabaseResolver
+import org.neo4j.ssl.config.SslPolicyProvider
 import org.neo4j.storageengine.api.TransactionIdStore
 
 /**
@@ -300,7 +299,11 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                 ConsensusTuning { it }
             }
         val tls =
-            ClusterTls.of(config, sslPolicyLoader, logService.getUserLog(ClusterTls::class.java))
+            ClusterTls.of(
+                config,
+                globalModule.globalDependencies.resolveDependency(SslPolicyProvider::class.java),
+                logService.getUserLog(ClusterTls::class.java),
+            )
         memberTls = tls
         forwardingRefusal = ForwardedWrites.refusal(config, tls)
         sendingRefusal = ForwardedWrites.sendingRefusal(config, tls)
@@ -901,7 +904,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             createGlobalReadOnlyChecker(
                 setOf(SystemGraphReadOnlyDatabaseLookupFactory.DEFAULT_PROVIDER),
                 systemDatabaseProvider,
-                databaseIdRepository,
+                { name -> databaseIdRepository.getByName(name).map { it.databaseId() } },
                 { balancer.request() },
                 globalModule,
             )
@@ -1222,7 +1225,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         clusterServers.systemChanged()
         databaseIdCache.invalidateAll()
         referenceCache.invalidateAll()
-        (defaultDatabaseResolver as? CommunityDefaultDatabaseResolver)?.clearCache()
+        refreshDefaultLanguages()
+        (defaultDatabaseResolver as? DozenDbDefaultDatabaseResolver)?.clearCache()
         globalReadOnlyChecker?.refresh()
         reconciler.request()
         // A new database may need members added since its initial members were recorded.
@@ -1631,61 +1635,49 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     }
 
     /**
-     * Neo4j Community's routing service, with routing tables of replicated databases taken from
-     * their Raft groups. The member is alone, and drivers get Community's single-address tables,
-     * only in a one-member cluster.
+     * DozenDB's routing service, with routing tables of replicated databases taken from their Raft
+     * groups. The member is alone, and drivers get tables that name only this member, only in a
+     * one-member cluster.
      */
     override fun createRoutingService(
         databaseContextProvider: DatabaseContextProvider<*>,
         clientRoutingDomainChecker: ClientRoutingDomainChecker,
     ): RoutingService {
         val config = globalModule.globalConfig
-        val logProvider = globalModule.logService.internalLogProvider
-        val ttl = RoutingTableTTLProvider.ttlFromConfig(config)
-        val singleAddress =
-            SingleAddressRoutingTableProvider(
-                globalModule.connectorPortRegister,
-                RoutingOption.ROUTE_WRITE_AND_READ,
-                config,
-                logProvider,
-                ttl,
-            )
+        val singleAddress = SingleAddressRoutingTable(globalModule.connectorPortRegister, config)
+        val local = LocalRoutingTables(databaseContextProvider, singleAddress)
         val routing =
             ClusterRoutingTableProvider(
                 locations,
                 directory,
                 ROUTING_REFRESH_WAIT,
                 { config.get(ClusterSettings.readsOnWriters) },
-                ttl,
-                singleAddress,
-                singleAddress,
+                { config.get(GraphDatabaseSettings.routing_ttl) },
+                ClusterRoutingValidator(
+                    local,
+                    locations,
+                    directory,
+                    ROUTING_REFRESH_WAIT,
+                    quarantined = { quarantines.of(it) != null },
+                    groups = groups,
+                ),
+                local,
                 config.get(ClusterSettings.readsOnPrimaries),
                 groups,
                 routingPolicies,
                 { systemGraph.serverTags() },
                 config.get(ClusterSettings.loadBalancingShuffle),
             )
-        return DefaultRoutingService(
-            logProvider,
-            ClusterRoutingValidator(
-                DefaultDatabaseAvailabilityChecker(databaseContextProvider),
-                locations,
-                directory,
-                ROUTING_REFRESH_WAIT,
-                quarantined = { quarantines.of(it) != null },
-                groups = groups,
-            ),
+        return DozenDbRoutingService(
+            ConfirmedReferences(referenceCache) {
+                awaitLinearizable(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
+            },
+            defaultDatabaseResolver,
             routing,
-            routing,
+            singleAddress,
             clientRoutingDomainChecker,
             config,
             ::alone,
-            defaultDatabaseResolver,
-            ConfirmedReferences(databaseReferenceRepo) {
-                awaitLinearizable(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
-            },
-            true,
-            globalModule.globalClock,
         )
     }
 
@@ -1725,7 +1717,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
         ClusterQueryRouterBootstrap(
             globalModule,
             databaseProvider,
-            databaseReferenceRepo,
+            referenceCache,
             securityLog,
             globalModule.globalConfig.get(ClusterSettings.defaultReadConsistency),
             ::awaitLinearizable,
@@ -1879,7 +1871,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             .orElseThrow { IllegalStateException("there is no database ${database.name} here") }
             .dependencies()
             .resolveDependency(TransactionIdStore::class.java)
-            .lastClosedTransactionId
+            .highestGapFreeClosedTransactionId
     }
 
     /** The last transaction of `system` on this member, which its forwarded logins carry. */
@@ -1888,7 +1880,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             .getSystemDatabaseContext()
             .dependencies()
             .resolveDependency(TransactionIdStore::class.java)
-            .lastClosedTransactionId
+            .highestGapFreeClosedTransactionId
 
     override fun registerEditionSpecificProcedures(
         globalProcedures: GlobalProcedures,

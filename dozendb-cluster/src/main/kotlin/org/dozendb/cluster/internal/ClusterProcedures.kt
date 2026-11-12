@@ -11,8 +11,6 @@ import org.dozendb.cluster.internal.recreation.DatabaseRecreation
 import org.dozendb.consensus.ConsensusUnavailableException
 import org.dozendb.consensus.HostPort
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
-import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
-import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.graphdb.security.AuthorizationViolationException
 import org.neo4j.internal.kernel.api.security.AdminActionOnResource
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
@@ -218,12 +216,9 @@ class ClusterProcedures {
                         .allowsAccess()
                 }
             if (!allowed) {
-                throw AuthorizationViolationException(
-                    ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42NFF)
-                        .build(),
+                throw AuthorizationViolationException.authorizationViolation(
                     "Permission denied for recreating database '$database': it needs the " +
-                        "CREATE DATABASE and DROP DATABASE privileges.",
-                    Status.Security.Forbidden,
+                        "CREATE DATABASE and DROP DATABASE privileges."
                 )
             }
         }

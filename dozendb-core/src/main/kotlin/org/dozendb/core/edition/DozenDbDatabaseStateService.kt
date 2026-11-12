@@ -18,7 +18,7 @@ import org.neo4j.kernel.database.NamedDatabaseId
 internal class DozenDbDatabaseStateService(
     private val databases: DatabaseContextProvider<StandaloneDatabaseContext>,
     private val quarantines: Quarantines,
-) : DatabaseStateService {
+) : DatabaseStateService<org.neo4j.dbms.DatabaseState> {
     override fun stateOfAllDatabases(): Map<NamedDatabaseId, org.neo4j.dbms.DatabaseState> =
         databases.registeredDatabases().mapValues { (_, context) -> stateOf(context) }
 

@@ -1,6 +1,7 @@
 package org.dozendb.core.cypher
 
 import java.util.UUID
+import org.dozendb.core.Gql
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Move
@@ -36,7 +37,6 @@ import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
 import org.neo4j.dbms.database.ServerDetails
 import org.neo4j.dbms.database.TopologyInfoService
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
-import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.Transaction
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.SecurityAuthorizationHandler
@@ -64,7 +64,6 @@ import scala.jdk.javaapi.CollectionConverters
  * other servers (see [DatabasePlacement.conform]); it fails, changing nothing, if one has nowhere
  * to go.
  */
-@Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for most refusals of server commands.
 internal class ServerCommands(
     private val engine: ExecutionEngine,
     private val dependencies: DependencyResolver,
@@ -96,7 +95,7 @@ internal class ServerCommands(
 
     private fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
-            is ShowServers -> Planner { showServers(plan, compile(plan.source(), it)) }
+            is ShowServers -> Planner { showServers(plan, compile(plan.source(), it), version(it)) }
             is EnableServer -> Planner { enable(plan, it) }
             is AlterServer -> Planner { alter(plan, it) }
             is RenameServer -> Planner { rename(plan, it) }
@@ -106,7 +105,11 @@ internal class ServerCommands(
             else -> null
         }
 
-    private fun showServers(plan: ShowServers, source: ExecutionPlan): ExecutionPlan {
+    private fun showServers(
+        plan: ShowServers,
+        source: ExecutionPlan,
+        version: CypherVersion,
+    ): ExecutionPlan {
         val servers = ParameterTransformer.apply { tx, _, _ ->
             val rows = topology.servers(tx).map(::row)
             VirtualValues.map(arrayOf(SERVERS_KEY), arrayOf(VirtualValues.fromList(rows)))
@@ -123,9 +126,10 @@ internal class ServerCommands(
                 .trimIndent(),
             VirtualValues.EMPTY_MAP,
             Option.apply(source),
-            SystemCommandExecutionPlan.`apply$default$7`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
             servers,
-            SystemCommandExecutionPlan.`apply$default$9`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
+            version,
         )
     }
 
@@ -140,11 +144,11 @@ internal class ServerCommands(
     ): ExecutionPlan {
         val version = context.runtimeContext().cypherVersion()
         val failure = { params: MapValue ->
-            "Could not enable server '${admin.runtimeStringValue(plan.serverName(), params)}'"
+            "Could not enable server '${nameOf(plan.serverName(), params)}'"
         }
         val change =
             changing("ENABLE SERVER", failure) { tx, params ->
-                val name = admin.runtimeStringValue(plan.serverName(), params)
+                val name = nameOf(plan.serverName(), params)
                 val failed = failure(params)
                 val given = evaluate(plan.options(), params, version, failed)
                 ServerRecords.lock(tx)
@@ -152,7 +156,7 @@ internal class ServerCommands(
                 val id = server.id
                 if (server.enabled) {
                     if (ServerOptionsInput.parse(given, server.options, failed) != server.options) {
-                        throw InvalidArgumentException(
+                        throw Gql.refused(
                             "$failed: it is enabled already, with other options. ALTER SERVER " +
                                 "changes them."
                         )
@@ -190,14 +194,14 @@ internal class ServerCommands(
     ): ExecutionPlan {
         val version = context.runtimeContext().cypherVersion()
         val failure = { params: MapValue ->
-            "Could not alter server '${admin.runtimeStringValue(plan.serverName(), params)}'"
+            "Could not alter server '${nameOf(plan.serverName(), params)}'"
         }
         val change =
             changing("ALTER SERVER", failure) { tx, params ->
                 val failed = failure(params)
                 val given = evaluate(plan.options(), params, version, failed)
                 ServerRecords.lock(tx)
-                val name = admin.runtimeStringValue(plan.serverName(), params)
+                val name = nameOf(plan.serverName(), params)
                 val server = enabled(target(tx, name, failed), failed)
                 val options = ServerOptionsInput.parse(given, ServerOptions(), failed)
                 ServerRecords.write(
@@ -207,7 +211,7 @@ internal class ServerCommands(
                 try {
                     placement.conform(tx)
                 } catch (e: AllocationException) {
-                    throw InvalidArgumentException("$failed: ${e.message}.")
+                    throw Gql.refused("$failed: ${e.message}.")
                 }
             }
         return updating(
@@ -230,7 +234,7 @@ internal class ServerCommands(
     ): ExecutionPlan {
         val names = { params: MapValue ->
             CollectionConverters.asJava(plan.serverNames()).map {
-                admin.runtimeStringValue(it, params)
+                nameOf(it, params)
             }
         }
         val failure = { params: MapValue ->
@@ -240,7 +244,7 @@ internal class ServerCommands(
         }
         val source = compile(plan.source(), context)
         if (plan.dryRun()) {
-            return moves("DeallocateServer", source) { tx, params ->
+            return moves("DeallocateServer", source, version(context)) { tx, params ->
                 ServerLifecycle.deallocate(
                     tx,
                     names(params),
@@ -284,7 +288,7 @@ internal class ServerCommands(
         val failure = { _: MapValue -> failed }
         val source = compile(plan.source(), context)
         if (plan.dryRun()) {
-            return moves("ReallocateDatabases", source) { tx, _ ->
+            return moves("ReallocateDatabases", source, version(context)) { tx, _ ->
                 ServerLifecycle.reallocate(tx, placement, null, null, dryRun = true, failed)
             }
         }
@@ -303,7 +307,7 @@ internal class ServerCommands(
         plan: DropServer,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
-        val name = { params: MapValue -> admin.runtimeStringValue(plan.serverName(), params) }
+        val name = { params: MapValue -> nameOf(plan.serverName(), params) }
         val failure = { params: MapValue -> "Could not drop server '${name(params)}'" }
         val change =
             changing("DROP SERVER", failure) { tx, params ->
@@ -326,6 +330,7 @@ internal class ServerCommands(
     private fun moves(
         name: String,
         source: ExecutionPlan,
+        version: CypherVersion,
         moves: (Transaction, MapValue) -> List<Move>,
     ): ExecutionPlan {
         val rows = ParameterTransformer.apply { tx, _, params ->
@@ -358,9 +363,10 @@ internal class ServerCommands(
                 .trimIndent(),
             VirtualValues.EMPTY_MAP,
             Option.apply(source),
-            SystemCommandExecutionPlan.`apply$default$7`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
             rows,
-            SystemCommandExecutionPlan.`apply$default$9`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
+            version,
         )
     }
 
@@ -373,33 +379,29 @@ internal class ServerCommands(
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
         val failure = { params: MapValue ->
-            "Could not rename server '${admin.runtimeStringValue(plan.serverName(), params)}'"
+            "Could not rename server '${nameOf(plan.serverName(), params)}'"
         }
         val change =
             changing("RENAME SERVER", failure) { tx, params ->
                 val failed = failure(params)
-                val newName = admin.runtimeStringValue(plan.newName(), params)
+                val newName = nameOf(plan.newName(), params)
                 ServerRecords.lock(tx)
-                val name = admin.runtimeStringValue(plan.serverName(), params)
+                val name = nameOf(plan.serverName(), params)
                 val server = enabled(target(tx, name, failed), failed)
                 if (newName == server.name) return@changing
                 if (newName.isBlank()) {
-                    throw InvalidArgumentException("$failed: the new name is empty.")
+                    throw Gql.refused("$failed: the new name is empty.")
                 }
                 val records = ServerRecords.records(tx)
                 records.values
                     .firstOrNull { it.name == newName && it.id != server.id }
                     ?.let {
-                        throw InvalidArgumentException(
-                            "$failed: server ${it.id} has the name '$newName'."
-                        )
+                        throw Gql.refused("$failed: server ${it.id} has the name '$newName'.")
                     }
                 uuid(newName)
                     ?.takeIf { it != server.id && (it in servers.ids() || it in records) }
                     ?.let {
-                        throw InvalidArgumentException(
-                            "$failed: '$newName' is the id of another server."
-                        )
+                        throw Gql.refused("$failed: '$newName' is the id of another server.")
                     }
                 ServerRecords.write(
                     tx,
@@ -501,7 +503,7 @@ internal class ServerCommands(
             }
             is OptionsParam ->
                 params.get(options.parameter().name()) as? MapValue
-                    ?: throw InvalidArgumentException("$failure: OPTIONS is not a map.")
+                    ?: throw Gql.refused("$failure: OPTIONS is not a map.")
             else -> MapValue.EMPTY
         }
 

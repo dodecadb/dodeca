@@ -30,26 +30,26 @@ Enterprise.
 ## Installing DozenDB
 
 DozenDB is one jar added to Neo4j Community's `lib/`. It runs only on the Neo4j
-version it was built for, 5.26.27, as it builds on Neo4j's internal classes
+version it was built for, 2026.10.2, as it builds on Neo4j's internal classes
 ([`COMPATIBILITY.md`, "Pinned versions"](COMPATIBILITY.md#pinned-versions)), on
-Java 17 or 21.
+Java 21 or 25.
 
 ### The jar
 
 Each [release](https://github.com/dozendb/dozendb/releases) has the jar,
-`dozendb-<version>-neo4j-5.26.27.jar`, about 70 MB: it bundles what DozenDB
+`dozendb-<version>-neo4j-2026.10.2.jar`, about 70 MB: it bundles what DozenDB
 needs, and its name says which Neo4j version it runs on. To check that the
 release workflow built it, from the tagged commit:
 
 ```sh
-gh attestation verify dozendb-<version>-neo4j-5.26.27.jar --repo dozendb/dozendb
+gh attestation verify dozendb-<version>-neo4j-2026.10.2.jar --repo dozendb/dozendb
 ```
 
 Built from source as the README says, the jar is
-`dozendb-plugin/target/dozendb-<version>-neo4j-5.26.27.jar`; the small
+`dozendb-plugin/target/dozendb-<version>-neo4j-2026.10.2.jar`; the small
 `dozendb-plugin-<version>.jar` next to it is not the one.
 
-Copy it into the `lib/` directory of Neo4j Community 5.26.27, not into
+Copy it into the `lib/` directory of Neo4j Community 2026.10.2, not into
 `plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds DozenDB's commands
 there too, such as `neo4j-admin database backup`. Without further settings, the
 server runs alone, as Neo4j Community does, with what DozenDB adds; it starts on
@@ -62,15 +62,15 @@ version at each start: `DozenDB 0.1.0-SNAPSHOT: clustering is disabled`.
 Each release publishes an image, `ghcr.io/dozendb/dozendb`, for `linux/amd64`
 and `linux/arm64`: Neo4j's official Community image with the jar in its
 `lib/`, which runs as Neo4j's image does. Its tags are the release's version,
-such as `0.2.0`, the version with Neo4j's, `0.2.0-neo4j-5.26.27`, the minor
+such as `0.2.0`, the version with Neo4j's, `0.2.0-neo4j-2026.10.2`, the minor
 version, `0.2`, and `latest` (see [`RELEASING.md`, "What a release
 publishes"](RELEASING.md#what-a-release-publishes)).
 
 With a jar built from source, build such an image:
 
 ```dockerfile
-FROM neo4j:5.26.27-community
-COPY dozendb-0.1.0-SNAPSHOT-neo4j-5.26.27.jar /var/lib/neo4j/lib/
+FROM neo4j:2026.10.2-community
+COPY dozendb-0.1.0-SNAPSHOT-neo4j-2026.10.2.jar /var/lib/neo4j/lib/
 ```
 
 Mounting the jar into the container read-only does not work: Neo4j's
@@ -992,8 +992,8 @@ extended key usages, it needs both `serverAuth` and `clientAuth`.
 - `verify_hostname=true` makes a member check that the certificate of the
   member it connects to names the address it dials: the host of that member's
   `server.dozendb.cluster.advertised_address`, as a DNS name or IP address
-  among the certificate's subject alternative names. Neo4j's default is
-  `false`, which only checks that a trusted authority issued the certificate.
+  among the certificate's subject alternative names. It is Neo4j's default;
+  `false` only checks that a trusted authority issued the certificate.
 - `client_auth` keeps its default, `REQUIRE`, for members to refuse
   connections without a trusted certificate. `NONE` leaves only the member
   connected to checked, and members log a warning; `OPTIONAL` is refused.
@@ -1342,7 +1342,8 @@ once `dbms.ssl.policy.backup.enabled` is set explicitly:
 
 `neo4j-admin` reads the same settings from the configuration of the server it
 runs on to connect, so the client presents its own certificate and checks the
-server's, its host name too with `dbms.ssl.policy.backup.verify_hostname=true`.
+server's, and its host name unless `dbms.ssl.policy.backup.verify_hostname=false`
+(Neo4j's default is `true`).
 
 ### Taking backups
 

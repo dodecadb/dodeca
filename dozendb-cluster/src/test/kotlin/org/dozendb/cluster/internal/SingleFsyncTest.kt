@@ -8,7 +8,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
-import org.neo4j.kernel.impl.transaction.log.files.TransactionLogFilesHelper
+import org.neo4j.wal.files.TransactionLogFilesHelper
 
 /** Commits to replicated databases force only the Raft log. */
 class SingleFsyncTest {

@@ -9,7 +9,9 @@ import org.dozendb.core.store.CommittedTransaction
 import org.neo4j.commandline.dbms.StoreVersionLoader
 import org.neo4j.common.Subject
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.DatabaseConfig
 import org.neo4j.dbms.archive.ArchiveFormat
+import org.neo4j.dbms.archive.ArchiveInput
 import org.neo4j.dbms.archive.DumpFormatSelector
 import org.neo4j.dbms.archive.IncorrectFormat
 import org.neo4j.dbms.archive.Loader
@@ -20,21 +22,21 @@ import org.neo4j.io.pagecache.IOController
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.io.pagecache.context.CursorContextFactory
-import org.neo4j.kernel.KernelVersionProvider
 import org.neo4j.kernel.database.DatabaseTracers
 import org.neo4j.kernel.impl.api.LeaseService
-import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
-import org.neo4j.kernel.impl.transaction.log.LogAppendEvent
-import org.neo4j.kernel.impl.transaction.log.files.LogFilesBuilder
 import org.neo4j.kernel.lifecycle.Lifespan
 import org.neo4j.kernel.recovery.LogTailExtractor
 import org.neo4j.kernel.recovery.Recovery
 import org.neo4j.logging.InternalLogProvider
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.AppendIndexProvider
+import org.neo4j.storageengine.api.Leases
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.TransactionId
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.CompleteCommandBatch
+import org.neo4j.wal.LogAppendEvent
+import org.neo4j.wal.files.LogFilesBuilder
 
 /**
  * Prepares the store of a database, offline, from a dump or a full backup and the differential
@@ -107,7 +109,9 @@ class StorePreparer(
         if (differentials.isNotEmpty() || (detach && last.consensusIndex() >= 0)) {
             val storeId = engine.retrieveStoreId(fs, target, pageCache, CursorContext.NULL_CONTEXT)
             val logFiles =
-                LogFilesBuilder.activeFilesBuilder(target, fs, tail)
+                LogFilesBuilder.writeableBuilder(target, fs, tail, tail)
+                    .withStorageEngineFactory(engine)
+                    .withLogTermProvider(tail)
                     .withStoreId(storeId)
                     .withConfig(config)
                     .withLogProvider(logProvider)
@@ -209,7 +213,7 @@ class StorePreparer(
                 logFile.forceAfterAppend(LogAppendEvent.NULL)
             }
         }
-        recover(target, tail)
+        recover(target, engine)
         val recovered =
             LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
                 .getTailMetadata(target, EmptyMemoryTracker.INSTANCE)
@@ -233,7 +237,7 @@ class StorePreparer(
                 IOException("$source holds no store")
             }
         val extractor = LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
-        recover(target, extractor.getTailMetadata(target, EmptyMemoryTracker.INSTANCE))
+        recover(target, engine)
         return extractor
             .getTailMetadata(target, EmptyMemoryTracker.INSTANCE)
             .lastCommittedTransaction
@@ -256,6 +260,7 @@ class StorePreparer(
                 last.id(),
                 now,
                 LeaseService.NO_LEASE,
+                Leases.NO_LEASES,
                 last.kernelVersion(),
                 Subject.ANONYMOUS,
             )
@@ -272,9 +277,8 @@ class StorePreparer(
     private fun unpack(archive: Path, target: DatabaseLayout) {
         val description =
             fs.openAsInputStream(archive).use { input ->
-                val magic =
-                    String(input.readNBytes(ArchiveFormat.MAGIC_PREFIX_LENGTH), Charsets.US_ASCII)
-                BackupFormatSelector.selectFormat(magic).map { it.readMetadata(input) }.orElse(null)
+                val magic = input.readNBytes(ArchiveFormat.MAGIC_PREFIX_LENGTH)
+                BackupFormatSelector.selectReadFormat(magic)?.readMetadata(input)
             }
         if (description != null && !description.isFull) {
             throw IOException(
@@ -290,8 +294,7 @@ class StorePreparer(
                     false,
                     false,
                     { DumpFormatSelector.decompressWithBackupSupport(it) {} },
-                    { fs.openAsInputStream(archive) },
-                    "$archive",
+                    ArchiveInput.FileInput.of(fs, archive),
                 )
         } catch (e: IncorrectFormat) {
             throw IOException("$archive is not a dump or a backup", e)
@@ -316,14 +319,18 @@ class StorePreparer(
         }
     }
 
-    private fun recover(target: DatabaseLayout, tail: KernelVersionProvider) {
+    /** Recovers the store in [target] from its transaction logs as they are now. */
+    private fun recover(target: DatabaseLayout, engine: StorageEngineFactory) {
+        val tail =
+            LogTailExtractor(fs, config, engine, DatabaseTracers.EMPTY)
+                .getTailMetadata(target, EmptyMemoryTracker.INSTANCE)
         val required =
             Recovery.isRecoveryRequired(
                 fs,
                 pageCache,
                 target,
                 config,
-                Optional.empty(),
+                Optional.of(tail),
                 EmptyMemoryTracker.INSTANCE,
                 DatabaseTracers.EMPTY,
             )
@@ -333,7 +340,7 @@ class StorePreparer(
                     fs,
                     pageCache,
                     DatabaseTracers.EMPTY,
-                    config,
+                    DatabaseConfig(config),
                     target,
                     EmptyMemoryTracker.INSTANCE,
                     IOController.DISABLED,

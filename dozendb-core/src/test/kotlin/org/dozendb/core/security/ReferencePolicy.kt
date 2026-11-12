@@ -191,8 +191,8 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
                 is PrivilegeSegment.NodePattern -> {
                     val pattern = segment.pattern
                     val labelled =
-                        pattern.labels().isEmpty() ||
-                            pattern.labels().intersect(labels).isNotEmpty()
+                        pattern.elementTypes().isEmpty() ||
+                            pattern.elementTypes().intersect(labels).isNotEmpty()
                     labelled && pattern.holdsFor(properties(pattern.property()))
                 }
                 else -> false
@@ -317,19 +317,34 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
                     PrivilegeAction.CREATE_DATABASE,
                     PrivilegeAction.DROP_DATABASE,
                     PrivilegeAction.SET_DATABASE_ACCESS,
+                    PrivilegeAction.SET_DEFAULT_LANGUAGE,
+                    PrivilegeAction.ALTER_DATABASE_OPTIONS,
+                    PrivilegeAction.ALTER_DATABASE_TOPOLOGY,
                     PrivilegeAction.CREATE_COMPOSITE_DATABASE,
                     PrivilegeAction.DROP_COMPOSITE_DATABASE,
+                    PrivilegeAction.ALTER_COMPOSITE_DATABASE,
                     PrivilegeAction.CREATE_ALIAS,
                     PrivilegeAction.DROP_ALIAS,
                     PrivilegeAction.ALTER_ALIAS,
                     PrivilegeAction.SHOW_ALIAS,
                     PrivilegeAction.SHOW_USER,
+                    PrivilegeAction.SHOW_USER_CREDENTIALS,
                     PrivilegeAction.CREATE_USER,
                     PrivilegeAction.RENAME_USER,
                     PrivilegeAction.SET_USER_STATUS,
                     PrivilegeAction.SET_PASSWORDS,
                     PrivilegeAction.SET_USER_HOME_DATABASE,
                     PrivilegeAction.DROP_USER,
+                    PrivilegeAction.SHOW_USER_METADATA,
+                    PrivilegeAction.SET_USER_METADATA,
+                    PrivilegeAction.READ_SECRETS,
+                    PrivilegeAction.WRITE_SECRETS,
+                    PrivilegeAction.SHOW_SECRETS,
+                    PrivilegeAction.SHOW_AUTH_RULE,
+                    PrivilegeAction.CREATE_AUTH_RULE,
+                    PrivilegeAction.RENAME_AUTH_RULE,
+                    PrivilegeAction.ALTER_AUTH_RULE,
+                    PrivilegeAction.DROP_AUTH_RULE,
                     PrivilegeAction.IMPERSONATE,
                     PrivilegeAction.SHOW_ROLE,
                     PrivilegeAction.CREATE_ROLE,
@@ -340,8 +355,6 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
                     PrivilegeAction.SHOW_PRIVILEGE,
                     PrivilegeAction.ASSIGN_PRIVILEGE,
                     PrivilegeAction.REMOVE_PRIVILEGE,
-                    PrivilegeAction.ASSIGN_IMMUTABLE_PRIVILEGE,
-                    PrivilegeAction.REMOVE_IMMUTABLE_PRIVILEGE,
                     PrivilegeAction.EXECUTE,
                     PrivilegeAction.EXECUTE_BOOSTED,
                     PrivilegeAction.EXECUTE_ADMIN,
@@ -380,8 +393,15 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
                 PrivilegeAction.COMPOSITE_DATABASE_MANAGEMENT,
                 PrivilegeAction.CREATE_COMPOSITE_DATABASE,
                 PrivilegeAction.DROP_COMPOSITE_DATABASE,
+                PrivilegeAction.ALTER_COMPOSITE_DATABASE,
             )
-            covers(PrivilegeAction.ALTER_DATABASE, PrivilegeAction.SET_DATABASE_ACCESS)
+            covers(
+                PrivilegeAction.ALTER_DATABASE,
+                PrivilegeAction.SET_DATABASE_ACCESS,
+                PrivilegeAction.SET_DEFAULT_LANGUAGE,
+                PrivilegeAction.ALTER_DATABASE_OPTIONS,
+                PrivilegeAction.ALTER_DATABASE_TOPOLOGY,
+            )
             covers(
                 PrivilegeAction.DATABASE_MANAGEMENT,
                 PrivilegeAction.CREATE_DATABASE,
@@ -406,6 +426,7 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
             covers(
                 PrivilegeAction.USER_MANAGEMENT,
                 PrivilegeAction.SHOW_USER,
+                PrivilegeAction.SHOW_USER_CREDENTIALS,
                 PrivilegeAction.CREATE_USER,
                 PrivilegeAction.RENAME_USER,
                 PrivilegeAction.DROP_USER,
@@ -426,11 +447,33 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
                 PrivilegeAction.ASSIGN_PRIVILEGE,
                 PrivilegeAction.REMOVE_PRIVILEGE,
             )
+            covers(
+                PrivilegeAction.USER_METADATA_MANAGEMENT,
+                PrivilegeAction.SHOW_USER_METADATA,
+                PrivilegeAction.SET_USER_METADATA,
+            )
+            covers(
+                PrivilegeAction.SECRETS_MANAGEMENT,
+                PrivilegeAction.READ_SECRETS,
+                PrivilegeAction.WRITE_SECRETS,
+                PrivilegeAction.SHOW_SECRETS,
+            )
+            covers(
+                PrivilegeAction.AUTH_RULE_MANAGEMENT,
+                PrivilegeAction.SHOW_AUTH_RULE,
+                PrivilegeAction.CREATE_AUTH_RULE,
+                PrivilegeAction.RENAME_AUTH_RULE,
+                PrivilegeAction.ALTER_AUTH_RULE,
+                PrivilegeAction.DROP_AUTH_RULE,
+            )
             covers(PrivilegeAction.SERVER_MANAGEMENT, PrivilegeAction.SHOW_SERVER)
             covers(
                 PrivilegeAction.DBMS_ACTIONS,
                 PrivilegeAction.ROLE_MANAGEMENT,
                 PrivilegeAction.USER_MANAGEMENT,
+                PrivilegeAction.USER_METADATA_MANAGEMENT,
+                PrivilegeAction.SECRETS_MANAGEMENT,
+                PrivilegeAction.AUTH_RULE_MANAGEMENT,
                 PrivilegeAction.DATABASE_MANAGEMENT,
                 PrivilegeAction.ALIAS_MANAGEMENT,
                 PrivilegeAction.PRIVILEGE_MANAGEMENT,

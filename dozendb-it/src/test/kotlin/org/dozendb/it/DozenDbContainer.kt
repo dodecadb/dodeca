@@ -343,6 +343,9 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     /** Neo4j's debug log, read from the container. */
     fun debugLog(): String = logFile("debug.log")
 
+    /** The entries of Neo4j's debug log, read from the container. */
+    fun debugEntries(): List<DebugEntry> = DebugEntry.parse(debugLog())
+
     /** The log file [name], such as `query.log`, read from the container. */
     fun logFile(name: String): String =
         copyFileFromContainer("/logs/$name") { it.readAllBytes().decodeToString() }

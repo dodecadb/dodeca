@@ -21,6 +21,7 @@ class CheckBackup : CheckDatabase {
 
     override fun containsPotentiallyCheckableDatabase(
         fs: FileSystemAbstraction,
+        config: Config,
         source: Source,
         database: NormalizedDatabaseName,
     ): Boolean =

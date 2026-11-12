@@ -6,7 +6,6 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
-import kotlin.io.path.readText
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
@@ -56,10 +55,10 @@ class CheckpointIoControllerTest {
         val controller = controller(600)
         val flush = Flush()
 
-        repeat(60) { controller.maybeLimitIO(1, flush) }
+        repeat(60) { controller.maybeLimitIO(1, 1, flush) }
         assertThat(parks).isEmpty()
 
-        controller.maybeLimitIO(1, flush)
+        controller.maybeLimitIO(1, 1, flush)
         // 61 I/Os at 600 a second, less the tenth of a second that went at once.
         assertThat(parks)
             .containsExactly(
@@ -74,7 +73,7 @@ class CheckpointIoControllerTest {
         val flush = Flush()
         val start = clock.nanos()
 
-        repeat(120) { controller.maybeLimitIO(10, flush) }
+        repeat(120) { controller.maybeLimitIO(10, 10, flush) }
 
         // 1200 I/Os: the first 60 at once, the rest at 600 a second.
         assertThat(Duration.ofNanos(clock.nanos() - start))
@@ -88,7 +87,7 @@ class CheckpointIoControllerTest {
         val controller = controller(600)
 
         repeat(1000) {
-            controller.maybeLimitIO(1, Flush())
+            controller.maybeLimitIO(1, 1, Flush())
             clock.forward(2, TimeUnit.MILLISECONDS)
         }
 
@@ -100,7 +99,7 @@ class CheckpointIoControllerTest {
         for (none in listOf(-1, 0)) {
             val controller = controller(none)
 
-            repeat(10_000) { controller.maybeLimitIO(100, Flush()) }
+            repeat(10_000) { controller.maybeLimitIO(100, 100, Flush()) }
 
             assertThat(parks).isEmpty()
             assertThat(controller.isEnabled).isFalse()
@@ -117,12 +116,12 @@ class CheckpointIoControllerTest {
 
         config.setDynamic(GraphDatabaseSettings.check_point_iops_limit, 10, "test")
         assertThat(controller.configuredLimit()).isEqualTo(10)
-        controller.maybeLimitIO(1, Flush())
-        controller.maybeLimitIO(1, Flush())
+        controller.maybeLimitIO(1, 1, Flush())
+        controller.maybeLimitIO(1, 1, Flush())
         assertThat(parks).containsExactly(TimeUnit.MILLISECONDS.toNanos(100))
 
         config.setDynamic(GraphDatabaseSettings.check_point_iops_limit, -1, "test")
-        repeat(1000) { controller.maybeLimitIO(100, Flush()) }
+        repeat(1000) { controller.maybeLimitIO(100, 100, Flush()) }
         assertThat(parks).hasSize(1)
         assertThat(controller.configuredLimit()).isEqualTo(-1)
     }
@@ -138,7 +137,7 @@ class CheckpointIoControllerTest {
             }
 
         // Two I/Os at 10 a second, one beyond the burst; then none.
-        repeat(2) { controller.maybeLimitIO(2, Flush()) }
+        repeat(2) { controller.maybeLimitIO(2, 2, Flush()) }
 
         assertThat(parks).containsExactly(TimeUnit.MILLISECONDS.toNanos(100))
         assertThat(controller.configuredLimit()).isEqualTo(-1)
@@ -149,7 +148,7 @@ class CheckpointIoControllerTest {
         var background = false
         val controller = controller(10, background = { background })
 
-        repeat(100) { controller.maybeLimitIO(10, Flush()) }
+        repeat(100) { controller.maybeLimitIO(10, 10, Flush()) }
         assertThat(parks).isEmpty()
         assertThat(controller.isEnabled).isFalse()
         assertThat(controller.configuredLimit()).isEqualTo(-1)
@@ -157,7 +156,7 @@ class CheckpointIoControllerTest {
         background = true
         assertThat(controller.isEnabled).isTrue()
         assertThat(controller.configuredLimit()).isEqualTo(10)
-        repeat(2) { controller.maybeLimitIO(1, Flush()) }
+        repeat(2) { controller.maybeLimitIO(1, 1, Flush()) }
         assertThat(parks).hasSize(1)
     }
 
@@ -167,7 +166,7 @@ class CheckpointIoControllerTest {
 
         val lift = controller.lift()
         val other = controller.lift()
-        repeat(1000) { controller.maybeLimitIO(100, Flush()) }
+        repeat(1000) { controller.maybeLimitIO(100, 100, Flush()) }
         assertThat(parks).isEmpty()
         assertThat(controller.isEnabled).isFalse()
         assertThat(controller.configuredLimit()).isEqualTo(-1)
@@ -178,7 +177,7 @@ class CheckpointIoControllerTest {
         other.close()
         assertThat(controller.isEnabled).isTrue()
         assertThat(controller.configuredLimit()).isEqualTo(10)
-        repeat(3) { controller.maybeLimitIO(1, Flush()) }
+        repeat(3) { controller.maybeLimitIO(1, 1, Flush()) }
         assertThat(parks).hasSize(2)
     }
 
@@ -198,7 +197,7 @@ class CheckpointIoControllerTest {
         // 100 I/Os at 1 a second: 100 seconds.
         val flushing = thread {
             waiting.countDown()
-            controller.maybeLimitIO(100, flush)
+            controller.maybeLimitIO(100, 100, flush)
         }
         waiting.await()
         await atMost
@@ -219,7 +218,7 @@ class CheckpointIoControllerTest {
         val interrupted = AtomicBoolean()
 
         val flushing = thread {
-            controller.maybeLimitIO(100, FileFlushEvent.NULL)
+            controller.maybeLimitIO(100, 100, FileFlushEvent.NULL)
             interrupted.set(Thread.currentThread().isInterrupted)
         }
         await atMost
@@ -260,7 +259,7 @@ class CheckpointIoControllerTest {
                     Duration.ofSeconds(60) untilAsserted
                     {
                         assertThat(checkpoints(server, "Scheduled checkpoint")).anyMatch {
-                            "IO limit: 20," in it
+                            "IO limit: 20 IOPS," in it
                         }
                     }
             }
@@ -289,14 +288,14 @@ class CheckpointIoControllerTest {
         }
     }
 
-    /** The lines of [server]'s debug log about checkpoints [trigger] completed. */
+    /** The messages of [server]'s debug log about checkpoints [trigger] completed. */
     private fun checkpoints(server: StandaloneServer, trigger: String) =
-        server.home.resolve("logs/debug.log").readText().lines().filter {
+        server.debugMessages().filter {
             "triggered by \"$trigger" in it && "checkpoint completed" in it
         }
 
     private companion object {
-        val LIMITED = Regex("IO limit: 10, paused in total [1-9]")
+        val LIMITED = Regex("IO limit: 10 IOPS, paused in total [1-9]")
         val UNLIMITED = Regex("IO limit: unlimited, paused in total 0 times")
     }
 }

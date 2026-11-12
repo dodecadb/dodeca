@@ -18,10 +18,10 @@ import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.kernel.KernelVersionProvider
 import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.transaction.CommittedCommandBatchRepresentation
-import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.neo4j.storageengine.api.StorageCommand
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.LogicalTransactionStore
 
 /** Round trips real transactions, read back from a standalone database's transaction log. */
 class TransactionEnvelopeTest {

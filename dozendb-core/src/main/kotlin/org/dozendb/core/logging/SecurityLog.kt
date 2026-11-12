@@ -6,13 +6,13 @@ import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.internal.kernel.api.connectioninfo.ClientConnectionInfo
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
+import org.neo4j.internal.kernel.api.security.AbstractSecurityLog.ContextInfo
 import org.neo4j.internal.kernel.api.security.LoginContext
 import org.neo4j.internal.kernel.api.security.SecurityContext
 import org.neo4j.kernel.api.KernelTransaction
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.impl.query.TransactionExecutionMonitor
 import org.neo4j.logging.InternalLog
-import org.neo4j.logging.log4j.Neo4jMapMessage
 
 /**
  * Neo4j Enterprise's security log, `security.log`, with authentication enabled: logins,
@@ -30,17 +30,17 @@ class SecurityLog(inner: InternalLog, private val logSuccessfulLogins: Boolean) 
 
     /** [login] logged in, unless `dbms.security.log_successful_authentication` is false. */
     fun loggedIn(login: LoginContext) {
-        if (logSuccessfulLogins) info(login, "logged in")
+        if (logSuccessfulLogins) info(ContextInfo.from(login), "logged in")
     }
 
     /** [user] failed to log in from [connection], for [reason]. */
     fun loginFailed(user: String, connection: ClientConnectionInfo, reason: String) {
-        inner.error(Line(connection, user, "failed to log in: $reason"))
+        error(ContextInfo(connection, null, user, user), "failed to log in: $reason")
     }
 
     /** [login] started acting as [user]. */
     fun impersonating(login: LoginContext, user: String) {
-        info(login, "impersonating user $user logged in")
+        info(ContextInfo.from(login), "impersonating user $user logged in")
     }
 
     /** Logs [command], which [transaction] ran as [context], when the transaction commits. */
@@ -53,7 +53,9 @@ class SecurityLog(inner: InternalLog, private val logSuccessfulLogins: Boolean) 
     override fun commit(tx: KernelTransaction) {
         val command = commands.remove(tx) ?: return
         // Kernel transactions are reused; this one is still the one that ran the command.
-        if (command.sequence == tx.transactionSequenceNumber) info(command.context, command.text)
+        if (command.sequence == tx.transactionSequenceNumber) {
+            info(ContextInfo.from(command.context), command.text)
+        }
     }
 
     override fun rollback(tx: KernelTransaction, failure: Throwable?) {
@@ -91,32 +93,4 @@ class SecurityLog(inner: InternalLog, private val logSuccessfulLogins: Boolean) 
                     null
                 }
         }
-
-    /**
-     * A line about a user who has no login, as one that failed: in the format of Community's lines,
-     * which it does not let others write.
-     */
-    private class Line(
-        connection: ClientConnectionInfo,
-        private val user: String,
-        message: String,
-    ) : Neo4jMapMessage(6) {
-        private val message = message.replace(Regex("\\R+"), " ")
-
-        init {
-            with("type", "security")
-            @Suppress("DEPRECATION") // The documented source format, as Community writes it.
-            with("source", connection.asConnectionDetails())
-            if (user.isNotEmpty()) {
-                with("executingUser", user)
-                with("authenticatedUser", user)
-            }
-            with("message", this.message)
-        }
-
-        override fun formatAsString(sb: StringBuilder) {
-            if (user.isNotEmpty()) sb.append('[').append(user).append("]: ")
-            sb.append(message)
-        }
-    }
 }

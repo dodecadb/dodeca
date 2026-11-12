@@ -323,7 +323,7 @@ class DatabaseCommandsTest {
 
     private fun StandaloneServer.status(name: String): Map<String, Any?> =
         rows(
-                "SHOW DATABASE $name YIELD currentStatus, statusMessage",
+                "SHOW DATABASE $name YIELD requestedStatus, currentStatus, statusMessage",
                 StandaloneServer.SYSTEM,
             )
             .single()
@@ -335,8 +335,13 @@ class DatabaseCommandsTest {
         assertThat(server.waited("CREATE DATABASE films WAIT")).isEqualTo(caughtUp)
         assertThat(server.status("films")["currentStatus"]).isEqualTo("online")
         assertThat(server.waited("STOP DATABASE films WAIT 5 SECONDS")).isEqualTo(caughtUp)
-        assertThat(server.status("films")["currentStatus"]).isEqualTo("offline")
+        assertThat(server.status("films"))
+            .containsEntry("requestedStatus", "offline")
+            .containsEntry("currentStatus", "offline")
         assertThat(server.waited("START DATABASE films WAIT 5 SECONDS")).isEqualTo(caughtUp)
+        assertThat(server.status("films"))
+            .containsEntry("requestedStatus", "online")
+            .containsEntry("currentStatus", "online")
         assertThat(server.waited("CREATE OR REPLACE DATABASE films WAIT")).isEqualTo(caughtUp)
         assertThat(server.waited("DROP DATABASE films WAIT")).isEqualTo(caughtUp)
         assertThat(server.names()).doesNotContain("films")

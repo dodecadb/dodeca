@@ -7,6 +7,7 @@ import org.neo4j.common.DependencyResolver
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.AdministrationShowCommandUtils
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.Return
@@ -84,6 +85,7 @@ internal class ShowPrivilegeCommands(
                         plan.yields(),
                         plan.returns(),
                         source(plan.source(), it),
+                        it.runtimeContext().cypherVersion(),
                     )
                 }
             is ShowPrivilegeCommandsPlan ->
@@ -95,10 +97,18 @@ internal class ShowPrivilegeCommands(
                         plan.yields(),
                         plan.returns(),
                         source(plan.source(), it),
+                        it.runtimeContext().cypherVersion(),
                     )
                 }
             is ShowSupportedPrivileges ->
-                Planner { supported(plan.returnColumns(), plan.yields(), plan.returns()) }
+                Planner {
+                    supported(
+                        plan.returnColumns(),
+                        plan.yields(),
+                        plan.returns(),
+                        it.runtimeContext().cypherVersion(),
+                    )
+                }
             else -> null
         }
 
@@ -117,6 +127,7 @@ internal class ShowPrivilegeCommands(
         yields: Option<Yield>,
         returns: Option<Return>,
         source: ExecutionPlan?,
+        version: CypherVersion,
     ): ExecutionPlan {
         val users = isUserScope(scope)
         val fields =
@@ -131,6 +142,7 @@ internal class ShowPrivilegeCommands(
             returns,
             if (users) listOf("user") + order else order,
             source,
+            version,
         ) { graph, securityContext, params ->
             holders(scope, graph, securityContext, params).flatMap { held ->
                 graph.roles[held.role]?.privileges.orEmpty().mapNotNull { privilege ->
@@ -154,8 +166,9 @@ internal class ShowPrivilegeCommands(
     }
 
     /**
-     * The commands of SHOW PRIVILEGES AS [REVOKE] COMMANDS, each once; for users, with `$role` for
-     * the role, as Neo4j's docs show them.
+     * The commands of SHOW PRIVILEGES AS [REVOKE] COMMANDS, each once, with the roles that hold the
+     * privilege and, for users, the users; for users, with `$role` for the role, as Neo4j's docs
+     * show them. Cypher 5 shows the command and whether it is immutable only.
      */
     private fun commands(
         scope: ShowPrivilegeScope,
@@ -164,9 +177,12 @@ internal class ShowPrivilegeCommands(
         yields: Option<Yield>,
         returns: Option<Return>,
         source: ExecutionPlan?,
+        version: CypherVersion,
     ): ExecutionPlan {
-        val fields = listOf("command", "immutable")
         val users = isUserScope(scope)
+        val fields =
+            listOf("command", "access", "action", "roles", "immutable") +
+                if (users) listOf("users") else emptyList()
         return show(
             "ShowPrivilegeCommands",
             fields,
@@ -175,32 +191,48 @@ internal class ShowPrivilegeCommands(
             returns,
             listOf("command"),
             source,
+            version,
         ) { graph, securityContext, params ->
             holders(scope, graph, securityContext, params)
                 .flatMap { held ->
-                    graph.roles[held.role]?.privileges.orEmpty().mapNotNull {
-                        PrivilegeText.command(
-                            it,
-                            if (users) null else held.role,
-                            revoke,
-                            graph::databaseName,
-                        )
+                    graph.roles[held.role]?.privileges.orEmpty().mapNotNull { privilege ->
+                        val command =
+                            PrivilegeText.command(
+                                privilege,
+                                if (users) null else held.role,
+                                revoke,
+                                graph::databaseName,
+                            ) ?: return@mapNotNull null
+                        command to (privilege to held)
                     }
                 }
-                .distinct()
-                .map {
+                .groupBy({ it.first }, { it.second })
+                .map { (command, holders) ->
+                    val row = PrivilegeText.row(holders.first().first, graph::databaseName)
                     map(
                         fields,
-                        listOf(Values.utf8Value(it.command), Values.booleanValue(it.immutable)),
+                        listOf(
+                            Values.utf8Value(command.command),
+                            row?.access?.let(Values::utf8Value) ?: Values.NO_VALUE,
+                            row?.action?.let(Values::utf8Value) ?: Values.NO_VALUE,
+                            strings(holders.map { it.second.role }),
+                            Values.booleanValue(command.immutable),
+                        ) +
+                            if (users) listOf(strings(holders.mapNotNull { it.second.user }))
+                            else emptyList(),
                     )
                 }
         }
     }
 
+    private fun strings(values: List<String>): AnyValue =
+        Values.stringArray(*values.distinct().sorted().toTypedArray())
+
     private fun supported(
         columns: ScalaList<LogicalVariable>,
         yields: Option<Yield>,
         returns: Option<Return>,
+        version: CypherVersion,
     ): ExecutionPlan {
         val fields = listOf("action", "qualifier", "target", "scope", "description")
         return show(
@@ -211,6 +243,7 @@ internal class ShowPrivilegeCommands(
             returns,
             listOf("action", "target"),
             null,
+            version,
         ) { _, _, _ ->
             SupportedPrivileges.ALL.map {
                 map(
@@ -279,6 +312,7 @@ internal class ShowPrivilegeCommands(
         returns: Option<Return>,
         order: List<String>,
         source: ExecutionPlan?,
+        version: CypherVersion,
         rows: (SecurityGraph, SecurityContext, MapValue) -> List<MapValue>,
     ): ExecutionPlan =
         SystemCommandExecutionPlan(
@@ -293,7 +327,7 @@ internal class ShowPrivilegeCommands(
                 .trimIndent(),
             VirtualValues.EMPTY_MAP,
             Option.apply(source),
-            SystemCommandExecutionPlan.`apply$default$7`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
             ParameterTransformer.apply(
                 Function3<Transaction, SecurityContext, MapValue, MapValue> {
                     tx,
@@ -307,7 +341,8 @@ internal class ShowPrivilegeCommands(
                     )
                 }
             ),
-            SystemCommandExecutionPlan.`apply$default$9`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
+            version,
         )
 
     /** Rows by the text of [fields], one after the other; rows without one first. */

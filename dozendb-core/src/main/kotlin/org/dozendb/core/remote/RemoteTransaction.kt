@@ -15,7 +15,9 @@ import org.neo4j.bolt.connection.exception.BoltFailureException
 import org.neo4j.bolt.connection.message.Message
 import org.neo4j.bolt.connection.message.Messages
 import org.neo4j.bolt.connection.values.Value
-import org.neo4j.cypher.internal.util.InternalNotification
+import org.neo4j.cypher.internal.DefaultQueryLanguageScope
+import org.neo4j.cypher.internal.frontend.notification.NotificationWrapping
+import org.neo4j.cypher.internal.notification.InternalNotification
 import org.neo4j.fabric.bookmark.RemoteBookmark
 import org.neo4j.fabric.bookmark.TransactionBookmarkManager
 import org.neo4j.fabric.executor.Location
@@ -25,14 +27,15 @@ import org.neo4j.graphdb.GqlStatusObject
 import org.neo4j.graphdb.Notification
 import org.neo4j.graphdb.QueryExecutionType
 import org.neo4j.graphdb.TransactionTerminatedException
+import org.neo4j.graphdb.TransactionTerminatedHelper
 import org.neo4j.kernel.api.KernelTransaction
 import org.neo4j.kernel.api.exceptions.Status
+import org.neo4j.kernel.api.query.ExtendedQueryStatistics
 import org.neo4j.kernel.impl.query.NotificationConfiguration
 import org.neo4j.kernel.impl.query.QueryExecution
 import org.neo4j.kernel.impl.query.QuerySubscriber
 import org.neo4j.kernel.impl.util.ValueUtils
 import org.neo4j.memory.HeapHighWaterMarkTracker
-import org.neo4j.notifications.NotificationWrapping
 import org.neo4j.router.query.Query
 import org.neo4j.router.transaction.DatabaseTransaction
 import org.neo4j.router.transaction.TransactionInfo
@@ -64,11 +67,13 @@ class RemoteTransaction(
     private val implicit = info.type() == KernelTransaction.Type.IMPLICIT
     private val notificationConfig = notificationConfig(info)
     private val accessMode =
-        if (info.accessMode() == org.neo4j.bolt.protocol.common.message.AccessMode.READ) {
+        if (info.accessMode() == org.neo4j.boltmessages.AccessMode.READ) {
             AccessMode.READ
         } else {
             AccessMode.WRITE
         }
+    /** The default Cypher version of the transaction's queries, which the router sets. */
+    private val languageScope = DefaultQueryLanguageScope.create()
     @Volatile private var connection: BoltConnection? = null
     private var begun = false
     private var lastBookmark: String? = null
@@ -87,6 +92,8 @@ class RemoteTransaction(
 
     override fun isOpen(): Boolean = open
 
+    override fun defaultQueryLanguageScope(): DefaultQueryLanguageScope = languageScope
+
     override fun executeQuery(
         query: Query,
         querySubscriber: QuerySubscriber,
@@ -98,7 +105,9 @@ class RemoteTransaction(
         statementLifecycle.startExecution(true)
         // The server plans and runs the query: here, it is running from now on.
         statementLifecycle.monitoredQuery.onCompilationCompleted(null, null, null, 0)
-        statementLifecycle.monitoredQuery.onExecutionStarted(HeapHighWaterMarkTracker.NONE)
+        statementLifecycle.monitoredQuery.onExecutionStarted(HeapHighWaterMarkTracker.NONE) {
+            ExtendedQueryStatistics.EMPTY
+        }
         val parameters = HashMap<String, Value>()
         query.parameters().foreach<RuntimeException> { key, value ->
             parameters[key] = BoltValue(value)
@@ -402,9 +411,9 @@ class RemoteTransaction(
         /** The records fetched at a time, as drivers do by default. */
         const val FETCH_SIZE = 1000L
 
-        @Suppress("DEPRECATION") // As Neo4j's own transactions report terminations.
+        /** As Neo4j's own transactions report terminations. */
         fun terminatedException(reason: Status): TransactionTerminatedException =
-            TransactionTerminatedException(reason)
+            TransactionTerminatedHelper.transactionTerminated(reason)
 
         /** The client's notification filters, which the server applies. */
         private fun notificationConfig(info: TransactionInfo): NotificationConfig {

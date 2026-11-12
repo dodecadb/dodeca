@@ -268,11 +268,10 @@ class ServerSideRoutingTest {
             @Suppress("DEPRECATION")
             assertThat(actual.notifications().map { it.code() })
                 .isEqualTo(expected.notifications().map { it.code() })
-            assertThat(actual.hasPlan()).isEqualTo(expected.hasPlan())
-            assertThat(actual.hasProfile()).isEqualTo(expected.hasProfile())
-            if (expected.hasPlan()) {
-                assertThat(actual.plan().operatorType()).isEqualTo(expected.plan().operatorType())
-            }
+            assertThat(actual.queryPlan().map { it.operatorType() })
+                .describedAs(query.text())
+                .isEqualTo(expected.queryPlan().map { it.operatorType() })
+            assertThat(actual.queryProfile().isPresent).isEqualTo(expected.queryProfile().isPresent)
         }
     }
 

@@ -1,6 +1,7 @@
 package org.dozendb.plugin
 
 import java.nio.file.Path
+import java.time.Instant
 import org.dozendb.cluster.internal.ClusteredDbms
 import org.dozendb.core.DozenDb
 import org.dozendb.core.DozenDbSettings
@@ -44,4 +45,11 @@ class DozenDbBootstrapper : NeoBootstrapper() {
         config: Configuration,
         daemonMode: Boolean,
     ): Boolean = true
+
+    /** Neo4j Community's, which has no license evaluation period to report. */
+    override fun logOnLicenseEvaluation(
+        homeDir: Path,
+        config: Configuration,
+        databaseCreationDate: Instant,
+    ) {}
 }

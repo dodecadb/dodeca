@@ -19,8 +19,10 @@ import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.kernel.database.Database
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
+import org.neo4j.storageengine.AppendIndexProvider
+import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 class CommittedTransactionsTest {
     // Kept when a test fails, for the server's logs.
@@ -59,6 +61,36 @@ class CommittedTransactionsTest {
                 }
 
             assertThat(fields(read)).isEqualTo(fields(expected)).hasSizeGreaterThan(10)
+            assertThat(read.map { it.previousChecksum })
+                .isEqualTo(listOf(after.checksum()) + read.dropLast(1).map { it.checksum })
+        }
+    }
+
+    @Test
+    fun `reads the transactions after the base one, which no log holds, as after an import`() {
+        CommunityServer(root).start().use { server ->
+            CommunityServer.populate(server)
+            val base = AppendIndexProvider.BASE_APPEND_INDEX
+            val database = server.databaseInternal()
+
+            val read =
+                CommittedTransactions.read(database, base, TransactionIdStore.BASE_TX_CHECKSUM) {
+                    (it as Continued).transactions.toList()
+                }
+            val diverged =
+                CommittedTransactions.read(
+                    database,
+                    base,
+                    TransactionIdStore.BASE_TX_CHECKSUM + 1,
+                ) {
+                    it
+                }
+
+            assertThat(read.map { it.appendIndex })
+                .isEqualTo((base + 1..server.lastCommitted().appendIndex()).toList())
+            assertThat(read.first().previousChecksum).isEqualTo(TransactionIdStore.BASE_TX_CHECKSUM)
+            assertThat(fields(read)).isEqualTo(fields(server.transactionsAfter(base)))
+            assertThat(diverged).isInstanceOf(Diverged::class.java)
         }
     }
 

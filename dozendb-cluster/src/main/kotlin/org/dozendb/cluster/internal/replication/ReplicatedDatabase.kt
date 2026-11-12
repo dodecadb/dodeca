@@ -64,7 +64,6 @@ internal class ReplicatedDatabase(
     private val mustDetach: () -> Boolean,
     private val detached: () -> Unit,
     private val adopt: () -> Unit,
-    private val idGeneratorFactory: IdGeneratorFactory,
     storeExists: Boolean,
     private val scheduler: ScheduledExecutorService,
     private val log: InternalLog,
@@ -477,9 +476,8 @@ internal class ReplicatedDatabase(
     /** Returns false, after logging why, if the caches could not be cleared; reuse stays off. */
     private fun clearIdCaches(reuse: Boolean): Boolean =
         try {
-            database.cursorContextFactory.create(ID_CACHE_TAG).use {
-                idGeneratorFactory.clearCache(reuse, it)
-            }
+            val ids = database.dependencyResolver.resolveDependency(IdGeneratorFactory::class.java)
+            database.cursorContextFactory.create(ID_CACHE_TAG).use { ids.clearCache(reuse, it) }
             true
         } catch (e: Exception) {
             log.error("Clearing the ID caches of ${ref.name} failed; free IDs are not reused", e)

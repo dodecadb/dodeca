@@ -23,7 +23,6 @@ import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DatabaseHosting
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
-import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.InternalLogProvider
@@ -241,7 +240,6 @@ internal class ReplicationService(
      */
     override fun prepare(
         namedDatabaseId: NamedDatabaseId,
-        idGeneratorFactory: IdGeneratorFactory,
         storeExists: Boolean,
     ): ReplicatedDatabase {
         val replica =
@@ -252,7 +250,6 @@ internal class ReplicationService(
                 { mustDetach(namedDatabaseId.name()) },
                 { detached(namedDatabaseId.name()) },
                 if (namedDatabaseId.isSystemDatabase) adoptDatabases else ({}),
-                idGeneratorFactory,
                 storeExists,
                 scheduler,
                 logProvider.getLog(ReplicatedDatabase::class.java),

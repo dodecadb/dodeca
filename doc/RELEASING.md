@@ -17,8 +17,8 @@ is published from a laptop.
 DozenDB's version is its own, in [Semantic Versioning](https://semver.org):
 `0.2.0`, or `0.3.0-rc.1` for a pre-release. Each release is built for exactly
 one Neo4j version, which the names of its jar and image carry, as in
-`dozendb-0.2.0-neo4j-5.26.27.jar` and
-`ghcr.io/dozendb/dozendb:0.2.0-neo4j-5.26.27`.
+`dozendb-0.2.0-neo4j-2026.10.2.jar` and
+`ghcr.io/dozendb/dozendb:0.2.0-neo4j-2026.10.2`.
 
 What a number says to operators:
 
@@ -53,7 +53,7 @@ every test on it. Before merging it:
    [`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md) for changes between
    the two versions.
 2. Write the new version wherever the documents name the old one: `git grep
-   -n 5.26.27 -- '*.md'`.
+   -n 2026.10.2 -- '*.md'`.
 3. Raise the versions of what DozenDB takes from Neo4j's `lib/` to those the
    new Neo4j ships, if they changed: slf4j, JNA, Jackson and the JAX-RS API,
    which Dependabot leaves alone.
@@ -141,7 +141,7 @@ The attestations prove that the release workflow built the jar and the image
 from the tagged commit. The release notes give the commands that check them:
 
 ```sh
-gh attestation verify dozendb-0.2.0-neo4j-5.26.27.jar --repo dozendb/dozendb
+gh attestation verify dozendb-0.2.0-neo4j-2026.10.2.jar --repo dozendb/dozendb
 gh attestation verify oci://ghcr.io/dozendb/dozendb:0.2.0 --repo dozendb/dozendb
 ```
 

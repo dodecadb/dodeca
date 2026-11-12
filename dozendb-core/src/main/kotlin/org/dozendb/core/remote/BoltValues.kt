@@ -8,6 +8,7 @@ import java.time.OffsetDateTime
 import java.time.OffsetTime
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
+import java.util.UUID
 import org.neo4j.bolt.connection.BoltProtocolVersion
 import org.neo4j.bolt.connection.values.IsoDuration
 import org.neo4j.bolt.connection.values.Node
@@ -35,7 +36,10 @@ import org.neo4j.values.storable.NoValue
 import org.neo4j.values.storable.PointValue
 import org.neo4j.values.storable.TextValue
 import org.neo4j.values.storable.TimeValue
+import org.neo4j.values.storable.UUIDValue
+import org.neo4j.values.storable.ValueWriter
 import org.neo4j.values.storable.Values
+import org.neo4j.values.storable.VectorValue
 import org.neo4j.values.virtual.ListValue
 import org.neo4j.values.virtual.MapValue
 import org.neo4j.values.virtual.MapValueBuilder
@@ -68,6 +72,8 @@ internal class BoltValue(val value: AnyValue) : Value {
             is DateTimeValue -> Type.DATE_TIME
             is DurationValue -> Type.DURATION
             is PointValue -> Type.POINT
+            is VectorValue -> Type.VECTOR
+            is UUIDValue -> Type.UUID
             // Nodes, relationships and paths are only received: Bolt takes none as parameters.
             is NodeValue -> Type.NODE
             is RelationshipValue -> Type.RELATIONSHIP
@@ -130,8 +136,23 @@ internal class BoltValue(val value: AnyValue) : Value {
         return result
     }
 
-    override fun asBoltVector(): Vector =
-        throw UnsupportedOperationException("Neo4j 5 has no vector values")
+    override fun asBoltVector(): Vector {
+        val elements = VectorElements()
+        (value as VectorValue).writeTo(elements)
+        val type =
+            elements.type
+                ?: throw UnsupportedOperationException(
+                    "Bolt cannot carry a vector of ${value.coordinateType()} coordinates"
+                )
+        val array = elements.array
+        return object : Vector {
+            override fun elementType(): Class<*> = type
+
+            override fun elements(): Any = array!!
+        }
+    }
+
+    override fun asUUID(): UUID = (value as UUIDValue).asObjectCopy()
 
     override fun isNull(): Boolean = value is NoValue
 
@@ -249,7 +270,18 @@ object BoltValues : ValueFactory {
         BoltValue(Values.pointValue(CoordinateReferenceSystem.get(srid), x, y, z))
 
     override fun vector(elementType: Class<*>, elements: Any): Value =
-        throw UnsupportedOperationException("Neo4j 5 has no vector values")
+        BoltValue(
+            when (elements) {
+                is kotlin.ByteArray -> Values.int8Vector(*elements)
+                is ShortArray -> Values.int16Vector(*elements)
+                is IntArray -> Values.int32Vector(*elements)
+                is LongArray -> Values.int64Vector(*elements)
+                is FloatArray -> Values.float32Vector(*elements)
+                is DoubleArray -> Values.float64Vector(*elements)
+                else ->
+                    throw UnsupportedOperationException("Vectors of $elementType are not supported")
+            }
+        )
 
     override fun unsupportedType(
         name: String,
@@ -330,4 +362,27 @@ object BoltValues : ValueFactory {
                 relationships.map { it.toValue() }.toTypedArray(),
             )
     }
+}
+
+/** The coordinates of a vector, as bolt-connection sends them: one primitive array. */
+private class VectorElements : ValueWriter.Adapter<RuntimeException>() {
+    var type: Class<*>? = null
+    var array: Any? = null
+
+    private fun take(type: Class<*>, array: Any) {
+        this.type = type
+        this.array = array
+    }
+
+    override fun writeInt8Vector(values: kotlin.ByteArray) = take(Byte::class.java, values)
+
+    override fun writeInt16Vector(values: ShortArray) = take(Short::class.java, values)
+
+    override fun writeInt32Vector(values: IntArray) = take(Int::class.java, values)
+
+    override fun writeInt64Vector(values: LongArray) = take(Long::class.java, values)
+
+    override fun writeFloat32Vector(values: FloatArray) = take(Float::class.java, values)
+
+    override fun writeFloat64Vector(values: DoubleArray) = take(Double::class.java, values)
 }

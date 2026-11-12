@@ -300,8 +300,13 @@ class AdministrationPrivilegesTest {
             )
 
         assertThat(users()).containsExactly("alice")
-        assertThat(alice.refused("CALL dbms.killConnection('$bob')"))
-            .isEqualTo("Not allowed to terminate connection for user bob.")
+        // Neo4j answers as for a connection it does not know, and keeps it open.
+        assertThat(alice.run("CALL dbms.killConnection('$bob') YIELD username, message"))
+            .containsExactly(
+                mapOf("username" to "n/a", "message" to "No connection found with this id")
+            )
+        assertThat(server.rows("CALL dbms.listConnections() YIELD username").map { it["username"] })
+            .contains("bob")
 
         // As for @Admin procedures.
         grant("GRANT EXECUTE BOOSTED PROCEDURE dbms.listConnections ON DBMS TO r")

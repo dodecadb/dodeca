@@ -11,6 +11,9 @@ import javax.crypto.spec.GCMParameterSpec
 import org.dozendb.core.DozenDbSettings
 import org.neo4j.configuration.Config
 import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlParams
+import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.messages.MessageUtil
 
 /**
@@ -85,9 +88,16 @@ class AliasPasswords(private val config: Config) {
             cause,
         )
 
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for keystore failures.
+    // Neo4j has no GQL status of its own for keystore failures: its general internal error.
     private fun failure(message: String, cause: Throwable?): InvalidArgumentException =
-        InvalidArgumentException(message, cause)
+        InvalidArgumentException(
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_50N00)
+                .withParam(GqlParams.StringParam.msgTitle, "Remote alias password")
+                .withParam(GqlParams.StringParam.msg, message)
+                .build(),
+            message,
+            cause,
+        )
 
     private companion object {
         const val KEYSTORE_TYPE = "PKCS12"

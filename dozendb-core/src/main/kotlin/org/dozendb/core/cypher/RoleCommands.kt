@@ -20,7 +20,6 @@ import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.AdministrationShowCommandUtils
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
-import org.neo4j.cypher.internal.PrivilegeGQLCodeEntity
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AssertRoleCanBeDropped
 import org.neo4j.cypher.internal.logical.plans.AssertRoleCanBeRenamed
@@ -42,6 +41,10 @@ import org.neo4j.cypher.internal.logical.plans.RequireRole
 import org.neo4j.cypher.internal.logical.plans.RevokeRoleFromUser
 import org.neo4j.cypher.internal.logical.plans.`RoleEntity$`
 import org.neo4j.cypher.internal.logical.plans.ShowRoles
+import org.neo4j.cypher.internal.notification.GrantRoleCommandHasNoEffectNotification
+import org.neo4j.cypher.internal.notification.ImpossibleRevokeCommandWarning
+import org.neo4j.cypher.internal.notification.InternalNotification
+import org.neo4j.cypher.internal.notification.RevokeRoleCommandHasNoEffectNotification
 import org.neo4j.cypher.internal.procs.`Continue$`
 import org.neo4j.cypher.internal.procs.NotifyAndContinue
 import org.neo4j.cypher.internal.procs.ParameterTransformer
@@ -52,12 +55,11 @@ import org.neo4j.cypher.internal.procs.QueryHandlerResult
 import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
-import org.neo4j.cypher.internal.util.GrantRoleCommandHasNoEffectNotification
-import org.neo4j.cypher.internal.util.ImpossibleRevokeCommandWarning
-import org.neo4j.cypher.internal.util.InternalNotification
-import org.neo4j.cypher.internal.util.RevokeRoleCommandHasNoEffectNotification
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
+import org.neo4j.gqlstatus.PrivilegeGqlCodeEntity
 import org.neo4j.graphdb.RelationshipType
 import org.neo4j.graphdb.Transaction
 import org.neo4j.graphdb.security.AuthorizationViolationException
@@ -110,7 +112,7 @@ internal class RoleCommands(
 
     private fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
-            is ShowRoles -> Planner { showRoles(plan, compile(plan.source(), it)) }
+            is ShowRoles -> Planner { showRoles(plan, it) }
             is CreateRole -> Planner { createRole(plan, compile(plan.source(), it)) }
             is DropRole -> Planner { dropRole(plan.roleName(), compile(plan.source(), it)) }
             is RenameRole -> Planner { renameRole(plan, compile(plan.source(), it)) }
@@ -199,10 +201,35 @@ internal class RoleCommands(
 
     /**
      * Every role, or those with users; PUBLIC has every user, and a role without users has null.
+     * Roles as commands and with auth rules are not supported.
      */
-    private fun showRoles(plan: ShowRoles, source: ExecutionPlan): ExecutionPlan {
-        val user = admin.userLabel()
-        val userName = admin.userNamePropKey()
+    private fun showRoles(
+        plan: ShowRoles,
+        context: AdministrationCommandRuntimeContext,
+    ): ExecutionPlan {
+        val source = compile(plan.source(), context)
+        val withUsers = plan.extensionType() == ShowRoles.`Users$`.`MODULE$`
+        val unsupported =
+            when {
+                plan.asCommands() -> "`SHOW ROLES AS COMMANDS`"
+                plan.extensionType() == ShowRoles.`AuthRules$`.`MODULE$` ->
+                    "`SHOW ROLES WITH AUTH RULES`"
+                else -> null
+            }
+        if (unsupported != null) {
+            return PredicateExecutionPlan.apply(
+                Function2 { _, _ -> false },
+                Option.apply(source),
+                Function3 { _, _, _ ->
+                    InvalidArgumentException(
+                        notSupported(unsupported),
+                        "Failed to show roles: $unsupported is not supported.",
+                    )
+                },
+            )
+        }
+        val user = USER_LABEL.name()
+        val userName = USER_NAME_PROPERTY
         return SystemCommandExecutionPlan(
             "ShowRoles",
             engine,
@@ -215,16 +242,17 @@ internal class RoleCommands(
             WITH role, assigned, collect(user.$userName) AS everyone
             WITH role, assigned + everyone AS members
             ${if (plan.showAll()) "" else "WHERE size(members) > 0"}
-            ${if (plan.withUsers()) "UNWIND CASE size(members) WHEN 0 THEN [null] ELSE members END AS member" else ""}
-            WITH role.$NAME AS role, role.$IMMUTABLE AS immutable${if (plan.withUsers()) ", member" else ""}
+            ${if (withUsers) "UNWIND CASE size(members) WHEN 0 THEN [null] ELSE members END AS member" else ""}
+            WITH role.$NAME AS role, role.$IMMUTABLE AS immutable${if (withUsers) ", member" else ""}
             ${AdministrationShowCommandUtils.generateReturnClause(plan.returnColumns(), plan.yields(), plan.returns(), seqOf("role", "member"))}
             """
                 .trimIndent(),
             VirtualValues.EMPTY_MAP,
             Option.apply(source),
-            SystemCommandExecutionPlan.`apply$default$7`(),
-            SystemCommandExecutionPlan.`apply$default$8`(),
-            SystemCommandExecutionPlan.`apply$default$9`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$8`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
+            context.runtimeContext().cypherVersion(),
         )
     }
 
@@ -248,11 +276,7 @@ internal class RoleCommands(
                 Function2 { error, params ->
                     val role = show(plan.roleName(), params)
                     if (hasStatus(error, Status.Schema.ConstraintValidationFailed)) {
-                        InvalidArgumentException(
-                            PrivilegeGQLCodeEntity.entityAlreadyExistsGqlStatus(ROLE_ENTITY, role),
-                            "Failed to create the specified role '$role': Role already exists.",
-                            error,
-                        )
+                        InvalidArgumentException.createEntityAlreadyExists(ROLE_ENTITY, role)
                     } else {
                         failed("CREATE ROLE", "create the specified role '$role'", error)
                     }
@@ -323,13 +347,10 @@ internal class RoleCommands(
                         Option.apply(
                             ThrowException(
                                 InvalidArgumentException.renameEntityNotFound(
-                                    PrivilegeGQLCodeEntity.entityNotFoundGqlStatus(
-                                        ROLE_ENTITY,
-                                        fromName,
-                                    ),
-                                    "role",
+                                    ROLE_ENTITY,
                                     fromName,
                                     show(plan.toRoleName(), params),
+                                    parameterName(plan.fromRoleName()),
                                 )
                             )
                         )
@@ -341,14 +362,9 @@ internal class RoleCommands(
                         val toName = show(plan.toRoleName(), params)
                         if (hasStatus(error, Status.Schema.ConstraintValidationFailed)) {
                             InvalidArgumentException.renameEntityAlreadyExists(
-                                PrivilegeGQLCodeEntity.entityAlreadyExistsGqlStatus(
-                                    ROLE_ENTITY,
-                                    toName,
-                                ),
-                                "Role",
+                                ROLE_ENTITY,
                                 fromName,
                                 toName,
-                                error,
                             )
                         } else {
                             failed(
@@ -406,13 +422,11 @@ internal class RoleCommands(
                         val role = show(roleName, params)
                         Option.apply(
                             ThrowException(
-                                InvalidArgumentException(
-                                    PrivilegeGQLCodeEntity.entityNotFoundGqlStatus(
-                                        ROLE_ENTITY,
-                                        role,
-                                    ),
-                                    "Failed to create a role as copy of '$role': " +
-                                        "Role does not exist.",
+                                InvalidArgumentException.failedActionEntityNotFound(
+                                    "create a role as copy of '$role'",
+                                    ROLE_ENTITY,
+                                    role,
+                                    parameterName(roleName),
                                 )
                             )
                         )
@@ -540,7 +554,7 @@ internal class RoleCommands(
             "GrantRoleToUser",
             """
             OPTIONAL MATCH (role:$ROLE {$NAME: ${parameter(role.nameKey())}})
-            OPTIONAL MATCH (user:${admin.userLabel()} {${admin.userNamePropKey()}: ${parameter(user.nameKey())}})
+            OPTIONAL MATCH (user:${USER_LABEL.name()} {$USER_NAME_PROPERTY: ${parameter(user.nameKey())}})
             OPTIONAL MATCH (user)-[had:$HAS_ROLE]->(role)
             WITH role, user, count(had) > 0 AS had
             FOREACH (_ IN CASE WHEN role IS NOT NULL AND user IS NOT NULL AND NOT had THEN [1] ELSE [] END |
@@ -560,13 +574,11 @@ internal class RoleCommands(
                         when {
                             !result.flag("role") ->
                                 ThrowException(
-                                    InvalidArgumentException(
-                                        PrivilegeGQLCodeEntity.entityNotFoundGqlStatus(
-                                            ROLE_ENTITY,
-                                            roleName,
-                                        ),
-                                        "Failed to grant role '$roleName' to user '$userName': " +
-                                            "Role does not exist.",
+                                    InvalidArgumentException.failedActionEntityNotFound(
+                                        "grant role '$roleName' to user '$userName'",
+                                        ROLE_ENTITY,
+                                        roleName,
+                                        parameterName(plan.roleName()),
                                     )
                                 )
                             !result.flag("user") ->
@@ -574,6 +586,7 @@ internal class RoleCommands(
                                     InvalidArgumentException.roleMissingUser(
                                         roleName,
                                         userName,
+                                        parameterName(plan.userName()),
                                         null,
                                     )
                                 )
@@ -615,7 +628,7 @@ internal class RoleCommands(
             "RevokeRoleFromUser",
             """
             OPTIONAL MATCH (role:$ROLE {$NAME: ${parameter(role.nameKey())}})
-            OPTIONAL MATCH (user:${admin.userLabel()} {${admin.userNamePropKey()}: ${parameter(user.nameKey())}})
+            OPTIONAL MATCH (user:${USER_LABEL.name()} {$USER_NAME_PROPERTY: ${parameter(user.nameKey())}})
             OPTIONAL MATCH (user)-[had:$HAS_ROLE]->(role)
             WITH role, user, collect(had) AS had
             FOREACH (relationship IN had | DELETE relationship)
@@ -717,12 +730,11 @@ internal class RoleCommands(
                         val role = show(plan.name(), params)
                         Option.apply(
                             ThrowException(
-                                InvalidArgumentException(
-                                    PrivilegeGQLCodeEntity.entityNotFoundGqlStatus(
-                                        ROLE_ENTITY,
-                                        role,
-                                    ),
-                                    "Failed to $operation '$role': Role does not exist.",
+                                InvalidArgumentException.failedActionEntityNotFound(
+                                    "$operation '$role'",
+                                    ROLE_ENTITY,
+                                    role,
+                                    parameterName(plan.name()),
                                 )
                             )
                         )
@@ -857,9 +869,13 @@ internal class RoleCommands(
     private fun MapValue.flag(key: String): Boolean = (get(key) as BooleanValue).booleanValue()
 
     private fun show(name: Either<String, Parameter>, params: MapValue): String =
-        admin.runtimeStringValue(name, params)
+        nameOf(name, params)
 
     private fun parameter(key: String) = "${'$'}`$key`"
+
+    /** The parameter that gives [name], if a parameter does. */
+    private fun parameterName(name: Either<String, Parameter>): String? =
+        admin.getParameterName(name).getOrElse { null }
 
     private fun <T> seqOf(vararg items: T): Seq<T> =
         CollectionConverters.asScala(items.toList()).toSeq()
@@ -875,7 +891,7 @@ internal class RoleCommands(
         const val IMMUTABLE = PrivilegeRecords.IMMUTABLE
         const val KEY = PrivilegeRecords.KEY
 
-        val ROLE_ENTITY: PrivilegeGQLCodeEntity = PrivilegeGQLCodeEntity.Role()
+        val ROLE_ENTITY = PrivilegeGqlCodeEntity.ROLE
         val IDENTITY = Function1<String, String> { it }
 
         /** The parameter of whether a new role is immutable. */

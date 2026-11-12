@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.DatabaseConfig
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.io.ByteUnit
@@ -168,19 +169,26 @@ class StoreSnapshotsTest {
                         )
                     )
                     .isTrue
+                val tail =
+                    LogTailExtractor(
+                            fs,
+                            config,
+                            StorageEngineFactory.selectStorageEngine(fs, layout).orElseThrow(),
+                            DatabaseTracers.EMPTY,
+                        )
+                        .getTailMetadata(layout, EmptyMemoryTracker.INSTANCE)
                 Recovery.performRecovery(
                     Recovery.context(
                             fs,
                             pageCache,
                             DatabaseTracers.EMPTY,
-                            config,
+                            DatabaseConfig(config),
                             layout,
                             EmptyMemoryTracker.INSTANCE,
                             IOController.DISABLED,
                             NullLogProvider.getInstance(),
-                        ) {
-                            org.neo4j.kernel.KernelVersion.getLatestVersion(config)
-                        }
+                            tail,
+                        )
                         .awaitIndexesOnline(1, TimeUnit.MINUTES)
                 )
             }

@@ -82,14 +82,17 @@ object Artifacts {
         require(header.full) { "the header is not a full backup's" }
         val excluded =
             setOf(layout.databaseLockFile(), layout.quarantineFile()).map { it.fileName.toString() }
-        Dumper(fs).dump(
-            layout.databaseDirectory(),
-            layout.transactionLogsDirectory,
-            out,
-            ArtifactContainer.format(header),
-        ) {
-            it.fileName.toString() in excluded
-        }
+        val manifest =
+            Dumper.collectManifest(layout.databaseDirectory(), layout.transactionLogsDirectory) {
+                it.fileName.toString() in excluded
+            }
+        val output =
+            object : Dumper.DumpOutput {
+                override fun stream(): OutputStream = out
+
+                override fun description() = "the backup of ${header.databaseName}"
+            }
+        Dumper(fs).dump(output, ArtifactContainer.format(header), manifest)
     }
 
     /**

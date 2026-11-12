@@ -141,8 +141,10 @@ class MetricsExportIT {
 
         eventually { assertThat(checkpoints().last().transaction).isEqualTo(committed()) }
         val checkpoints = checkpoints().filter { it.transaction > start }
-        assertThat(checkpoints).allMatch { "IO limit: 10," in it.line }
-        assertThat(checkpoints).anyMatch { Regex("paused in total [1-9]").containsMatchIn(it.line) }
+        assertThat(checkpoints).allMatch { "IO limit: 10 IOPS," in it.message }
+        assertThat(checkpoints).anyMatch {
+            Regex("paused in total [1-9]").containsMatchIn(it.message)
+        }
         assertThat(server.debugLog()).doesNotContain("Could not load check point policy")
     }
 
@@ -152,17 +154,19 @@ class MetricsExportIT {
             .getValue("neo4j_database_neo4j_transaction_last_committed_tx_id_total")
             .toLong()
 
-    private class Checkpoint(val line: String) {
-        val transaction = Regex("@ txId: (\\d+)").find(line)!!.groupValues[1].toLong()
+    private class Checkpoint(val message: String) {
+        val transaction = Regex("@ txId: (\\d+)").find(message)!!.groupValues[1].toLong()
+
+        override fun toString() = message
     }
 
     /** The continuous checkpoints of `neo4j` that completed, in order. */
     private fun checkpoints(): List<Checkpoint> =
         server
-            .debugLog()
-            .lines()
+            .debugEntries()
+            .map { it.message }
             .filter {
-                "[neo4j/" in it &&
+                it.startsWith("[neo4j/") &&
                     "Scheduled checkpoint for continuous checkpointing" in it &&
                     "checkpoint completed" in it
             }

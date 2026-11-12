@@ -1,11 +1,14 @@
 package org.dozendb.cloud
 
+import java.time.Duration
+import org.neo4j.cloud.storage.StorageSettingsDeclaration
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.Internal
 import org.neo4j.configuration.SettingConstraints.min
 import org.neo4j.configuration.SettingConstraints.range
 import org.neo4j.configuration.SettingImpl.newBuilder
 import org.neo4j.configuration.SettingValueParsers.BYTES
+import org.neo4j.configuration.SettingValueParsers.DURATION
 import org.neo4j.configuration.SettingValueParsers.INT
 import org.neo4j.configuration.SettingValueParsers.STRING
 import org.neo4j.configuration.SettingsDeclaration
@@ -19,7 +22,7 @@ import org.neo4j.io.ByteUnit.mebiBytes
  * storage interface reads.
  */
 class CloudStorageSettings : SettingsDeclaration {
-    /** The four sizes of one scheme's reads. */
+    /** The sizes of one scheme's reads, and how long a read waits for a range. */
     class Queues internal constructor(scheme: String) {
         val pushSlots: Setting<Int> =
             internal(scheme, "push", "slot", INT, PUSH_SLOTS).addConstraint(min(1)).build()
@@ -29,6 +32,10 @@ class CloudStorageSettings : SettingsDeclaration {
             internal(scheme, "pull", "slot", INT, PULL_SLOTS).addConstraint(min(1)).build()
         val pullChunk: Setting<Long> =
             internal(scheme, "pull", "chunk", BYTES, CHUNK).addConstraint(CHUNK_RANGE).build()
+        val pushTimeout: Setting<Duration> =
+            internal(scheme, "push", "poll", DURATION, POLL_TIMEOUT, "timeout").build()
+        val pullTimeout: Setting<Duration> =
+            internal(scheme, "pull", "poll", DURATION, POLL_TIMEOUT, "timeout").build()
 
         private fun <T> internal(
             scheme: String,
@@ -36,9 +43,10 @@ class CloudStorageSettings : SettingsDeclaration {
             option: String,
             parser: org.neo4j.configuration.SettingValueParser<T>,
             default: T,
+            unit: String = "size",
         ) =
             newBuilder(
-                "internal.dbms.cloud.storage.$scheme.${queue}_queue_${option}_size",
+                "internal.dbms.cloud.storage.$scheme.${queue}_queue_${option}_$unit",
                 parser,
                 default,
             )
@@ -55,6 +63,9 @@ class CloudStorageSettings : SettingsDeclaration {
         private const val PULL_SLOTS = 4
 
         private val CHUNK = mebiBytes(8)
+
+        /** How long a read waits for a range, as Neo4j's interface says. */
+        private val POLL_TIMEOUT = StorageSettingsDeclaration.DEFAULT_POLL_TIMEOUT
         private val CHUNK_RANGE = range(mebiBytes(1), gibiBytes(1))
 
         @JvmField
@@ -88,16 +99,22 @@ class CloudStorageSettings : SettingsDeclaration {
         @JvmField @field:Internal val s3PushChunk = s3Queues.pushChunk
         @JvmField @field:Internal val s3PullSlots = s3Queues.pullSlots
         @JvmField @field:Internal val s3PullChunk = s3Queues.pullChunk
+        @JvmField @field:Internal val s3PushTimeout = s3Queues.pushTimeout
+        @JvmField @field:Internal val s3PullTimeout = s3Queues.pullTimeout
 
         @JvmField @field:Internal val gsPushSlots = gsQueues.pushSlots
         @JvmField @field:Internal val gsPushChunk = gsQueues.pushChunk
         @JvmField @field:Internal val gsPullSlots = gsQueues.pullSlots
         @JvmField @field:Internal val gsPullChunk = gsQueues.pullChunk
+        @JvmField @field:Internal val gsPushTimeout = gsQueues.pushTimeout
+        @JvmField @field:Internal val gsPullTimeout = gsQueues.pullTimeout
 
         @JvmField @field:Internal val azbPushSlots = azbQueues.pushSlots
         @JvmField @field:Internal val azbPushChunk = azbQueues.pushChunk
         @JvmField @field:Internal val azbPullSlots = azbQueues.pullSlots
         @JvmField @field:Internal val azbPullChunk = azbQueues.pullChunk
+        @JvmField @field:Internal val azbPushTimeout = azbQueues.pushTimeout
+        @JvmField @field:Internal val azbPullTimeout = azbQueues.pullTimeout
 
         /** The read sizes of [scheme], or of `s3` for a scheme of tests. */
         internal fun queues(scheme: String): Queues =

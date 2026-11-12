@@ -34,6 +34,7 @@ package org.dozendb.core.cypher
 import java.time.Duration
 import java.util.UUID
 import org.dozendb.core.DozenDbSettings
+import org.dozendb.core.Gql
 import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.SeedServers
@@ -66,6 +67,7 @@ import org.neo4j.cypher.internal.ast.`NoOptions$`
 import org.neo4j.cypher.internal.ast.Options
 import org.neo4j.cypher.internal.ast.OptionsMap
 import org.neo4j.cypher.internal.ast.OptionsParam
+import org.neo4j.cypher.internal.ast.ParameterName
 import org.neo4j.cypher.internal.ast.`ReadOnlyAccess$`
 import org.neo4j.cypher.internal.ast.Topology
 import org.neo4j.cypher.internal.evaluator.Evaluator
@@ -73,6 +75,9 @@ import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AlterDatabase
 import org.neo4j.cypher.internal.logical.plans.AssertCanDropDatabase
 import org.neo4j.cypher.internal.logical.plans.AssertManagementActionNotBlocked
+import org.neo4j.cypher.internal.logical.plans.AssertNotInvalidActionOnShard
+import org.neo4j.cypher.internal.logical.plans.AssertNotShardedDatabase
+import org.neo4j.cypher.internal.logical.plans.AssertNotStandard
 import org.neo4j.cypher.internal.logical.plans.CreateDatabase
 import org.neo4j.cypher.internal.logical.plans.DropDatabase
 import org.neo4j.cypher.internal.logical.plans.EnsureDatabaseSafeToDelete
@@ -84,6 +89,9 @@ import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.StartDatabase
 import org.neo4j.cypher.internal.logical.plans.StopDatabase
 import org.neo4j.cypher.internal.logical.plans.WaitForCompletion
+import org.neo4j.cypher.internal.notification.DeprecatedOptionInOptionMap
+import org.neo4j.cypher.internal.notification.DeprecatedStoreFormat
+import org.neo4j.cypher.internal.notification.InternalNotification
 import org.neo4j.cypher.internal.optionsmap.`ExistingDataOption$`
 import org.neo4j.cypher.internal.optionsmap.`ExistingSeedInstanceOption$`
 import org.neo4j.cypher.internal.optionsmap.`ExistingSeedServerOption$`
@@ -99,9 +107,6 @@ import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.QueryHandlerResult
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
-import org.neo4j.cypher.internal.util.DeprecatedOptionInOptionMap
-import org.neo4j.cypher.internal.util.DeprecatedStoreFormat
-import org.neo4j.cypher.internal.util.InternalNotification
 import org.neo4j.dbms.api.DatabaseAliasExistsException
 import org.neo4j.dbms.api.DatabaseLimitReachedException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
@@ -154,6 +159,22 @@ import scala.util.Left
 import scala.util.Right
 
 internal typealias Planner = Function1<AdministrationCommandRuntimeContext, ExecutionPlan>
+
+/** The name [name] gives, itself or the value of its parameter in [params]. */
+internal fun nameOf(name: Either<String, Parameter>, params: MapValue): String =
+    `AdministrationCommandRuntime$`.`MODULE$`.runtimeStringValue(name, params) { it }
+
+/**
+ * Fails with "[feature] is not supported." once the checks of [source], such as privileges, passed.
+ */
+internal fun notSupportedPlan(source: ExecutionPlan, feature: String): ExecutionPlan =
+    PredicateExecutionPlan.apply(
+        Function2 { _, _ -> false },
+        Option.apply(source),
+        Function3 { _, _, _ ->
+            InvalidArgumentException(notSupported(feature), "$feature is not supported.")
+        },
+    )
 
 /** Neo4j's GQL status for a [feature] that DozenDB does not support. */
 internal fun notSupported(feature: String): ErrorGqlStatusObject =
@@ -275,8 +296,9 @@ private constructor(
                 ?: source
         }
         if (!commands.isDefinedAt(plan)) {
-            throw CantCompileQueryException(
-                "Plan is not a recognized database administration command: ${plan.javaClass.simpleName}"
+            throw CantCompileQueryException.internalError(
+                "DozenDbAdministrationCommandRuntime",
+                "Plan is not a recognized database administration command: ${plan.javaClass.simpleName}",
             )
         }
         return commands.apply(plan).apply(context)
@@ -294,10 +316,11 @@ private class DatabaseCommands(
     private val fs = dependencies.resolveDependency(FileSystemAbstraction::class.java)
 
     // Resolved on first use, like Community's runtime does.
+    private val authorizationLog by lazy {
+        dependencies.resolveDependency(AbstractSecurityLog::class.java)
+    }
     private val authorization by lazy {
-        SecurityAuthorizationHandler(
-            dependencies.resolveDependency(AbstractSecurityLog::class.java)
-        )
+        SecurityAuthorizationHandler(authorizationLog)
     }
 
     private val admin = `AdministrationCommandRuntime$`.`MODULE$`
@@ -338,6 +361,11 @@ private class DatabaseCommands(
             is EnsureNameIsNotAmbiguous -> Planner { compile(plan.source(), it) }
             // DROP DATABASE checks for aliases, where it knows which database the name means.
             is EnsureDatabaseSafeToDelete -> Planner { compile(plan.source(), it) }
+            // There are no sharded databases: no database is one, nor a shard of one. The commands
+            // that need one, which this check is for, refuse themselves.
+            is AssertNotShardedDatabase -> Planner { compile(plan.source(), it) }
+            is AssertNotInvalidActionOnShard -> Planner { compile(plan.source(), it) }
+            is AssertNotStandard -> Planner { compile(plan.source(), it) }
             is WaitForCompletion ->
                 Planner { context ->
                     WaitExecutionPlan(
@@ -347,6 +375,7 @@ private class DatabaseCommands(
                         { dependencies.resolveDependency(DatabaseProgress::class.java) },
                         engine,
                         authorization,
+                        context.runtimeContext().cypherVersion(),
                     )
                 }
             else -> null
@@ -358,10 +387,18 @@ private class DatabaseCommands(
     ): ExecutionPlan {
         val source = replacing(plan.source(), context)
         val databaseName = plan.databaseName()
-        if (plan.isComposite) {
-            return failure(source, "Composite databases") {
+        val type = plan.databaseType()
+        if (type.isComposite || type.isReplica) {
+            val kind = if (type.isComposite) "Composite databases" else "Replica databases"
+            return failure(source, kind) {
                 "Failed to create the specified database '${show(databaseName, it)}': " +
-                    "composite databases are not supported."
+                    "${kind.lowercase()} are not supported."
+            }
+        }
+        if (plan.defaultLanguageVersion().isDefined) {
+            return failure(source, "DEFAULT LANGUAGE") {
+                "Failed to create the specified database '${show(databaseName, it)}': " +
+                    "a default language of its own is not supported."
             }
         }
         val name = admin.getNameFields("databaseName", databaseName, Function1(::validName))
@@ -503,7 +540,19 @@ private class DatabaseCommands(
                     "are not supported."
             }
         }
-        val name = admin.getDatabaseNameFields("databaseName", databaseName)
+        if (plan.defaultLanguageVersion().isDefined) {
+            return failure(source, "SET DEFAULT LANGUAGE") {
+                "Failed to alter the specified database '${show(databaseName, it)}': a default " +
+                    "language of its own is not supported."
+            }
+        }
+        if (plan.replicas().isDefined) {
+            return failure(source, "SET REPLICAS") {
+                "Failed to alter the specified database '${show(databaseName, it)}': replicas " +
+                    "are not supported."
+            }
+        }
+        val name = admin.getDatabaseNameFields("databaseName", databaseName, false)
         val access =
             plan.access().valueOrNull()?.let {
                 if (it is `ReadOnlyAccess$`) DatabaseAccess.READ_ONLY else DatabaseAccess.READ_WRITE
@@ -604,7 +653,6 @@ private class DatabaseCommands(
      * The numbers of copies [topology] asks for, checked for the database [name]: 1 to 11 primaries
      * and 0 to 20 secondaries, as Neo4j Enterprise takes them.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for a number out of range.
     private fun topology(
         topology: Topology,
         name: String,
@@ -616,40 +664,52 @@ private class DatabaseCommands(
         val secondaries = topology.secondaries().valueOrNull()?.let { number(it, params, failed) }
         if (primaries != null && primaries !in 1..MAX_PRIMARIES) {
             throw InvalidArgumentException(
-                "$failed: a topology has 1 to $MAX_PRIMARIES primaries, not $primaries."
+                outOfRange(GqlStatusInfoCodes.STATUS_51N52, operation, primaries, MAX_PRIMARIES),
+                "$failed: a topology has 1 to $MAX_PRIMARIES primaries, not $primaries.",
             )
         }
         if (secondaries != null && secondaries !in 0..MAX_SECONDARIES) {
             throw InvalidArgumentException(
-                "$failed: a topology has 0 to $MAX_SECONDARIES secondaries, not $secondaries."
+                outOfRange(
+                    GqlStatusInfoCodes.STATUS_51N53,
+                    operation,
+                    secondaries,
+                    MAX_SECONDARIES,
+                ),
+                "$failed: a topology has 0 to $MAX_SECONDARIES secondaries, not $secondaries.",
             )
         }
         return Requested(primaries?.toInt(), secondaries?.toInt())
     }
 
+    /** 51N52 or 51N53: [count] primaries or secondaries, out of their range up to [upper]. */
+    private fun outOfRange(code: GqlStatusInfoCodes, operation: String, count: Long, upper: Int) =
+        Gql.status(
+            code,
+            GqlParams.StringParam.action to operation,
+            GqlParams.NumberParam.count to count,
+            GqlParams.NumberParam.upper to upper,
+        )
+
     /** A number of a topology, given or as a parameter. */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for it.
     private fun number(given: Either<Any, Parameter>, params: MapValue, failed: String): Long =
         when (given) {
             is Left -> (given.value() as Number).toLong()
             else -> {
                 val parameter = (given as Right).value()
                 (params.get(parameter.name()) as? IntegralValue)?.longValue()
-                    ?: throw InvalidArgumentException(
+                    ?: throw Gql.refused(
                         "$failed: the topology parameter '${parameter.name()}' is not an integer."
                     )
             }
         }
 
     /** What [placing] decides, refused as a failed [operation] of the database [name]. */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for it.
     private fun placed(name: String, operation: String, placing: () -> Placement): Placement =
         try {
             placing()
         } catch (e: AllocationException) {
-            throw InvalidArgumentException(
-                "Failed to $operation the specified database '$name': ${e.message}."
-            )
+            throw Gql.refused("Failed to $operation the specified database '$name': ${e.message}.")
         }
 
     /**
@@ -674,7 +734,6 @@ private class DatabaseCommands(
      * ignore it. Ignoring one such as a seed would create an empty database instead of the expected
      * data.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for the refusals of seeds.
     private fun creationOptions(
         plan: CreateDatabase,
         name: String,
@@ -707,12 +766,22 @@ private class DatabaseCommands(
             )
         }
         val existingData = find(`ExistingDataOption$`.`MODULE$`, options) != null
-        val seedUri = find(`SeedURIOption$`.`MODULE$`, options)
+        // One URI: a list, for one per server, is not supported.
+        val seedUri =
+            `SeedURIOption$`.`MODULE$`
+                .findIn(options, Option.apply(config), CREATE_DATABASE)
+                .takeIf { it.isDefined }
+                ?.let {
+                    `SeedURIOption$`.`MODULE$`
+                        .validateSingleOnly(it.get(), CREATE_DATABASE)
+                        .singleUri()
+                        .get()
+                }
         val seedServers =
             listOf(`ExistingSeedServerOption$`.`MODULE$`, `ExistingSeedInstanceOption$`.`MODULE$`)
                 .mapNotNull { option -> find(option, options)?.let { option.KEY() to it } }
         if (seedServers.size > 1) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: existingDataSeedInstance is the deprecated name of " +
                     "existingDataSeedServer. Give existingDataSeedServer alone."
             )
@@ -723,7 +792,7 @@ private class DatabaseCommands(
             plan.ifExistsDo() is `IfExistsReplace$` &&
                 (existingData || seedUri != null || seedServer != null)
         ) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: OR REPLACE cannot be combined with existingData, seedURI or " +
                     "existingDataSeedServer. Drop the database first."
             )
@@ -731,7 +800,7 @@ private class DatabaseCommands(
         val clustered = config.get(DozenDbSettings.clusterEnabled)
         if (seedServer != null) {
             if (!clustered) {
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failed: $seedKey needs clustering. Without it, restore the database with " +
                         "'neo4j-admin database restore' and create it without options."
                 )
@@ -741,7 +810,7 @@ private class DatabaseCommands(
                     it.check(UUID.fromString(seedServer))
                 }
             } catch (e: IllegalArgumentException) {
-                throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
+                throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
             }
         }
         val placement = StorePlacement(fs, Neo4jLayout.of(config))
@@ -749,30 +818,30 @@ private class DatabaseCommands(
         when {
             seedUri != null -> {
                 if (!clustered && placement.holdsStore(normalized)) {
-                    throw InvalidArgumentException(
+                    throw Gql.refused(
                         "$failed: its files are in place already. Create it without seedURI to " +
                             "use them, or delete them first."
                     )
                 }
                 val seeder =
                     dependencies.resolveTypeDependencies(DatabaseSeeder::class.java).firstOrNull()
-                        ?: throw InvalidArgumentException(
+                        ?: throw Gql.refused(
                             "$failed: this server cannot create databases from seeds."
                         )
                 try {
                     seeder.check(seedUri)
                 } catch (e: IllegalArgumentException) {
-                    throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
+                    throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
                 }
             }
             existingData && seedServer == null && clustered ->
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failed: with clustering, existingData 'use' needs existingDataSeedServer, " +
                         "the server where 'neo4j-admin database restore' prepared the database, " +
                         "or a seedURI."
                 )
             existingData && !clustered && !placement.holdsStore(normalized) ->
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failed: existingData 'use' needs its files in place, as 'neo4j-admin " +
                         "database restore' puts them, or a seedURI. There are no files."
                 )
@@ -848,7 +917,7 @@ private class DatabaseCommands(
         try {
             DatabaseNameValidator.validateExternalDatabaseName(normalized)
         } catch (e: IllegalArgumentException) {
-            throw InvalidArgumentException(e.message)
+            throw InvalidArgumentException(GqlHelper.getGql22000_22N11(name), e.message)
         }
         return normalized.name()
     }
@@ -901,7 +970,6 @@ private class DatabaseCommands(
      * default database, as Neo4j Enterprise does: `dbms.setDefaultDatabase` makes another database
      * the default first.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for dropping the default database.
     private fun dropDatabase(
         plan: DropDatabase,
         context: AdministrationCommandRuntimeContext,
@@ -915,7 +983,7 @@ private class DatabaseCommands(
                     "DUMP DATA is not supported."
             }
         }
-        val name = admin.getDatabaseNameFields("databaseName", databaseName)
+        val name = admin.getDatabaseNameFields("databaseName", databaseName, false)
         val key = parameter(name.displayNameKey())
         val restrict = plan.aliasAction() !is `CascadeAliases$`
         val droppable =
@@ -941,7 +1009,7 @@ private class DatabaseCommands(
                             when {
                                 database.get("default") == Values.TRUE ->
                                     ThrowException(
-                                        InvalidArgumentException(
+                                        Gql.refused(
                                             "Not allowed to delete the default database " +
                                                 "'$target'."
                                         )
@@ -1017,7 +1085,7 @@ private class DatabaseCommands(
         val online = status == DatabaseStatus.ONLINE
         val (command, operation) =
             if (online) "START DATABASE" to "start" else "STOP DATABASE" to "stop"
-        val name = admin.getDatabaseNameFields("databaseName", databaseName)
+        val name = admin.getDatabaseNameFields("databaseName", databaseName, false)
         return updating(
             if (online) "StartDatabase" else "StopDatabase",
             """
@@ -1047,7 +1115,7 @@ private class DatabaseCommands(
         if (plan.aliasName().isDefined)
             return ensureAliasTarget(plan, plan.aliasName().get(), context)
         val databaseName = plan.databaseName()
-        val name = admin.getDatabaseNameFields("databaseName", databaseName)
+        val name = admin.getDatabaseNameFields("databaseName", databaseName, false)
         return updating(
             "EnsureValidNonSystemDatabase",
             "${database(parameter(name.displayNameKey()))} RETURN database.name AS name",
@@ -1101,14 +1169,13 @@ private class DatabaseCommands(
      * Checks that the target of the alias [aliasName] is a database other than `system`: an alias
      * cannot target another alias.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these targets.
     private fun ensureAliasTarget(
         plan: EnsureValidNonSystemDatabase,
         aliasName: DatabaseName,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
         val target = plan.databaseName()
-        val name = admin.getDatabaseNameFields("targetName", target)
+        val name = admin.getDatabaseNameFields("targetName", target, false)
         val key = parameter(name.displayNameKey())
         return updating(
             "EnsureValidAliasTarget",
@@ -1138,14 +1205,14 @@ private class DatabaseCommands(
                             "database" -> `Continue$`.`MODULE$`
                             "system" ->
                                 ThrowException(
-                                    InvalidArgumentException(
+                                    Gql.refused(
                                         "$failed: Target database name '$targetName' is " +
                                             "invalid, due to the prefix 'system'."
                                     )
                                 )
                             "alias" ->
                                 ThrowException(
-                                    InvalidArgumentException(
+                                    Gql.refused(
                                         "$failed: '$targetName' is an alias, and aliases can " +
                                             "only target databases."
                                     )
@@ -1156,6 +1223,7 @@ private class DatabaseCommands(
                                         plan.action(),
                                         show(aliasName, params),
                                         targetName,
+                                        parameterName(target),
                                     )
                                 )
                         }
@@ -1173,7 +1241,7 @@ private class DatabaseCommands(
     ): ExecutionPlan {
         val action = plan.defaultAction()
         return AuthorizationAndPredicateExecutionPlan.apply(
-            authorization,
+            authorizationLog,
             Function2<
                 MapValue,
                 SecurityContext,
@@ -1237,7 +1305,11 @@ private class DatabaseCommands(
         Function1<MapValue, Option<QueryHandlerResult>> { params ->
             Option.apply(
                 ThrowException(
-                    DatabaseNotFoundHelper.failedAction(operation, show(databaseName, params))
+                    DatabaseNotFoundHelper.failedAction(
+                        operation,
+                        show(databaseName, params),
+                        parameterName(databaseName),
+                    )
                 )
             )
         }
@@ -1271,8 +1343,12 @@ private class DatabaseCommands(
     private fun show(name: DatabaseName, params: MapValue): String =
         admin.runtimeStringValue(name, params)
 
+    /** The parameter that gives [name], if a parameter does. */
+    private fun parameterName(name: DatabaseName): String? =
+        (name as? ParameterName)?.parameter()?.name()
+
     private fun show(name: Either<String, Parameter>, params: MapValue): String =
-        admin.runtimeStringValue(name, params)
+        nameOf(name, params)
 
     private fun transformer(): ParameterTransformer =
         ParameterTransformer(

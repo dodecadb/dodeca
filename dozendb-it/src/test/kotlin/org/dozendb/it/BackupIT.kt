@@ -261,7 +261,8 @@ class BackupIT {
 
     /** How many scheduled checkpoints [server] has completed, by its debug log. */
     private fun scheduledCheckpoints(server: DozenDbContainer): Int =
-        server.debugLog().lines().count {
-            "Checkpoint triggered by \"Scheduled checkpoint" in it && "completed" in it
+        server.debugEntries().count {
+            it.message.contains("Checkpoint triggered by \"Scheduled checkpoint") &&
+                it.message.contains("checkpoint completed")
         }
 }

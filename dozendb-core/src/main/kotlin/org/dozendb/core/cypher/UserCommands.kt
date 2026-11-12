@@ -6,6 +6,8 @@
  * 2026-10-20: Neo4j Community's planners of CREATE USER, ALTER USER, SHOW USERS and SHOW CURRENT
  * USER, which keep and show the status and home database that Community refuses.
  * 2026-10-23: SHOW USERS and SHOW CURRENT USER show the roles of the users.
+ * 2026-11-11: ported to Neo4j 2026, whose SHOW USERS lists the users in Java and runs SHOW CURRENT
+ * USER outside the administration commands; user tags are refused.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -22,39 +24,36 @@ import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.AdministrationShowCommandUtils
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
-import org.neo4j.cypher.internal.administration.ShowUsersExecutionPlanner
 import org.neo4j.cypher.internal.ast.ExternalAuth
-import org.neo4j.cypher.internal.ast.Return
-import org.neo4j.cypher.internal.ast.Yield
-import org.neo4j.cypher.internal.expressions.LogicalVariable
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AlterUser
 import org.neo4j.cypher.internal.logical.plans.CreateUser
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
-import org.neo4j.cypher.internal.logical.plans.ShowCurrentUser
 import org.neo4j.cypher.internal.logical.plans.ShowUsers
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.PredicateExecutionPlan
 import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.SecurityAuthorizationHandler
+import org.neo4j.server.security.systemgraph.ShowUsersOutput
 import org.neo4j.server.security.systemgraph.UserSecurityGraphComponent
-import org.neo4j.values.storable.Values
 import org.neo4j.values.virtual.VirtualValues
 import scala.Function2
 import scala.Function3
 import scala.Option
 import scala.PartialFunction
-import scala.collection.immutable.List as ScalaList
 import scala.collection.immutable.Seq
 import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
 
 /**
  * CREATE USER and ALTER USER with `SET STATUS` and `SET HOME DATABASE`, which Neo4j Community
- * refuses, through Neo4j's own plans that store them; and SHOW USERS and SHOW CURRENT USER, which
- * show them where Community shows null. Only native authentication is supported.
+ * refuses, through Neo4j's own plans that store them; and SHOW USERS, which shows them, and the
+ * users' roles, where Community shows null. Only native authentication is supported, without user
+ * tags.
  */
 internal class UserCommands(
     private val engine: ExecutionEngine,
@@ -86,17 +85,7 @@ internal class UserCommands(
         when (plan) {
             is CreateUser -> Planner { createUser(plan, it) }
             is AlterUser -> Planner { alterUser(plan, it) }
-            is ShowUsers ->
-                Planner {
-                    showUsers(
-                        plan.returnColumns(),
-                        plan.withAuth(),
-                        plan.yields(),
-                        plan.returns(),
-                        compile(plan.source(), it),
-                    )
-                }
-            is ShowCurrentUser -> Planner { showCurrentUser(plan) }
+            is ShowUsers -> Planner { showUsers(plan, it) }
             else -> null
         }
 
@@ -105,8 +94,10 @@ internal class UserCommands(
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
         val source = compile(plan.source(), context)
-        if (!plan.externalAuths().isEmpty) {
-            return failure(source, "create", plan.userName(), external(plan.externalAuths()))
+        val unsupported =
+            external(plan.externalAuths()) + listOfNotNull(TAGS.takeIf { plan.tags().isDefined })
+        if (unsupported.isNotEmpty()) {
+            return failure(source, "create", plan.userName(), unsupported)
         }
         return admin.makeCreateUserExecutionPlan(
             plan.userName(),
@@ -115,6 +106,7 @@ internal class UserCommands(
             plan.nativeAuth(),
             plan.externalAuths(),
             admin.`makeCreateUserExecutionPlan$default$6`(),
+            admin.`makeCreateUserExecutionPlan$default$7`(),
             Option.apply(source),
             engine,
             authorization,
@@ -127,11 +119,14 @@ internal class UserCommands(
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
         val source = compile(plan.source(), context)
-        if (!plan.externalAuths().isEmpty) {
-            return failure(source, "alter", plan.userName(), external(plan.externalAuths()))
-        }
-        if (!plan.removeAuth().isEmpty) {
-            return failure(source, "alter", plan.userName(), listOf("`REMOVE AUTH`"))
+        val unsupported =
+            external(plan.externalAuths()) +
+                listOfNotNull(
+                    "`REMOVE AUTH`".takeUnless { plan.removeAuth().isEmpty },
+                    TAGS.takeUnless { plan.tags().isEmpty },
+                )
+        if (unsupported.isNotEmpty()) {
+            return failure(source, "alter", plan.userName(), unsupported)
         }
         return admin.makeAlterUserExecutionPlan(
             plan.userName(),
@@ -141,6 +136,7 @@ internal class UserCommands(
             plan.externalAuths(),
             plan.removeAuth(),
             admin.`makeAlterUserExecutionPlan$default$7`(),
+            admin.`makeAlterUserExecutionPlan$default$8`(),
             Option.apply(source),
             engine,
             authorization,
@@ -169,77 +165,61 @@ internal class UserCommands(
                 InvalidArgumentException(
                     notSupported(what),
                     "Failed to $operation the specified user " +
-                        "'${admin.runtimeStringValue(userName, params)}': $what " +
+                        "'${nameOf(userName, params)}': $what " +
                         "${if (clauses.size == 1) "is" else "are"} not supported.",
                 )
             },
         )
     }
 
+    /**
+     * The users as Neo4j Community lists them, with their status and home database, and the roles
+     * granted to them in DozenDB's model, by name, then PUBLIC.
+     */
     private fun showUsers(
-        columns: ScalaList<LogicalVariable>,
-        withAuth: Boolean,
-        yields: Option<Yield>,
-        returns: Option<Return>,
-        source: ExecutionPlan,
+        plan: ShowUsers,
+        context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
-        val auth = if (withAuth) ShowUsersExecutionPlanner.getAuthCypher("u") else null
+        val rows = admin.internalKey(ShowUsersOutput.USERS)
         return SystemCommandExecutionPlan(
             "ShowUsers",
             engine,
             authorization,
             """
-            MATCH (u:${admin.userLabel()})
-            ${auth?._1() ?: ""}
-            WITH ${userColumns("u")}
-            ${auth?._2() ?: ""}
-            ${AdministrationShowCommandUtils.generateReturnClause(columns, yields, returns, seqOf("user"))}
-            """
-                .trimIndent(),
-            VirtualValues.EMPTY_MAP,
-            Option.apply(source),
-            SystemCommandExecutionPlan.`apply$default$7`(),
-            SystemCommandExecutionPlan.`apply$default$8`(),
-            SystemCommandExecutionPlan.`apply$default$9`(),
-        )
-    }
-
-    private fun showCurrentUser(plan: ShowCurrentUser): ExecutionPlan {
-        val currentUser = "__internal_currentUser"
-        return SystemCommandExecutionPlan(
-            "ShowCurrentUser",
-            engine,
-            authorization,
-            """
-            MATCH (u:${admin.userLabel()})
-            WITH ${userColumns("u")}
-            WHERE user = ${'$'}`$currentUser`
+            UNWIND ${'$'}`$rows` AS row
+            MATCH (u:${USER_LABEL.name()} {$USER_NAME_PROPERTY: row.${ShowUsersOutput.USER}})
+            WITH
+              row.${ShowUsersOutput.COMMAND} AS command,
+              row.${ShowUsersOutput.USER} AS user,
+              COLLECT { MATCH (u)-[:${PrivilegeRecords.HAS_ROLE.name()}]->(role:${PrivilegeRecords.ROLE.name()})
+                RETURN role.${PrivilegeRecords.ROLE_NAME} ORDER BY role.${PrivilegeRecords.ROLE_NAME} } +
+                ['${BuiltInRoles.PUBLIC}'] AS roles,
+              row.${ShowUsersOutput.PASSWORD_CHANGE_REQ} AS passwordChangeRequired,
+              row.${ShowUsersOutput.SUSPENDED} AS suspended,
+              row.${ShowUsersOutput.HOME} AS home,
+              row.${ShowUsersOutput.PROVIDER} AS provider,
+              row.${ShowUsersOutput.AUTH} AS auth,
+              row.${ShowUsersOutput.TAGS} AS tags
             ${AdministrationShowCommandUtils.generateReturnClause(plan.returnColumns(), plan.yields(), plan.returns(), seqOf("user"))}
             """
                 .trimIndent(),
             VirtualValues.EMPTY_MAP,
-            Option.empty(),
-            SystemCommandExecutionPlan.`apply$default$7`(),
-            ParameterTransformer.apply { _, securityContext, _ ->
-                VirtualValues.map(
-                    arrayOf(currentUser),
-                    arrayOf(Values.utf8Value(securityContext.subject().executingUser())),
-                )
+            Option.apply(compile(plan.source(), context)),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
+            ParameterTransformer.apply { tx, _, _ ->
+                userSecurity
+                    .showUsers(tx, plan.withAuth(), true, plan.asCommands(), true)
+                    .toMapValue()
             },
-            SystemCommandExecutionPlan.`apply$default$9`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
+            context.runtimeContext().cypherVersion(),
         )
     }
 
-    /** The columns of SHOW USERS: the roles are those granted, by name, then PUBLIC. */
-    private fun userColumns(user: String): String =
-        "$user.${admin.userNamePropKey()} AS user, " +
-            "COLLECT { MATCH ($user)-[:${PrivilegeRecords.HAS_ROLE.name()}]->" +
-            "(role:${PrivilegeRecords.ROLE.name()}) RETURN role.${PrivilegeRecords.ROLE_NAME} " +
-            "ORDER BY role.${PrivilegeRecords.ROLE_NAME} } + ['${BuiltInRoles.PUBLIC}'] AS roles, " +
-            "$user.${admin.userPwChangeReqPropKey()} AS passwordChangeRequired, " +
-            "coalesce($user.${admin.userSuspendedPropKey()}, false) AS suspended, " +
-            "$user.${admin.userHomeDbPropKey()} AS home"
-
     private fun <T> seqOf(vararg items: T): Seq<T> =
         CollectionConverters.asScala(items.toList()).toSeq()
+
+    private companion object {
+        const val TAGS = "`SET TAGS`, `ADD TAGS` and `REMOVE TAGS`"
+    }
 }

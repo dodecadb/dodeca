@@ -4,23 +4,24 @@ import java.io.IOException
 import java.io.PrintStream
 import java.nio.file.Files
 import java.time.Instant
+import java.util.function.Supplier
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.importer.IncrementState.Stage
-import org.neo4j.batchimport.api.AdditionalInitialIds
 import org.neo4j.batchimport.api.Configuration
 import org.neo4j.batchimport.api.IncrementalBatchImporter
 import org.neo4j.batchimport.api.IndexImporterFactory
 import org.neo4j.batchimport.api.Monitor
 import org.neo4j.batchimport.api.input.Collector
-import org.neo4j.batchimport.api.input.Group
 import org.neo4j.batchimport.api.input.IdType
 import org.neo4j.batchimport.api.input.Input
+import org.neo4j.batchimport.api.input.PropertySizeCalculator
 import org.neo4j.cli.ExitCode
 import org.neo4j.commandline.dbms.LockChecker
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.function.ThrowingSupplier
 import org.neo4j.internal.batchimport.IncrementalBatchImporterFactory
+import org.neo4j.internal.batchimport.input.Groups
 import org.neo4j.internal.kernel.api.IndexQueryConstraints
 import org.neo4j.internal.kernel.api.security.LoginContext
 import org.neo4j.internal.schema.IndexDescriptor
@@ -34,7 +35,6 @@ import org.neo4j.io.pagecache.tracing.PageCacheTracer
 import org.neo4j.kernel.KernelVersion
 import org.neo4j.kernel.api.KernelTransaction
 import org.neo4j.kernel.api.index.IndexProvidersAccess
-import org.neo4j.kernel.impl.transaction.log.LogTailMetadata
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.neo4j.logging.internal.LogService
 import org.neo4j.memory.MemoryTracker
@@ -46,6 +46,7 @@ import org.neo4j.values.storable.FloatingPointValue
 import org.neo4j.values.storable.IntegralValue
 import org.neo4j.values.storable.TextValue
 import org.neo4j.values.storable.Value
+import org.neo4j.wal.LogTailMetadata
 
 /**
  * DozenDB's incremental importer for the record storage engine, the one Neo4j Community's
@@ -62,7 +63,6 @@ class DozenDbIncrementalImporterFactory : IncrementalBatchImporterFactory(PRIORI
         logService: LogService,
         progressOutput: PrintStream,
         verboseProgressOutput: Boolean,
-        additionalInitialIds: AdditionalInitialIds,
         logTailMetadataSupplier: ThrowingSupplier<LogTailMetadata, IOException>,
         dbConfig: Config,
         monitor: Monitor,
@@ -72,7 +72,7 @@ class DozenDbIncrementalImporterFactory : IncrementalBatchImporterFactory(PRIORI
         indexImporterFactory: IndexImporterFactory,
         memoryTracker: MemoryTracker,
         contextFactory: CursorContextFactory,
-        indexProvidersAccess: IndexProvidersAccess,
+        indexProvidersAccess: Supplier<IndexProvidersAccess>,
     ): IncrementalBatchImporter =
         IncrementalImporter(
             databaseLayout,
@@ -127,12 +127,32 @@ internal class IncrementalImporter(
     private val name: String = layout.databaseName
 
     override fun prepare(input: Input) {
+        refuseSystem()
+        prepareIncrement(validated(input))
+    }
+
+    private fun refuseSystem() {
         if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
             throw IncrementalImportException(
                 "Incremental import adds to user databases, not to system.",
                 ExitCode.USAGE,
             )
         }
+    }
+
+    /**
+     * [input], having read its headers: Neo4j's inputs know their id type and entities only then.
+     * The estimates it gives are not needed.
+     */
+    private fun validated(input: Input): Input {
+        input.validateAndEstimate(
+            PropertySizeCalculator { _, _, _ -> 0 },
+            importConfig.maxNumberOfWorkerThreads(),
+        )
+        return input
+    }
+
+    private fun prepareIncrement(input: Input) {
         val idType = input.idType()
         if (idType == IdType.ACTUAL) {
             throw IncrementalImportException(
@@ -186,7 +206,22 @@ internal class IncrementalImporter(
         }
     }
 
-    override fun build(input: Input) {
+    /** All three stages, as `--stage=all` asks, with the database stopped. */
+    override fun doImport(input: Input) {
+        refuseSystem()
+        val validated = validated(input)
+        prepareIncrement(validated)
+        buildIncrement(validated)
+        merge()
+    }
+
+    override fun doDryRun(input: Input, output: PrintStream) {
+        throw IncrementalImportException("An incremental import runs no --dry-run.", ExitCode.USAGE)
+    }
+
+    override fun build(input: Input) = buildIncrement(validated(input))
+
+    private fun buildIncrement(input: Input) {
         val state =
             increment.state()
                 ?: throw IncrementalImportException(
@@ -328,7 +363,7 @@ internal class IncrementalImporter(
                     .mapIndexed { i, (groupName, schema) ->
                         val label = tokens.labelTokens().getTokenById(schema.labelId).name()
                         val key = tokens.propertyKeyTokens().getTokenById(schema.propertyId).name()
-                        val keyType = keyType(input.groups().get(groupName), idType)
+                        val keyType = keyType(groupName, specificIdType(input, groupName), idType)
                         val index =
                             ktx.schemaRead().index(schema).asSequence().firstOrNull { it.isUnique }
                                 ?: throw IncrementalImportException(
@@ -376,11 +411,18 @@ internal class IncrementalImporter(
             if (group == null) "the global ID space" else "ID space '$group'"
 
         /**
-         * How the IDs of [group] compare: as the group's own ID type, if its header gives one, or
-         * as [idType] says.
+         * The ID type that the header of [group] gives its first ID column, the one incremental
+         * import finds the group's nodes by; null if it gives none.
          */
-        internal fun keyType(group: Group?, idType: IdType): KeyType {
-            val specific = group?.specificIdType()?.lowercase()
+        internal fun specificIdType(input: Input, group: String?): String? =
+            (input.groups() as? Groups)?.getSpecificIdType(input.groups().get(group), 0)
+
+        /**
+         * How the IDs of [group] compare: as the group's own ID type, [specificIdType], if its
+         * header gives one, or as [idType] says.
+         */
+        internal fun keyType(group: String?, specificIdType: String?, idType: IdType): KeyType {
+            val specific = specificIdType?.lowercase()
             val type =
                 when (specific) {
                     null -> if (idType == IdType.INTEGER) KeyType.INTEGER else KeyType.TEXT
@@ -391,7 +433,7 @@ internal class IncrementalImporter(
                     "byte" -> KeyType.INTEGER
                     else ->
                         throw IncrementalImportException(
-                            "${describe(group.name())} has IDs of type $specific, which " +
+                            "${describe(group)} has IDs of type $specific, which " +
                                 "incremental import cannot match with existing nodes: use " +
                                 "string, long, int, short or byte.",
                             ExitCode.DATAERR,
@@ -399,8 +441,7 @@ internal class IncrementalImporter(
                 }
             if (idType == IdType.INTEGER && type == KeyType.TEXT) {
                 throw IncrementalImportException(
-                    "${describe(group?.name())} has text IDs, which --id-type=integer does " +
-                        "not take.",
+                    "${describe(group)} has text IDs, which --id-type=integer does " + "not take.",
                     ExitCode.DATAERR,
                 )
             }

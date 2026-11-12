@@ -7,6 +7,7 @@
  *
  * Modifications Copyright (c) DozenDB
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbCompilerFactory (Scala).
+ * 2026-11-11: SHOW CURRENT USER through DozenDbQueryRuntime.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -16,21 +17,24 @@ package org.dozendb.core.cypher
 
 import org.neo4j.cypher.internal.CommunityRuntimeContext
 import org.neo4j.cypher.internal.CommunityRuntimeFactory
+import org.neo4j.cypher.internal.`CommunitySchemaCommandRuntime$`
 import org.neo4j.cypher.internal.Compiler
 import org.neo4j.cypher.internal.CompilerFactory
 import org.neo4j.cypher.internal.CypherCurrentCompiler
 import org.neo4j.cypher.internal.CypherRuntime
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.MasterCompiler
+import org.neo4j.cypher.internal.SchemaCommandRuntime
 import org.neo4j.cypher.internal.cache.CypherQueryCaches
 import org.neo4j.cypher.internal.compiler.CypherParsingConfig
 import org.neo4j.cypher.internal.compiler.CypherPlannerConfiguration
-import org.neo4j.cypher.internal.frontend.phases.InternalSyntaxUsageStats
+import org.neo4j.cypher.internal.frontend.notification.InternalNotificationStats
+import org.neo4j.cypher.internal.frontend.phases.InternalUsageStats
 import org.neo4j.cypher.internal.options.CypherPlannerOption
 import org.neo4j.cypher.internal.options.CypherRuntimeOption
-import org.neo4j.cypher.internal.planning.CypherPlanner
+import org.neo4j.cypher.internal.planning.DefaultCypherPlanner
 import org.neo4j.cypher.internal.runtime.CypherRuntimeConfiguration
-import org.neo4j.cypher.internal.util.InternalNotificationStats
+import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.kernel.GraphDatabaseQueryService
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.logging.InternalLogProvider
@@ -40,7 +44,7 @@ import scala.Option
 
 /**
  * Neo4j Community's compiler factory, with [DozenDbAdministrationCommandRuntime] for the
- * administration commands that run on `system`.
+ * administration commands that run on `system`, and [DozenDbQueryRuntime] for the other queries.
  */
 internal class DozenDbCompilerFactory(
     private val graph: GraphDatabaseQueryService,
@@ -64,25 +68,29 @@ internal class DozenDbCompilerFactory(
     ): Compiler {
         val dependencies = graph.dependencyResolver
         val planner =
-            CypherPlanner(
+            DefaultCypherPlanner.apply(
                 parsingConfig,
                 plannerConfig,
                 MasterCompiler.CLOCK(),
                 kernelMonitors,
                 log,
+                dependencies.resolveDependency(AbstractSecurityLog::class.java),
                 queryCaches,
                 cypherPlanner,
                 dependencies.resolveDependency(DatabaseReferenceRepository::class.java),
+                SCHEMA_COMMANDS,
                 dependencies.resolveDependency(InternalNotificationStats::class.java),
-                dependencies.resolveDependency(InternalSyntaxUsageStats::class.java),
+                dependencies.resolveDependency(InternalUsageStats::class.java),
             )
         val runtime =
             if (plannerConfig.planSystemCommands()) {
                 DozenDbAdministrationCommandRuntime(executionEngineProvider.apply(), dependencies)
             } else {
-                CommunityRuntimeFactory.getRuntime(
-                    cypherRuntime,
-                    plannerConfig.useErrorsOverWarnings().apply() as Boolean,
+                DozenDbQueryRuntime(
+                    CommunityRuntimeFactory.getRuntime(
+                        cypherRuntime,
+                        plannerConfig.useErrorsOverWarnings().apply() as Boolean,
+                    )
                 )
             }
         // Runtimes accept any context their context type is a supertype of; Scala's variance
@@ -92,8 +100,14 @@ internal class DozenDbCompilerFactory(
             planner,
             runtime as CypherRuntime<CommunityRuntimeContext>,
             DozenDbRuntimeContextManager(log, runtimeConfig),
+            SCHEMA_COMMANDS,
             kernelMonitors,
             queryCaches,
         )
+    }
+
+    private companion object {
+        /** Neo4j Community's, which plans every kind of constraint the kernel may refuse. */
+        val SCHEMA_COMMANDS: SchemaCommandRuntime = `CommunitySchemaCommandRuntime$`.`MODULE$`
     }
 }

@@ -1,5 +1,6 @@
 package org.dozendb.core.cypher
 
+import org.dozendb.core.Gql
 import org.neo4j.common.DependencyResolver
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
@@ -18,7 +19,6 @@ import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
-import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
 import org.neo4j.internal.kernel.api.security.SecurityAuthorizationHandler
 import org.neo4j.kernel.api.exceptions.Status
@@ -106,7 +106,7 @@ internal class DatabaseNameChecks(
         handler: QueryHandler,
         source: ExecutionPlan,
     ): ExecutionPlan {
-        val fields = admin.getDatabaseNameFields("name", name)
+        val fields = admin.getDatabaseNameFields("name", name, false)
         return UpdatingSystemCommandExecutionPlan(
             planName,
             engine,
@@ -147,12 +147,11 @@ internal class DatabaseNameChecks(
             else -> ""
         }
 
-    @Suppress("DEPRECATION") // Like Neo4j's own message, which has no GQL status.
     private fun notFound(action: String, name: DatabaseName) =
         Function1<MapValue, Option<QueryHandlerResult>> { params ->
             Option.apply(
                 ThrowException(
-                    InvalidArgumentException(
+                    Gql.refused(
                         "Failed to $action the specified ${ALIAS.lowercase()} " +
                             "'${show(name, params)}': $ALIAS does not exist."
                     )

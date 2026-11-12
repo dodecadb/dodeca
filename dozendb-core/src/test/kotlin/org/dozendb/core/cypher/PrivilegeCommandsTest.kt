@@ -75,7 +75,11 @@ class PrivilegeCommandsTest {
             session.run(cypher, parameters).list { it.asMap() }
         }
 
-    /** The notifications of [cypher], as their code and their title with their description. */
+    /**
+     * The notifications of [cypher], as their code and their title with their description: the
+     * driver's legacy notifications, which Neo4j still sends next to the GQL statuses.
+     */
+    @Suppress("DEPRECATION")
     private fun Driver.notifications(
         cypher: String,
         parameters: Map<String, Any> = emptyMap(),
@@ -188,7 +192,7 @@ class PrivilegeCommandsTest {
                 "Failed to grant privilege to role 'manager': Database `nowhere` does not exist."
             )
             .extracting { it.gqlStatus() }
-            .isEqualTo("42002")
+            .isEqualTo("42001")
         assertThat(admin.refused("DENY CREATE ROLE ON DBMS TO missing"))
             .hasMessage("Failed to deny privilege to role 'missing': Role does not exist.")
             .extracting { it.gqlStatus() }
@@ -295,16 +299,21 @@ class PrivilegeCommandsTest {
     @Test
     fun `keeps immutable privileges as they are while authentication is enabled`() {
         assertThat(admin.refused("GRANT IMMUTABLE CREATE ROLE ON DBMS TO manager"))
-            .hasMessage("Permission cannot be granted for ASSIGN IMMUTABLE PRIVILEGE.")
+            .hasMessage(
+                "Immutable privileges cannot be granted. " +
+                    "Try granting the privilege without the IMMUTABLE keyword."
+            )
         // Embedded transactions run with authentication disabled.
         server.administer("GRANT IMMUTABLE CREATE ROLE ON DBMS TO manager")
         admin.run("GRANT CREATE ROLE ON DBMS TO manager")
 
         assertThat(privileges().map { it.immutable }).containsExactlyInAnyOrder(true, false)
-        assertThat(admin.refused("REVOKE CREATE ROLE ON DBMS FROM manager"))
-            .hasMessage("Immutable privileges cannot be revoked.")
+        val immutable =
+            "Immutable privileges cannot be revoked. Use " +
+                "`SHOW ROLE manager PRIVILEGES AS COMMANDS YIELD *` to inspect manager's privileges."
+        assertThat(admin.refused("REVOKE CREATE ROLE ON DBMS FROM manager")).hasMessage(immutable)
         assertThat(admin.refused("REVOKE IMMUTABLE CREATE ROLE ON DBMS FROM manager"))
-            .hasMessage("Immutable privileges cannot be revoked.")
+            .hasMessage(immutable)
         alice.run("CREATE ROLE curator")
 
         server.administer("REVOKE IMMUTABLE CREATE ROLE ON DBMS FROM manager")

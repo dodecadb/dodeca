@@ -17,13 +17,14 @@ import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
-import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
 import org.neo4j.kernel.internal.GraphDatabaseAPI
+import org.neo4j.storageengine.AppendIndexProvider
 import org.neo4j.storageengine.api.CommandReaderFactory
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.StoreIdProvider
 import org.neo4j.storageengine.api.TransactionId
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.LogicalTransactionStore
 
 /**
  * A Neo4j Community DBMS without DozenDB, in this JVM, for tests, serving [databaseName] as its
@@ -72,11 +73,32 @@ internal class CommunityServer(
 
     fun lastCommitted(): TransactionId = dependency<TransactionIdStore>().lastCommittedTransaction
 
-    /** The transactions after append index [after], as Neo4j reads them from its log. */
+    /**
+     * The transactions after append index [after], as Neo4j reads them from its log, which must
+     * still hold the one at [after], unless it is the base one: its checksum is the one the first
+     * follows.
+     */
     fun transactionsAfter(after: Long): List<CommittedTransaction> {
         if (after == lastCommitted().appendIndex()) return emptyList()
-        return dependency<LogicalTransactionStore>().getCommandBatches(after + 1).use { cursor ->
-            buildList { while (cursor.next()) add(CommittedTransaction.of(cursor.get())) }
+        val base = after == AppendIndexProvider.BASE_APPEND_INDEX
+        val logs = dependency<LogicalTransactionStore>()
+        return logs.getCommandBatches(if (base) after + 1 else after).use { cursor ->
+            var previous =
+                if (base) {
+                    TransactionIdStore.BASE_TX_CHECKSUM
+                } else {
+                    check(cursor.next()) { "the log ends before append index $after" }
+                    cursor.get().checksum()
+                }
+            buildList {
+                while (cursor.next()) {
+                    add(
+                        CommittedTransaction.of(cursor.get(), previous).also {
+                            previous = it.checksum
+                        }
+                    )
+                }
+            }
         }
     }
 

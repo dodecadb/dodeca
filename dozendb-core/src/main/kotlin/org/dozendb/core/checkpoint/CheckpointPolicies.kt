@@ -1,13 +1,13 @@
 package org.dozendb.core.checkpoint
 
 import org.neo4j.configuration.Config
-import org.neo4j.kernel.impl.transaction.log.LogPosition
-import org.neo4j.kernel.impl.transaction.log.checkpoint.AbstractCheckPointThreshold
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointThreshold
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointThresholdPolicy
-import org.neo4j.kernel.impl.transaction.log.pruning.LogPruning
 import org.neo4j.logging.InternalLogProvider
 import org.neo4j.time.SystemNanoClock
+import org.neo4j.wal.LogPosition
+import org.neo4j.wal.checkpoint.AbstractCheckPointThreshold
+import org.neo4j.wal.checkpoint.CheckPointThreshold
+import org.neo4j.wal.checkpoint.CheckPointThresholdPolicy
+import org.neo4j.wal.pruning.LogPruning
 
 /**
  * Neo4j Enterprise's `db.checkpoint=CONTINUOUS`: a checkpoint whenever transactions were appended

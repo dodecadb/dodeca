@@ -14,14 +14,14 @@ import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.GraphDatabaseSettings.CheckpointPolicy
 import org.neo4j.io.ByteUnit
-import org.neo4j.kernel.impl.transaction.log.LogPosition
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointThreshold
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.files.LogFiles
-import org.neo4j.kernel.impl.transaction.log.pruning.LogPruning
 import org.neo4j.logging.NullLogProvider
 import org.neo4j.storageengine.api.TransactionIdStore
 import org.neo4j.time.Clocks
+import org.neo4j.wal.LogPosition
+import org.neo4j.wal.WALService
+import org.neo4j.wal.checkpoint.CheckPointThreshold
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.pruning.LogPruning
 
 /** Neo4j Enterprise's checkpoint policies that Neo4j Community lacks: CONTINUOUS and VOLUMETRIC. */
 class CheckpointPoliciesTest {
@@ -48,6 +48,7 @@ class CheckpointPoliciesTest {
             Clocks.nanoClock(),
             pruning,
             NullLogProvider.getInstance(),
+            false,
         )
 
     private fun CheckPointThreshold.needed(appendIndex: Long, version: Long = 0): String? {
@@ -138,10 +139,10 @@ class CheckpointPoliciesTest {
                     server
                         .database()
                         .dependencyResolver
-                        .resolveDependency(LogFiles::class.java)
+                        .resolveDependency(WALService::class.java)
                         .logFile
 
-                while (logFile.highestLogVersion == 0L) {
+                while (logFile.currentLogVersion == 0L) {
                     server.rows("CREATE (:Film {title: \$title})", parameters = big())
                 }
                 // keep_none keeps the logs from the one holding the entry before the last: log 0
@@ -151,7 +152,8 @@ class CheckpointPoliciesTest {
                 await atMost
                     Duration.ofSeconds(60) untilAsserted
                     {
-                        assertThat(logFile.lowestLogVersion).isGreaterThan(0)
+                        assertThat(logFile.matchedFiles.minOf(logFile::getLogVersion))
+                            .isGreaterThan(0)
                     }
                 assertThat(server.home.resolve("logs/debug.log").readText())
                     .contains("Scheduled checkpoint for transaction logs to prune")

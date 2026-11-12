@@ -2,7 +2,6 @@ package org.dozendb.cluster.internal.replication
 
 import java.io.ByteArrayOutputStream
 import java.io.IOException
-import java.lang.reflect.Proxy
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -27,7 +26,6 @@ import org.dozendb.consensus.fake.RecordingStateMachine
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
-import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.kernel.database.DatabaseIdFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.logging.NullLog
@@ -84,13 +82,6 @@ class StagedCatchUpTest {
             mustDetach = { false },
             detached = {},
             adopt = {},
-            idGeneratorFactory =
-                Proxy.newProxyInstance(
-                    javaClass.classLoader,
-                    arrayOf(IdGeneratorFactory::class.java),
-                ) { _, _, _ ->
-                    error("not used")
-                } as IdGeneratorFactory,
             storeExists = true,
             scheduler,
             NullLog.getInstance(),

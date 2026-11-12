@@ -12,6 +12,8 @@
  * 2026-11-09: starts a database again when Neo4j's file watcher failed to start it because a
  * directory entry went meanwhile.
  * 2026-11-10: starts no database in quarantine; stops databases without the checkpoint I/O limit.
+ * 2026-11-11: no longer starts a database again: Neo4j 2026 cannot, and the file watcher of
+ * DozenDbDatabaseContextFactory watches again instead.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -19,18 +21,15 @@
  */
 package org.dozendb.core.edition
 
-import java.nio.file.NoSuchFileException
-import java.util.Optional
 import org.dozendb.core.checkpoint.CheckpointIoController
 import org.dozendb.core.store.StorePlacement
-import org.neo4j.dbms.api.DatabaseManagementException
+import org.neo4j.dbms.api.DatabaseManagementHelper
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
 import org.neo4j.dbms.database.DatabaseContextFactory
 import org.neo4j.dbms.database.DatabaseOperationCounts
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.UnableToStartDatabaseException
-import org.neo4j.io.fs.watcher.DatabaseLayoutWatcher
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.lifecycle.Lifecycle
@@ -43,13 +42,12 @@ import org.neo4j.logging.InternalLogProvider
  * database whose files [placement] left half-moved, as by an interrupted restore, fails to start. A
  * database in [quarantines] is not started at all.
  *
- * Like Neo4j's own database lifecycles, it throws database management exceptions without a GQL
- * status, which Neo4j 5.26 has none for.
+ * Like Neo4j's own database lifecycles, it throws database management exceptions with the GQL
+ * status of an internal error, 50N00.
  */
-@Suppress("DEPRECATION")
 class DatabaseManager(
     private val repository: DatabaseRepository<StandaloneDatabaseContext>,
-    private val contextFactory: DatabaseContextFactory<StandaloneDatabaseContext, Optional<*>>,
+    private val contextFactory: DatabaseContextFactory<StandaloneDatabaseContext, NamedDatabaseId>,
     private val defaultDatabase: () -> String?,
     private val counts: DatabaseOperationCounts.Counter,
     private val placement: StorePlacement,
@@ -64,7 +62,7 @@ class DatabaseManager(
     @Synchronized
     fun createDatabase(id: NamedDatabaseId): StandaloneDatabaseContext {
         log.info("Creating '%s'.", id)
-        val context = contextFactory.create(id, Optional.empty<Any>())
+        val context = contextFactory.create(id)
         repository.add(id, context)
         counts.increaseCreateCount()
         return context
@@ -93,45 +91,22 @@ class DatabaseManager(
     }
 
     /**
+     * Starts [database]. Returns false, starting nothing, if the database is in quarantine: checked
+     * under the database's monitor, which starting and stopping it hold, and under which
+     * [DatabaseQuarantine] puts it in quarantine.
+     */
+    private fun start(database: Database): Boolean {
+        synchronized(database) {
+            if (quarantined(database.namedDatabaseId)) return false
+            database.start()
+        }
+        return true
+    }
+
+    /**
      * Starts the database of [context]; first, if it has no store and a [seed], puts the seed's
      * store in place. A seed that fails fails the database.
      */
-    /**
-     * Starts [database], again while it fails because an entry of a directory went while Neo4j's
-     * file watcher began to watch the directory: the JDK's polling watch service (macOS and AIX)
-     * reads each entry as it registers a directory, and fails if one goes meanwhile, as when
-     * another database's copy moves into place or a database is dropped. Returns false, starting
-     * nothing, if the database is in quarantine: checked under the database's monitor, which
-     * starting and stopping it hold, and under which [DatabaseQuarantine] puts it in quarantine.
-     */
-    private fun start(database: Database): Boolean {
-        var attempt = 1
-        while (true) {
-            try {
-                synchronized(database) {
-                    if (quarantined(database.namedDatabaseId)) return false
-                    database.start()
-                }
-                return true
-            } catch (e: Throwable) {
-                if (attempt == WATCH_ATTEMPTS || !goneWhileWatched(e)) throw e
-                log.warn(
-                    "Starting '%s' failed as a file went while Neo4j began to watch its " +
-                        "directory; starting it again",
-                    database.namedDatabaseId,
-                )
-                attempt++
-            }
-        }
-    }
-
-    private fun goneWhileWatched(failure: Throwable): Boolean =
-        generateSequence(failure) { it.cause }
-            .any { cause ->
-                cause is NoSuchFileException &&
-                    cause.stackTrace.any { it.className == DatabaseLayoutWatcher::class.java.name }
-            }
-
     fun startDatabase(context: StandaloneDatabaseContext, seed: Seed? = null) {
         val id = context.database().namedDatabaseId
         if (quarantined(id)) {
@@ -164,7 +139,7 @@ class DatabaseManager(
                 val message = "Unable to create `${id.name()}` from $seed: ${e.message}"
                 log.error(message, e)
                 // Without the cause, whose message the message holds; the log has its trace.
-                context.fail(DatabaseManagementException(message))
+                context.fail(DatabaseManagementHelper.internalError(TITLE, message))
                 counts.increaseFailedCount()
                 return
             }
@@ -174,7 +149,7 @@ class DatabaseManager(
                 "Unable to start `${id.name()}`: its files were left half-moved into place, as " +
                     "by an interrupted 'neo4j-admin database restore'. Restore it again."
             log.error(message)
-            context.fail(DatabaseManagementException(message))
+            context.fail(DatabaseManagementHelper.internalError(TITLE, message))
             counts.increaseFailedCount()
             return
         }
@@ -187,7 +162,7 @@ class DatabaseManager(
             }
         if (refusal != null) {
             log.error("Not starting '%s': %s", id, refusal)
-            context.fail(DatabaseManagementException(refusal))
+            context.fail(DatabaseManagementHelper.internalError(TITLE, refusal))
             counts.increaseFailedCount()
             return
         }
@@ -227,7 +202,13 @@ class DatabaseManager(
             counts.increaseStopCount()
         } catch (e: Throwable) {
             log.error("Failed to stop '$id'.", e)
-            context.fail(DatabaseManagementException("An error occurred! Unable to stop `$id`.", e))
+            context.fail(
+                DatabaseManagementHelper.internalError(
+                    TITLE,
+                    "An error occurred! Unable to stop `$id`.",
+                    e,
+                )
+            )
         }
     }
 
@@ -261,7 +242,7 @@ class DatabaseManager(
             context.get().database().drop()
         } catch (e: Throwable) {
             log.error("Failed to drop '$id'.", e)
-            throw DatabaseManagementException("Failed to drop `$id`.", e)
+            throw DatabaseManagementHelper.internalError(TITLE, "Failed to drop `$id`.", e)
         }
         quarantines.remove(id.databaseId().uuid())
         counts.increaseDropCount()
@@ -285,16 +266,18 @@ class DatabaseManager(
                 synchronized(this@DatabaseManager) {
                     val name =
                         defaultDatabase()
-                            ?: throw DatabaseManagementException(
-                                "The system graph names no default database."
+                            ?: throw DatabaseManagementHelper.internalError(
+                                TITLE,
+                                "The system graph names no default database.",
                             )
                     val id =
                         repository.databaseIdRepository().getByName(name).orElseThrow {
                             DatabaseNotFoundHelper.defaultDatabaseNotFound(name)
                         }
                     if (repository.getDatabaseContext(id).isPresent) {
-                        throw DatabaseManagementException(
-                            "Cannot initialize $id because it already exists"
+                        throw DatabaseManagementHelper.internalError(
+                            TITLE,
+                            "Cannot initialize $id because it already exists",
                         )
                     }
                     startDatabase(createDatabase(id))
@@ -309,21 +292,24 @@ class DatabaseManager(
     fun allDatabaseStopper(): Lifecycle =
         object : LifecycleAdapter() {
             override fun stop() {
-                val default = runCatching { defaultDatabase() }.getOrNull()
+                // Found while `system` runs: Neo4j finds a database by its name in the system
+                // graph.
+                val default = runCatching {
+                    defaultDatabase()?.let { repository.getDatabaseContext(it).orElse(null) }
+                }
+                    .getOrNull()
                 val system = systemContext()
                 val others =
                     repository.registeredDatabases().filterKeys { !it.isSystemDatabase }.values
                 others.forEach(::stopDatabase)
                 stopDatabase(system)
-                listOfNotNull(
-                        default?.let { repository.getDatabaseContext(it).orElse(null) },
-                        system,
-                    )
+                listOfNotNull(default, system)
                     .firstOrNull {
                         it.isFailed && it.failureCause() !is UnableToStartDatabaseException
                     }
                     ?.let {
-                        throw DatabaseManagementException(
+                        throw DatabaseManagementHelper.internalError(
+                            TITLE,
                             "Failed to stop ${it.database().namedDatabaseId.name()} database.",
                             it.failureCause(),
                         )
@@ -338,9 +324,7 @@ class DatabaseManager(
         repository.getDatabaseContext(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID).orElseThrow {
             DatabaseNotFoundHelper.databaseNotFound(NamedDatabaseId.SYSTEM_DATABASE_NAME)
         }
-
-    private companion object {
-        /** How often a database is started while directory entries go as it begins to watch. */
-        const val WATCH_ATTEMPTS = 3
-    }
 }
+
+/** The title of DozenDB's internal errors about databases, as Neo4j's give their class. */
+private const val TITLE = "DatabaseManager"

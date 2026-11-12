@@ -156,7 +156,7 @@ class PageCacheWarmupTest {
                 .excludeAll()
                 .includeAdditionalProviders()
                 .build()
-                .use { files -> files.asSequence().map { it.path() }.toList() }
+                .use { files -> files.asSequence().toList() }
 
         assertThat(listed).contains(nodes).allMatch {
             it.startsWith(server.directory.resolve("profiles"))

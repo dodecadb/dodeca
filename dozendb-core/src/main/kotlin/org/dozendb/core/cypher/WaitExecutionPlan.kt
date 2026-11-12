@@ -6,16 +6,17 @@ import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.ServerProgress
 import org.dozendb.core.edition.WantedDatabase
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.DatabaseName
+import org.neo4j.cypher.internal.notification.InternalNotification
 import org.neo4j.cypher.internal.procs.AdministrationChainedExecutionPlan
 import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.SystemUpdateCountingQueryContext
 import org.neo4j.cypher.internal.runtime.ExecutionMode
 import org.neo4j.cypher.internal.runtime.InputDataStream
 import org.neo4j.cypher.internal.runtime.QueryContext
-import org.neo4j.cypher.internal.util.InternalNotification
 import org.neo4j.cypher.result.RuntimeResult
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.Direction
@@ -45,6 +46,7 @@ internal class WaitExecutionPlan(
     private val progress: () -> DatabaseProgress,
     private val engine: ExecutionEngine,
     private val authorization: SecurityAuthorizationHandler,
+    private val version: CypherVersion,
 ) : AdministrationChainedExecutionPlan(Option.apply(source)) {
     override fun run(
         ctx: QueryContext,
@@ -116,9 +118,10 @@ internal class WaitExecutionPlan(
                     "row.message AS message, row.success AS success",
                 VirtualValues.map(arrayOf(ROWS), arrayOf<AnyValue>(rows)),
                 Option.empty(),
-                SystemCommandExecutionPlan.`apply$default$7`(),
-                SystemCommandExecutionPlan.`apply$default$8`(),
-                SystemCommandExecutionPlan.`apply$default$9`(),
+                SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
+                SystemCommandExecutionPlan.`$lessinit$greater$default$8`(),
+                SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
+                version,
             )
             .runSpecific(
                 ctx,

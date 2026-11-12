@@ -29,7 +29,7 @@ import org.neo4j.bolt.connection.exception.BoltFailureException
 import org.neo4j.bolt.connection.netty.NettyBoltConnectionProviderFactory
 import org.neo4j.bolt.connection.pooled.AuthTokenManager
 import org.neo4j.bolt.connection.pooled.PooledBoltConnectionSource
-import org.neo4j.bolt.protocol.common.message.AccessMode
+import org.neo4j.boltmessages.AccessMode
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.SocketAddress

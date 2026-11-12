@@ -11,6 +11,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
+import org.neo4j.dbms.archive.ArchiveInput
 import org.neo4j.dbms.archive.DumpZstdFormatV1
 import org.neo4j.dbms.archive.StandardCompressionFormat
 import org.neo4j.dbms.archive.backup.BackupDescription
@@ -64,7 +65,9 @@ class ArtifactContainerTest {
         val header = header(compressed, full = true)
 
         val description =
-            BackupFormatSelector.readDescription(ByteArrayInputStream(artifact(header)))
+            BackupFormatSelector.readDescription(
+                ArchiveInput.StreamInput.of(ByteArrayInputStream(artifact(header)), "artifact")
+            )
 
         assertThat(description.databaseName).isEqualTo("films")
         assertThat(description.databaseId).isEqualTo(header.databaseId)
@@ -89,7 +92,10 @@ class ArtifactContainerTest {
 
         assertThat(ArtifactContainer.read(ByteArrayInputStream(artifact)).header).isEqualTo(header)
         assertThat(
-                BackupFormatSelector.readDescription(ByteArrayInputStream(artifact)).metadataScript
+                BackupFormatSelector.readDescription(
+                        ArchiveInput.StreamInput.of(ByteArrayInputStream(artifact), "artifact")
+                    )
+                    .metadataScript
             )
             .isEqualTo(script)
     }

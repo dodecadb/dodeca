@@ -2,15 +2,15 @@ package org.dozendb.core.security
 
 import org.dozendb.core.edition.DefaultDatabase
 import org.neo4j.configuration.GraphDatabaseSettings
-import org.neo4j.cypher.internal.ast.prettifier.`ExpressionStringifier$`
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_CREDENTIALS_EXPIRED_PROPERTY as USER_EXPIRED
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_CREDENTIALS_PROPERTY as USER_CREDENTIALS
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY as USER_NAME
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLog
 import org.neo4j.server.security.SystemGraphCredential
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_CREDENTIALS
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_EXPIRED
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_LABEL
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_NAME
+import org.neo4j.util.Stringifier
 
 /**
  * The Cypher that gives a DBMS back what concerns one database of its roles, privileges and users,
@@ -136,6 +136,5 @@ object MetadataScript {
             }
         }
 
-    private fun name(name: String): String =
-        `ExpressionStringifier$`.`MODULE$`.backtick(name, true, false)
+    private fun name(name: String): String = Stringifier.backtick(name, true)
 }

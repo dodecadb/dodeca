@@ -16,8 +16,8 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.dbms.api.DatabaseNotFoundException
 import org.neo4j.graphdb.config.Setting
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /** Members added to and removed from a running cluster. */
 class MembershipTest {

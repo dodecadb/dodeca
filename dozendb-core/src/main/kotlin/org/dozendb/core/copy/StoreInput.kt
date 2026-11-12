@@ -62,7 +62,13 @@ internal class StoreInput(
 
     override fun groups(): ReadableGroups = groups
 
-    override fun validateAndEstimate(valueSizeCalculator: PropertySizeCalculator): Input.Estimates {
+    /** The record format, which the source is in, keeps no vectors. */
+    override fun containsVectorData() = false
+
+    override fun validateAndEstimate(
+        valueSizeCalculator: PropertySizeCalculator,
+        numberOfThreads: Int,
+    ): Input.Estimates {
         val properties = source.neoStores.propertyStore.idGenerator.highId
         val propertyBytes =
             properties * source.neoStores.propertyStore.recordSize +
@@ -187,7 +193,7 @@ internal class StoreInput(
             }
             if (global != null) visitor.id(id, global) else visitor.id(id)
             visitor.labels(filters.keptLabels(labels).toTypedArray())
-            for ((key, value) in kept) visitor.property(key, value)
+            for ((key, value) in kept) visitor.property(key, value, false)
             markCopied(id)
             nodesCopied.incrementAndGet()
             return true
@@ -231,7 +237,7 @@ internal class StoreInput(
                 visitor.endId(end)
             }
             visitor.type(type)
-            for ((key, value) in kept) visitor.property(key, value)
+            for ((key, value) in kept) visitor.property(key, value, false)
             relationshipsCopied.incrementAndGet()
             return true
         }

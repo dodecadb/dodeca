@@ -1,6 +1,7 @@
 package org.dozendb.core.servers
 
 import java.util.UUID
+import org.dozendb.core.Gql
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.Transaction
@@ -12,7 +13,6 @@ import org.neo4j.kernel.database.NormalizedDatabaseName
  * named by its name or its id. A refusal is an [InvalidArgumentException] whose message starts with
  * the failure given, such as "Could not cordon server 'a'".
  */
-@Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for most refusals of server commands.
 object ServerLifecycle {
     /**
      * A server as a command finds it: [enabled] with its record, or without one while the servers
@@ -36,10 +36,10 @@ object ServerLifecycle {
         val id =
             (records.values.firstOrNull { it.name == name }?.id
                 ?: uuid(name)?.takeIf { it in servers.ids() || it in records || it in dropped })
-                ?: throw InvalidArgumentException(
+                ?: throw Gql.refused(
                     "$failed: there is no such server. SHOW SERVERS lists the servers."
                 )
-        if (id in dropped) throw InvalidArgumentException("$failed: it was dropped.")
+        if (id in dropped) throw Gql.refused("$failed: it was dropped.")
         val record = records[id]
         return Target(
             id,
@@ -53,9 +53,7 @@ object ServerLifecycle {
     /** [server], if it is enabled. */
     fun enabled(server: Target, failed: String): Target {
         if (!server.enabled) {
-            throw InvalidArgumentException(
-                "$failed: it is Free. ENABLE SERVER enables it, with its options."
-            )
+            throw Gql.refused("$failed: it is Free. ENABLE SERVER enables it, with its options.")
         }
         return server
     }
@@ -68,8 +66,7 @@ object ServerLifecycle {
         val server = enabled(target(tx, name, servers, failed), failed)
         when (server.status) {
             InstanceStatus.CORDONED -> {}
-            InstanceStatus.DEALLOCATING ->
-                throw InvalidArgumentException("$failed: it is deallocating.")
+            InstanceStatus.DEALLOCATING -> throw Gql.refused("$failed: it is deallocating.")
             else -> ServerRecords.write(tx, server.record(InstanceStatus.CORDONED))
         }
     }
@@ -87,8 +84,7 @@ object ServerLifecycle {
         when (server.status) {
             InstanceStatus.CORDONED ->
                 ServerRecords.write(tx, server.record(InstanceStatus.ENABLED))
-            InstanceStatus.DEALLOCATING ->
-                throw InvalidArgumentException("$failed: it is deallocating.")
+            InstanceStatus.DEALLOCATING -> throw Gql.refused("$failed: it is deallocating.")
             else -> {}
         }
     }
@@ -102,20 +98,20 @@ object ServerLifecycle {
         val server = target(tx, name, servers, failed)
         if (server.enabled && server.status != InstanceStatus.DEALLOCATING) {
             val state = if (server.status == InstanceStatus.CORDONED) "Cordoned" else "Enabled"
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: it is $state. DEALLOCATE DATABASES FROM SERVER moves its databases " +
                     "off first."
             )
         }
         val holding = (Placements.placedOn(tx, server.id) + servers.holding(tx, server.id)).sorted()
         if (holding.isNotEmpty()) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: it still holds ${holding.joinToString { "'$it'" }}. Drop it once SHOW " +
                     "SERVERS shows it Deallocated."
             )
         }
         if ((servers.ids() - server.id).isEmpty()) {
-            throw InvalidArgumentException("$failed: it is the only server.")
+            throw Gql.refused("$failed: it is the only server.")
         }
         ServerRecords.drop(tx, server.id, server.name, servers.address(server.id))
     }
@@ -187,16 +183,14 @@ object ServerLifecycle {
     private fun database(tx: Transaction, database: String?, failed: String): String? {
         val name = database?.let { NormalizedDatabaseName(it).name() }
         if (name != null && Placements.database(tx, name) == null) {
-            throw InvalidArgumentException("$failed: there is no database '$database'.")
+            throw Gql.refused("$failed: there is no database '$database'.")
         }
         return name
     }
 
     private fun checkLimit(limit: Int?, failed: String) {
         if (limit != null && limit < 1) {
-            throw InvalidArgumentException(
-                "$failed: the number of databases is $limit, not 1 or more."
-            )
+            throw Gql.refused("$failed: the number of databases is $limit, not 1 or more.")
         }
     }
 
@@ -205,7 +199,7 @@ object ServerLifecycle {
         try {
             moving()
         } catch (e: AllocationException) {
-            throw InvalidArgumentException("$failed: ${e.message}.")
+            throw Gql.refused("$failed: ${e.message}.")
         }
 
     /** [text] as a server id, if it is one. */

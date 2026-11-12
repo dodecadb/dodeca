@@ -95,11 +95,12 @@ internal constructor(
         idLookup: IdLookup,
         dbReference: PrivilegeDatabaseReference,
         securityLog: AbstractSecurityLog,
+        timeOfEvaluationMillis: Long,
     ): SecurityContext =
         if (NormalizedDatabaseName(owner(dbReference)).name() == user.database) {
             this
         } else {
-            user.login.authorize(idLookup, dbReference, securityLog)
+            user.login.authorize(idLookup, dbReference, securityLog, timeOfEvaluationMillis)
         }
 
     override fun withMode(mode: AccessMode): DozenDbSecurityContext =
@@ -116,6 +117,14 @@ internal constructor(
         )
 
     override fun isAuthDisabled(): Boolean = false
+
+    /**
+     * The login's OIDC token, which Neo4j Enterprise forwards to remote aliases; DozenDB has none.
+     */
+    override fun oidcToken(): String? = user.login.oidcToken()
+
+    /** This context: the access to other shards of a sharded database, which DozenDB has not. */
+    override fun withExternalShardAccess(): DozenDbSecurityContext = this
 
     override fun toString(): String = defaultString("dozendb")
 

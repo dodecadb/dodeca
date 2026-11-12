@@ -143,7 +143,7 @@ class IncrementFilesTest {
     fun `the build's keys are looked up by their place`() {
         KeyStore(
                 root.resolve("ids"),
-                NumberArrayFactories.HEAP,
+                NumberArrayFactories.AUTO_WITHOUT_SWAP,
                 EmptyMemoryTracker.INSTANCE,
             )
             .use { keys ->
@@ -152,7 +152,7 @@ class IncrementFilesTest {
                 keys.add(1, "ünïcode")
                 keys.complete()
 
-                keys.newLookup().use { lookup ->
+                keys.newLookup(true).use { lookup ->
                     val tracker = EmptyMemoryTracker.INSTANCE
                     assertThat(lookup.lookupProperty(0, tracker)).isEqualTo(42L)
                     assertThat(lookup.lookupProperty(1, tracker)).isEqualTo("ünïcode")

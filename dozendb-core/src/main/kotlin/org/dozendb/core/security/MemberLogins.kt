@@ -48,7 +48,8 @@ class ForwardedLogin(val login: LoginContext) :
         idLookup: IdLookup,
         dbReference: PrivilegeDatabaseReference,
         securityLog: AbstractSecurityLog,
-    ): SecurityContext = login.authorize(idLookup, dbReference, securityLog)
+        timeOfEvaluationMillis: Long,
+    ): SecurityContext = login.authorize(idLookup, dbReference, securityLog, timeOfEvaluationMillis)
 
     override fun nativelyAuthenticated(): Boolean = login.nativelyAuthenticated()
 }

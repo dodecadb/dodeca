@@ -38,11 +38,11 @@ import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.impl.muninn.StandalonePageCacheFactory
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
+import org.neo4j.kernel.DatabaseCreationOptions
 import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory
 import org.neo4j.kernel.impl.store.InlineNodeLabels
 import org.neo4j.kernel.impl.store.StoreFactory
 import org.neo4j.kernel.impl.store.record.RecordLoad
-import org.neo4j.kernel.impl.transaction.log.LogTailLogVersionsMetadata
 import org.neo4j.logging.NullLogProvider
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.StoreIdProvider
@@ -599,7 +599,7 @@ class StoreCopyTest {
                         NullLogProvider.getInstance(),
                         contextFactory,
                         false,
-                        LogTailLogVersionsMetadata.EMPTY_LOG_TAIL,
+                        DatabaseCreationOptions.EMPTY_CREATION_OPTIONS,
                     )
                     .openAllNeoStores()
                     .use { stores ->

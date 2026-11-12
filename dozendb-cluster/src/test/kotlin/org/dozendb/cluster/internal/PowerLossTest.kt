@@ -24,14 +24,15 @@ import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.tracing.DatabaseFlushEvent
 import org.neo4j.kernel.BinarySupportedKernelVersions
-import org.neo4j.kernel.impl.transaction.log.LogEntryCursor
-import org.neo4j.kernel.impl.transaction.log.LogVersionBridge.NO_MORE_CHANNELS
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
-import org.neo4j.kernel.impl.transaction.log.entry.VersionAwareLogEntryReader
-import org.neo4j.kernel.impl.transaction.log.files.LogFilesBuilder
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.LogEntryCursor
+import org.neo4j.wal.LogVersionBridge.NO_MORE_CHANNELS
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
+import org.neo4j.wal.entry.VersionAwareLogEntryReader
+import org.neo4j.wal.files.LogFilesBuilder
 
 /**
  * Members that lose power during writes, with damage to what their transaction logs had not forced,
@@ -287,7 +288,12 @@ class PowerLossTest {
         var entry = -1L
         logFile.getReader(logFile.extractHeader(version).startPosition, NO_MORE_CHANNELS).use {
             reader ->
-            val entries = VersionAwareLogEntryReader(factory, BinarySupportedKernelVersions(config))
+            val entries =
+                VersionAwareLogEntryReader(
+                    factory,
+                    BinarySupportedKernelVersions(config),
+                    EmptyMemoryTracker.INSTANCE,
+                )
             LogEntryCursor(entries, reader).use { cursor ->
                 var position = reader.currentLogPosition.byteOffset
                 while (position < at && cursor.next()) {

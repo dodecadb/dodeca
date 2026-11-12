@@ -19,8 +19,8 @@ import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.remote.RemoteFailure
 import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
-import org.neo4j.bolt.protocol.common.message.AccessMode
-import org.neo4j.bolt.protocol.common.message.request.connection.RoutingContext
+import org.neo4j.boltmessages.AccessMode
+import org.neo4j.boltmessages.request.connection.RoutingContext
 import org.neo4j.fabric.executor.FabricException
 import org.neo4j.fabric.executor.Location
 import org.neo4j.kernel.api.exceptions.Status

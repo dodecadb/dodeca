@@ -150,14 +150,14 @@ class PrivilegeGenerator(private val random: Random, private val databases: List
     private fun pattern(): PrivilegeSegment =
         PrivilegeSegment.NodePattern(
             if (random.nextBoolean()) {
-                PatternSegment.ValuePatternSegment(
+                PatternSegment.NodeValuePatternSegment(
                     listOf(emptySet(), setOf("A"), setOf("A", "B")).random(random),
                     listOf("p", "q").random(random),
                     Values.intValue(random.nextInt(0, 3)),
                     PropertyRule.ComparisonOperator.entries.random(random),
                 )
             } else {
-                PatternSegment.NullPatternSegment(
+                PatternSegment.NodeNullPatternSegment(
                     listOf(emptySet(), setOf("B")).random(random),
                     listOf("p", "q").random(random),
                     PropertyRule.NullOperator.entries.random(random),

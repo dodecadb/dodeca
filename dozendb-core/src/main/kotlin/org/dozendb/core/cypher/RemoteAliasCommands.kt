@@ -8,21 +8,23 @@ import org.neo4j.configuration.Config
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.AliasMapSettingsEvaluator
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.DatabaseName
+import org.neo4j.cypher.internal.ast.RemoteAliasStoredCredentials
 import org.neo4j.cypher.internal.expressions.Expression
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AlterRemoteDatabaseAlias
 import org.neo4j.cypher.internal.logical.plans.CreateRemoteDatabaseAlias
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.NameValidator
+import org.neo4j.cypher.internal.notification.InternalNotification
 import org.neo4j.cypher.internal.procs.`Continue$`
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
-import org.neo4j.cypher.internal.util.InternalNotification
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
@@ -82,8 +84,10 @@ internal class RemoteAliasCommands(
 
     private fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
-            is CreateRemoteDatabaseAlias -> Planner { create(plan, compile(plan.source(), it)) }
-            is AlterRemoteDatabaseAlias -> Planner { alter(plan, compile(plan.source(), it)) }
+            is CreateRemoteDatabaseAlias ->
+                Planner { create(plan, compile(plan.source(), it), version(it)) }
+            is AlterRemoteDatabaseAlias ->
+                Planner { alter(plan, compile(plan.source(), it), version(it)) }
             else -> null
         }
 
@@ -91,9 +95,19 @@ internal class RemoteAliasCommands(
      * Creates the remote alias, unless a database or alias has the name; with OR REPLACE, the plans
      * before dropped an alias of the same name, local or remote.
      */
-    private fun create(plan: CreateRemoteDatabaseAlias, source: ExecutionPlan): ExecutionPlan {
-        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName())
-        val target = admin.getDatabaseNameFields("targetName", plan.targetName())
+    private fun create(
+        plan: CreateRemoteDatabaseAlias,
+        source: ExecutionPlan,
+        version: CypherVersion,
+    ): ExecutionPlan {
+        val credentials =
+            plan.remoteAliasCredentials() as? RemoteAliasStoredCredentials
+                ?: return notSupportedPlan(source, "`OIDC CREDENTIAL FORWARDING`")
+        if (plan.defaultLanguageVersion().isDefined) {
+            return notSupportedPlan(source, "`DEFAULT LANGUAGE`")
+        }
+        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName(), false)
+        val target = admin.getDatabaseNameFields("targetName", plan.targetName(), false)
         val free =
             ensureNameFree(
                 engine,
@@ -115,8 +129,8 @@ internal class RemoteAliasCommands(
                 ${TopologyGraphDbmsModel.PRIMARY_PROPERTY}: false,
                 ${TopologyGraphDbmsModel.URL_PROPERTY}: ${parameter(URL)},
                 ${TopologyGraphDbmsModel.TARGET_NAME_PROPERTY}: ${parameter(TARGET)},
-                ${TopologyGraphDbmsModel.USERNAME_PROPERTY}: ${parameter(USER)},
-                ${TopologyGraphDbmsModel.PASSWORD_PROPERTY}: ${parameter(PASSWORD)},
+                ${TopologyGraphDbmsModel.REMOTE_USERNAME_PROPERTY}: ${parameter(USER)},
+                ${TopologyGraphDbmsModel.REMOTE_PASSWORD_PROPERTY}: ${parameter(PASSWORD)},
                 ${TopologyGraphDbmsModel.IV_PROPERTY}: ${parameter(IV)},
                 ${TopologyGraphDbmsModel.VERSION_PROPERTY}: randomUUID()})
             CREATE (alias)-[:$CONNECTS_WITH]->(driver:$DRIVER_SETTINGS)
@@ -153,10 +167,15 @@ internal class RemoteAliasCommands(
                         NameValidator.assertValidTargetName(targetName)
                         val operation = "create the specified database alias '$name'"
                         val driver =
-                            driverSettings(transaction, plan.driverSettings(), params, operation)
-                        val url =
-                            checkedUrl(admin.runtimeStringValue(plan.url(), params), ssl(driver))
-                        val encrypted = passwords.encrypt(password(plan.password(), params))
+                            driverSettings(
+                                transaction,
+                                plan.driverSettings(),
+                                params,
+                                operation,
+                                version,
+                            )
+                        val url = checkedUrl(nameOf(plan.url(), params), ssl(driver))
+                        val encrypted = passwords.encrypt(password(credentials.password(), params))
                         result(
                             params
                                 .updatedWith(URL, Values.utf8Value(url))
@@ -164,7 +183,11 @@ internal class RemoteAliasCommands(
                                 .updatedWith(
                                     USER,
                                     Values.utf8Value(
-                                        admin.runtimeStringValue(plan.username(), params)
+                                        admin.runtimeStringValue(
+                                            credentials.username(),
+                                            params,
+                                            false,
+                                        )
                                     ),
                                 )
                                 .updatedWith(PASSWORD, Values.byteArray(encrypted.password))
@@ -177,6 +200,7 @@ internal class RemoteAliasCommands(
                                         plan.properties(),
                                         params,
                                         operation,
+                                        version,
                                     ),
                                 )
                         )
@@ -191,11 +215,17 @@ internal class RemoteAliasCommands(
      * properties changes. The plans before checked that the alias exists. A local alias stays
      * local.
      */
-    private fun alter(plan: AlterRemoteDatabaseAlias, source: ExecutionPlan): ExecutionPlan {
-        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName())
+    private fun alter(
+        plan: AlterRemoteDatabaseAlias,
+        source: ExecutionPlan,
+        version: CypherVersion,
+    ): ExecutionPlan {
+        if (plan.defaultLanguage().isDefined)
+            return notSupportedPlan(source, "`SET DEFAULT LANGUAGE`")
+        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName(), false)
         val target =
             if (plan.targetName().isDefined) {
-                admin.getDatabaseNameFields("targetName", plan.targetName().get())
+                admin.getDatabaseNameFields("targetName", plan.targetName().get(), false)
             } else {
                 null
             }
@@ -228,7 +258,7 @@ internal class RemoteAliasCommands(
                                 val driver = params.get(DRIVER) as? MapValue
                                 checkedUrl(
                                     if (plan.url().isDefined) {
-                                        admin.runtimeStringValue(plan.url().get(), params)
+                                        nameOf(plan.url().get(), params)
                                     } else {
                                         (existing.get("url") as TextValue).stringValue()
                                     },
@@ -254,6 +284,7 @@ internal class RemoteAliasCommands(
                                         plan.driverSettings(),
                                         params,
                                         operation(plan.aliasName(), params),
+                                        version,
                                     ),
                                 )
                             } else {
@@ -269,9 +300,9 @@ internal class RemoteAliasCommands(
         }
         if (target != null) set(TopologyGraphDbmsModel.TARGET_NAME_PROPERTY, TARGET)
         if (plan.url().isDefined) set(TopologyGraphDbmsModel.URL_PROPERTY, URL)
-        if (plan.username().isDefined) set(TopologyGraphDbmsModel.USERNAME_PROPERTY, USER)
+        if (plan.username().isDefined) set(TopologyGraphDbmsModel.REMOTE_USERNAME_PROPERTY, USER)
         if (plan.password().isDefined) {
-            set(TopologyGraphDbmsModel.PASSWORD_PROPERTY, PASSWORD)
+            set(TopologyGraphDbmsModel.REMOTE_PASSWORD_PROPERTY, PASSWORD)
             set(TopologyGraphDbmsModel.IV_PROPERTY, IV)
         }
         if (sets.isNotEmpty() || plan.driverSettings().isDefined) {
@@ -328,18 +359,14 @@ internal class RemoteAliasCommands(
                         updated =
                             updated.updatedWith(
                                 URL,
-                                Values.utf8Value(
-                                    admin.runtimeStringValue(plan.url().get(), params)
-                                ),
+                                Values.utf8Value(nameOf(plan.url().get(), params)),
                             )
                     }
                     if (plan.username().isDefined) {
                         updated =
                             updated.updatedWith(
                                 USER,
-                                Values.utf8Value(
-                                    admin.runtimeStringValue(plan.username().get(), params)
-                                ),
+                                Values.utf8Value(nameOf(plan.username().get(), params)),
                             )
                     }
                     if (plan.password().isDefined) {
@@ -358,13 +385,20 @@ internal class RemoteAliasCommands(
                                     plan.driverSettings(),
                                     params,
                                     operation,
+                                    version,
                                 ),
                             )
                     }
                     result(
                         updated.updatedWith(
                             PROPERTIES_KEY,
-                            aliasProperties(transaction, plan.properties(), params, operation),
+                            aliasProperties(
+                                transaction,
+                                plan.properties(),
+                                params,
+                                operation,
+                                version,
+                            ),
                         )
                     )
                 }
@@ -385,10 +419,12 @@ internal class RemoteAliasCommands(
         settings: Option<Either<ScalaMap<String, Expression>, Parameter>>,
         params: MapValue,
         operation: String,
+        version: CypherVersion,
     ): MapValue {
         val evaluated =
             AliasMapSettingsEvaluator(
-                    (transaction as InternalTransaction).kernelTransaction().procedures()
+                    (transaction as InternalTransaction).kernelTransaction().procedures(),
+                    version,
                 )
                 .convertDriverSettings(settings, params, operation)
         val builder = MapValueBuilder()

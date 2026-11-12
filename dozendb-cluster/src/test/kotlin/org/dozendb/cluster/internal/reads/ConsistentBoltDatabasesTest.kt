@@ -9,8 +9,8 @@ import org.junit.jupiter.api.Test
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseManagementServiceSPI
 import org.neo4j.bolt.dbapi.BoltGraphDatabaseServiceSPI
 import org.neo4j.bolt.dbapi.BoltTransaction
-import org.neo4j.bolt.protocol.common.message.AccessMode
-import org.neo4j.bolt.protocol.common.message.request.connection.RoutingContext
+import org.neo4j.boltmessages.AccessMode
+import org.neo4j.boltmessages.request.connection.RoutingContext
 import org.neo4j.internal.kernel.api.connectioninfo.ClientConnectionInfo
 import org.neo4j.internal.kernel.api.security.LoginContext
 import org.neo4j.kernel.api.KernelTransaction

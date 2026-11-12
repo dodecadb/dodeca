@@ -1,11 +1,8 @@
 package org.dozendb.cluster.internal
 
-import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -22,9 +19,9 @@ import org.junit.jupiter.api.io.TempDir
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
 import org.neo4j.kernel.database.NamedDatabaseId
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /**
  * The Raft log of `system` is discarded like that of any database: a member behind it copies
@@ -146,17 +143,10 @@ class SystemCatchUpTest {
             }
     }
 
-    private fun ClusterHarness.Member.debugLog(): List<String> =
-        Files.readAllLines(home.resolve("logs/debug.log"))
-
-    /** The time of a line of Neo4j's debug log. */
-    private fun timeOf(line: String): Instant =
-        OffsetDateTime.parse(line.substring(0, 28), LOG_TIME).toInstant()
-
     private fun ClusterHarness.Member.assertCopiedSystemWithoutErrors() {
-        val log = debugLog()
-        assertThat(log).anyMatch { "Database system now holds Raft snapshot" in it }
-        assertThat(log.filter { " ERROR " in it }).describedAs("ERROR lines of $this").isEmpty()
+        val log = debugEntries()
+        assertThat(log).anyMatch { "Database system now holds Raft snapshot" in it.message }
+        assertThat(log.filter { it.level == "ERROR" }).describedAs("errors of $this").isEmpty()
     }
 
     @Test
@@ -183,7 +173,9 @@ class SystemCatchUpTest {
         // Aliases are in the copy too.
         assertThat(behind.database("movies").databaseName()).isEqualTo("films")
         behind.assertCopiedSystemWithoutErrors()
-        assertThat(behind.debugLog()).anyMatch { "Database neo4j now holds Raft snapshot" in it }
+        assertThat(behind.debugEntries()).anyMatch {
+            "Database neo4j now holds Raft snapshot" in it.message
+        }
     }
 
     @Test
@@ -208,7 +200,7 @@ class SystemCatchUpTest {
                             await atMost
                                 Duration.ofMinutes(1) until
                                 {
-                                    behind.debugLog().any { CATCH_UP_NOTICE in it }
+                                    behind.debugEntries().any { CATCH_UP_NOTICE in it.message }
                                 }
                         }
                     }
@@ -218,8 +210,8 @@ class SystemCatchUpTest {
         behind.start()
         val started = Instant.now()
 
-        val catchUp = behind.debugLog().first { CATCH_UP_NOTICE in it }
-        assertThat(timeOf(catchUp)).describedAs("catch-up began while starting").isBefore(started)
+        val catchUp = behind.debugEntries().first { CATCH_UP_NOTICE in it.message }
+        assertThat(catchUp.time).describedAs("catch-up began while starting").isBefore(started)
         cluster.awaitSameEverywhere(SYSTEM)
         assertThat(behind.database().isAvailable(0)).isTrue()
         behind.assertCopiedSystemWithoutErrors()
@@ -275,6 +267,5 @@ class SystemCatchUpTest {
         const val DEFAULT = "neo4j"
         const val CATCH_UP_NOTICE = "Database system needs Raft entries"
         val SYSTEM_GROUP: UUID = NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid()
-        val LOG_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSXX")
     }
 }

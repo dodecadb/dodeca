@@ -16,10 +16,11 @@ class ClusterLeaseServiceTest {
     fun `no lease is granted while the member is not writable`() {
         val client = leases.newClient()
 
+        // As Neo4j's own refusal, with a message of its own: Neo4j 2026's LeaseException cannot
+        // be subclassed, and Bolt sends the status and GQL status whatever the class.
         assertThatThrownBy { client.ensureValid() }
-            .isInstanceOfSatisfying(LeaseException::class.java) {
+            .isInstanceOfSatisfying(NotLeaderException::class.java) {
                 assertThat(it.status()).isEqualTo(Status.Cluster.NotALeader)
-                // As Neo4j's own refusal, with a message of its own.
                 assertThat(it.gqlStatus()).isEqualTo(LeaseException.notOnALeader().gqlStatus())
                 assertThat(it.legacyMessage()).isEqualTo("Member 1 leads neo4j")
             }
@@ -53,6 +54,6 @@ class ClusterLeaseServiceTest {
 
         assertThat(client.leaseId()).isEqualTo(LeaseService.NO_LEASE)
         bootstrapping = false
-        assertThatThrownBy { client.ensureValid() }.isInstanceOf(LeaseException::class.java)
+        assertThatThrownBy { client.ensureValid() }.isInstanceOf(NotLeaderException::class.java)
     }
 }

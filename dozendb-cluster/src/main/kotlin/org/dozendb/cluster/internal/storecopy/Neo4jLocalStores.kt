@@ -12,7 +12,6 @@ import org.dozendb.consensus.BulkTransfer
 import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Snapshot
-import org.dozendb.core.store.CommittedTransaction
 import org.dozendb.core.store.StoreArchive
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.Config
@@ -22,13 +21,15 @@ import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.kernel.database.DatabaseTracers
-import org.neo4j.kernel.impl.transaction.log.NoSuchLogEntryException
-import org.neo4j.kernel.impl.transaction.log.ReadOnlyTransactionStore
 import org.neo4j.kernel.recovery.LogTailExtractor
 import org.neo4j.logging.InternalLog
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.monitoring.Monitors
+import org.neo4j.storageengine.AppendIndexProvider
 import org.neo4j.storageengine.api.StorageEngineFactory
+import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.NoSuchLogEntryException
+import org.neo4j.wal.ReadOnlyTransactionStore
 
 /**
  * The database files of this member, which it copies from another member when they are missing or
@@ -210,13 +211,17 @@ internal class Neo4jLocalStores(
             when {
                 index == last.appendIndex() -> last.checksum()
                 index < 1 || index > last.appendIndex() -> null
-                // The transaction after it names its checksum.
+                // No log holds the base transaction, after which the first one comes.
+                index == AppendIndexProvider.BASE_APPEND_INDEX ->
+                    TransactionIdStore.BASE_TX_CHECKSUM
                 else ->
                     try {
-                        logs.getCommandBatches(index + 1).use { cursor ->
-                            if (cursor.next())
-                                CommittedTransaction.of(cursor.get()).previousChecksum
-                            else null
+                        logs.getCommandBatches(index).use { cursor ->
+                            cursor
+                                .takeIf { it.next() }
+                                ?.get()
+                                ?.takeIf { it.appendIndex() == index }
+                                ?.checksum()
                         }
                     } catch (_: NoSuchLogEntryException) {
                         null

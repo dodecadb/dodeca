@@ -1,11 +1,13 @@
 package org.dozendb.core.cypher
 
+import org.dozendb.core.Gql
 import org.dozendb.core.security.PrivilegeRecords
 import org.neo4j.common.DependencyResolver
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.AdministrationShowCommandUtils
 import org.neo4j.cypher.internal.AliasMapSettingsEvaluator
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.DatabaseName
@@ -19,6 +21,7 @@ import org.neo4j.cypher.internal.logical.plans.DropDatabaseAlias
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
 import org.neo4j.cypher.internal.logical.plans.NameValidator
 import org.neo4j.cypher.internal.logical.plans.ShowAliases
+import org.neo4j.cypher.internal.notification.InternalNotification
 import org.neo4j.cypher.internal.procs.`Continue$`
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.PredicateExecutionPlan
@@ -26,9 +29,9 @@ import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
-import org.neo4j.cypher.internal.util.InternalNotification
 import org.neo4j.dbms.api.DatabaseExistsException
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModelConstants
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
@@ -89,10 +92,12 @@ internal class AliasCommands(
 
     private fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
-            is CreateLocalDatabaseAlias -> Planner { createLocal(plan, compile(plan.source(), it)) }
-            is AlterLocalDatabaseAlias -> Planner { alterLocal(plan, compile(plan.source(), it)) }
+            is CreateLocalDatabaseAlias ->
+                Planner { createLocal(plan, compile(plan.source(), it), version(it)) }
+            is AlterLocalDatabaseAlias ->
+                Planner { alterLocal(plan, compile(plan.source(), it), version(it)) }
             is DropDatabaseAlias -> Planner { drop(plan, compile(plan.source(), it)) }
-            is ShowAliases -> Planner { showAliases(plan, compile(plan.source(), it)) }
+            is ShowAliases -> Planner { showAliases(plan, compile(plan.source(), it), version(it)) }
             // Neo4j Enterprise can block the management of aliases; nothing blocks it here.
             is AssertNotBlockedDropAlias,
             is AssertNotBlockedRemoteAliasManagement ->
@@ -110,9 +115,13 @@ internal class AliasCommands(
      * Creates the alias, unless a database or alias has the name; the plans before checked the
      * target and, with OR REPLACE, dropped an alias of the same name.
      */
-    private fun createLocal(plan: CreateLocalDatabaseAlias, source: ExecutionPlan): ExecutionPlan {
-        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName())
-        val target = admin.getDatabaseNameFields("targetName", plan.targetName())
+    private fun createLocal(
+        plan: CreateLocalDatabaseAlias,
+        source: ExecutionPlan,
+        version: CypherVersion,
+    ): ExecutionPlan {
+        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName(), false)
+        val target = admin.getDatabaseNameFields("targetName", plan.targetName(), false)
         val free =
             ensureNameFree(
                 engine,
@@ -185,6 +194,7 @@ internal class AliasCommands(
                                     plan.properties(),
                                     params,
                                     "create the specified database alias '$name'",
+                                    version,
                                 ),
                             ),
                             `Set$`.`MODULE$`.empty<InternalNotification>(),
@@ -196,13 +206,18 @@ internal class AliasCommands(
 
     /**
      * SHOW ALIASES, as Neo4j shows them: the target of a local alias only to those who may see it,
-     * remote aliases with their URL, user and driver settings. A name given finds the alias of that
-     * name, which DozenDB reads as one name also when it has dots.
+     * remote aliases with their URL, user and driver settings, and in Cypher 25 the kind of their
+     * credentials. A name given finds the alias of that name, which DozenDB reads as one name also
+     * when it has dots.
      */
-    private fun showAliases(plan: ShowAliases, source: ExecutionPlan): ExecutionPlan {
+    private fun showAliases(
+        plan: ShowAliases,
+        source: ExecutionPlan,
+        version: CypherVersion,
+    ): ExecutionPlan {
         val fields =
             if (plan.aliasName().isDefined) {
-                admin.getDatabaseNameFields("aliasName", plan.aliasName().get())
+                admin.getDatabaseNameFields("aliasName", plan.aliasName().get(), false)
             } else {
                 null
             }
@@ -211,9 +226,15 @@ internal class AliasCommands(
                 "WHERE alias.name = ${parameter(it.nameKey())} AND " +
                     "alias.namespace = ${parameter(it.namespaceKey())}"
             } ?: ""
+        // A remote alias's default Cypher version, as Neo4j stores it, which DozenDB does not set.
+        val language =
+            CypherVersion.entries.joinToString(" ") {
+                "WHEN '${it.persistedValue}' THEN '${it.description}'"
+            }
         val verbose =
             if (plan.verbose()) {
-                ", driverSettings{.*} AS driver, properties{.*} AS properties"
+                ", driverSettings{.*} AS driver, properties{.*} AS properties, " +
+                    "CASE aliasNode.$DEFAULT_LANGUAGE $language END AS defaultLanguage"
             } else {
                 ""
             }
@@ -239,18 +260,25 @@ internal class AliasCommands(
                 alias.database AS database,
                 alias.location AS location,
                 aliasNode.${TopologyGraphDbmsModel.URL_PROPERTY} AS url,
-                aliasNode.${TopologyGraphDbmsModel.USERNAME_PROPERTY} AS user
+                CASE
+                    WHEN aliasNode.${TopologyGraphDbmsModel.OIDC_CREDENTIAL_FORWARDING_PROPERTY}
+                        THEN '$OIDC_CREDENTIAL_FORWARDING'
+                    WHEN aliasNode.${TopologyGraphDbmsModel.REMOTE_USERNAME_PROPERTY} IS NOT NULL
+                        THEN '$STORED_NATIVE_CREDENTIALS'
+                END AS credentials,
+                aliasNode.${TopologyGraphDbmsModel.REMOTE_USERNAME_PROPERTY} AS user
                 $verbose
             ${AdministrationShowCommandUtils.generateReturnClause(plan.returnColumns(), plan.yields(), plan.returns(), seqOf("name"))}
             """
                 .trimIndent(),
             fields?.let { VirtualValues.map(it.keys(), it.values()) } ?: VirtualValues.EMPTY_MAP,
             Option.apply(source),
-            SystemCommandExecutionPlan.`apply$default$7`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
             fields?.let {
                 names.convert(it.nameConverter()).convert(inRoot(it.nameKey(), it.namespaceKey()))
             } ?: names,
-            SystemCommandExecutionPlan.`apply$default$9`(),
+            SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
+            version,
         )
     }
 
@@ -312,11 +340,15 @@ internal class AliasCommands(
      * without AT is local, so it cannot change the target of a remote alias, which would make it
      * local, but can change its properties.
      */
-    private fun alterLocal(plan: AlterLocalDatabaseAlias, source: ExecutionPlan): ExecutionPlan {
-        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName())
+    private fun alterLocal(
+        plan: AlterLocalDatabaseAlias,
+        source: ExecutionPlan,
+        version: CypherVersion,
+    ): ExecutionPlan {
+        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName(), false)
         val target =
             if (plan.targetName().isDefined) {
-                admin.getDatabaseNameFields("targetName", plan.targetName().get())
+                admin.getDatabaseNameFields("targetName", plan.targetName().get(), false)
             } else {
                 null
             }
@@ -406,6 +438,7 @@ internal class AliasCommands(
                                 params,
                                 "alter the specified database alias " +
                                     "'${show(plan.aliasName(), params)}'",
+                                version,
                             ),
                         ),
                         `Set$`.`MODULE$`.empty<InternalNotification>(),
@@ -421,7 +454,7 @@ internal class AliasCommands(
      * relies on. A database's own name is never dropped.
      */
     private fun drop(plan: DropDatabaseAlias, source: ExecutionPlan): ExecutionPlan {
-        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName())
+        val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName(), false)
         return updating(
             "DropDatabaseAlias",
             """
@@ -512,8 +545,14 @@ internal class AliasCommands(
         val CONNECTS_WITH = TopologyGraphDbmsModel.CONNECTS_WITH_RELATIONSHIP.name()
         val ALIAS_PROPERTIES = TopologyGraphDbmsModel.ALIAS_PROPERTIES_LABEL.name()
         val DRIVER_SETTINGS = TopologyGraphDbmsModel.DRIVER_SETTINGS_LABEL.name()
+        const val DEFAULT_LANGUAGE =
+            TopologyGraphDbmsModelConstants.DATABASE_DEFAULT_LANGUAGE_PROPERTY
         const val LOCAL_LOCATION = "local"
         const val REMOTE_LOCATION = "remote"
+
+        /** The kinds of credentials of remote aliases, as Neo4j's docs name them. */
+        const val OIDC_CREDENTIAL_FORWARDING = "OIDC CREDENTIAL FORWARDING"
+        const val STORED_NATIVE_CREDENTIALS = "STORED NATIVE CREDENTIALS"
 
         /** The parameter of the aliases SHOW ALIASES lists. */
         const val ALIASES_KEY = "__dozendb_aliases"
@@ -615,8 +654,12 @@ internal fun aliasProperties(
     properties: Option<Either<scala.collection.immutable.Map<String, Expression>, Parameter>>,
     params: MapValue,
     operation: String,
+    version: CypherVersion,
 ): MapValue =
-    AliasMapSettingsEvaluator((transaction as InternalTransaction).kernelTransaction().procedures())
+    AliasMapSettingsEvaluator(
+            (transaction as InternalTransaction).kernelTransaction().procedures(),
+            version,
+        )
         .convertPropertiesMap(properties, params, operation)
         .getOrElse { MapValue.EMPTY }
 
@@ -628,11 +671,13 @@ internal fun aliasProperties(
 internal fun assertValidAliasName(name: String) {
     NameValidator.assertValidAliasName(name)
     if (name.startsWith("_")) {
-        throw InvalidArgumentException("Alias name '$name' is invalid, due to the prefix '_'.")
+        throw Gql.refused("Alias name '$name' is invalid, due to the prefix '_'.")
     }
     if (name.endsWith(".")) {
-        throw InvalidArgumentException(
-            "Alias name '$name' is invalid: alias names cannot end with a dot."
-        )
+        throw Gql.refused("Alias name '$name' is invalid: alias names cannot end with a dot.")
     }
 }
+
+/** The Cypher version of the command [context] runs. */
+internal fun version(context: AdministrationCommandRuntimeContext): CypherVersion =
+    context.runtimeContext().cypherVersion()

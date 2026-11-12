@@ -20,6 +20,7 @@ import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.ClientException
+import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.logging.NullLog
 
 /** The role commands, over Bolt as drivers see them, by the admin `neo4j` unless said otherwise. */
@@ -68,7 +69,11 @@ class RoleCommandsTest {
             session.run(cypher, parameters).list { it.asMap() }
         }
 
-    /** The notifications of [cypher], as their code and their title with their description. */
+    /**
+     * The notifications of [cypher], as their code and their title with their description: the
+     * driver's legacy notifications, which Neo4j still sends next to the GQL statuses.
+     */
+    @Suppress("DEPRECATION")
     private fun Driver.notifications(cypher: String): List<Pair<String, String>> =
         session(SessionConfig.forDatabase(SYSTEM)).use { session ->
             session.run(cypher).consume().notifications().map {
@@ -85,6 +90,16 @@ class RoleCommandsTest {
         ) {
             "$cypher succeeded"
         }
+
+    /**
+     * The outermost GQL status of [this] and the one at the root of its causes: Neo4j gives 42001
+     * for a role that exists or does not, caused by the code saying which.
+     */
+    private fun Neo4jException.gqlStatuses(): Pair<String, String> =
+        generateSequence(this) { it.gqlCause().orElse(null) }
+            .map { it.gqlStatus() }
+            .toList()
+            .let { it.first() to it.last() }
 
     private fun roles(): List<String> = admin.run("SHOW ROLES").map { it["role"] as String }
 
@@ -130,12 +145,12 @@ class RoleCommandsTest {
 
         assertThat(admin.refused("CREATE ROLE curator"))
             .hasMessage("Failed to create the specified role 'curator': Role already exists.")
-            .extracting { it.gqlStatus() }
-            .isEqualTo("42N13")
+            .extracting { it.gqlStatuses() }
+            .isEqualTo("42001" to "42N13")
         assertThat(admin.refused("DROP ROLE missing"))
             .hasMessage("Failed to delete the specified role 'missing': Role does not exist.")
-            .extracting { it.gqlStatus() }
-            .isEqualTo("42N10")
+            .extracting { it.gqlStatuses() }
+            .isEqualTo("42001" to "42N10")
         assertThat(admin.refused("RENAME ROLE missing TO other"))
             .hasMessage(
                 "Failed to rename the specified role 'missing' to 'other': " +
@@ -146,8 +161,8 @@ class RoleCommandsTest {
                 "Failed to rename the specified role 'curator' to 'keeper': " +
                     "Role 'keeper' already exists."
             )
-            .extracting { it.gqlStatus() }
-            .isEqualTo("42N13")
+            .extracting { it.gqlStatuses() }
+            .isEqualTo("42001" to "42N13")
 
         admin.run("CREATE ROLE curator IF NOT EXISTS")
         admin.run("DROP ROLE missing IF EXISTS")
@@ -228,8 +243,8 @@ class RoleCommandsTest {
             )
         assertThat(admin.refused("GRANT ROLE missing TO alice"))
             .hasMessage("Failed to grant role 'missing' to user 'alice': Role does not exist.")
-            .extracting { it.gqlStatus() }
-            .isEqualTo("42N10")
+            .extracting { it.gqlStatuses() }
+            .isEqualTo("42001" to "42N10")
         assertThat(admin.refused("GRANT ROLE reader TO nobody"))
             .hasMessage("Failed to grant role 'reader' to user 'nobody': User does not exist.")
 
@@ -352,9 +367,10 @@ class RoleCommandsTest {
             .hasMessageStartingWith("Immutable roles cannot be replaced.")
         assertThat(admin.refused("CREATE ROLE unlocked AS COPY OF locked"))
             .hasMessage(
-                "The role 'locked' cannot be copied because it has one or more Immutable " +
-                    "Privileges assigned to it. Permission cannot be granted for ASSIGN " +
-                    "IMMUTABLE PRIVILEGE."
+                "'locked' cannot be copied because it has one or more immutable privileges " +
+                    "assigned to it and immutable privileges cannot be copied. Use " +
+                    "`SHOW ROLE locked PRIVILEGES AS COMMANDS YIELD *` to inspect locked's " +
+                    "privileges."
             )
         admin.run("GRANT ROLE locked TO alice")
         admin.run("REVOKE ROLE locked FROM alice")

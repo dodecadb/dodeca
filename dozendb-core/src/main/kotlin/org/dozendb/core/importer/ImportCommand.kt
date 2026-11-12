@@ -1,43 +1,60 @@
 package org.dozendb.core.importer
 
 import java.io.ByteArrayOutputStream
+import java.io.Closeable
 import java.io.IOException
 import java.io.OutputStream
 import java.io.PrintStream
+import java.nio.charset.Charset
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import java.util.Locale
+import java.util.function.Supplier
 import org.neo4j.batchimport.api.Configuration
+import org.neo4j.batchimport.api.Monitor
+import org.neo4j.batchimport.api.ResumableStateAccessor
 import org.neo4j.batchimport.api.input.Collector
+import org.neo4j.batchimport.api.input.FileGroup
 import org.neo4j.batchimport.api.input.Input
 import org.neo4j.cli.CommandFailedException
 import org.neo4j.cli.CommandProvider
 import org.neo4j.cli.CommandType
 import org.neo4j.cli.ExecutionContext
 import org.neo4j.cli.ExitCode
+import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.configuration.Config
+import org.neo4j.importer.FileImporter
 import org.neo4j.importer.ImportCommand
+import org.neo4j.importer.ImportCommand.ShardingArguments
+import org.neo4j.importer.ImportConverters
 import org.neo4j.importer.PrintingImportLogicMonitor
+import org.neo4j.importer.SchemaCommandReader
+import org.neo4j.importer.SchemaCommandSource.DeferredSchemaCommands
 import org.neo4j.internal.batchimport.DefaultAdditionalIds
 import org.neo4j.internal.batchimport.staging.ExecutionMonitors
 import org.neo4j.internal.batchimport.staging.SpectrumExecutionMonitor
 import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.io.fs.FileSystemAbstraction.PatternStyle
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
+import org.neo4j.kernel.api.index.IndexProvidersAccess
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.index.schema.IndexImporterFactoryImpl
-import org.neo4j.kernel.impl.transaction.log.files.TransactionLogInitializer
-import org.neo4j.kernel.impl.util.Converters
 import org.neo4j.logging.InternalLogProvider
 import org.neo4j.logging.internal.LogService
 import org.neo4j.memory.MemoryTracker
 import org.neo4j.scheduler.JobScheduler
 import org.neo4j.storageengine.api.StorageEngineFactory
+import org.neo4j.token.TokenHolders
+import org.neo4j.wal.files.LogTailMetadataFactoryImpl
+import org.neo4j.wal.files.TransactionLogInitializer
 import picocli.CommandLine
 import picocli.CommandLine.Command
 import picocli.CommandLine.Model.CommandSpec
+import picocli.CommandLine.Option
 import picocli.CommandLine.Spec
 
 /**
@@ -95,9 +112,11 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
             )
         val overwrite = spec.findOption("--overwrite-destination").getValue<Boolean>()
         // Linking and post-processing find no bad entries: the report is the stopped import's.
-        val report = spec.findOption("--report-file").getValue<Path>().toAbsolutePath()
-        val kept = report.resolveSibling("${report.fileName}.dozendb-kept")
-        if (!overwrite && resumable(progress) && Files.exists(report)) {
+        // Without
+        // --report-file, each run reports in a directory of its own, which keeps the stopped one's.
+        val report = spec.findOption("--report-file").getValue<Path?>()?.toAbsolutePath()
+        val kept = report?.resolveSibling("${report.fileName}.dozendb-kept")
+        if (report != null && !overwrite && resumable(progress) && Files.exists(report)) {
             Files.move(report, kept, StandardCopyOption.REPLACE_EXISTING)
         }
         try {
@@ -114,14 +133,18 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
             }
             throw explained(e)
         } finally {
-            if (Files.exists(kept)) Files.move(kept, report, StandardCopyOption.REPLACE_EXISTING)
+            if (kept != null && Files.exists(kept)) {
+                Files.move(kept, report, StandardCopyOption.REPLACE_EXISTING)
+            }
         }
     }
 
     override fun doImport(
         fileSystem: FileSystemAbstraction,
         databaseLayout: DatabaseLayout,
+        force: Boolean,
         databaseConfig: Config,
+        storageEngineFactory: StorageEngineFactory,
         jobScheduler: JobScheduler,
         logProvider: InternalLogProvider,
         pageCacheTracer: PageCacheTracer,
@@ -134,12 +157,17 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
         badCollector: Collector,
         memoryTracker: MemoryTracker,
         input: Input,
+        indexProvidersAccess: Supplier<IndexProvidersAccess>,
+        shardingArguments: ShardingArguments?,
+        monitor: Monitor,
     ) {
-        if (StorageEngineFactory.selectStorageEngine(databaseConfig).name() != RECORD_ENGINE) {
+        if (storageEngineFactory.name() != RECORD_ENGINE) {
             return super.doImport(
                 fileSystem,
                 databaseLayout,
+                force,
                 databaseConfig,
+                storageEngineFactory,
                 jobScheduler,
                 logProvider,
                 pageCacheTracer,
@@ -152,9 +180,12 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
                 badCollector,
                 memoryTracker,
                 input,
+                indexProvidersAccess,
+                shardingArguments,
+                monitor,
             )
         }
-        val monitor = PrintingImportLogicMonitor(stdOut, stdErr)
+        val printing = PrintingImportLogicMonitor(stdOut, stdErr, monitor)
         ResumableBatchImporter(
                 databaseLayout,
                 fileSystem,
@@ -162,10 +193,10 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
                 importConfig,
                 logService,
                 if (verbose) SpectrumExecutionMonitor(stdOut)
-                else ExecutionMonitors.defaultVisible(monitor, stdOut, System.err),
+                else ExecutionMonitors.defaultVisible(printing, stdOut, System.err),
                 DefaultAdditionalIds.EMPTY,
                 databaseConfig,
-                monitor,
+                printing,
                 jobScheduler,
                 badCollector,
                 TransactionLogInitializer.getLogFilesInitializer(),
@@ -210,14 +241,18 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
 
     /** The files that [list] names, as Neo4j reads it, each with its size and modification time. */
     private fun files(fs: FileSystemAbstraction, list: String): String =
-        Converters.toFiles(",", Converters.regexFiles(fs, true)).apply(list).joinToString(",") {
-            file ->
-            try {
-                "$file (${fs.getFileSize(file)} bytes, modified ${fs.lastModifiedTime(file)})"
-            } catch (_: IOException) {
-                file.toString()
+        ImportConverters.parseFilesList(
+                fs,
+                list,
+                spec.findOption("--path-pattern-style").getValue<PatternStyle>(),
+            )
+            .joinToString(",") { file ->
+                try {
+                    "$file (${fs.getFileSize(file)} bytes, modified ${fs.lastModifiedTime(file)})"
+                } catch (_: IOException) {
+                    file.toString()
+                }
             }
-        }
 
     private fun plain(value: Any?): String =
         when (value) {
@@ -245,6 +280,13 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
                 "--additional-config",
                 "--overwrite-destination",
                 "--help",
+                "--temp-path",
+                "--disable-instrumentation",
+                "--capture-java-flight-recordings",
+                "--capture-thread-dumps",
+                "--profile",
+                "--profile-results-path",
+                "--resumable-import-checkpoint-interval",
             )
 
         const val RESUME =
@@ -259,26 +301,60 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
 }
 
 /**
- * Neo4j's `neo4j-admin database import incremental`, which fails with the reason DozenDB's importer
- * gives, or the input's error, rather than only "Error importing csv file.", and without Neo4j's
- * warning that a failed import leaves the store "likely in an unusable state": no stage leaves it
- * so. As Neo4j Enterprise documents, the merge stage needs no `--nodes`, which Neo4j Community's
- * subcommand requires for every stage.
+ * `neo4j-admin database import incremental`, as Neo4j Enterprise documents it, which adds to an
+ * existing database with DozenDB's [DozenDbIncrementalImporterFactory], in the stage that `--stage`
+ * names: ported from Neo4j 5.26 Community's subcommand, which Neo4j 2026 removed. It fails with the
+ * reason DozenDB's importer gives, or the input's error, and without Neo4j's warning that a failed
+ * import leaves the store "likely in an unusable state": no stage leaves it so. The merge stage
+ * needs no `--nodes`. It takes no `--schema`, and runs no `--dry-run`.
  */
 @Command(name = "incremental", description = ["Incremental import into an existing database."])
 class IncrementalImportCommand(context: ExecutionContext) :
-    ImportCommand.Incremental(withoutUnusableStoreWarning(context)) {
+    ImportCommand.Base(withoutUnusableStoreWarning(context)) {
 
-    /**
-     * Makes `--nodes` optional, for the merge stage: picocli calls this while it builds the
-     * command's model, once Neo4j's options are in it.
-     */
-    @Spec
-    fun optionalNodes(spec: CommandSpec) {
-        val nodes = spec.findOption(NODES) ?: return
-        if (!nodes.required()) return
-        spec.remove(nodes)
-        spec.addOption(nodes.toBuilder().required(false).build())
+    @Option(
+        names = ["--stage"],
+        paramLabel = "all|prepare|build|merge",
+        description =
+            [
+                "Stage of incremental import. For incremental import into an existing database " +
+                    "use 'all' (which requires the database to be stopped). For semi-online " +
+                    "incremental import run 'prepare' (on a stopped database) followed by 'build' " +
+                    "(on a potentially running database) and finally 'merge' (on a stopped " +
+                    "database)."
+            ],
+        converter = [StageConverter::class],
+    )
+    private var stage = Stage.ALL
+
+    @Option(
+        names = ["--force"],
+        required = true,
+        description = ["Confirm incremental import by setting this flag."],
+    )
+    private var forced = false
+
+    /** The stages of an incremental import. */
+    enum class Stage {
+        PREPARE,
+        BUILD,
+        MERGE,
+        ALL,
+    }
+
+    /** A stage by its name, or by its number, as Neo4j takes it. */
+    class StageConverter : CommandLine.ITypeConverter<Stage> {
+        override fun convert(value: String): Stage =
+            when (value.lowercase(Locale.ROOT)) {
+                "1",
+                "prepare" -> Stage.PREPARE
+                "2",
+                "build" -> Stage.BUILD
+                "3",
+                "merge" -> Stage.MERGE
+                "all" -> Stage.ALL
+                else -> throw CommandLine.TypeConversionException("Invalid stage: $value")
+            }
     }
 
     override fun execute() {
@@ -292,16 +368,24 @@ class IncrementalImportCommand(context: ExecutionContext) :
                 ExitCode.FAIL,
             )
         }
-        val nodes = spec.findOption(NODES)
-        if (nodes.getValue<List<*>?>() == null) {
-            if (spec.findOption("--stage").getValue<Any>().toString() != "merge") {
-                throw CommandFailedException(
-                    "Missing required option: '${nodes.paramLabel()}', which every stage but " +
-                        "merge needs.",
-                    ExitCode.USAGE,
-                )
-            }
-            nodes.setValue(emptyList<Any>())
+        if (spec.findOption("--schema").getValue<String?>() != null) {
+            throw CommandFailedException(
+                "An incremental import does not apply schema commands: create the indexes and " +
+                    "constraints on the database.",
+                ExitCode.USAGE,
+            )
+        }
+        if (stage == Stage.MERGE) {
+            // Neo4j's import reads the input files of every stage, and of csv by default only once
+            // it has some; the merge reads none.
+            spec
+                .findOption("--nodes")
+                .takeIf { it.getValue<Any?>() == null }
+                ?.setValue(ArrayList<Any>())
+            spec
+                .findOption("--input-type")
+                .takeIf { it.getValue<Any?>() == null }
+                ?.setValue(FileImporter.FileInputType.CSV)
         }
         try {
             super.execute()
@@ -310,9 +394,139 @@ class IncrementalImportCommand(context: ExecutionContext) :
         }
     }
 
-    private companion object {
-        const val NODES = "--nodes"
+    override fun importType() = "Incremental import"
 
+    override fun isDistributedGraphShard() = false
+
+    override fun isDistributedPropShard() = false
+
+    override fun includeUpdatesInProgress() = true
+
+    override fun requiresNodeParameter() = stage != Stage.MERGE
+
+    /** The database exists, in its own format. */
+    override fun importFormat(): String? = null
+
+    override fun configureFileImporterBuilder(builder: FileImporter.Builder): FileImporter.Builder =
+        builder.withStorageEngineFactory(
+            StorageEngineFactory.selectStorageEngine(builder.fileSystem, builder.databaseLayout)
+                .orElseThrow()
+        )
+
+    /** Each stage locks the database itself, as far as it needs to. */
+    override fun maybeLockChecker() = MaybeLocker { Closeable {} }
+
+    override fun doDryRun(
+        input: Input,
+        fileSystem: FileSystemAbstraction,
+        databaseLayout: DatabaseLayout,
+        databaseConfig: Config,
+        storageEngineFactory: StorageEngineFactory,
+        jobScheduler: JobScheduler,
+        contextFactory: CursorContextFactory,
+        importConfig: Configuration,
+        indexProvidersAccess: Supplier<IndexProvidersAccess>,
+        stdOut: PrintStream,
+        verbose: Boolean,
+        shardingArguments: ShardingArguments?,
+        monitor: Monitor,
+    ): Unit =
+        throw CommandFailedException("An incremental import runs no --dry-run.", ExitCode.USAGE)
+
+    override fun doImport(
+        fileSystem: FileSystemAbstraction,
+        databaseLayout: DatabaseLayout,
+        force: Boolean,
+        databaseConfig: Config,
+        storageEngineFactory: StorageEngineFactory,
+        jobScheduler: JobScheduler,
+        logProvider: InternalLogProvider,
+        pageCacheTracer: PageCacheTracer,
+        contextFactory: CursorContextFactory,
+        importConfig: Configuration,
+        logService: LogService,
+        stdOut: PrintStream,
+        stdErr: PrintStream,
+        verbose: Boolean,
+        badCollector: Collector,
+        memoryTracker: MemoryTracker,
+        input: Input,
+        indexProvidersAccess: Supplier<IndexProvidersAccess>,
+        shardingArguments: ShardingArguments?,
+        monitor: Monitor,
+    ) {
+        val importer =
+            storageEngineFactory.incrementalBatchImporter(
+                databaseLayout,
+                fileSystem,
+                pageCacheTracer,
+                importConfig,
+                logService,
+                stdOut,
+                verbose,
+                LogTailMetadataFactoryImpl(fileSystem),
+                databaseConfig,
+                PrintingImportLogicMonitor(stdOut, stdErr, monitor),
+                jobScheduler,
+                badCollector,
+                TransactionLogInitializer.getLogFilesInitializer(),
+                IndexImporterFactoryImpl(),
+                memoryTracker,
+                contextFactory,
+                indexProvidersAccess,
+                0,
+                null,
+            )
+        importer.use {
+            when (stage) {
+                Stage.PREPARE -> it.prepare(input)
+                Stage.BUILD -> it.build(input)
+                Stage.MERGE -> it.merge()
+                Stage.ALL -> it.doImport(input)
+            }
+        }
+    }
+
+    override fun doResumableImport(
+        fileSystem: FileSystemAbstraction,
+        databaseLayout: DatabaseLayout,
+        force: Boolean,
+        databaseConfig: Config,
+        storageEngineFactory: StorageEngineFactory,
+        jobScheduler: JobScheduler,
+        logProvider: InternalLogProvider,
+        pageCacheTracer: PageCacheTracer,
+        contextFactory: CursorContextFactory,
+        importConfig: Configuration,
+        logService: LogService,
+        stdOut: PrintStream,
+        stdErr: PrintStream,
+        verbose: Boolean,
+        badCollector: Collector,
+        memoryTracker: MemoryTracker,
+        input: Input,
+        encoding: Charset,
+        nodeFileGroupsByAdditionalLabels: Map<Set<String>, List<FileGroup>>,
+        indexProvidersAccess: Supplier<IndexProvidersAccess>,
+        shardingArguments: ShardingArguments?,
+        monitor: Monitor,
+        resumableStateAccessor: ResumableStateAccessor,
+        resume: Boolean,
+    ): Unit =
+        throw CommandFailedException(
+            "An incremental import runs only with Neo4j's legacy importer, without --legacy=false.",
+            ExitCode.USAGE,
+        )
+
+    /** Never asked for: [execute] refuses `--schema`. */
+    override fun schemaCommandReader(
+        fileSystem: SchemeFileSystemAbstraction,
+        config: Config,
+        adaptor: DeferredSchemaCommands.Adaptor,
+        tokenHolders: TokenHolders,
+    ): SchemaCommandReader = throw UnsupportedOperationException("no schema commands")
+
+    private companion object {
         /** The line Neo4j's file importer prints when any import fails. */
         const val UNUSABLE_STORE_WARNING = "WARNING Import failed. The store files in "
 
@@ -357,20 +571,20 @@ class IncrementalImportCommand(context: ExecutionContext) :
 }
 
 /**
- * [e], a failed import, with the reason DozenDB's importers gave, or else the input's error, such
- * as a duplicate key or a missing node, which Neo4j leaves to `--verbose`.
+ * [e], a failed import, with the reason DozenDB's importers gave in place of Neo4j's "Error
+ * importing csv file."; Neo4j's console output adds the message of the cause, which says it once.
+ * Other failures as Neo4j gives them, with the input's error, such as a duplicate key or a missing
+ * node.
  */
 private fun explained(e: CommandFailedException): CommandFailedException {
     val causes = generateSequence<Throwable>(e) { it.cause }.toList()
     causes.filterIsInstance<IncrementalImportException>().firstOrNull()?.let {
-        return CommandFailedException(it.message, e, it.exitCode)
+        return CommandFailedException(it.message, it, it.exitCode)
     }
     causes.filterIsInstance<ImportResumeException>().firstOrNull()?.let {
-        return CommandFailedException(it.message, e, ExitCode.FAIL)
+        return CommandFailedException(it.message, it, ExitCode.FAIL)
     }
-    val detail = causes.drop(1).lastOrNull { !it.message.isNullOrBlank() }?.message
-    if (detail == null || e.message.isNullOrBlank()) return e
-    return CommandFailedException("${e.message?.removeSuffix(".")}: $detail", e, e.exitCode)
+    return e
 }
 
 /** Provides [DozenDbImportCommand] in place of Neo4j Community's `import`. */

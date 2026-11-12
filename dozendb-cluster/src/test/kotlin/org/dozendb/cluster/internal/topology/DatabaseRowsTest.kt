@@ -1,6 +1,9 @@
 package org.dozendb.cluster.internal.topology
 
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
 import java.util.Optional
+import java.util.OptionalLong
 import java.util.UUID
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.consensus.MemberId
@@ -8,6 +11,7 @@ import org.dozendb.core.edition.DatabaseState
 import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
 import org.neo4j.configuration.helpers.SocketAddress
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.dbms.database.DatabaseDetails
 import org.neo4j.dbms.identity.ServerId
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseAccess
@@ -30,15 +34,23 @@ class DatabaseRowsTest {
             true,
             "online",
             "",
-            Optional.empty(),
-            Optional.of(0L),
+            OptionalLong.empty(),
+            OptionalLong.of(0L),
+            OptionalLong.empty(),
             id,
+            "offline",
             DatabaseDetails.TYPE_STANDARD,
             emptyMap(),
             Optional.empty(),
             Optional.empty(),
+            3,
+            1,
             1,
             0,
+            Optional.of(CREATED),
+            Optional.of(CREATED.plusMinutes(1)),
+            Optional.empty(),
+            Optional.of(CypherVersion.Cypher25),
         )
 
     private fun copy(
@@ -75,6 +87,22 @@ class DatabaseRowsTest {
         }
 
     @Test
+    fun `every row has what the database's record requests, its times and its language`() {
+        val rows = rows(listOf(copy(a), copy(b), copy(c, answering = false)))
+
+        for (row in rows.values) {
+            assertThat(row.requestedStatus()).isEqualTo("offline")
+            assertThat(row.requestedPrimariesCount()).isEqualTo(3)
+            assertThat(row.requestedSecondariesCount()).isEqualTo(1)
+            assertThat(row.creationTime()).contains(CREATED)
+            assertThat(row.lastStartTime()).contains(CREATED.plusMinutes(1))
+            assertThat(row.lastStopTime()).isEmpty()
+            assertThat(row.cypherVersion()).contains(CypherVersion.Cypher25)
+            assertThat(row.shardCommitLag()).isEmpty()
+        }
+    }
+
+    @Test
     fun `a copy in quarantine is quarantined with its message, of an unknown role, no writer`() {
         val message = "By neo4j at 2026-11-10T09:08:07.006Z: Inspecting its files"
         val rows =
@@ -88,7 +116,7 @@ class DatabaseRowsTest {
             )
 
         val quarantined = rows.getValue(b)
-        assertThat(quarantined.status()).isEqualTo("quarantined")
+        assertThat(quarantined.actualStatus()).isEqualTo("quarantined")
         assertThat(quarantined.statusMessage()).isEqualTo(message)
         assertThat(quarantined.role()).contains("unknown")
         assertThat(quarantined.writer()).isFalse()
@@ -99,9 +127,9 @@ class DatabaseRowsTest {
     fun `a copy on a server the database moves off is deallocating, and may still be the writer`() {
         val rows = rows(listOf(copy(a), copy(b), copy(c)), leader = c, placed = setOf(a, b))
 
-        assertThat(rows.getValue(c).status()).isEqualTo("deallocating")
+        assertThat(rows.getValue(c).actualStatus()).isEqualTo("deallocating")
         assertThat(rows.getValue(c).writer()).isTrue()
-        assertThat(rows.getValue(a).status()).isEqualTo("online")
+        assertThat(rows.getValue(a).actualStatus()).isEqualTo("online")
         assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(3)
     }
 
@@ -110,7 +138,7 @@ class DatabaseRowsTest {
         val rows =
             rows(listOf(copy(a), copy(b, DatabaseState.Status.STARTING), copy(c)), leader = a)
 
-        assertThat(rows.getValue(b).status()).isEqualTo("starting")
+        assertThat(rows.getValue(b).actualStatus()).isEqualTo("starting")
         assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(2)
     }
 
@@ -125,7 +153,7 @@ class DatabaseRowsTest {
                 recreation = waiting,
             )
 
-        assertThat(rows.getValue(a).status()).isEqualTo("initial")
+        assertThat(rows.getValue(a).actualStatus()).isEqualTo("initial")
         assertThat(rows.getValue(a).statusMessage()).isEqualTo(waiting)
         assertThat(rows.getValue(b).statusMessage()).isEqualTo(waiting)
         assertThat(rows.getValue(c).statusMessage()).isEqualTo("Server is unavailable")
@@ -142,8 +170,8 @@ class DatabaseRowsTest {
                 placed = setOf(a, b, c),
             )
 
-        assertThat(rows.getValue(b).status()).isEqualTo("store copying")
-        assertThat(rows.getValue(c).status()).isEqualTo("initial")
+        assertThat(rows.getValue(b).actualStatus()).isEqualTo("store copying")
+        assertThat(rows.getValue(c).actualStatus()).isEqualTo("initial")
         assertThat(rows.filterValues { it.writer() }.keys).containsExactly(a)
         assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(1)
     }
@@ -155,7 +183,7 @@ class DatabaseRowsTest {
         assertThat(rows.keys).containsExactlyInAnyOrder(a, b, c)
         assertThat(rows.filterValues { it.writer() }.keys).containsExactly(b)
         assertThat(rows.getValue(c).boltAddress()).contains(SocketAddress("host3", 7687))
-        assertThat(rows.values.map { it.status() }).containsOnly("online")
+        assertThat(rows.values.map { it.actualStatus() }).containsOnly("online")
         assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(3)
         assertThat(rows.values.map { it.namedDatabaseId() }).containsOnly(id)
     }
@@ -168,7 +196,7 @@ class DatabaseRowsTest {
         assertThat(readOnly.values).noneMatch { it.writer() }
         assertThat(readOnly.getValue(b).databaseAccess()).isEqualTo(DatabaseAccess.READ_ONLY)
         assertThat(offline.values).noneMatch { it.writer() }
-        assertThat(offline.getValue(b).status()).isEqualTo("offline")
+        assertThat(offline.getValue(b).actualStatus()).isEqualTo("offline")
         assertThat(offline.values.map { it.actualPrimariesCount() }).containsOnly(2)
     }
 
@@ -191,8 +219,8 @@ class DatabaseRowsTest {
                 mapOf(a to "primary", b to "primary", c to "secondary", d to "secondary")
             )
         assertThat(rows.values).noneMatch { it.writer() }
-        assertThat(rows.getValue(c).status()).isEqualTo("online")
-        assertThat(rows.getValue(d).status()).isEqualTo("store copying")
+        assertThat(rows.getValue(c).actualStatus()).isEqualTo("online")
+        assertThat(rows.getValue(d).actualStatus()).isEqualTo("store copying")
         assertThat(rows.values.map { it.actualPrimariesCount() }).containsOnly(2)
         assertThat(rows.values.map { it.actualSecondariesCount() }).containsOnly(1)
     }
@@ -202,7 +230,7 @@ class DatabaseRowsTest {
         val rows =
             rows(listOf(copy(a), copy(b, mode = CopyMode.SECONDARY, paused = true)), leader = a)
 
-        assertThat(rows.getValue(b).status()).isEqualTo("online")
+        assertThat(rows.getValue(b).actualStatus()).isEqualTo("online")
         assertThat(rows.getValue(b).statusMessage()).isEqualTo("Secondary replication is paused")
         assertThat(rows.getValue(a).statusMessage()).isEmpty()
     }
@@ -216,7 +244,7 @@ class DatabaseRowsTest {
                 placed = setOf(a, b),
             )
 
-        assertThat(rows.getValue(c).status()).isEqualTo("deallocating")
+        assertThat(rows.getValue(c).actualStatus()).isEqualTo("deallocating")
         assertThat(rows.getValue(c).role()).contains("secondary")
     }
 
@@ -228,7 +256,7 @@ class DatabaseRowsTest {
         val c = rows.getValue(c)
         assertThat(c.boltAddress()).isEmpty()
         assertThat(c.role()).contains("unknown")
-        assertThat(c.status()).isEqualTo(DatabaseDetails.STATUS_UNKNOWN)
+        assertThat(c.actualStatus()).isEqualTo(DatabaseDetails.STATUS_UNKNOWN)
         assertThat(c.statusMessage()).isEqualTo(DatabaseDetails.STATUS_MESSAGE_UNKNOWN)
         assertThat(c.writer()).isFalse()
     }
@@ -245,9 +273,9 @@ class DatabaseRowsTest {
                 leader = a,
             )
 
-        assertThat(rows.getValue(b).status()).isEqualTo("offline")
+        assertThat(rows.getValue(b).actualStatus()).isEqualTo("offline")
         assertThat(rows.getValue(b).statusMessage()).isEqualTo("disk on fire")
-        assertThat(rows.getValue(c).status()).isEqualTo("offline")
+        assertThat(rows.getValue(c).actualStatus()).isEqualTo("offline")
         assertThat(rows.getValue(c).statusMessage()).isEmpty()
     }
 
@@ -264,11 +292,15 @@ class DatabaseRowsTest {
         val rows = rows(copies, txInfo = true)
         val without = rows(copies)
 
-        assertThat(rows.getValue(a).lastCommittedTxId()).contains(90L)
-        assertThat(rows.getValue(a).txCommitLag()).contains(-10L)
-        assertThat(rows.getValue(b).txCommitLag()).contains(0L)
+        assertThat(rows.getValue(a).lastCommittedTxId()).hasValue(90L)
+        assertThat(rows.getValue(a).txCommitLag()).hasValue(-10L)
+        assertThat(rows.getValue(b).txCommitLag()).hasValue(0L)
         assertThat(rows.getValue(c).lastCommittedTxId()).isEmpty()
         assertThat(rows.getValue(c).txCommitLag()).isEmpty()
         assertThat(without.getValue(a).lastCommittedTxId()).isEmpty()
+    }
+
+    private companion object {
+        val CREATED: ZonedDateTime = ZonedDateTime.of(2026, 11, 11, 9, 0, 0, 0, ZoneOffset.UTC)
     }
 }

@@ -27,14 +27,13 @@ import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.helpers.DatabaseNamePattern
-import org.neo4j.dbms.archive.backup.BackupMetadataV2
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLogProvider
-import org.neo4j.ssl.config.SslPolicyLoader
+import org.neo4j.ssl.config.DefaultSslPolicyProvider
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.StoreId
 import picocli.CommandLine
@@ -291,7 +290,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     }
 
     private fun policies(config: Config, logProvider: InternalLogProvider) =
-        SslPolicyLoader.create(ctx.fs(), config, logProvider)
+        DefaultSslPolicyProvider(ctx.fs(), config, false, false, logProvider)
 
     /** The databases to back up: the names given, and those of the first server for patterns. */
     private fun names(
@@ -397,17 +396,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     private fun metadata(name: String, client: BackupClient, server: HostPort): String? {
         if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) return null
         if (includeMetadata == MetadataScript.Include.NONE) return null
-        val script = client.metadata(server, name, includeMetadata) ?: return null
-        val size = script.toByteArray(Charsets.UTF_8).size
-        if (size > BackupMetadataV2.METADATA_SCRIPT_MAX_LENGTH) {
-            throw Refused(
-                Status.FAILED,
-                "the users, roles and privileges of '$name' take $size bytes, more than a backup " +
-                    "holds; back it up with --include-metadata=none and keep them with SHOW " +
-                    "PRIVILEGES AS COMMANDS",
-            )
-        }
-        return script
+        return client.metadata(server, name, includeMetadata)
     }
 
     private fun differential(

@@ -10,7 +10,7 @@ import org.neo4j.configuration.ssl.SslPolicyConfig
 import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.logging.Log
 import org.neo4j.ssl.SslPolicy
-import org.neo4j.ssl.config.SslPolicyLoader
+import org.neo4j.ssl.config.SslPolicyProvider
 
 /**
  * TLS for backups, configured with Neo4j's SSL policy of the backup scope,
@@ -23,13 +23,13 @@ internal object BackupTls {
 
     /**
      * The TLS that [config] asks for to serve backups on [address], with the backup policy that
-     * [policies] loaded, or null for plaintext. Warns in [log] about choices that let any host that
-     * reaches the address take backups.
+     * [policies] provides, or null for plaintext. Warns in [log] about choices that let any host
+     * that reaches the address take backups.
      */
     fun server(
         config: Config,
         address: SocketAddress,
-        policies: SslPolicyLoader,
+        policies: SslPolicyProvider,
         log: Log,
     ): TlsConfig? {
         val enabled = policy.enabled.name()
@@ -62,7 +62,7 @@ internal object BackupTls {
     }
 
     /** The TLS that [config] asks for to take backups, with [policies]; null for plaintext. */
-    fun client(config: Config, policies: SslPolicyLoader): TlsConfig? =
+    fun client(config: Config, policies: SslPolicyProvider): TlsConfig? =
         if (enabled(config)) of(policies.getPolicy(SslPolicyScope.BACKUP)) else null
 
     // Neo4j knows the policy's settings only once one of them is set.

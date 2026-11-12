@@ -20,10 +20,11 @@ import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.io.fs.PhysicalFlushableChannel
 import org.neo4j.kernel.BinarySupportedKernelVersions
-import org.neo4j.kernel.impl.transaction.log.LogIndexEncoding
-import org.neo4j.kernel.impl.transaction.log.entry.LogEntryWriter
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.CommandReaderFactory
+import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.LogIndexEncoding
+import org.neo4j.wal.entry.LogEntryWriter
 
 class DifferentialBackupTest {
     // Kept when a test fails, for the server's logs.
@@ -124,6 +125,7 @@ class DifferentialBackupTest {
                             batch.timeStarted,
                             batch.latestCommittedTxWhenStarted,
                             transaction.appendIndex,
+                            TransactionIdStore.UNKNOWN_TX_SEQUENCE_NUMBER,
                             transaction.previousChecksum,
                             LogIndexEncoding.encodeLogIndex(batch.consensusIndex()),
                         )

@@ -597,7 +597,7 @@ class PrivilegePolicyTest {
                     resource = PrivilegeResource.Graph,
                     segment =
                         PrivilegeSegment.NodePattern(
-                            PatternSegment.ValuePatternSegment(
+                            PatternSegment.NodeValuePatternSegment(
                                 setOf("Doc"),
                                 "level",
                                 Values.intValue(3),
@@ -610,7 +610,7 @@ class PrivilegePolicyTest {
                     resource = PrivilegeResource.Graph,
                     segment =
                         PrivilegeSegment.NodePattern(
-                            PatternSegment.ValuePatternSegment(
+                            PatternSegment.NodeValuePatternSegment(
                                 emptySet(),
                                 "level",
                                 Values.intValue(2),
@@ -638,7 +638,7 @@ class PrivilegePolicyTest {
                             resource = PrivilegeResource.Graph,
                             segment =
                                 PrivilegeSegment.NodePattern(
-                                    PatternSegment.ValuePatternSegment(
+                                    PatternSegment.NodeValuePatternSegment(
                                         emptySet(),
                                         "level",
                                         Values.intValue(2),

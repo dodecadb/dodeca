@@ -1,6 +1,8 @@
 package org.dozendb.cluster.internal
 
 import java.util.UUID
+import org.dozendb.core.Gql
+import org.dozendb.core.edition.DefaultDatabase
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Move
 import org.dozendb.core.servers.Placements
@@ -8,7 +10,6 @@ import org.dozendb.core.servers.ServerLifecycle
 import org.dozendb.core.servers.ServerRecords
 import org.dozendb.core.servers.Servers
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
-import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.Transaction
 
@@ -21,7 +22,6 @@ import org.neo4j.graphdb.Transaction
  * @property autoEnable whether servers that join are enabled at once, as the configuration sets it,
  *   while that is not recorded.
  */
-@Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for most refusals of server commands.
 class ServerAdministration(
     private val system: () -> GraphDatabaseService,
     private val reading: (() -> Unit) -> Unit,
@@ -57,7 +57,7 @@ class ServerAdministration(
                         Placements.defaults(tx, defaults),
                         tx.findNode(
                                 TopologyGraphDbmsModel.DATABASE_LABEL,
-                                TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY,
+                                DefaultDatabase.PROPERTY,
                                 true,
                             )
                             ?.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null)
@@ -77,12 +77,12 @@ class ServerAdministration(
     fun setDefaults(primaries: Long, secondaries: Long) {
         val failed = "Could not set the default numbers of copies"
         if (primaries !in 1..MAXIMUM_PRIMARIES) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: the number of primaries is $primaries, not 1 to $MAXIMUM_PRIMARIES."
             )
         }
         if (secondaries !in 0..MAXIMUM_SECONDARIES) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: the number of secondaries is $secondaries, not 0 to $MAXIMUM_SECONDARIES."
             )
         }

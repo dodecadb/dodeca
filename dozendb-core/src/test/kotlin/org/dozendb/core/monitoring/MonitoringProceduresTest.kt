@@ -24,11 +24,11 @@ import org.neo4j.driver.SessionConfig
 import org.neo4j.graphdb.Label
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.impl.coreapi.InternalTransaction
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
 import org.neo4j.scheduler.Group
 import org.neo4j.scheduler.JobMonitoringParams
 import org.neo4j.scheduler.JobScheduler
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.checkpoint.CheckPointer
 
 /** Neo4j Enterprise's procedures for looking into a running server. */
 class MonitoringProceduresTest {

@@ -33,8 +33,8 @@ import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 class BackupCommandTest {
     // Kept when a test fails, for the servers' logs.

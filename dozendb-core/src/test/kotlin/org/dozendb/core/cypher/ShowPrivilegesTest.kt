@@ -74,6 +74,17 @@ class ShowPrivilegesTest {
     private fun Driver.column(cypher: String, parameters: Map<String, Any> = emptyMap()) =
         run(cypher, parameters).map { it.values.single() }
 
+    /** A row of Cypher 25's SHOW USERS PRIVILEGES AS COMMANDS YIELD * of an access privilege. */
+    private fun command(command: String, access: String, role: String, vararg users: String) =
+        mapOf(
+            "command" to command,
+            "access" to access,
+            "action" to "access",
+            "roles" to listOf(role),
+            "immutable" to false,
+            "users" to users.toList(),
+        )
+
     @Test
     fun `shows the privileges of roles as the docs show them`() {
         assertThat(admin.run("SHOW ROLES regularUsers, noAccessUsers PRIVILEGES"))
@@ -158,10 +169,20 @@ class ShowPrivilegesTest {
                 "GRANT WRITE ON GRAPH * TO `editor`",
                 "GRANT WRITE ON GRAPH * TO `publisher`",
             )
-        assertThat(admin.run("SHOW ROLE regularUsers PRIVILEGES AS COMMANDS YIELD *"))
+        assertThat(admin.run("CYPHER 5 SHOW ROLE regularUsers PRIVILEGES AS COMMANDS YIELD *"))
             .containsExactly(
                 mapOf(
                     "command" to "GRANT ACCESS ON DATABASE neo4j TO `regularUsers`",
+                    "immutable" to false,
+                )
+            )
+        assertThat(admin.run("CYPHER 25 SHOW ROLE regularUsers PRIVILEGES AS COMMANDS YIELD *"))
+            .containsExactly(
+                mapOf(
+                    "command" to "GRANT ACCESS ON DATABASE neo4j TO `regularUsers`",
+                    "access" to "GRANTED",
+                    "action" to "access",
+                    "roles" to listOf("regularUsers"),
                     "immutable" to false,
                 )
             )
@@ -186,7 +207,7 @@ class ShowPrivilegesTest {
                 "joe PUBLIC access",
                 "joe noAccessUsers access",
             )
-        assertThat(admin.column("SHOW USER jake PRIVILEGES AS COMMANDS"))
+        assertThat(admin.column("CYPHER 5 SHOW USER jake PRIVILEGES AS COMMANDS"))
             .containsExactly(
                 "GRANT ACCESS ON DATABASE neo4j TO \$role",
                 "GRANT ACCESS ON HOME DATABASE TO \$role",
@@ -196,12 +217,52 @@ class ShowPrivilegesTest {
             )
         assertThat(
                 jake.column(
-                    "SHOW USER PRIVILEGES AS REVOKE COMMANDS WHERE command CONTAINS 'EXECUTE'"
+                    "CYPHER 5 SHOW USER PRIVILEGES AS REVOKE COMMANDS " +
+                        "WHERE command CONTAINS 'EXECUTE'"
                 )
             )
             .containsExactly(
                 "REVOKE GRANT EXECUTE FUNCTION * ON DBMS FROM \$role",
                 "REVOKE GRANT EXECUTE PROCEDURE * ON DBMS FROM \$role",
+            )
+        // Cypher 25 shows each command once, with the roles and users that have it.
+        assertThat(
+                admin.run(
+                    "CYPHER 25 SHOW USERS jake, joe PRIVILEGES AS COMMANDS YIELD * " +
+                        "WHERE action = 'access'"
+                )
+            )
+            .containsExactly(
+                command(
+                    "DENY ACCESS ON DATABASE neo4j TO \$role",
+                    "DENIED",
+                    "noAccessUsers",
+                    "joe",
+                ),
+                command(
+                    "GRANT ACCESS ON DATABASE neo4j TO \$role",
+                    "GRANTED",
+                    "regularUsers",
+                    "jake",
+                ),
+                command(
+                    "GRANT ACCESS ON HOME DATABASE TO \$role",
+                    "GRANTED",
+                    "PUBLIC",
+                    "jake",
+                    "joe",
+                ),
+            )
+        assertThat(
+                jake.run(
+                    "CYPHER 25 SHOW USER PRIVILEGES AS REVOKE COMMANDS WHERE command CONTAINS 'LOAD'"
+                )
+            )
+            .containsExactly(
+                mapOf(
+                    "command" to "REVOKE GRANT LOAD ON ALL DATA FROM \$role",
+                    "users" to listOf("jake"),
+                )
             )
         assertThat(jake.run("SHOW USER jake PRIVILEGES")).hasSize(5)
         assertThat(

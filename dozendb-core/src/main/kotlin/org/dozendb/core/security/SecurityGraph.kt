@@ -3,16 +3,16 @@ package org.dozendb.core.security
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import org.neo4j.dbms.database.SystemGraphComponent
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_HOME_DB_PROPERTY as USER_HOME_DB
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY as USER_NAME
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_SUSPENDED_PROPERTY as USER_SUSPENDED
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLog
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_HOME_DB
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_LABEL
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_NAME
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_SUSPENDED
 
 /**
  * The users, roles and privileges of the system graph as one transaction read them. [initialized]

@@ -389,7 +389,7 @@ class RemoteAliasTransactionsTest {
 
         // The other DBMS checks the rest, for the user the alias names.
         val graph = admin.failure("GRANT MATCH {*} ON GRAPH routed TO analyst", SYSTEM)
-        assertThat(graph.gqlStatus()).isEqualTo("42002")
+        assertThat(graph.gqlStatus()).isEqualTo("42001")
         assertThat(graph.message)
             .isEqualTo(
                 "Failed to grant privilege to role 'analyst': Only the ACCESS privilege applies to " +

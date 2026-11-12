@@ -168,10 +168,12 @@ class StandaloneIT {
     @Test
     fun `reports the Enterprise edition`() {
         assertSame("CALL dbms.components() YIELD name, versions")
-        assertThat(community.rows("CALL dbms.components() YIELD edition"))
-            .containsExactly(mapOf("edition" to "community"))
-        assertThat(dozenDb.rows("CALL dbms.components() YIELD edition"))
-            .containsExactly(mapOf("edition" to "enterprise"))
+        // Neo4j 2026 adds a row of the Cypher versions, without an edition.
+        val edition =
+            "CALL dbms.components() YIELD name, edition WHERE name = 'Neo4j Kernel' " +
+                "RETURN edition"
+        assertThat(community.rows(edition)).containsExactly(mapOf("edition" to "community"))
+        assertThat(dozenDb.rows(edition)).containsExactly(mapOf("edition" to "enterprise"))
     }
 
     /** Neo4j would report this server to udc.neo4j.com as Neo4j Enterprise. */
@@ -593,6 +595,8 @@ class StandaloneIT {
                     "database" to "pictures",
                     "location" to "local",
                     "url" to null,
+                    // Cypher 25's, which the image's neo4j.conf makes the default.
+                    "credentials" to null,
                     "user" to null,
                 )
             )

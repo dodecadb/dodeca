@@ -15,10 +15,11 @@
  */
 package org.dozendb.core.constraints
 
+import java.util.function.BooleanSupplier
 import java.util.function.Function
 import org.dozendb.core.edition.DozenDbDatabaseContextFactory
 import org.eclipse.collections.api.IntIterable
-import org.eclipse.collections.api.set.primitive.LongSet
+import org.eclipse.collections.api.set.primitive.IntSet
 import org.eclipse.collections.impl.map.mutable.primitive.IntObjectHashMap
 import org.neo4j.common.EntityType
 import org.neo4j.common.TokenNameLookup
@@ -47,6 +48,8 @@ import org.neo4j.kernel.api.exceptions.schema.NodePropertyExistenceException
 import org.neo4j.kernel.api.exceptions.schema.PropertyTypeException
 import org.neo4j.kernel.api.exceptions.schema.RelationshipPropertyExistenceException
 import org.neo4j.kernel.impl.constraints.StandardConstraintSemantics
+import org.neo4j.kernel.impl.newapi.FilteringNodeCursorWrapper
+import org.neo4j.kernel.impl.newapi.FilteringRelationshipScanCursorWrapper
 import org.neo4j.memory.MemoryTracker
 import org.neo4j.storageengine.api.PropertySelection
 import org.neo4j.storageengine.api.RelationshipVisitorWithProperties
@@ -77,42 +80,43 @@ import org.neo4j.values.storable.Value
 class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
     private val rules = StandardConstraintRuleAccessor()
 
-    override fun getName(): String = "dozenDbConstraints"
-
     override fun readConstraint(constraint: ConstraintDescriptor): ConstraintDescriptor = constraint
 
-    override fun assertKeyConstraintAllowed(descriptor: SchemaDescriptor) {}
+    override fun assertKeyConstraintAllowed(
+        descriptor: SchemaDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {}
 
     override fun createUniquenessConstraintRule(
-        ruleId: Long,
         descriptor: UniquenessConstraintDescriptor,
         indexId: Long,
-    ): ConstraintDescriptor = rules.createUniquenessConstraintRule(ruleId, descriptor, indexId)
+    ): ConstraintDescriptor = rules.createUniquenessConstraintRule(descriptor, indexId)
 
     override fun createKeyConstraintRule(
-        ruleId: Long,
         descriptor: KeyConstraintDescriptor,
         indexId: Long,
-    ): ConstraintDescriptor = rules.createKeyConstraintRule(ruleId, descriptor, indexId)
+        tokenNameLookup: TokenNameLookup,
+    ): ConstraintDescriptor = rules.createKeyConstraintRule(descriptor, indexId, tokenNameLookup)
 
     override fun createExistenceConstraint(
-        ruleId: Long,
         descriptor: ConstraintDescriptor,
-    ): ConstraintDescriptor = rules.createExistenceConstraint(ruleId, descriptor)
+        tokenNameLookup: TokenNameLookup,
+    ): ConstraintDescriptor = rules.createExistenceConstraint(descriptor, tokenNameLookup)
 
     override fun createPropertyTypeConstraint(
-        ruleId: Long,
         descriptor: TypeConstraintDescriptor,
-    ): ConstraintDescriptor = rules.createPropertyTypeConstraint(ruleId, descriptor)
+        tokenNameLookup: TokenNameLookup,
+    ): ConstraintDescriptor = rules.createPropertyTypeConstraint(descriptor, tokenNameLookup)
 
     // Checks of existing data when a constraint is created.
 
     override fun validateNodePropertyExistenceConstraint(
-        nodeCursor: NodeCursor,
+        nodeCursor: FilteringNodeCursorWrapper,
         propertyCursor: PropertyCursor,
         schema: LabelSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
         isDependent: Boolean,
+        memoryTracker: MemoryTracker,
     ) {
         val constraint = ConstraintDescriptorFactory.existsForSchema(schema, isDependent)
         while (nodeCursor.next()) {
@@ -127,19 +131,22 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         descriptor: LabelSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
         isDependent: Boolean,
+        memoryTracker: MemoryTracker,
+        doContinue: BooleanSupplier,
     ) {
         val constraint = ConstraintDescriptorFactory.existsForSchema(descriptor, isDependent)
-        forEachNode(allNodes, nodeCursor) {
+        forEachNode(allNodes, nodeCursor, doContinue) {
             checkPresence(constraint, descriptor, nodeCursor, propertyCursor, tokenNameLookup)
         }
     }
 
     override fun validateRelationshipPropertyExistenceConstraint(
-        relationshipCursor: RelationshipScanCursor,
+        relationshipCursor: FilteringRelationshipScanCursorWrapper,
         propertyCursor: PropertyCursor,
         descriptor: RelationTypeSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
         isDependent: Boolean,
+        memoryTracker: MemoryTracker,
     ) {
         val constraint = ConstraintDescriptorFactory.existsForSchema(descriptor, isDependent)
         while (relationshipCursor.next()) {
@@ -159,18 +166,21 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         descriptor: RelationTypeSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
         isDependent: Boolean,
+        memoryTracker: MemoryTracker,
+        doContinue: BooleanSupplier,
     ) {
         val constraint = ConstraintDescriptorFactory.existsForSchema(descriptor, isDependent)
-        forEachRelationship(allRelationships) {
+        forEachRelationship(allRelationships, doContinue) {
             checkPresence(constraint, descriptor, allRelationships, propertyCursor, tokenNameLookup)
         }
     }
 
     override fun validateNodeKeyConstraint(
-        nodeCursor: NodeCursor,
+        nodeCursor: FilteringNodeCursorWrapper,
         propertyCursor: PropertyCursor,
         descriptor: LabelSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         val constraint = ConstraintDescriptorFactory.keyForSchema(descriptor)
         while (nodeCursor.next()) {
@@ -184,6 +194,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         propertyCursor: PropertyCursor,
         descriptor: LabelSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         val constraint = ConstraintDescriptorFactory.keyForSchema(descriptor)
         forEachNode(allNodes, nodeCursor) {
@@ -192,10 +203,11 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
     }
 
     override fun validateRelKeyConstraint(
-        relCursor: RelationshipScanCursor,
+        relCursor: FilteringRelationshipScanCursorWrapper,
         propertyCursor: PropertyCursor,
         descriptor: RelationTypeSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         val constraint = ConstraintDescriptorFactory.keyForSchema(descriptor)
         while (relCursor.next()) {
@@ -209,6 +221,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         propertyCursor: PropertyCursor,
         descriptor: RelationTypeSchemaDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         val constraint = ConstraintDescriptorFactory.keyForSchema(descriptor)
         forEachRelationship(allRelationships) {
@@ -217,10 +230,11 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
     }
 
     override fun validateNodePropertyTypeConstraint(
-        nodeCursor: NodeCursor,
+        nodeCursor: FilteringNodeCursorWrapper,
         propertyCursor: PropertyCursor,
         descriptor: TypeConstraintDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         while (nodeCursor.next()) {
             checkType(descriptor, nodeCursor, propertyCursor, tokenNameLookup)
@@ -233,6 +247,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         propertyCursor: PropertyCursor,
         descriptor: TypeConstraintDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         forEachNode(allNodes, nodeCursor) {
             checkType(descriptor, nodeCursor, propertyCursor, tokenNameLookup)
@@ -240,10 +255,11 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
     }
 
     override fun validateRelationshipPropertyTypeConstraint(
-        relationshipCursor: RelationshipScanCursor,
+        relationshipCursor: FilteringRelationshipScanCursorWrapper,
         propertyCursor: PropertyCursor,
         descriptor: TypeConstraintDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         while (relationshipCursor.next()) {
             checkType(descriptor, relationshipCursor, propertyCursor, tokenNameLookup)
@@ -255,30 +271,36 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         propertyCursor: PropertyCursor,
         descriptor: TypeConstraintDescriptor,
         tokenNameLookup: TokenNameLookup,
+        memoryTracker: MemoryTracker,
     ) {
         forEachRelationship(allRelationships) {
             checkType(descriptor, allRelationships, propertyCursor, tokenNameLookup)
         }
     }
 
-    /** Runs [check] with [nodeCursor] at each node of [allNodes]. */
+    /** Runs [check] with [nodeCursor] at each node of [allNodes], while [doContinue] says so. */
     private inline fun forEachNode(
         allNodes: NodeLabelIndexCursor,
         nodeCursor: NodeCursor,
+        doContinue: BooleanSupplier = ALWAYS,
         check: () -> Unit,
     ) {
-        while (allNodes.next()) {
+        while (doContinue.asBoolean && allNodes.next()) {
             allNodes.node(nodeCursor)
             if (nodeCursor.next()) check()
         }
     }
 
-    /** Runs [check] at each relationship of [allRelationships] that is still stored. */
+    /**
+     * Runs [check] at each relationship of [allRelationships] that is still stored, while
+     * [doContinue] says so.
+     */
     private inline fun forEachRelationship(
         allRelationships: RelationshipTypeIndexCursor,
+        doContinue: BooleanSupplier = ALWAYS,
         check: () -> Unit,
     ) {
-        while (allRelationships.next()) {
+        while (doContinue.asBoolean && allRelationships.next()) {
             if (allRelationships.readFromStore()) check()
         }
     }
@@ -300,7 +322,11 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                 ConstraintValidationException.Phase.VERIFICATION,
                 node.nodeReference(),
             )
-        throw CreateConstraintFailureException(violation, violation.constraint(), violation)
+        throw CreateConstraintFailureException.constraintCreationFailed(
+            violation.constraint(),
+            tokenNameLookup,
+            violation,
+        )
     }
 
     /**
@@ -322,7 +348,11 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                 ConstraintValidationException.Phase.VERIFICATION,
                 relationship.reference(),
             )
-        throw CreateConstraintFailureException(violation, violation.constraint(), violation)
+        throw CreateConstraintFailureException.constraintCreationFailed(
+            violation.constraint(),
+            tokenNameLookup,
+            violation,
+        )
     }
 
     /** Whether the entity at [entity] has every property in [propertyIds]. */
@@ -351,14 +381,17 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         val value = properties.propertyValue()
         if (TypeRepresentation.disallows(descriptor.propertyType(), value)) {
             val violation =
-                PropertyTypeException(
+                PropertyTypeException.propertyTypeVerificationFailed(
                     descriptor,
-                    ConstraintValidationException.Phase.VERIFICATION,
                     entity.reference(),
                     tokenNameLookup,
                     value,
                 )
-            throw CreateConstraintFailureException(violation, violation.constraint(), violation)
+            throw CreateConstraintFailureException.constraintCreationFailed(
+                violation.constraint(),
+                tokenNameLookup,
+                violation,
+            )
         }
     }
 
@@ -465,14 +498,13 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         override fun visitNodePropertyChanges(
             id: Long,
             added: Iterable<StorageProperty>,
-            changed: Iterable<StorageProperty>,
             removed: IntIterable,
         ) {
             checkNode(id)
-            super.visitNodePropertyChanges(id, added, changed, removed)
+            super.visitNodePropertyChanges(id, added, removed)
         }
 
-        override fun visitNodeLabelChanges(id: Long, added: LongSet, removed: LongSet) {
+        override fun visitNodeLabelChanges(id: Long, added: IntSet, removed: IntSet) {
             checkNode(id)
             super.visitNodeLabelChanges(id, added, removed)
         }
@@ -480,7 +512,7 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         override fun visitRelationshipModifications(modifications: RelationshipModifications) {
             if (!enforced.relationshipsEmpty) {
                 val check =
-                    RelationshipVisitorWithProperties<RuntimeException> { id, type, _, _, _, _, _ ->
+                    RelationshipVisitorWithProperties<RuntimeException> { id, type, _, _, _, _ ->
                         checkRelationship(id, type)
                     }
                 modifications.creations().forEach(check)
@@ -536,9 +568,8 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         private fun checkType(constraint: TypeConstraintDescriptor, id: Long) {
             val value = present.get(constraint.schema().propertyId) ?: return
             if (TypeRepresentation.disallows(constraint.propertyType(), value)) {
-                throw PropertyTypeException(
+                throw PropertyTypeException.propertyTypeValidationFailed(
                     constraint,
-                    ConstraintValidationException.Phase.VALIDATION,
                     id,
                     storageReader.tokenNameLookup(),
                     value,
@@ -598,6 +629,8 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         /** Above Neo4j Community's standard constraint semantics, priority 1. */
         const val PRIORITY = 2
 
+        val ALWAYS = BooleanSupplier { true }
+
         val BUILD_ENFORCED_CONSTRAINTS =
             Function<StorageReader, EnforcedConstraints> { reader ->
                 val nodes = mutableListOf<LabelSchemaDescriptor>()
@@ -609,12 +642,9 @@ class DozenDbConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                     }
                     if (!constraint.enforcesPropertyExistence()) return@forEachRemaining
                     val schema = constraint.schema()
-                    if (schema.isSchemaDescriptorType(LabelSchemaDescriptor::class.java)) {
-                        nodes += schema.asSchemaDescriptorType(LabelSchemaDescriptor::class.java)
-                    }
-                    if (schema.isSchemaDescriptorType(RelationTypeSchemaDescriptor::class.java)) {
-                        relationships +=
-                            schema.asSchemaDescriptorType(RelationTypeSchemaDescriptor::class.java)
+                    if (schema.isLabelSchemaDescriptor) nodes += schema.asLabelSchemaDescriptor()
+                    if (schema.isRelationshipTypeSchemaDescriptor) {
+                        relationships += schema.asRelationshipTypeSchemaDescriptor()
                     }
                 }
                 EnforcedConstraints(nodes, relationships, types)

@@ -154,7 +154,7 @@ internal class StandaloneDatabases(
                                 status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
                                 seedUri,
                                 node.getProperty(
-                                    TopologyGraphDbmsModel.DATABASE_DEFAULT_PROPERTY,
+                                    DefaultDatabase.PROPERTY,
                                     false,
                                 ) == true,
                             )

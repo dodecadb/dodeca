@@ -2,6 +2,7 @@ package org.dozendb.core
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 import org.dozendb.core.edition.DozenDbEditionModule
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
@@ -87,6 +88,13 @@ class StandaloneServer(
             result.asSequence().map { it.toMap() }.toList()
         }
 
+    /** The messages of the debug log. */
+    fun debugMessages(): List<String> =
+        DebugEntry.read(home.resolve("logs/debug.log")).map { it.message }
+
+    /** The entries of the debug log. */
+    fun debugEntries(): List<DebugEntry> = DebugEntry.read(home.resolve("logs/debug.log"))
+
     /** The address Bolt listens on, when enabled. */
     fun boltAddress(): String {
         val register =
@@ -120,7 +128,17 @@ class StandaloneServer(
                 .set(HttpConnector.enabled, false)
                 .set(HttpsConnector.enabled, false)
                 // Bolt's thread pools otherwise wait 5 s each for quiet before they stop.
-                .set(GraphDatabaseInternalSettings.netty_server_shutdown_quiet_period, 0)
+                .set(
+                    GraphDatabaseInternalSettings.netty_server_shutdown_quiet_period,
+                    Duration.ZERO,
+                )
+        // Neo4j's default, Cypher 5, unless the build runs the tests under another.
+        System.getProperty(CYPHER_PROPERTY)?.let {
+            builder.set(
+                GraphDatabaseSettings.default_language,
+                GraphDatabaseSettings.CypherVersion.valueOf(it),
+            )
+        }
         @Suppress("UNCHECKED_CAST")
         settings.forEach { (setting, value) -> builder.set(setting as Setting<Any>, value) }
         return builder.build()
@@ -129,5 +147,8 @@ class StandaloneServer(
     companion object {
         const val DEFAULT_DATABASE = "neo4j"
         const val SYSTEM = "system"
+
+        /** The Cypher version of queries that name none, as Neo4j names it (`Cypher25`). */
+        const val CYPHER_PROPERTY = "dozendb.test.cypher"
     }
 }

@@ -14,6 +14,7 @@ import org.neo4j.server.CommunityNeoWebServer
 import org.neo4j.server.configuration.ConfigurableServerModules
 import org.neo4j.server.configuration.ServerSettings
 import org.neo4j.server.modules.ServerModule
+import org.neo4j.server.rest.discovery.DiscoverableURIs
 import org.neo4j.time.SystemNanoClock
 
 /**
@@ -44,13 +45,12 @@ internal class ClusterNeoWebServer(
         monitors,
         clock,
     ) {
-    override fun createServerModules(): Iterable<ServerModule> {
-        val modules = super.createServerModules().toList()
+    override fun extendModules(discoverableURIs: DiscoverableURIs.Builder): Iterable<ServerModule> {
         val enabled = config.get(ServerSettings.http_enabled_modules)
         return if (ConfigurableServerModules.ENTERPRISE_MANAGEMENT_ENDPOINTS in enabled) {
-            modules + ClusterStatusModule(webServer, statuses)
+            listOf(ClusterStatusModule(webServer, statuses))
         } else {
-            modules
+            emptyList()
         }
     }
 

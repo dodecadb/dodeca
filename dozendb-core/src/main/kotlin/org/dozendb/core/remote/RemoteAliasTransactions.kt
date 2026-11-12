@@ -110,10 +110,7 @@ class RemoteAliasTransactions(
                 .withAuthToken(connections.token)
                 .withMinVersion(MIN_VERSION)
                 .withAccessMode(
-                    if (
-                        transactionInfo.accessMode() ==
-                            org.neo4j.bolt.protocol.common.message.AccessMode.READ
-                    ) {
+                    if (transactionInfo.accessMode() == org.neo4j.boltmessages.AccessMode.READ) {
                         AccessMode.READ
                     } else {
                         AccessMode.WRITE
@@ -223,9 +220,9 @@ class RemoteAliasTransactions(
                         }
                     )
                 },
-                setting(settings, DriverSettings::connectionPoolMaxSize, MAX_POOL_SIZE).let {
-                    if (it < 0) Int.MAX_VALUE else it
-                },
+                (settings?.connectionPoolMaxSize()?.takeIf { it.isPresent }?.asInt
+                        ?: config.get(MAX_POOL_SIZE))
+                    .let { if (it < 0) Int.MAX_VALUE else it },
                 setting(
                         settings,
                         DriverSettings::connectionPoolAcquisitionTimeout,
@@ -292,8 +289,10 @@ class RemoteAliasTransactions(
         if (connections.isEmpty()) return
         val current =
             system().beginTx().use { tx ->
+                // Remote aliases are in the root namespace: DozenDB has no composite databases.
                 CommunityTopologyGraphDbmsModel(tx)
-                    .allExternalDatabaseReferences
+                    .allDatabaseReferences
+                    .filterIsInstance<DatabaseReferenceImpl.External>()
                     .map { it.id() }
                     .toSet()
             }

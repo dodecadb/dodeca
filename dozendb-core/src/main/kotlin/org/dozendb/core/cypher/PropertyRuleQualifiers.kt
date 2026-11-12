@@ -3,11 +3,13 @@ package org.dozendb.core.cypher
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ast.LabelQualifier
+import org.neo4j.cypher.internal.ast.`Node$`
 import org.neo4j.cypher.internal.ast.PatternQualifier
 import org.neo4j.cypher.internal.ast.prettifier.`ExpressionStringifier$`
 import org.neo4j.cypher.internal.evaluator.Evaluator
 import org.neo4j.cypher.internal.expressions.Equals
 import org.neo4j.cypher.internal.expressions.Expression
+import org.neo4j.cypher.internal.expressions.FunctionInvocationLike
 import org.neo4j.cypher.internal.expressions.GreaterThan
 import org.neo4j.cypher.internal.expressions.GreaterThanOrEqual
 import org.neo4j.cypher.internal.expressions.In
@@ -32,6 +34,7 @@ import org.neo4j.internal.kernel.api.procs.ProcedureCallContext
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PropertyRule.ComparisonOperator
 import org.neo4j.internal.kernel.api.security.PropertyRule.NullOperator
+import org.neo4j.kernel.api.QueryLanguage
 import org.neo4j.kernel.impl.coreapi.InternalTransaction
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.values.AnyValue
@@ -46,7 +49,9 @@ import scala.jdk.javaapi.CollectionConverters
 /**
  * The property rules of graph privileges, `FOR (n:L) WHERE n.p > 1` and the like, as Neo4j's
  * semantic checks leave them: one property compared with a value, a list or null, perhaps negated,
- * in the kernel's [PatternSegment]s.
+ * in the kernel's [PatternSegment]s. Rules about relationships, which Neo4j allows only
+ * with an internal feature on, and rules about users' attributes, with `abac` functions, are
+ * refused.
  */
 internal object PropertyRuleQualifiers {
     private const val FAILED = "Failed to administer property rule."
@@ -62,8 +67,18 @@ internal object PropertyRuleQualifiers {
         tx: Transaction,
     ): PatternSegment {
         fun evaluate(expression: Expression) = evaluate(expression, params, version, tx)
+        if (qualifier.element() !is `Node$`)
+            throw unsupported("Property rules on relationships are")
+        val abac =
+            (listOf(qualifier.expression()) +
+                    CollectionConverters.asJava(qualifier.expression().subExpressions()))
+                .filterIsInstance<FunctionInvocationLike>()
+                .firstOrNull { it.functionName().fullName().startsWith("abac.", ignoreCase = true) }
+        if (abac != null) {
+            throw unsupported("Property rules with `${abac.functionName().fullName()}()` are")
+        }
         val labels =
-            CollectionConverters.asJava(qualifier.labelQualifiers())
+            CollectionConverters.asJava(qualifier.elementTypeQualifiers())
                 .mapNotNull { (it as? LabelQualifier)?.label() }
                 .toSet()
         var predicate = qualifier.expression()
@@ -82,10 +97,10 @@ internal object PropertyRuleQualifiers {
             val value = value(evaluate(rhs), applied)
             // Neo4j hands `p <> v` over as `NOT p = v`: the rule is named as written.
             value ?: throw alwaysNull(applied, "$property ${applied.symbol} NULL")
-            return PatternSegment.ValuePatternSegment(labels, property, value, applied)
+            return PatternSegment.NodeValuePatternSegment(labels, property, value, applied)
         }
         fun isNull(lhs: Expression, operator: NullOperator): PatternSegment =
-            PatternSegment.NullPatternSegment(
+            PatternSegment.NodeNullPatternSegment(
                 labels,
                 (lhs as Property).propertyKey().name(),
                 if (negated) NEGATED_NULL.getValue(operator) else operator,
@@ -117,7 +132,7 @@ internal object PropertyRuleQualifiers {
                                 "always evaluates to `NULL`. Use `WHERE` syntax in combination " +
                                 "with `IS NULL` instead.",
                         )
-                PatternSegment.ValuePatternSegment(labels, key, evaluated, applied)
+                PatternSegment.NodeValuePatternSegment(labels, key, evaluated, applied)
             }
             else ->
                 throw InvalidArgumentException(
@@ -161,6 +176,10 @@ internal object PropertyRuleQualifiers {
                         "evaluates to `NULL`.",
                 )
         }
+
+    /** That [what] (are) not supported, as an invalid property rule. */
+    private fun unsupported(what: String) =
+        InvalidArgumentException(invalidRule(null), "$FAILED $what not supported.")
 
     /** Neo4j's GQL status of an invalid property rule, for the reason [cause] if any. */
     private fun invalidRule(cause: ErrorGqlStatusObject?): ErrorGqlStatusObject =
@@ -236,6 +255,8 @@ internal object PropertyRuleQualifiers {
                         true,
                         "",
                         EmptyMemoryTracker.INSTANCE,
+                        if (version == CypherVersion.Cypher5) QueryLanguage.CYPHER_5
+                        else QueryLanguage.CYPHER_25,
                     )
                 val arguments = (given + defaults).toTypedArray()
                 if (signature.builtIn()) {
@@ -255,13 +276,7 @@ internal object PropertyRuleQualifiers {
 
     private fun stringify(expression: Expression): String =
         `ExpressionStringifier$`.`MODULE$`
-            .apply(
-                `ExpressionStringifier$`.`MODULE$`.`apply$default$1`(),
-                `ExpressionStringifier$`.`MODULE$`.`apply$default$2`(),
-                `ExpressionStringifier$`.`MODULE$`.`apply$default$3`(),
-                `ExpressionStringifier$`.`MODULE$`.`apply$default$4`(),
-                `ExpressionStringifier$`.`MODULE$`.`apply$default$5`(),
-            )
+            .apply(`ExpressionStringifier$`.`MODULE$`.failingExtender(), false, false, false, false)
             .apply(expression)
 
     /** The operator that holds when [ComparisonOperator] does not, under three-valued logic. */

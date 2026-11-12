@@ -1,7 +1,6 @@
 package org.dozendb.core.edition
 
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
-import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.impl.api.LeaseService
@@ -22,11 +21,7 @@ interface DatabaseHosting {
      * Prepares to host the database [namedDatabaseId], before Neo4j creates it. [storeExists] tells
      * whether the database's files exist or Neo4j is about to create them.
      */
-    fun prepare(
-        namedDatabaseId: NamedDatabaseId,
-        idGeneratorFactory: IdGeneratorFactory,
-        storeExists: Boolean,
-    ): HostedDatabase
+    fun prepare(namedDatabaseId: NamedDatabaseId, storeExists: Boolean): HostedDatabase
 
     /**
      * Called before the database [namedDatabaseId] starts, each time, with its store in place; an

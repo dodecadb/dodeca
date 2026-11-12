@@ -21,12 +21,12 @@ import org.neo4j.dbms.api.DatabaseManagementServiceBuilder
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.io.ByteUnit
 import org.neo4j.kernel.database.Database
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 import org.neo4j.logging.NullLog
 import org.neo4j.storageengine.api.TransactionId
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /** Pulls the transactions of a running database through [PullSource], as a secondary does. */
 class PullSourceTest {

@@ -14,6 +14,7 @@
 package org.dozendb.core.security
 
 import java.util.UUID
+import org.dozendb.core.Gql
 import org.dozendb.core.logging.SecurityLog
 import org.neo4j.collection.Dependencies
 import org.neo4j.configuration.Config
@@ -21,12 +22,14 @@ import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.fabric.bookmark.LocalGraphTransactionIdTracker
 import org.neo4j.function.Suppliers
-import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlParams
+import org.neo4j.gqlstatus.GqlRuntimeException
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.security.AuthorizationViolationException
 import org.neo4j.internal.kernel.api.connectioninfo.ClientConnectionInfo
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
+import org.neo4j.internal.kernel.api.security.AbstractSecurityLog.ContextInfo
 import org.neo4j.internal.kernel.api.security.AuthSubject
 import org.neo4j.internal.kernel.api.security.AuthenticationResult
 import org.neo4j.internal.kernel.api.security.LoginContext
@@ -203,13 +206,14 @@ internal class DozenDbLoginContext(
         idLookup: IdLookup,
         dbReference: PrivilegeDatabaseReference,
         securityLog: AbstractSecurityLog,
+        timeOfEvaluationMillis: Long,
     ): SecurityContext {
         val result = subject().authenticationResult
         if (
             result != AuthenticationResult.SUCCESS &&
                 result != AuthenticationResult.PASSWORD_CHANGE_REQUIRED
         ) {
-            return login.authorize(idLookup, dbReference, securityLog)
+            return login.authorize(idLookup, dbReference, securityLog, timeOfEvaluationMillis)
         }
         val user = subject().executingUser()
         val graph = current(subject().authenticatedUser(), user)
@@ -226,7 +230,9 @@ internal class DozenDbLoginContext(
                 subject(),
                 if (result == AuthenticationResult.PASSWORD_CHANGE_REQUIRED) {
                     // Community's refusal outside system, and its mode in it.
-                    login.authorize(idLookup, dbReference, securityLog).mode()
+                    login
+                        .authorize(idLookup, dbReference, securityLog, timeOfEvaluationMillis)
+                        .mode()
                 } else {
                     mode
                 },
@@ -241,7 +247,7 @@ internal class DozenDbLoginContext(
         ) {
             val message =
                 "Database access is not allowed for ${MessageUtil.withUser(user, mode.name())}."
-            securityLog.error(context, message)
+            securityLog.error(ContextInfo.from(context), message)
             throw AuthorizationViolationException.authorizationViolation(message)
         }
         return context
@@ -254,10 +260,8 @@ internal class DozenDbLoginContext(
      */
     fun impersonate(user: String, securityLog: AbstractSecurityLog): LoginContext {
         if (subject().authenticationResult == AuthenticationResult.PASSWORD_CHANGE_REQUIRED) {
-            throw AuthorizationViolationException(
-                ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42N83).build(),
-                "Cannot impersonate a user while password change required.",
-                Status.Security.CredentialsExpired,
+            throw AuthorizationViolationException.impersonationDisallowed(
+                "Cannot impersonate a user while password change required."
             )
         }
         val self = subject().authenticatedUser()
@@ -282,7 +286,10 @@ internal class DozenDbLoginContext(
                         )
                         .also { (securityLog as? SecurityLog)?.impersonating(it, user) }
             }
-        securityLog.error(this, "Impersonating user '$user' was refused: $refusal")
+        securityLog.error(
+            ContextInfo.from(this),
+            "Impersonating user '$user' was refused: $refusal",
+        )
         throw AuthorizationViolationException.authorizationViolation(refusal)
     }
 
@@ -292,7 +299,6 @@ internal class DozenDbLoginContext(
      * The system graph as it is now, for transactions of [users], who must not be suspended. Until
      * a cluster's leader created the roles, nobody may run any.
      */
-    @Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for roles that do not exist yet.
     private fun current(vararg users: String): SecurityGraph {
         val graph = security.current()
         for (user in users) {
@@ -303,11 +309,7 @@ internal class DozenDbLoginContext(
             }
         }
         if (!graph.initialized) {
-            throw AuthorizationViolationException(
-                "Database access is not allowed for user '${users.last()}' yet: this server does " +
-                    "not have the roles of the cluster yet. Try again in a moment.",
-                Status.General.DatabaseUnavailable,
-            )
+            throw RolesUnavailableException(users.last())
         }
         return graph
     }
@@ -354,3 +356,17 @@ private const val CHECK_PRIVILEGES =
 /** The database [reference] is in, an alias's target; Neo4j leaves it out for full access. */
 internal fun owner(reference: PrivilegeDatabaseReference): String =
     reference.owningDatabaseName() ?: reference.name()
+
+/**
+ * The roles of the cluster have not reached this server yet, so that `system` is unavailable for
+ * logins: transient, as drivers retry it.
+ */
+class RolesUnavailableException(user: String) :
+    GqlRuntimeException(
+        Gql.status(GqlStatusInfoCodes.STATUS_08N09, GqlParams.StringParam.db to "system"),
+        "Database access is not allowed for user '$user' yet: this server does not have the " +
+            "roles of the cluster yet. Try again in a moment.",
+    ),
+    Status.HasStatus {
+    override fun status(): Status = Status.General.DatabaseUnavailable
+}

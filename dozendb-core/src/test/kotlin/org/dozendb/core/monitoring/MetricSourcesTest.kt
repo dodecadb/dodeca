@@ -18,8 +18,8 @@ import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.configuration.helpers.GlobbingPattern
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.driver.GraphDatabase
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /** The metrics of each source move with what they measure. */
 class MetricSourcesTest {

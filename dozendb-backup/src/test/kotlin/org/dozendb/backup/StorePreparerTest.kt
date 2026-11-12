@@ -24,12 +24,13 @@ import org.neo4j.io.pagecache.impl.muninn.StandalonePageCacheFactory
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
 import org.neo4j.kernel.BinarySupportedKernelVersions
 import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory
-import org.neo4j.kernel.impl.transaction.log.LogIndexEncoding
-import org.neo4j.kernel.impl.transaction.log.entry.LogEntryWriter
 import org.neo4j.logging.NullLogProvider
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.scheduler.JobScheduler
 import org.neo4j.storageengine.api.StorageEngineFactory
+import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.LogIndexEncoding
+import org.neo4j.wal.entry.LogEntryWriter
 
 /** Restores stores from the backups of a [PhasedSource]. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -218,6 +219,7 @@ class StorePreparerTest {
                         batch.timeStarted,
                         batch.latestCommittedTxWhenStarted,
                         transaction.appendIndex,
+                        TransactionIdStore.UNKNOWN_TX_SEQUENCE_NUMBER,
                         previous,
                         LogIndexEncoding.encodeLogIndex(batch.consensusIndex()),
                     )

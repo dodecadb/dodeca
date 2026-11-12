@@ -13,7 +13,6 @@ import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
-import org.neo4j.cypher.internal.PrivilegeGQLCodeEntity
 import org.neo4j.cypher.internal.ast.ActionResource
 import org.neo4j.cypher.internal.ast.AdministrationAction
 import org.neo4j.cypher.internal.ast.AllDatabasesQualifier
@@ -38,13 +37,11 @@ import org.neo4j.cypher.internal.ast.RelationshipAllQualifier
 import org.neo4j.cypher.internal.ast.RelationshipQualifier
 import org.neo4j.cypher.internal.ast.SettingAllQualifier
 import org.neo4j.cypher.internal.ast.SettingQualifier
-import org.neo4j.cypher.internal.ast.UnassignableAction
 import org.neo4j.cypher.internal.ast.UserAllQualifier
 import org.neo4j.cypher.internal.ast.UserQualifier
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.`AllScope$`
 import org.neo4j.cypher.internal.logical.plans.AssertDatabasePrivilegeCanBeMutated
-import org.neo4j.cypher.internal.logical.plans.AssertDbmsActionIsAssignable
 import org.neo4j.cypher.internal.logical.plans.AssertDbmsPrivilegeCanBeMutated
 import org.neo4j.cypher.internal.logical.plans.AssertGraphPrivilegeCanBeMutated
 import org.neo4j.cypher.internal.logical.plans.AssertLoadPrivilegeCanBeMutated
@@ -53,6 +50,7 @@ import org.neo4j.cypher.internal.logical.plans.DenyDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.DenyDbmsAction
 import org.neo4j.cypher.internal.logical.plans.DenyGraphAction
 import org.neo4j.cypher.internal.logical.plans.DenyLoadAction
+import org.neo4j.cypher.internal.logical.plans.EnsureRoleNotGrantedToAnyAuthRules
 import org.neo4j.cypher.internal.logical.plans.GrantDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.GrantDbmsAction
 import org.neo4j.cypher.internal.logical.plans.GrantGraphAction
@@ -65,25 +63,25 @@ import org.neo4j.cypher.internal.logical.plans.RevokeDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.RevokeDbmsAction
 import org.neo4j.cypher.internal.logical.plans.RevokeGraphAction
 import org.neo4j.cypher.internal.logical.plans.RevokeLoadAction
+import org.neo4j.cypher.internal.notification.AssignPrivilegeCommandHasNoEffectNotification
+import org.neo4j.cypher.internal.notification.ImpossibleRevokeCommandWarning
+import org.neo4j.cypher.internal.notification.InternalNotification
+import org.neo4j.cypher.internal.notification.RevokePrivilegeCommandHasNoEffectNotification
 import org.neo4j.cypher.internal.procs.ActionMapper
 import org.neo4j.cypher.internal.procs.`Continue$`
 import org.neo4j.cypher.internal.procs.NotifyAndContinue
 import org.neo4j.cypher.internal.procs.ParameterTransformer
-import org.neo4j.cypher.internal.procs.PredicateExecutionPlan
 import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.QueryHandlerResult
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
-import org.neo4j.cypher.internal.util.AssignPrivilegeCommandHasNoEffectNotification
-import org.neo4j.cypher.internal.util.ImpossibleRevokeCommandWarning
-import org.neo4j.cypher.internal.util.InternalNotification
-import org.neo4j.cypher.internal.util.RevokePrivilegeCommandHasNoEffectNotification
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
 import org.neo4j.gqlstatus.GqlHelper
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
+import org.neo4j.gqlstatus.PrivilegeGqlCodeEntity
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Transaction
 import org.neo4j.graphdb.security.AuthorizationViolationException
@@ -137,6 +135,10 @@ internal class PrivilegeCommands(
 
     private fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
+            // Neo4j Enterprise's auth rules can have roles, whose denials it then refuses; there
+            // are
+            // no auth rules here.
+            is EnsureRoleNotGrantedToAnyAuthRules -> Planner { compile(plan.source().get(), it) }
             is GrantDbmsAction ->
                 Planner {
                     assign(
@@ -307,18 +309,6 @@ internal class PrivilegeCommands(
                 }
             is AssertMutablePrivilegesCanBeAssignedToRole ->
                 Planner { assertMutableRole(plan.roleName(), compile(plan.source(), it)) }
-            is AssertDbmsActionIsAssignable ->
-                Planner { context ->
-                    PredicateExecutionPlan.apply(
-                        Function2 { _, _ -> plan.action() !is UnassignableAction },
-                        plan.source().map { compile(it, context) },
-                        Function3 { _, _, _ ->
-                            AuthorizationViolationException.grantingImmutablePrivileges(
-                                plan.action().name()
-                            )
-                        },
-                    )
-                }
             else -> null
         }
 
@@ -564,7 +554,7 @@ internal class PrivilegeCommands(
 
     /** The CIDR range of [range], refused unless it is one, such as `10.0.0.0/8`. */
     private fun cidr(range: Either<String, Parameter>, params: MapValue): String {
-        val shown = admin.runtimeStringValue(range, params)
+        val shown = nameOf(range, params)
         val address = IPAddressString(shown)
         if (!address.isPrefixed || address.address == null) {
             throw InvalidArgumentException.inputContainsInvalidCharacters(
@@ -635,21 +625,16 @@ internal class PrivilegeCommands(
                 val failure = "Failed to $verb privilege to role '$name'"
                 val roleId =
                     roleId(tx, name)
-                        ?: throw InvalidArgumentException(
-                            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42001)
-                                .withCause(
-                                    PrivilegeGQLCodeEntity.entityNotFoundGqlStatus(
-                                        ROLE_ENTITY,
-                                        name,
-                                    )
-                                )
-                                .build(),
-                            "$failure: Role does not exist.",
+                        ?: throw InvalidArgumentException.failedActionEntityNotFound(
+                            "$verb privilege to role '$name'",
+                            ROLE_ENTITY,
+                            name,
+                            admin.getParameterName(roleName).getOrElse { null },
                         )
                 when (val privilege = template.resolve(access, immutable, params, tx)) {
                     is Resolved.Missing ->
                         throw InvalidArgumentException(
-                            GqlHelper.getGql42002_42N00(privilege.database),
+                            GqlHelper.getGql42001_42N00(privilege.database),
                             "$failure: ${privilege.reason}",
                         )
                     is Resolved.Refused -> throw refused("$failure: ${privilege.reason}")
@@ -751,7 +736,9 @@ internal class PrivilegeCommands(
                         `Continue$`.`MODULE$`
                     } else {
                         ThrowException(
-                            AuthorizationViolationException.revokingImmutablePrivileges()
+                            AuthorizationViolationException.revokingImmutablePrivileges(
+                                show(roleName, params)
+                            )
                         )
                     }
                 }
@@ -895,10 +882,10 @@ internal class PrivilegeCommands(
             else -> IllegalStateException("Failed to $operation.", error)
         }
 
-    /** A privilege that cannot apply where the command says. */
+    /** A privilege that cannot apply where the command says, as Neo4j's invalid references. */
     private fun refused(message: String) =
         InvalidArgumentException(
-            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42002).build(),
+            ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_42001).build(),
             message,
         )
 
@@ -906,7 +893,7 @@ internal class PrivilegeCommands(
         generateSequence(error) { it.cause }.any { it is Status.HasStatus && it.status() == status }
 
     private fun show(name: Either<String, Parameter>, params: MapValue): String =
-        admin.runtimeStringValue(name, params)
+        nameOf(name, params)
 
     private fun parameter(key: String) = "${'$'}`$key`"
 
@@ -916,7 +903,7 @@ internal class PrivilegeCommands(
         const val KEY = PrivilegeRecords.KEY
         const val IMMUTABLE = PrivilegeRecords.IMMUTABLE
 
-        val ROLE_ENTITY: PrivilegeGQLCodeEntity = PrivilegeGQLCodeEntity.Role()
+        val ROLE_ENTITY = PrivilegeGqlCodeEntity.ROLE
         val IDENTITY = Function1<String, String> { it }
 
         /** The parameters that a command's transformer adds. */

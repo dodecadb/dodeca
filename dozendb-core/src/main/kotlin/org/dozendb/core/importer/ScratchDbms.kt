@@ -22,7 +22,6 @@ import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.HostedOnMode
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
 import org.neo4j.graphdb.facade.GraphDatabaseDependencies
 import org.neo4j.graphdb.factory.module.GlobalModule
-import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.kernel.KernelVersion
 import org.neo4j.kernel.database.Database
@@ -32,11 +31,12 @@ import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.api.TransactionCommitProcess
 import org.neo4j.kernel.impl.api.TransactionalProcessFactory
 import org.neo4j.kernel.impl.factory.DbmsInfo
-import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
-import org.neo4j.kernel.impl.transaction.log.TransactionAppender
 import org.neo4j.kernel.internal.GraphDatabaseAPI
+import org.neo4j.logging.LogProvider
 import org.neo4j.storageengine.api.StorageEngine
 import org.neo4j.storageengine.api.StorageEngineTransaction
+import org.neo4j.wal.CompleteCommandBatch
+import org.neo4j.wal.TransactionAppender
 
 /**
  * One stopped database of a server, opened in a DBMS of its own beside the server, which may be
@@ -210,7 +210,6 @@ private constructor(
 
                 override fun prepare(
                     namedDatabaseId: NamedDatabaseId,
-                    idGeneratorFactory: IdGeneratorFactory,
                     storeExists: Boolean,
                 ): HostedDatabase =
                     object : HostedDatabase {
@@ -236,6 +235,7 @@ private constructor(
             preAllocateSpaceInStoreFiles: Boolean,
             commandCommitListeners: CommandCommitListeners,
             prefetchPages: Boolean,
+            logProvider: LogProvider,
         ): TransactionCommitProcess {
             val process =
                 local.create(
@@ -245,8 +245,9 @@ private constructor(
                     preAllocateSpaceInStoreFiles,
                     commandCommitListeners,
                     prefetchPages,
+                    logProvider,
                 )
-            return TransactionCommitProcess { batch, event, mode ->
+            return TransactionCommitProcess { batch, event, mode, memoryTracker ->
                 var transaction: StorageEngineTransaction? = batch
                 while (transaction != null) {
                     (transaction.commandBatch() as? CompleteCommandBatch)?.setConsensusIndex(
@@ -254,7 +255,7 @@ private constructor(
                     )
                     transaction = transaction.next()
                 }
-                process.commit(batch, event, mode)
+                process.commit(batch, event, mode, memoryTracker)
             }
         }
     }

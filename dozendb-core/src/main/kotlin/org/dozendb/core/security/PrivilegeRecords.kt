@@ -214,7 +214,7 @@ object PrivilegeRecords {
             is PrivilegeSegment.NodePattern -> {
                 segment("NODE_PATTERN", null)
                 val pattern = segment.pattern
-                put(PATTERN_LABELS, pattern.labels().sorted().toTypedArray())
+                put(PATTERN_LABELS, pattern.elementTypes().sorted().toTypedArray())
                 put(PATTERN_PROPERTY, pattern.property())
                 when (pattern) {
                     is PatternSegment.ValuePatternSegment -> {
@@ -250,13 +250,13 @@ object PrivilegeRecords {
                 ?: throw IllegalArgumentException("no $PATTERN_OPERATOR")
         val value = properties[PATTERN_VALUE]
         return if (value == null) {
-            PatternSegment.NullPatternSegment(
+            PatternSegment.NodeNullPatternSegment(
                 labels,
                 property,
                 PropertyRule.NullOperator.valueOf(operator),
             )
         } else {
-            PatternSegment.ValuePatternSegment(
+            PatternSegment.NodeValuePatternSegment(
                 labels,
                 property,
                 Values.of(value),

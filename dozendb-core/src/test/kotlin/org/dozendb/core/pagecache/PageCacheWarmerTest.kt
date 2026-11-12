@@ -10,6 +10,7 @@ import org.eclipse.collections.api.factory.Sets
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.io.async.AsyncBlockAccessor
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.PageCursor
@@ -17,6 +18,7 @@ import org.neo4j.io.pagecache.PagedFile
 import org.neo4j.io.pagecache.context.CursorContext
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.impl.muninn.StandalonePageCacheFactory
+import org.neo4j.io.pagecache.impl.muninn.StoreFile
 import org.neo4j.io.pagecache.tracing.FileFlushEvent
 import org.neo4j.kernel.impl.scheduler.JobSchedulerFactory
 import org.neo4j.logging.log4j.Log4jLogProvider
@@ -51,15 +53,26 @@ class PageCacheWarmerTest {
     private fun create(file: Path, pages: Int) {
         Files.createDirectories(file.parent)
         StandalonePageCacheFactory.createPageCache(fs, scheduler).use { cache ->
-            cache.map(file, PAGE_SIZE, "films", Sets.immutable.of(StandardOpenOption.CREATE)).use {
-                it.io(0, PagedFile.PF_SHARED_WRITE_LOCK, CursorContext.NULL_CONTEXT).use { cursor ->
-                    for (page in 0L until pages) {
-                        check(cursor.next(page))
-                        cursor.putLong(page)
+            cache
+                .map(
+                    StoreFile(file),
+                    PAGE_SIZE,
+                    "films",
+                    Sets.immutable.of(StandardOpenOption.CREATE),
+                )
+                .use {
+                    it.io(0, PagedFile.PF_SHARED_WRITE_LOCK, CursorContext.NULL_CONTEXT).use {
+                        cursor ->
+                        for (page in 0L until pages) {
+                            check(cursor.next(page))
+                            cursor.putLong(page)
+                        }
                     }
+                    it.flushAndForce(
+                        FileFlushEvent.NULL,
+                        AsyncBlockAccessor.EMPTY_ASYNC_BLOCK_ACCESSOR,
+                    )
                 }
-                it.flushAndForce(FileFlushEvent.NULL)
-            }
         }
     }
 
@@ -72,7 +85,7 @@ class PageCacheWarmerTest {
         if (open.isEmpty()) return null
         val cache = StandalonePageCacheFactory.createPageCache(fs, scheduler)
         pageCache = cache
-        open.forEach { mapped += cache.map(it, PAGE_SIZE, "films") }
+        open.forEach { mapped += cache.map(StoreFile(it), PAGE_SIZE, "films") }
         return cache
     }
 

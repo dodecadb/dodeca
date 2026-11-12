@@ -33,10 +33,10 @@ import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.FileUtils
 import org.neo4j.kernel.api.exceptions.Status
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
 import org.neo4j.kernel.impl.transaction.stats.TransactionCounters
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /**
  * Secondaries copy a database, pull its transactions from the members that host it, and take no

@@ -2,11 +2,12 @@ package org.dozendb.core.store
 
 import java.io.IOException
 import org.neo4j.kernel.database.Database
-import org.neo4j.kernel.impl.transaction.log.CommandBatchCursor
-import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
-import org.neo4j.kernel.impl.transaction.log.NoSuchLogEntryException
+import org.neo4j.storageengine.AppendIndexProvider
 import org.neo4j.storageengine.api.TransactionId
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.CommandBatchCursor
+import org.neo4j.wal.LogicalTransactionStore
+import org.neo4j.wal.NoSuchLogEntryException
 
 /**
  * A running database's committed transactions, read from its logs for a copy of it that continues
@@ -23,7 +24,10 @@ object CommittedTransactions {
     class Continued(val last: TransactionId, val transactions: Sequence<CommittedTransaction>) :
         Range
 
-    /** The database's logs no longer hold the transaction after the copy's last. */
+    /**
+     * The database's logs no longer hold the copy's last transaction, which tells whether the
+     * database continues the copy, or the one after it.
+     */
     data object Pruned : Range
 
     /**
@@ -50,7 +54,7 @@ object CommittedTransactions {
                 val last =
                     dependencies
                         .resolveDependency(TransactionIdStore::class.java)
-                        .lastClosedTransaction
+                        .highestGapFreeClosedTransaction
                         .transactionId()
                 if (after > last.appendIndex()) return block(Behind(last))
                 if (after == last.appendIndex()) {
@@ -59,25 +63,43 @@ object CommittedTransactions {
                         else diverged(after, last.checksum(), checksum)
                     )
                 }
+                // The copy's last transaction too, but for the base one, which no log holds: its
+                // checksum tells whether the database continues the copy, which Neo4j's logs
+                // since 2025.05 no longer tell after it.
+                val base = after == AppendIndexProvider.BASE_APPEND_INDEX
                 val cursor =
                     try {
                         dependencies
                             .resolveDependency(LogicalTransactionStore::class.java)
-                            .getCommandBatches(after + 1)
+                            .getCommandBatches(if (base) after + 1 else after)
                     } catch (_: NoSuchLogEntryException) {
                         return block(Pruned)
                     }
                 cursor.use {
-                    val first = next(cursor, after + 1)
-                    if (first.previousChecksum != checksum) {
-                        return block(diverged(after, first.previousChecksum, checksum))
-                    }
+                    val copied =
+                        if (base) {
+                            TransactionIdStore.BASE_TX_CHECKSUM
+                        } else {
+                            if (!cursor.next()) {
+                                throw IOException("the logs end before append index $after")
+                            }
+                            val copied = cursor.get()
+                            if (copied.appendIndex() != after) {
+                                throw IOException(
+                                    "the logs hold ${copied.appendIndex()} where $after was"
+                                )
+                            }
+                            copied.checksum()
+                        }
+                    if (copied != checksum) return block(diverged(after, copied, checksum))
                     val transactions = sequence {
-                        var transaction = first
-                        yield(transaction)
-                        while (transaction.appendIndex < last.appendIndex()) {
-                            transaction = next(cursor, transaction.appendIndex + 1)
+                        var previous = checksum
+                        var appendIndex = after
+                        while (appendIndex < last.appendIndex()) {
+                            val transaction = next(cursor, appendIndex + 1, previous)
                             yield(transaction)
+                            previous = transaction.checksum
+                            appendIndex = transaction.appendIndex
                         }
                     }
                     return block(Continued(last, transactions))
@@ -88,9 +110,10 @@ object CommittedTransactions {
     private fun next(
         cursor: CommandBatchCursor,
         appendIndex: Long,
+        previousChecksum: Int,
     ): CommittedTransaction {
         if (!cursor.next()) throw IOException("the logs end before append index $appendIndex")
-        val transaction = CommittedTransaction.of(cursor.get())
+        val transaction = CommittedTransaction.of(cursor.get(), previousChecksum)
         if (transaction.appendIndex != appendIndex) {
             throw IOException("the logs hold $transaction where append index $appendIndex was")
         }

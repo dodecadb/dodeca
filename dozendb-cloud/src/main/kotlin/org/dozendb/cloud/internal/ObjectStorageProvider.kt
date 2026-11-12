@@ -27,6 +27,8 @@ import java.nio.file.attribute.FileAttribute
 import java.nio.file.attribute.FileAttributeView
 import java.nio.file.attribute.FileTime
 import java.time.Instant
+import java.util.stream.Stream
+import kotlin.streams.asStream
 import org.neo4j.cloud.storage.StoragePath
 import org.neo4j.cloud.storage.StoragePathAttributes
 import org.neo4j.cloud.storage.StoragePathAttributesView
@@ -36,6 +38,7 @@ import org.neo4j.cloud.storage.StorageSystemProviderFactory.ChunkChannelSupplier
 import org.neo4j.cloud.storage.io.SeekableReadableChannel
 import org.neo4j.cloud.storage.io.SeekableWriteableChannel
 import org.neo4j.configuration.Config
+import org.neo4j.io.fs.PathWithMetadata
 import org.neo4j.logging.InternalLogProvider
 import org.neo4j.memory.MemoryTracker
 
@@ -100,37 +103,58 @@ internal open class ObjectStorageProvider(
         return if (info.size == 0L) EmptyChannel() else SeekableReadableChannel(reader(path, info))
     }
 
-    override fun newDirectoryStream(
-        dir: Path,
-        filter: DirectoryStream.Filter<in Path>,
-    ): DirectoryStream<Path> {
+    /**
+     * The objects and folders in [dir], each with its path: the first page listed now, so that a
+     * refusal fails the opening, as an IOException.
+     */
+    private fun listing(dir: Path): Sequence<Pair<Listed, Path>> {
         val folder = ensureCorrectPath(dir)
         val prefix = key(folder).let { if (it.isEmpty() || it.endsWith("/")) it else "$it/" }
         val entries = store.list(container(folder), prefix)
-        // The first page now, so that a refusal fails the opening, as an IOException.
         try {
             entries.hasNext()
         } catch (e: UncheckedIOException) {
             throw e.cause ?: e
         }
         val system = folder.fileSystem
+        return generateSequence {
+            try {
+                if (entries.hasNext()) entries.next() else null
+            } catch (e: UncheckedIOException) {
+                throw DirectoryIteratorException(e.cause)
+            }
+        }
+            .filter { it.key != prefix }
+            .map { it to system.getPath("/" + it.key) }
+    }
+
+    /** The entries of [dirPath], objects with their modification times. */
+    override fun newDirectoryStreamWithMetadata(
+        dirPath: Path,
+        filter: DirectoryStream.Filter<in Path>,
+    ): Stream<PathWithMetadata> =
+        listing(dirPath)
+            .filter { (_, path) -> filter.accept(path) }
+            .map { (listed, path) ->
+                when (listed) {
+                    is Listed.Object -> PathWithMetadata.withMetadata(path, listed.info.modified)
+                    is Listed.Folder -> PathWithMetadata.withoutMetadata(path)
+                }
+            }
+            .asStream()
+
+    override fun newDirectoryStream(
+        dir: Path,
+        filter: DirectoryStream.Filter<in Path>,
+    ): DirectoryStream<Path> {
+        val listed = listing(dir)
         return object : DirectoryStream<Path> {
             private var iterated = false
 
             override fun iterator(): MutableIterator<Path> {
                 check(!iterated) { "The entries of $dir are listed once" }
                 iterated = true
-                val paths = generateSequence {
-                    try {
-                        if (entries.hasNext()) entries.next() else null
-                    } catch (e: UncheckedIOException) {
-                        throw DirectoryIteratorException(e.cause)
-                    }
-                }
-                    .filter { it.key != prefix }
-                    .map { system.getPath("/" + it.key) }
-                    .filter { filter.accept(it) }
-                    .iterator()
+                val paths = listed.map { it.second }.filter { filter.accept(it) }.iterator()
                 return object : MutableIterator<Path> {
                     override fun hasNext() = paths.hasNext()
 

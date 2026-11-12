@@ -4,6 +4,7 @@ import java.time.ZonedDateTime
 import java.util.UUID
 import org.dozendb.cluster.internal.ClusterPlacement
 import org.dozendb.cluster.internal.Neo4jSystemGraph
+import org.dozendb.core.Gql
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.security.PrivilegeRecords
 import org.dozendb.core.servers.AllocationException
@@ -12,7 +13,6 @@ import org.dozendb.core.servers.ServerRecords
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
-import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.Node
 import org.neo4j.graphdb.Transaction
@@ -41,7 +41,6 @@ import org.neo4j.kernel.database.NormalizedDatabaseName
  * @property seeder reads seeds at URIs, if this server can.
  * @property quarantined the servers whose copies of a database, by id, are in quarantine.
  */
-@Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for these refusals.
 class DatabaseRecreation
 internal constructor(
     private val system: () -> GraphDatabaseService,
@@ -61,7 +60,7 @@ internal constructor(
         val named =
             asked.seedingServers?.map {
                 runCatching { UUID.fromString(it) }.getOrNull()
-                    ?: throw InvalidArgumentException(
+                    ?: throw Gql.refused(
                         "$failed: '$it' in ${RecreateOptions.SEEDING_SERVERS} is not a server id."
                     )
             }
@@ -69,13 +68,13 @@ internal constructor(
         if (uri != null) {
             val seeder =
                 seeder()
-                    ?: throw InvalidArgumentException(
+                    ?: throw Gql.refused(
                         "$failed: this server cannot recreate databases from seeds."
                     )
             try {
                 seeder.check(uri)
             } catch (e: IllegalArgumentException) {
-                throw InvalidArgumentException("$failed: ${e.message?.removeSuffix(".")}.", e)
+                throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
             }
         }
         check(leading()) {
@@ -94,7 +93,7 @@ internal constructor(
                     asked.secondaries ?: Placements.secondaries(node) ?: current.secondaries
                 val seeders = seeders(tx, normalized, named, old, primaries + secondaries, failed)
                 if (named != null && seeders.isEmpty() && uri == null) {
-                    throw InvalidArgumentException(
+                    throw Gql.refused(
                         "$failed: no enabled server hosts a copy of it. Give " +
                             "${RecreateOptions.SEED_URI}, a backup or dump to recreate it from."
                     )
@@ -127,7 +126,7 @@ internal constructor(
                 try {
                     placement.replace(tx, normalized, primaries, secondaries, seeders)
                 } catch (e: AllocationException) {
-                    throw InvalidArgumentException("$failed: ${e.message}.", e)
+                    throw Gql.refused("$failed: ${e.message}.", e)
                 }
                 tx.commit()
             }
@@ -157,7 +156,7 @@ internal constructor(
                 val servers = ServerRecords.records(tx)
                 named.distinct().onEach {
                     if (it !in servers) {
-                        throw InvalidArgumentException(
+                        throw Gql.refused(
                             "$failed: '$it' in ${RecreateOptions.SEEDING_SERVERS} is not a server."
                         )
                     }
@@ -167,13 +166,13 @@ internal constructor(
                     !it.available && it.record.status != InstanceStatus.CORDONED
                 }
                 if (missing.size == 1) {
-                    throw InvalidArgumentException(
+                    throw Gql.refused(
                         "$failed: server ${missing[0].record.name} hosts a copy of it but is not " +
                             "available. Start it, or cordon it to recreate the database without it."
                     )
                 }
                 if (missing.isNotEmpty()) {
-                    throw InvalidArgumentException(
+                    throw Gql.refused(
                         "$failed: servers ${missing.joinToString { it.record.name }} host copies " +
                             "of it but are not available. Start them, or cordon them to recreate " +
                             "the database without them."
@@ -182,7 +181,7 @@ internal constructor(
                 holders.filter { it.record.status == InstanceStatus.ENABLED }.map { it.record.id }
             }
         if (seeders.size > copies) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: it would have $copies copies, fewer than its ${seeders.size} seeding " +
                     "servers, which each host one. Name fewer servers in " +
                     "${RecreateOptions.SEEDING_SERVERS}, or give more " +
@@ -191,7 +190,7 @@ internal constructor(
         }
         val inQuarantine = quarantined(old).let { servers -> seeders.filter { it in servers } }
         if (inQuarantine.isNotEmpty()) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: its copies on ${inQuarantine.joinToString()} are in quarantine. Lift " +
                     "their quarantine first, or leave them out of " +
                     "${RecreateOptions.SEEDING_SERVERS}."
@@ -203,7 +202,7 @@ internal constructor(
     /** The node of the database [name], refusing `system`, aliases and unknown names. */
     private fun database(tx: Transaction, name: String, failed: String): Node {
         if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
-            throw InvalidArgumentException(
+            throw Gql.refused(
                 "$failed: the system database is recovered with neo4j-admin dbms " +
                     "unbind-system-db, as the disaster recovery guide shows."
             )
@@ -218,11 +217,9 @@ internal constructor(
                 name,
             )
         if (alias != null) {
-            throw InvalidArgumentException(
-                "$failed: it is an alias. Recreate the database it stands for."
-            )
+            throw Gql.refused("$failed: it is an alias. Recreate the database it stands for.")
         }
-        throw InvalidArgumentException("$failed: it does not exist.")
+        throw Gql.refused("$failed: it does not exist.")
     }
 
     private companion object {

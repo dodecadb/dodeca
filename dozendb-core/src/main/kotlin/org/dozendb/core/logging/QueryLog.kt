@@ -67,8 +67,6 @@ class QueryLog(
         listening.remove(listener)
     }
 
-    // The deprecated annotation_data_as_json_enabled is still declared, so it is honoured.
-    @Suppress("DEPRECATION")
     private fun options(level: LogQueryLevel) =
         QueryLogOptions(
             verbose = level == LogQueryLevel.VERBOSE,
@@ -77,17 +75,7 @@ class QueryLog(
             obfuscateLiterals = config.get(GraphDatabaseSettings.log_queries_obfuscate_literals),
             obfuscateErrors = config.get(GraphDatabaseSettings.log_queries_obfuscate_errors),
             plan = config.get(GraphDatabaseSettings.log_queries_query_plan),
-            annotationFormat =
-                config.get(GraphDatabaseSettings.log_queries_annotation_data_format).let {
-                    if (
-                        it == GraphDatabaseSettings.AnnotationDataFormat.CYPHER &&
-                            config.get(GraphDatabaseSettings.log_queries_annotation_data_as_json)
-                    ) {
-                        GraphDatabaseSettings.AnnotationDataFormat.JSON
-                    } else {
-                        it
-                    }
-                },
+            annotationFormat = config.get(GraphDatabaseSettings.log_queries_annotation_data_format),
         )
 
     private inner class Queries : QueryExecutionMonitor {

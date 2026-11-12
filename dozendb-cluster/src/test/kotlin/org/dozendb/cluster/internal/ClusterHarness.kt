@@ -20,6 +20,7 @@ import org.dozendb.consensus.GroupStatus
 import org.dozendb.consensus.Role
 import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestPorts
+import org.dozendb.core.DebugEntry
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.monitoring.MetricsSettings
 import org.dozendb.core.monitoring.metrics
@@ -75,6 +76,10 @@ internal class ClusterHarness(
 ) : AutoCloseable {
     inner class Member(val index: Int) {
         val home: Path = Files.createDirectories(root.resolve("member-$index"))
+
+        /** The entries of this member's debug log. */
+        fun debugEntries(): List<DebugEntry> = DebugEntry.read(home.resolve("logs/debug.log"))
+
         val raftPort: Int = TestPorts.free()
         // Fixed, as a real member's are, so that it reports its addresses from its first answer
         // on: with port 0 it reported none until it had bound them, and others took that answer
@@ -272,7 +277,10 @@ internal class ClusterHarness(
                     .set(CLUSTER_TLS.enabled, authority != null)
                     .set(BackupSettings.listenAddress, SocketAddress("127.0.0.1", 0))
                     // Bolt's thread pools otherwise wait 5 s each for quiet before they stop.
-                    .set(GraphDatabaseInternalSettings.netty_server_shutdown_quiet_period, 0)
+                    .set(
+                        GraphDatabaseInternalSettings.netty_server_shutdown_quiet_period,
+                        Duration.ZERO,
+                    )
             @Suppress("UNCHECKED_CAST")
             (this@ClusterHarness.settings + settings).forEach { (setting, value) ->
                 builder.set(setting as Setting<Any>, value)

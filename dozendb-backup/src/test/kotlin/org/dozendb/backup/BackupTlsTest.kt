@@ -18,7 +18,7 @@ import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.logging.NullLogProvider
 import org.neo4j.logging.log4j.Log4jLogProvider
-import org.neo4j.ssl.config.SslPolicyLoader
+import org.neo4j.ssl.config.DefaultSslPolicyProvider
 
 class BackupTlsTest {
     @TempDir lateinit var home: Path
@@ -35,9 +35,11 @@ class BackupTlsTest {
     }
 
     private fun policies(config: Config) =
-        SslPolicyLoader.create(
+        DefaultSslPolicyProvider(
             DefaultFileSystemAbstraction(),
             config,
+            false,
+            false,
             NullLogProvider.getInstance(),
         )
 
@@ -82,13 +84,14 @@ class BackupTlsTest {
     }
 
     @Test
-    fun `the backup policy configures TLS with client certificates, without hostname verification`() {
+    fun `the backup policy configures TLS with client certificates and, by default, hostname verification`() {
         val tls = checkNotNull(server("0.0.0.0:6362", policy.enabled to true))
 
         assertThat(tls.certificateChain).containsExactly(certificate.certificate)
         assertThat(tls.privateKey.encoded).isEqualTo(certificate.privateKey.encoded)
         assertThat(tls.requireClientCertificates).isTrue
-        assertThat(tls.verifyHostname).isFalse
+        // Neo4j 2026's default; Neo4j 5.26's was false.
+        assertThat(tls.verifyHostname).isTrue
         assertThat(output.toString()).isEmpty()
     }
 
@@ -114,9 +117,9 @@ class BackupTlsTest {
     fun `a client takes backups over TLS when the backup policy is enabled`() {
         val disabled = config()
         assertThat(BackupTls.client(disabled, policies(disabled))).isNull()
-        val enabled = config(policy.enabled to true, policy.verify_hostname to true)
+        val enabled = config(policy.enabled to true, policy.verify_hostname to false)
         val tls = checkNotNull(BackupTls.client(enabled, policies(enabled)))
         assertThat(tls.certificateChain).containsExactly(certificate.certificate)
-        assertThat(tls.verifyHostname).isTrue
+        assertThat(tls.verifyHostname).isFalse
     }
 }

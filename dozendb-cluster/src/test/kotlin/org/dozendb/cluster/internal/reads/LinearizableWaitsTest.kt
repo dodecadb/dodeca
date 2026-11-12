@@ -6,8 +6,8 @@ import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.dozendb.cluster.internal.ReadConsistency
 import org.junit.jupiter.api.Test
-import org.neo4j.bolt.protocol.common.message.AccessMode
-import org.neo4j.bolt.protocol.common.message.request.connection.RoutingContext
+import org.neo4j.boltmessages.AccessMode
+import org.neo4j.boltmessages.request.connection.RoutingContext
 import org.neo4j.kernel.api.KernelTransaction
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.DatabaseIdFactory

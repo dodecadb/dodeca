@@ -25,6 +25,9 @@ import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.monitoring.MetricsService
 import org.dozendb.core.monitoring.MonitoringProcedures
 import org.dozendb.core.remote.RemoteAliasTransactions
+import org.dozendb.core.routing.DozenDbRoutingService
+import org.dozendb.core.routing.LocalRoutingTables
+import org.dozendb.core.routing.SingleAddressRoutingTable
 import org.dozendb.core.security.AliasPasswords
 import org.dozendb.core.security.DozenDbDefaultDatabaseResolver
 import org.dozendb.core.security.DozenDbSecurityComponent
@@ -47,17 +50,25 @@ import org.neo4j.configuration.connectors.HttpConnector
 import org.neo4j.configuration.connectors.HttpsConnector
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.CommunityKernelPanicListener
+import org.neo4j.dbms.DatabaseStateService
 import org.neo4j.dbms.api.DatabaseManagementService
+import org.neo4j.dbms.database.CommunityDatabaseObjectRepositoryModelProvider
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DatabaseContextProviderDelegate
 import org.neo4j.dbms.database.DatabaseOperationCounts
 import org.neo4j.dbms.database.DatabaseReferenceCacheClearingListener
 import org.neo4j.dbms.database.DatabaseRepository
+import org.neo4j.dbms.database.DefaultDatabaseDetailsExtrasProvider
 import org.neo4j.dbms.database.DefaultSystemGraphComponent
+import org.neo4j.dbms.database.DefaultTopologyInfoService
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.SystemGraphComponent
 import org.neo4j.dbms.database.SystemGraphComponents
 import org.neo4j.dbms.database.TopologyInfoService
+import org.neo4j.dbms.routing.ClientRoutingDomainChecker
+import org.neo4j.dbms.routing.RoutingService
+import org.neo4j.dbms.systemgraph.CommunityDefaultQueryLanguageLookup
+import org.neo4j.dbms.systemgraph.ContextBasedSystemDatabaseProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.fabric.executor.Location
 import org.neo4j.graphdb.Transaction
@@ -66,20 +77,18 @@ import org.neo4j.graphdb.factory.module.GlobalModule
 import org.neo4j.graphdb.factory.module.edition.AbstractEditionModule
 import org.neo4j.graphdb.factory.module.edition.CommunityEditionModule
 import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
-import org.neo4j.internal.kernel.api.security.CommunitySecurityLog
 import org.neo4j.io.device.DeviceMapper
 import org.neo4j.kernel.api.procedure.GlobalProcedures
 import org.neo4j.kernel.api.security.AuthManager
 import org.neo4j.kernel.api.security.provider.NoAuthSecurityProvider
 import org.neo4j.kernel.api.security.provider.SecurityProvider
-import org.neo4j.kernel.database.DatabaseId
 import org.neo4j.kernel.database.DatabaseIdRepository
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.database.MapCachingDatabaseIdRepository
 import org.neo4j.kernel.database.MapCachingDatabaseReferenceRepository
+import org.neo4j.kernel.database.ModelBasedDatabaseIdRepository
+import org.neo4j.kernel.database.ModelBasedDatabaseReferenceRepository
 import org.neo4j.kernel.database.NamedDatabaseId
-import org.neo4j.kernel.database.SystemGraphDatabaseIdRepository
-import org.neo4j.kernel.database.SystemGraphDatabaseReferenceRepository
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.log4j.LoggerTarget
@@ -151,31 +160,36 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 createCommitProcessFactory(),
                 this,
                 hosting,
+                { securityLog },
             ) {
                 StoreFormats.requested(
                     { repository.getSystemDatabaseContext().databaseFacade() },
                     it,
                 )
             }
-        val rootDatabaseIdRepository =
+        val systemDatabase =
+            ContextBasedSystemDatabaseProvider(repository, globalModule.databaseEventListeners)
+        // The databases and aliases of the system graph, as Neo4j Community reads them.
+        val model = CommunityDatabaseObjectRepositoryModelProvider(systemDatabase)
+        idCache.setDelegate(
             AbstractEditionModule.tryResolveOrCreate(
                 DatabaseIdRepository::class.java,
                 globalModule.externalDependencyResolver,
             ) {
-                SystemGraphDatabaseIdRepository(
-                    { repository.getDatabaseContext(DatabaseId.SYSTEM_DATABASE_ID) },
-                    globalModule.logService.internalLogProvider,
+                ModelBasedDatabaseIdRepository(model)
+            }
+        )
+        referenceCache =
+            globalModule.globalDependencies.satisfyDependency(
+                MapCachingDatabaseReferenceRepository(
+                    AbstractEditionModule.tryResolveOrCreate(
+                        DatabaseReferenceRepository::class.java,
+                        globalModule.externalDependencyResolver,
+                    ) {
+                        ModelBasedDatabaseReferenceRepository(model)
+                    }
                 )
-            }
-        val rootDatabaseReferenceRepository =
-            AbstractEditionModule.tryResolveOrCreate(
-                DatabaseReferenceRepository::class.java,
-                globalModule.externalDependencyResolver,
-            ) {
-                SystemGraphDatabaseReferenceRepository(repository::getSystemDatabaseContext)
-            }
-        idCache.setDelegate(rootDatabaseIdRepository)
-        referenceCache.setDelegate(rootDatabaseReferenceRepository)
+            )
         globalModule.globalLife.add(
             CommunityKernelPanicListener(globalModule.databaseEventListeners, repository)
         )
@@ -216,7 +230,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 globalModule.logService.internalLogProvider,
                 beforeStart = { id -> hosting?.beforeStart(id) },
             )
-        databaseStateService = DozenDbDatabaseStateService(repository, quarantines)
+        stateService = DozenDbDatabaseStateService(repository, quarantines)
         // Before the databases start, so that it sees them start.
         MetricsService.create(globalModule, repository)?.let {
             globalModule.globalLife.add(it)
@@ -234,7 +248,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalModule.globalDependencies.satisfyDependency(
             DatabaseContextProviderDelegate.delegate(repository)
         )
-        globalModule.globalDependencies.satisfyDependency(databaseStateService)
+        globalModule.globalDependencies.satisfyDependency(stateService)
         globalModule.transactionEventListeners.registerTransactionEventListener(
             GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
             DatabaseReferenceCacheClearingListener(idCache, referenceCache),
@@ -242,6 +256,20 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalModule.globalDependencies.satisfyDependency<SystemGraphComponents.UpgradeChecker>(
             SystemGraphComponents.UpgradeChecker.UPGRADE_ALWAYS_ALLOWED
         )
+        // The default Cypher version of each database, which the query router asks for.
+        val languages =
+            CommunityDefaultQueryLanguageLookup(
+                systemDatabase,
+                globalModule.jobScheduler,
+                globalModule.logService.internalLogProvider,
+            )
+        globalModule.globalDependencies.satisfyDependency(languages)
+        globalModule.globalLife.add(languages.life())
+        globalModule.transactionEventListeners.registerTransactionEventListener(
+            GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
+            languages.transactionListener(),
+        )
+        defaultLanguages = languages
         databaseManager = manager
         databaseRepository = repository
         databaseIdCache = idCache
@@ -357,19 +385,70 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         return SocketAddress(advertised.hostname, bound.port)
     }
 
-    /** SHOW SERVERS of this server, with its name and options (see [SingleServerTopology]). */
+    /**
+     * The states of the databases on this server, as SHOW DATABASES shows them: Community's, with
+     * quarantines (see [DozenDbDatabaseStateService]).
+     */
+    protected lateinit var stateService: DatabaseStateService<org.neo4j.dbms.DatabaseState>
+        private set
+
+    /**
+     * SHOW SERVERS and SHOW DATABASES of this server, with its name and options (see
+     * [SingleServerTopology]), and the states of [stateService].
+     */
     override fun createTopologyInfoService(
         databaseContextProvider: DatabaseContextProvider<*>
     ): TopologyInfoService =
         SingleServerTopology(
-            super.createTopologyInfoService(databaseContextProvider),
+            DefaultTopologyInfoService(
+                identityModule.serverId(),
+                globalModule.globalConfig,
+                stateService,
+                globalReadOnlyChecker,
+                DefaultDatabaseDetailsExtrasProvider(databaseContextProvider),
+            ),
             globalModule.globalConfig,
         )
 
-    /** Caches the references to the databases the system graph names. */
-    protected val referenceCache: MapCachingDatabaseReferenceRepository
-        // Community creates it and exposes only the interface.
-        get() = databaseReferenceRepo as MapCachingDatabaseReferenceRepository
+    /**
+     * Routes by database or alias, as Neo4j 5.26 did (see [DozenDbRoutingService]), with tables
+     * that name only this server.
+     */
+    override fun createRoutingService(
+        databaseContextProvider: DatabaseContextProvider<*>,
+        clientRoutingDomainChecker: ClientRoutingDomainChecker,
+    ): RoutingService {
+        val singleAddress =
+            SingleAddressRoutingTable(
+                globalModule.connectorPortRegister,
+                globalModule.globalConfig,
+            )
+        return DozenDbRoutingService(
+            referenceCache,
+            defaultDatabaseResolver,
+            LocalRoutingTables(databaseContextProvider, singleAddress),
+            singleAddress,
+            clientRoutingDomainChecker,
+            globalModule.globalConfig,
+        ) {
+            true
+        }
+    }
+
+    /** Caches the references to the databases and aliases the system graph names. */
+    protected lateinit var referenceCache: MapCachingDatabaseReferenceRepository
+        private set
+
+    /** The default Cypher version of each database, as the system graph gives it. */
+    private lateinit var defaultLanguages: CommunityDefaultQueryLanguageLookup
+
+    /**
+     * Has the default Cypher versions of the databases read again, as after a commit to `system`
+     * here: Community's listener reads nothing of the commit.
+     */
+    protected fun refreshDefaultLanguages() {
+        defaultLanguages.transactionListener().afterCommit(null, null, null)
+    }
 
     /**
      * The users, roles and privileges of the system graph, which the login realm and the default
@@ -454,11 +533,17 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         }
     }
 
-    /** Neo4j Community's, with logins that have the privileges of their users' roles. */
-    override fun createSecurityModule(globalModule: GlobalModule) {
+    /**
+     * Neo4j Community's, with logins that have the privileges of their users' roles. The databases'
+     * authorization failures go to the security log through their own dependencies (see
+     * [DozenDbDatabaseContextFactory]): Community registers its own, which writes to `debug.log`,
+     * for the whole DBMS.
+     */
+    override fun createSecurityModule(
+        globalModule: GlobalModule,
+        systemDatabaseProvider: SystemDatabaseProvider,
+    ) {
         val log = securityLog
-        // For authorization failures; Community gives a log that writes nothing.
-        globalModule.globalDependencies.satisfyDependency(log ?: CommunitySecurityLog.NULL_LOG)
         if (log == null) {
             setSecurityProvider(NoAuthProvider(memberLogins()))
             return
@@ -510,8 +595,8 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
 
         override fun inClusterAuthManager(): AuthManager = members
 
-        override fun loopbackAuthManager(): AuthManager =
-            NoAuthSecurityProvider.INSTANCE.loopbackAuthManager()
+        override fun domainSocketAuthManager(): AuthManager =
+            NoAuthSecurityProvider.INSTANCE.domainSocketAuthManager()
     }
 
     /**
@@ -540,7 +625,10 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
                 globalModule.globalDependencies.resolveDependency(
                     DatabaseContextProvider::class.java
                 ),
-                securityLog ?: CommunitySecurityLog.NULL_LOG,
+                securityLog
+                    ?: globalModule.globalDependencies.resolveDependency(
+                        AbstractSecurityLog::class.java
+                    ),
                 remoteAliases,
             )
         globalModule.globalDependencies.satisfyDependency(
@@ -562,7 +650,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
             globalModule.globalDependencies,
             globalModule.logService,
             databaseProvider,
-            databaseReferenceRepo,
+            referenceCache,
             securityLog,
             remoteAliases,
         )

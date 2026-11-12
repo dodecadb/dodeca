@@ -1,5 +1,6 @@
 package org.dozendb.core.servers
 
+import org.dozendb.core.Gql
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
@@ -15,7 +16,6 @@ import org.neo4j.values.virtual.MapValue
  * The options of ENABLE SERVER and ALTER SERVER, as Neo4j Enterprise takes them: `modeConstraint`,
  * `allowedDatabases`, `deniedDatabases` and `tags`, named in any case.
  */
-@Suppress("DEPRECATION") // Neo4j 5.26 has no GQL status for most of these refusals.
 object ServerOptionsInput {
     private const val MODE_CONSTRAINT = "modeConstraint"
     private const val ALLOWED = "allowedDatabases"
@@ -48,9 +48,7 @@ object ServerOptionsInput {
         }
         if (defaults == null && values.keys != NAMES.toSet()) {
             val missing = NAMES.filter { it !in values }
-            throw InvalidArgumentException(
-                "$failure: ${missing.joinToString { "'$it'" }} not given$noDefaults."
-            )
+            throw Gql.refused("$failure: ${missing.joinToString { "'$it'" }} not given$noDefaults.")
         }
         val base = defaults ?: ServerOptions()
         val options =
@@ -77,7 +75,7 @@ object ServerOptionsInput {
         return InstanceModeConstraint.entries.firstOrNull {
             it.name.equals(text, ignoreCase = true)
         }
-            ?: throw InvalidArgumentException(
+            ?: throw Gql.refused(
                 "$failure: '$MODE_CONSTRAINT' is ${show(value)}, not one of " +
                     InstanceModeConstraint.entries.joinToString { "'${it.name}'" } +
                     "."
@@ -88,9 +86,7 @@ object ServerOptionsInput {
         val list = value as? ListValue
         val strings = list?.map { (it as? TextValue)?.stringValue() }
         if (strings == null || strings.any { it == null }) {
-            throw InvalidArgumentException(
-                "$failure: '$option' is ${show(value)}, not a list of strings."
-            )
+            throw Gql.refused("$failure: '$option' is ${show(value)}, not a list of strings.")
         }
         return strings.filterNotNull()
     }
@@ -109,12 +105,12 @@ object ServerOptionsInput {
         tags
             .firstOrNull { it.isEmpty() || ',' in it }
             ?.let {
-                throw InvalidArgumentException(
+                throw Gql.refused(
                     "$failure: the tag '$it' is empty or has a comma, which tags cannot have."
                 )
             }
         if (tags.toSet().size < tags.size) {
-            throw InvalidArgumentException("$failure: the tags $tags have duplicates.")
+            throw Gql.refused("$failure: the tags $tags have duplicates.")
         }
         return tags
     }

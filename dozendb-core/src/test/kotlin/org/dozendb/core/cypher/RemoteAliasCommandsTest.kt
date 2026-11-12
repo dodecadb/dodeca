@@ -101,8 +101,21 @@ class RemoteAliasCommandsTest {
             "$cypher succeeded"
         }
 
+    /**
+     * Every column of the aliases, but Cypher 25's `credentials`, which tells whether an alias is
+     * remote, as `location` does, and which `creates remote aliases with encrypted credentials, and
+     * shows them` checks.
+     */
     private fun Driver.aliases(): List<Map<String, Any?>> =
-        run("SHOW ALIASES FOR DATABASE YIELD * RETURN *")
+        run("SHOW ALIASES FOR DATABASE YIELD * RETURN *").map { alias ->
+            if ("credentials" in alias) {
+                assertThat(alias["credentials"])
+                    .isEqualTo(
+                        if (alias["location"] == "remote") "STORED NATIVE CREDENTIALS" else null
+                    )
+            }
+            alias - "credentials"
+        }
 
     /** The properties of the alias node [name] in `system`, and the password it decrypts to. */
     private fun stored(name: String): Pair<Map<String, Any?>, String> {
@@ -132,6 +145,44 @@ class RemoteAliasCommandsTest {
         }
     }
 
+    /** The routing table that drivers that route get for [name], as role and addresses. */
+    private fun Driver.routing(name: String, context: Map<String, Any> = emptyMap()) =
+        session(SessionConfig.forDatabase("neo4j")).use { session ->
+            session
+                .run(
+                    "CALL dbms.routing.getRoutingTable(\$context, \$name) YIELD servers " +
+                        "UNWIND servers AS server RETURN server.role AS role, " +
+                        "server.addresses AS addresses",
+                    mapOf("context" to context, "name" to name),
+                )
+                .list { it.asMap() }
+        }
+
+    @Test
+    fun `routes drivers of a remote alias to this server, which forwards their queries`() {
+        val admin = start()
+        admin.run(
+            "CREATE ALIAS `remote-films` FOR DATABASE films AT 'neo4j+s://films.example.com:7687' " +
+                "USER alice PASSWORD 'alice-secret'"
+        )
+
+        // Drivers say in the routing context the address they connected to.
+        val bolt = checkNotNull(server).boltAddress()
+        val table = admin.routing("remote-films", mapOf("address" to bolt))
+
+        assertThat(table.map { it["role"] }).containsExactlyInAnyOrder("WRITE", "READ", "ROUTE")
+        assertThat(table.flatMap { it["addresses"] as List<*> }).containsExactly(bolt, bolt, bolt)
+        // Another alias forwarding here would chain aliases, which Neo4j does not allow.
+        assertThat(
+                catchThrowableOfType(ClientException::class.java) {
+                    admin.routing("remote-films", mapOf("alias" to "movies"))
+                }
+            )
+            .hasMessageContaining("alias chains are not permitted")
+        assertThat(catchThrowableOfType(ClientException::class.java) { admin.routing("missing") })
+            .hasMessageContaining("'missing' because this database does not exist")
+    }
+
     @Test
     fun `creates remote aliases with encrypted credentials, and shows them`() {
         val admin = start()
@@ -142,17 +193,18 @@ class RemoteAliasCommandsTest {
                 "connection_pool_max_size: 10, logging_level: 'debug'} PROPERTIES {Genre: 'drama'}"
         )
 
-        assertThat(admin.run("SHOW ALIASES FOR DATABASE"))
-            .containsExactly(
-                mapOf(
-                    "name" to "remote-films",
-                    "composite" to null,
-                    "database" to "films",
-                    "location" to "remote",
-                    "url" to "neo4j+s://films.example.com:7687",
-                    "user" to "alice",
-                )
+        val columns =
+            mapOf(
+                "name" to "remote-films",
+                "composite" to null,
+                "database" to "films",
+                "location" to "remote",
+                "url" to "neo4j+s://films.example.com:7687",
+                "user" to "alice",
             )
+        assertThat(admin.run("CYPHER 5 SHOW ALIASES FOR DATABASE")).containsExactly(columns)
+        assertThat(admin.run("CYPHER 25 SHOW ALIASES FOR DATABASE"))
+            .containsExactly(columns + ("credentials" to "STORED NATIVE CREDENTIALS"))
         val shown = admin.aliases().single()
         assertThat(shown["driver"])
             .isEqualTo(

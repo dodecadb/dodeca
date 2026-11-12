@@ -201,8 +201,8 @@ internal class MergeJournal(
     /** The first [count] ids of new nodes, the file cut after them. */
     private fun readNodeIds(count: Long): LongArray {
         val array =
-            NumberArrayFactories.AUTO_WITHOUT_PAGECACHE.newDynamicLongArray(
-                1L shl 20,
+            NumberArrayFactories.AUTO_WITHOUT_SWAP.newDynamicLongArray(
+                1 shl 20,
                 -1,
                 memoryTracker,
             )

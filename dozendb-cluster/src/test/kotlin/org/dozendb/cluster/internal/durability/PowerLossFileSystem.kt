@@ -19,7 +19,7 @@ import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.fs.DelegatingStoreChannel
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.fs.StoreChannel
-import org.neo4j.kernel.impl.transaction.log.files.TransactionLogFilesHelper
+import org.neo4j.wal.files.TransactionLogFilesHelper
 
 /**
  * Neo4j's file system, able to lose power.

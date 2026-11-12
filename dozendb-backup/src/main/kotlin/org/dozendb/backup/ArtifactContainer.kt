@@ -1,15 +1,20 @@
 package org.dozendb.backup
 
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
 import java.io.DataOutputStream
+import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.time.Instant
 import java.time.ZoneOffset.UTC
 import java.util.BitSet
+import java.util.zip.GZIPInputStream
 import org.neo4j.dbms.archive.ArchiveFormat
-import org.neo4j.dbms.archive.CompressionFormat
+import org.neo4j.dbms.archive.Dumper
 import org.neo4j.dbms.archive.StandardCompressionFormat
+import org.neo4j.dbms.archive.backup.BackupMetadataV1
 import org.neo4j.dbms.archive.backup.BackupMetadataV2
 import org.neo4j.io.fs.OutputStreamWritableChannel
 
@@ -36,9 +41,13 @@ internal object ArtifactContainer {
     private const val KEY_LAST_CHECKSUM = "dozendb.lastChecksum"
     private const val KEY_LAST_COMMIT_TIME = "dozendb.lastCommitTime"
 
+    /** Neo4j's keys of the metadata script, written plainly, and gzipped by Neo4j 2026. */
+    private const val KEY_METADATA_SCRIPT = "metadataScript"
+    private const val KEY_COMPRESSED_METADATA_SCRIPT = "compressedMetadataScript"
+
     /** The container for Neo4j's dumper: compressing a stream first writes [header] to it. */
-    fun format(header: ArtifactHeader): CompressionFormat =
-        object : CompressionFormat {
+    fun format(header: ArtifactHeader): Dumper.DumpFormat =
+        object : Dumper.DumpFormat {
             override fun compress(stream: OutputStream): OutputStream = open(stream, header)
 
             override fun decompress(stream: InputStream): InputStream =
@@ -91,7 +100,8 @@ internal object ArtifactContainer {
             if (version != METADATA_VERSION) {
                 throw IOException("unsupported backup metadata version $version")
             }
-            return Opened(header(BackupMetadataV2.readFromStream(body), compressed), body)
+            val metadata = BackupMetadataV1.readFromStream(body)
+            return Opened(header(metadata, readFields(body), compressed), body)
         } catch (e: IOException) {
             body.close()
             throw e
@@ -107,11 +117,46 @@ internal object ArtifactContainer {
         header.previousChecksum?.let { put(KEY_PREVIOUS_CHECKSUM, it.toString()) }
         header.lastChecksum?.let { put(KEY_LAST_CHECKSUM, it.toString()) }
         header.lastCommitTime?.let { put(KEY_LAST_COMMIT_TIME, it.toEpochMilli().toString()) }
-        header.metadataScript?.let { put(BackupMetadataV2.METADATA_SCRIPT_FIELD, it) }
+        header.metadataScript?.let { put(KEY_METADATA_SCRIPT, it) }
     }
 
-    private fun header(metadata: BackupMetadataV2, compressed: Boolean): ArtifactHeader {
-        val fields = metadata.additionalFields
+    /**
+     * The fields after the metadata Neo4j's version 1 has, as Neo4j's version 2 writes them: their
+     * count, then each key and value, with its length; Neo4j 2026 writes the metadata script under
+     * [KEY_COMPRESSED_METADATA_SCRIPT], gzipped.
+     */
+    private fun readFields(stream: InputStream): Map<String, String> {
+        val data = DataInputStream(stream)
+        val count = data.readInt()
+        if (count < 0) throw IOException("invalid backup metadata: $count fields")
+        return buildMap {
+            repeat(count) {
+                val key = String(bytes(data), Charsets.UTF_8)
+                val value = bytes(data)
+                if (key == KEY_COMPRESSED_METADATA_SCRIPT) {
+                    GZIPInputStream(ByteArrayInputStream(value)).use {
+                        put(KEY_METADATA_SCRIPT, String(it.readAllBytes(), Charsets.UTF_8))
+                    }
+                } else {
+                    put(key, String(value, Charsets.UTF_8))
+                }
+            }
+        }
+    }
+
+    private fun bytes(data: DataInputStream): ByteArray {
+        val length = data.readInt()
+        if (length < 0) throw IOException("invalid backup metadata: a field of $length bytes")
+        val bytes = data.readNBytes(length)
+        if (bytes.size != length) throw EOFException("the backup metadata ends in a field")
+        return bytes
+    }
+
+    private fun header(
+        metadata: BackupMetadataV1,
+        fields: Map<String, String>,
+        compressed: Boolean,
+    ): ArtifactHeader {
         val format =
             fields[KEY_FORMAT] ?: throw IOException("not a DozenDB backup: it has no $KEY_FORMAT")
         if (format != FORMAT.toString())
@@ -132,7 +177,7 @@ internal object ArtifactContainer {
             lastChecksum = fields[KEY_LAST_CHECKSUM]?.let { checksum(it) },
             lastCommitTime = fields[KEY_LAST_COMMIT_TIME]?.let { commitTime(it) },
             source = fields[KEY_SOURCE] ?: throw IOException("the source of the backup is missing"),
-            metadataScript = fields[BackupMetadataV2.METADATA_SCRIPT_FIELD],
+            metadataScript = fields[KEY_METADATA_SCRIPT],
         )
     }
 

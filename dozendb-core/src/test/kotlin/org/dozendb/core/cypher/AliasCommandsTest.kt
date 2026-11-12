@@ -79,24 +79,32 @@ class AliasCommandsTest {
 
     private val titles = "MATCH (f:Film) RETURN f.title AS title"
 
+    /**
+     * Every column of the aliases, but Cypher 25's `credentials`, which local aliases have none of
+     * and which `shows the kind of credentials in Cypher 25` checks.
+     */
     private fun aliases(): List<Map<String, Any?>> =
-        admin.run("SHOW ALIASES FOR DATABASE YIELD * RETURN *")
+        admin.run("SHOW ALIASES FOR DATABASE YIELD * RETURN *").map { alias ->
+            assertThat(alias["credentials"]).isNull()
+            alias - "credentials"
+        }
 
     @Test
     fun `creates, shows and drops local aliases`() {
         admin.run("CREATE ALIAS movies FOR DATABASE films")
-
-        assertThat(admin.run("SHOW ALIASES FOR DATABASE"))
-            .containsExactly(
-                mapOf(
-                    "name" to "movies",
-                    "composite" to null,
-                    "database" to "films",
-                    "location" to "local",
-                    "url" to null,
-                    "user" to null,
-                )
+        val shown =
+            mapOf(
+                "name" to "movies",
+                "composite" to null,
+                "database" to "films",
+                "location" to "local",
+                "url" to null,
+                "user" to null,
             )
+
+        assertThat(admin.run("CYPHER 5 SHOW ALIASES FOR DATABASE")).containsExactly(shown)
+        assertThat(admin.run("CYPHER 25 SHOW ALIASES FOR DATABASE"))
+            .containsExactly(shown + ("credentials" to null))
         assertThat(aliases().single())
             .containsEntry("driver", null)
             .containsEntry("properties", emptyMap<String, Any>())
@@ -355,7 +363,7 @@ class AliasCommandsTest {
             "`movies` is an alias of database `films`: privileges are granted on the database."
         val granted = admin.refused("GRANT START ON DATABASE movies TO operator")
         assertThat(granted).hasMessage("Failed to grant privilege to role 'operator': $alias")
-        assertThat(granted.gqlStatus()).isEqualTo("42002")
+        assertThat(granted.gqlStatus()).isEqualTo("42001")
         assertThat(admin.refused("DENY ACCESS ON DATABASE movies TO operator"))
             .hasMessage("Failed to deny privilege to role 'operator': $alias")
         assertThat(admin.refused("REVOKE STOP ON DATABASE movies FROM operator"))
@@ -477,7 +485,8 @@ class AliasCommandsTest {
             .hasMessage("Alias name 'films.' is invalid: alias names cannot end with a dot.")
         assertThat(admin.refused("CREATE ALIAS `${"f".repeat(65535)}` FOR DATABASE films"))
             .hasMessage("The provided alias is to long, maximum characters are 65534.")
-        assertThat(admin.refused("CREATE ALIAS films.old.ones FOR DATABASE films"))
+        // Cypher 25 reads the name as one name, as there is no composite database `films`.
+        assertThat(admin.refused("CYPHER 5 CREATE ALIAS films.old.ones FOR DATABASE films"))
             .hasMessageContaining(
                 "'.' is not a valid character in the local alias name 'films.old.ones'."
             )
@@ -514,6 +523,18 @@ class AliasCommandsTest {
 
         admin.run("DROP ALIAS \$alias FOR DATABASE", mapOf("alias" to "movies.classic"))
         admin.run("DROP ALIAS films.old FOR DATABASE")
+        assertThat(aliases()).isEmpty()
+
+        // Neo4j's docs: a dot is part of the name unless a composite database of the part
+        // before it exists, and Cypher 5 refuses more than one in a local alias's name.
+        admin.run("CYPHER 25 CREATE ALIAS films.old.ones FOR DATABASE films")
+        assertThat(admin.run("SHOW ALIAS `films.old.ones` FOR DATABASE YIELD name, database"))
+            .containsExactly(mapOf("name" to "films.old.ones", "database" to "films"))
+        assertThat(
+                admin.run("MATCH (f:Film) RETURN count(f) AS films", database = "films.old.ones")
+            )
+            .containsExactly(mapOf("films" to 1L))
+        admin.run("CYPHER 25 DROP ALIAS films.old.ones FOR DATABASE")
         assertThat(aliases()).isEmpty()
     }
 

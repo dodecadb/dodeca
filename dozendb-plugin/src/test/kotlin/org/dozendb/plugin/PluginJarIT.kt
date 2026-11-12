@@ -184,11 +184,7 @@ class PluginJarIT {
             .containsExactly("org.dozendb.core.importer.DozenDbIncrementalImporterFactory")
         assertThat(services("org.neo4j.dbms.archive.CheckDatabase"))
             .containsExactly("org.dozendb.backup.cli.CheckBackup")
-        assertThat(
-                services(
-                    "org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointThresholdPolicy"
-                )
-            )
+        assertThat(services("org.neo4j.wal.checkpoint.CheckPointThresholdPolicy"))
             .containsExactlyInAnyOrder(
                 "org.dozendb.core.checkpoint.ContinuousThresholdPolicy",
                 "org.dozendb.core.checkpoint.VolumetricThresholdPolicy",

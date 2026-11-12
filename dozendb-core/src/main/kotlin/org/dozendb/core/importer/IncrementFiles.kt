@@ -200,7 +200,7 @@ internal class KeyStore(
     factory: NumberArrayFactory,
     memoryTracker: MemoryTracker,
 ) : PropertyValueLookup, AutoCloseable {
-    private val offsets: LongArray = factory.newDynamicLongArray(1L shl 20, -1, memoryTracker)
+    private val offsets: LongArray = factory.newDynamicLongArray(1 shl 20, -1, memoryTracker)
     private val out = DataOutputStream(BufferedOutputStream(Files.newOutputStream(path), 1 shl 16))
     private var position = 0L
     private var channel: FileChannel? = null
@@ -231,7 +231,7 @@ internal class KeyStore(
         channel = FileChannel.open(path, StandardOpenOption.READ)
     }
 
-    override fun newLookup(): PropertyValueLookup.Lookup =
+    override fun newLookup(readOnly: Boolean): PropertyValueLookup.Lookup =
         object : PropertyValueLookup.Lookup {
             override fun lookupProperty(nodeId: Long, memoryTracker: MemoryTracker): Any? {
                 val offset = offsets.get(nodeId)

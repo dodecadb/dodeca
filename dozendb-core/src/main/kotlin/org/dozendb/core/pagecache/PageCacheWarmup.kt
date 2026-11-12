@@ -1,5 +1,6 @@
 package org.dozendb.core.pagecache
 
+import java.nio.file.Path
 import java.util.concurrent.TimeUnit
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -19,7 +20,6 @@ import org.neo4j.scheduler.Group
 import org.neo4j.scheduler.JobHandle
 import org.neo4j.scheduler.JobMonitoringParams
 import org.neo4j.scheduler.JobScheduler
-import org.neo4j.storageengine.api.StoreFileMetadata
 
 /**
  * Page cache warmup, as Neo4j Enterprise has it and Community only declares its settings: each
@@ -98,10 +98,10 @@ internal constructor(
     }
 
     /** Adds the profiles to a copy's [listed] files; none is written until it is closed. */
-    private fun listProfiles(listed: MutableCollection<StoreFileMetadata>): Resource {
+    private fun listProfiles(listed: MutableCollection<Path>): Resource {
         synchronized(files) {
             copying++
-            profiles.list().forEach { listed += StoreFileMetadata(it) }
+            listed += profiles.list()
         }
         return Resource { synchronized(files) { copying-- } }
     }

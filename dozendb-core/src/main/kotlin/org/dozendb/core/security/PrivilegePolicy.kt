@@ -387,7 +387,7 @@ private fun PrivilegeSegment.coversRelationship(type: String): Boolean =
  * Whether the rule applies to the node: it has one of the labels, if any, and satisfies it.
  */
 private fun PatternSegment.covers(labels: Set<String>, properties: (String) -> Value): Boolean {
-    if (labels().isNotEmpty() && labels().none { it in labels }) return false
+    if (elementTypes().isNotEmpty() && elementTypes().none { it in labels }) return false
     val value = properties(property())
     return when (this) {
         is PatternSegment.ValuePatternSegment -> operator().test(value, value())

@@ -85,10 +85,12 @@ class ClusterFormationIT {
     @Test
     @Order(2)
     fun `consensus logs reach the Neo4j debug log`() {
-        val debugLog = members.first().debugLog()
+        val debugLog = members.first().debugEntries()
 
-        assertThat(debugLog).contains("[o.d.c.r.RatisConsensusLog] Raft member")
-        assertThat(debugLog).containsPattern("\\[o\\.a\\.r\\.[^]]+]")
+        assertThat(debugLog).anyMatch {
+            it.category == "o.d.c.r.RatisConsensusLog" && it.message.startsWith("Raft member")
+        }
+        assertThat(debugLog).anyMatch { it.category.startsWith("o.a.r.") }
     }
 
     @Test

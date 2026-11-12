@@ -6,6 +6,9 @@ import org.neo4j.configuration.Config
 import org.neo4j.dbms.database.AbstractSystemGraphComponent
 import org.neo4j.dbms.database.ComponentVersion
 import org.neo4j.dbms.database.SystemGraphComponent
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.ROLE_LABEL
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY as USER_NAME
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.Transaction
 import org.neo4j.io.fs.FileSystemAbstraction
@@ -14,9 +17,6 @@ import org.neo4j.logging.InternalLogProvider
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.server.security.auth.CommunitySecurityModule
 import org.neo4j.server.security.auth.FileUserRepository
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.ROLE_LABEL
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_LABEL
-import org.neo4j.server.security.systemgraph.versions.KnownCommunitySecurityComponentVersion.USER_NAME
 
 /**
  * Roles and privileges in the system graph, in [PrivilegeRecords]' model. The first start with it
@@ -52,18 +52,15 @@ class DozenDbSecurityComponent(
     override fun upgradeToCurrent(system: GraphDatabaseService) {
         system.beginTx().use(::refuseEnterpriseRoles)
         if (detect(system) == SystemGraphComponent.Status.UNINITIALIZED) {
-            system.beginTx().use {
-                initializeSystemGraphConstraints(it)
-                it.commit()
-            }
+            initializeSystemGraphSchema(system)
             initializeSystemGraphModel(system)
         }
     }
 
-    override fun initializeSystemGraphConstraints(tx: Transaction) {
-        initializeSystemGraphConstraint(tx, PrivilegeRecords.ROLE, PrivilegeRecords.ROLE_NAME)
-        initializeSystemGraphConstraint(tx, PrivilegeRecords.ROLE, PrivilegeRecords.ROLE_ID)
-        initializeSystemGraphConstraint(tx, PrivilegeRecords.PRIVILEGE, PrivilegeRecords.KEY)
+    override fun initializeSystemGraphSchema(system: GraphDatabaseService) {
+        initializeSystemGraphConstraint(system, PrivilegeRecords.ROLE, PrivilegeRecords.ROLE_NAME)
+        initializeSystemGraphConstraint(system, PrivilegeRecords.ROLE, PrivilegeRecords.ROLE_ID)
+        initializeSystemGraphConstraint(system, PrivilegeRecords.PRIVILEGE, PrivilegeRecords.KEY)
     }
 
     override fun initializeSystemGraphModel(tx: Transaction, system: GraphDatabaseService) {

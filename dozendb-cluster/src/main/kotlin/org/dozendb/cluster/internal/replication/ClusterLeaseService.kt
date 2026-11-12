@@ -1,7 +1,7 @@
 package org.dozendb.cluster.internal.replication
 
-import org.neo4j.gqlstatus.ErrorGqlStatusObject
 import org.neo4j.gqlstatus.ErrorGqlStatusObjectImplementation
+import org.neo4j.gqlstatus.GqlRuntimeException
 import org.neo4j.gqlstatus.GqlStatusInfoCodes
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.impl.api.LeaseClient
@@ -24,7 +24,7 @@ import org.neo4j.kernel.impl.api.LeaseService
  */
 internal class ClusterLeaseService(
     private val local: () -> Boolean,
-    private val refusal: () -> LeaseException,
+    private val refusal: () -> RuntimeException,
 ) : LeaseService {
     @Volatile private var current: Int = LeaseService.NO_LEASE
 
@@ -67,11 +67,11 @@ internal class ClusterLeaseService(
  * A write on a member that does not lead the database, with the status and GQL status of Neo4j's
  * own ([LeaseException.notOnALeader]) and a [message] that tells where to write instead.
  */
-@Suppress("DEPRECATION")
 internal class NotLeaderException(message: String) :
-    LeaseException(message, Status.Cluster.NotALeader) {
-    private val gql: ErrorGqlStatusObject =
-        ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N07).build()
-
-    override fun gqlStatusObject(): ErrorGqlStatusObject = gql
+    GqlRuntimeException(
+        ErrorGqlStatusObjectImplementation.from(GqlStatusInfoCodes.STATUS_08N07).build(),
+        message,
+    ),
+    Status.HasStatus {
+    override fun status(): Status = Status.Cluster.NotALeader
 }

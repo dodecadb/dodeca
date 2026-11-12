@@ -8,8 +8,9 @@ import org.neo4j.kernel.impl.api.CommandCommitListeners
 import org.neo4j.kernel.impl.api.LeaseService
 import org.neo4j.kernel.impl.api.TransactionCommitProcess
 import org.neo4j.kernel.impl.api.TransactionalProcessFactory
-import org.neo4j.kernel.impl.transaction.log.TransactionAppender
+import org.neo4j.logging.LogProvider
 import org.neo4j.storageengine.api.StorageEngine
+import org.neo4j.wal.TransactionAppender
 
 /**
  * A database hosted as [initial] until [switchTo] hosts it otherwise, as `system` is when a server
@@ -40,6 +41,7 @@ internal class SwitchingHostedDatabase(initial: HostedDatabase) : HostedDatabase
                 preAllocateSpaceInStoreFiles: Boolean,
                 commandCommitListeners: CommandCommitListeners,
                 prefetchPages: Boolean,
+                logProvider: LogProvider,
             ): TransactionCommitProcess =
                 current
                     .commitProcessFactory(local)
@@ -50,6 +52,7 @@ internal class SwitchingHostedDatabase(initial: HostedDatabase) : HostedDatabase
                         preAllocateSpaceInStoreFiles,
                         commandCommitListeners,
                         prefetchPages,
+                        logProvider,
                     )
         }
 

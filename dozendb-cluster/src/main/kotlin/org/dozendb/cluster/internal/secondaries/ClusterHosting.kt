@@ -6,7 +6,6 @@ import org.dozendb.cluster.internal.replication.ReplicationService
 import org.dozendb.core.edition.DatabaseHosting
 import org.dozendb.core.edition.HostedDatabase
 import org.dozendb.core.servers.CopyMode
-import org.neo4j.internal.id.IdGeneratorFactory
 import org.neo4j.kernel.database.NamedDatabaseId
 
 /**
@@ -25,8 +24,8 @@ internal class ClusterHosting(
 ) : DatabaseHosting {
     private val modes = ConcurrentHashMap<String, CopyMode>()
 
-    /** `system`, once Neo4j created it, with its ID generators. */
-    @Volatile private var system: Pair<SwitchingHostedDatabase, IdGeneratorFactory>? = null
+    /** `system`, once Neo4j created it. */
+    @Volatile private var system: SwitchingHostedDatabase? = null
 
     override val reusesFreedIdsAtStart: Boolean = false
 
@@ -41,15 +40,10 @@ internal class ClusterHosting(
     /** The mode the database [name] is hosted in, or is next created or copied in. */
     fun mode(name: String): CopyMode = modes[name] ?: CopyMode.PRIMARY
 
-    override fun prepare(
-        namedDatabaseId: NamedDatabaseId,
-        idGeneratorFactory: IdGeneratorFactory,
-        storeExists: Boolean,
-    ): HostedDatabase {
-        val hosted =
-            prepare(mode(namedDatabaseId), namedDatabaseId, idGeneratorFactory, storeExists)
+    override fun prepare(namedDatabaseId: NamedDatabaseId, storeExists: Boolean): HostedDatabase {
+        val hosted = prepare(mode(namedDatabaseId), namedDatabaseId, storeExists)
         if (!namedDatabaseId.isSystemDatabase) return hosted
-        return SwitchingHostedDatabase(hosted).also { system = it to idGeneratorFactory }
+        return SwitchingHostedDatabase(hosted).also { system = it }
     }
 
     override fun beforeStart(namedDatabaseId: NamedDatabaseId) {
@@ -60,11 +54,10 @@ internal class ClusterHosting(
     private fun prepare(
         mode: CopyMode,
         namedDatabaseId: NamedDatabaseId,
-        idGeneratorFactory: IdGeneratorFactory,
         storeExists: Boolean,
     ): HostedDatabase =
         when (mode) {
-            CopyMode.PRIMARY -> primaries.prepare(namedDatabaseId, idGeneratorFactory, storeExists)
+            CopyMode.PRIMARY -> primaries.prepare(namedDatabaseId, storeExists)
             CopyMode.SECONDARY -> secondaries.prepare(namedDatabaseId)
         }
 
@@ -73,9 +66,9 @@ internal class ClusterHosting(
      * as the same database.
      */
     fun switchSystem(mode: CopyMode) {
-        val (switching, idGeneratorFactory) = checkNotNull(system) { "system was not created" }
+        val switching = checkNotNull(system) { "system was not created" }
         val id = NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID
         modes[id.name()] = mode
-        switching.switchTo(prepare(mode, id, idGeneratorFactory, storeExists = true))
+        switching.switchTo(prepare(mode, id, storeExists = true))
     }
 }

@@ -20,7 +20,7 @@ internal class ObjectWriteChannel(
     private val key: String,
     private val description: String,
     memory: MemoryTracker,
-) : WriteableChannel(CHUNK_SIZE, memory) {
+) : WriteableChannel(CHUNK_SIZE, IN_FLIGHT, memory) {
     private val permits = Semaphore(store.uploadConcurrency)
     private val budget = Semaphore(BUDGET)
     private val sent = mutableListOf<CompletableFuture<Void>>()
@@ -32,7 +32,13 @@ internal class ObjectWriteChannel(
 
     override fun internalGetSize() = size + buffer.position()
 
-    override fun doBufferWrite(data: ByteBuffer) {
+    /** Moves [data] to the part being filled, at once: it is in flight no longer. */
+    override fun doBufferWrite(data: ByteBuffer, completionHandler: Runnable) {
+        fill(data)
+        completionHandler.run()
+    }
+
+    private fun fill(data: ByteBuffer) {
         while (data.hasRemaining()) {
             val current = part?.takeIf { it.hasRemaining() } ?: nextPart()
             val count = minOf(current.remaining(), data.remaining())
@@ -50,7 +56,7 @@ internal class ObjectWriteChannel(
     override fun completeWriteProcess() {
         if (replicated) return
         try {
-            doBufferWrite(buffer.flip())
+            fill(buffer.flip())
             val started = upload
             if (started == null) {
                 store.put(container, key, (part ?: ByteBuffer.allocate(0)).flip())
@@ -77,7 +83,10 @@ internal class ObjectWriteChannel(
         fromKey: String,
         from: Long,
     ): Boolean {
-        ensureOk()
+        ensureOpen()
+        ensureNoErrors()
+        if (replicated)
+            throw IOException("Cannot write to a channel that has been used in a copyFrom")
         if (fromStore !== store || from != 0L || internalGetSize() != 0L) return false
         store.copy(fromContainer, fromKey, container, key)
         replicated = true
@@ -157,6 +166,9 @@ internal class ObjectWriteChannel(
     companion object {
         /** What the writer buffers before it moves the bytes to the part being filled. */
         private const val CHUNK_SIZE = 1 shl 20
+
+        /** The chunks moved at once: one, as each moves before its write returns. */
+        private const val IN_FLIGHT = 1
 
         private const val MIB = 1 shl 20
 

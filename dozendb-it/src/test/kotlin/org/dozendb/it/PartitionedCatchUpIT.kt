@@ -1,8 +1,6 @@
 package org.dozendb.it
 
 import java.time.Duration
-import java.time.OffsetDateTime
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
@@ -153,9 +151,6 @@ class PartitionedCatchUpIT {
     }
 
     /** The time of a line of Neo4j's debug log. */
-    private fun timeOf(line: String): Long =
-        OffsetDateTime.parse(line.substring(0, 28), LOG_TIME).toInstant().toEpochMilli()
-
     /** The first index of the system database's Raft log on [member]. */
     private fun firstSystemIndex(member: DozenDbContainer): Long =
         member
@@ -309,10 +304,10 @@ class PartitionedCatchUpIT {
         val loginsAfterHealing = logins().filter { it.at > healedAt }
         val readsAfterHealing = administration().filter { it.at > healedAt }
 
-        val log = behind.debugLog().lines()
-        val copyStarted = timeOf(log.last { "Database system needs Raft entries" in it })
-        val copied = timeOf(log.last { "Copied database system holding" in it })
-        assertThat(copied - copyStarted)
+        val log = behind.debugEntries()
+        val copyStarted = log.last { "Database system needs Raft entries" in it.message }.time
+        val copied = log.last { "Copied database system holding" in it.message }.time
+        assertThat(copied.toEpochMilli() - copyStarted.toEpochMilli())
             .describedAs("copy time, long enough to tell copying from being stopped")
             .isGreaterThan(3_000)
         assertThat(readsAfterHealing.count { it.count == usersBefore })
@@ -333,7 +328,6 @@ class PartitionedCatchUpIT {
     }
 
     private companion object {
-        val LOG_TIME: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSSXX")
         const val SYSTEM_GROUP = "00000000-0000-0000-0000-000000000001"
         val SEGMENT = Regex("log_(?:inprogress_)?(\\d+)(?:-\\d+)?")
     }

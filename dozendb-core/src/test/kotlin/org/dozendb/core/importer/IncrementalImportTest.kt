@@ -26,10 +26,10 @@ import org.neo4j.consistency.ConsistencyCheckService
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
-import org.neo4j.kernel.impl.transaction.log.files.LogFilesBuilder
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.files.LogFilesBuilder
 
 /**
  * `neo4j-admin database import incremental`, run as `neo4j-admin` runs it, beside a running server
@@ -340,7 +340,8 @@ class IncrementalImportTest {
 
         assertThat(failed.exitCode).isNotZero
         assertThat(failed.err)
-            .contains("Error importing csv file: Id 'a' is defined more than once in group")
+            .contains("Error importing csv file.")
+            .contains("'a' is defined more than once in group")
         assertThat(failed.err).doesNotContain("likely in an unusable state")
         assertThat(checkNotNull(increment.state()).stage).isEqualTo(Stage.PREPARED)
 
@@ -372,7 +373,9 @@ class IncrementalImportTest {
         val failed = incremental("build", "films", *files)
 
         assertThat(failed.exitCode).isNotZero
-        assertThat(failed.err).contains("Error importing csv file: ").contains("zed")
+        assertThat(failed.err)
+            .contains("Error importing csv file.")
+            .contains("referring to missing node zed")
         assertThat(failed.err).doesNotContain("likely in an unusable state")
 
         val skipped = incremental("build", "films", "--skip-bad-relationships", *files)

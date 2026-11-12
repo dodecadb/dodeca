@@ -1,9 +1,10 @@
 package org.dozendb.core.security
 
 import java.util.UUID
-import org.neo4j.cypher.internal.ast.prettifier.`ExpressionStringifier$`
+import java.util.regex.Pattern
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
+import org.neo4j.util.Stringifier
 import org.neo4j.values.storable.ArrayValue
 import org.neo4j.values.storable.DateTimeValue
 import org.neo4j.values.storable.DateValue
@@ -69,7 +70,7 @@ object PrivilegeText {
         val body = body(privilege, databaseName, parameter) ?: return null
         val immutable = if (privilege.immutable) "IMMUTABLE " else ""
         val access = if (privilege.access == Access.GRANTED) "GRANT" else "DENY"
-        val grantee = role?.let { STRINGIFIER.backtick(it, true, false) } ?: "\$role"
+        val grantee = role?.let { Stringifier.backtick(it, true) } ?: "\$role"
         val text =
             if (revoke) "REVOKE $immutable$access $body FROM $grantee"
             else "$access $immutable$body TO $grantee"
@@ -170,7 +171,7 @@ object PrivilegeText {
 
     /** A property rule, as `(n:A|B) WHERE n.p > 1`. */
     private fun pattern(pattern: PatternSegment): String {
-        val labels = pattern.labels().sorted().joinToString("|") { name(it) }
+        val labels = pattern.elementTypes().sorted().joinToString("|") { name(it) }
         val node = if (labels.isEmpty()) "(n)" else "(n:$labels)"
         val property = "n.${name(pattern.property())}"
         val rule =
@@ -206,15 +207,23 @@ object PrivilegeText {
         }
 
     /** A name as Cypher takes it, in backticks where it needs them. */
-    private fun name(name: String): String = STRINGIFIER.backtick(name, false, false)
+    private fun name(name: String): String = Stringifier.backtick(name)
 
-    /** A procedure, function or setting glob, whose parts each get backticks if they need them. */
-    private fun glob(glob: String): String =
-        if (glob.contains("..")) STRINGIFIER.backtick(glob, false, true)
-        else
-            glob.split('.').joinToString(".") {
-                if (it.isEmpty()) it else STRINGIFIER.backtick(it, false, true)
-            }
+    /**
+     * A procedure, function or setting glob, whose parts each get backticks if they need them, as
+     * Neo4j writes it: an empty part in backticks, a trailing dot as is.
+     */
+    private fun glob(glob: String): String {
+        if (glob.contains("..")) return Stringifier.backtick(glob, false, true, true)
+        // As Java splits, without trailing empty parts.
+        val parts =
+            DOT.split(glob).joinToString(".") { Stringifier.backtick(it, false, true, true) }
+        return when {
+            glob.isEmpty() -> "``"
+            glob.endsWith('.') -> "$parts."
+            else -> parts
+        }
+    }
 
     /**
      * The keyword of [action]; for an action no command grants, such as the legacy `admin`, its
@@ -223,7 +232,7 @@ object PrivilegeText {
     private fun keyword(action: PrivilegeAction): String =
         KEYWORDS[action] ?: action.name.replace('_', ' ')
 
-    private val STRINGIFIER = `ExpressionStringifier$`.`MODULE$`
+    private val DOT = Pattern.compile("\\.")
 
     /** Graph privileges whose commands name no elements. */
     private val UNQUALIFIED =
@@ -302,8 +311,6 @@ object PrivilegeText {
             PrivilegeAction.SHOW_PRIVILEGE to "SHOW PRIVILEGE",
             PrivilegeAction.ASSIGN_PRIVILEGE to "ASSIGN PRIVILEGE",
             PrivilegeAction.REMOVE_PRIVILEGE to "REMOVE PRIVILEGE",
-            PrivilegeAction.ASSIGN_IMMUTABLE_PRIVILEGE to "ASSIGN IMMUTABLE PRIVILEGE",
-            PrivilegeAction.REMOVE_IMMUTABLE_PRIVILEGE to "REMOVE IMMUTABLE PRIVILEGE",
             PrivilegeAction.SERVER_MANAGEMENT to "SERVER MANAGEMENT",
             PrivilegeAction.SHOW_SERVER to "SHOW SERVERS",
             PrivilegeAction.IMPERSONATE to "IMPERSONATE",

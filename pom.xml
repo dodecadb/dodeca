@@ -33,13 +33,13 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
-    <java.release>17</java.release>
+    <java.release>21</java.release>
     <maven.compiler.release>${java.release}</maven.compiler.release>
 
     <!-- Pinned platform (see doc/UPSTREAM_TOUCHPOINTS.md). -->
-    <neo4j.version>5.26.27</neo4j.version>
-    <!-- Neo4j 5.26 ships slf4j-api 2.0.9 in lib/. We compile against it and never bundle it. -->
-    <slf4j.version>2.0.9</slf4j.version>
+    <neo4j.version>2026.10.2</neo4j.version>
+    <!-- Neo4j ships slf4j-api 2.0.17 in lib/. We compile against it and never bundle it. -->
+    <slf4j.version>2.0.17</slf4j.version>
 
     <kotlin.version>2.4.21</kotlin.version>
     <kotlinx-coroutines.version>1.11.0</kotlinx-coroutines.version>
@@ -141,7 +141,7 @@
         <artifactId>neo4j-server-stubs</artifactId>
         <version>${project.version}</version>
       </dependency>
-      <!-- The JAX-RS API of the Jersey that Neo4j 5.26 ships in lib/. -->
+      <!-- The JAX-RS API of the Jersey that Neo4j ships in lib/. -->
       <dependency>
         <groupId>jakarta.ws.rs</groupId>
         <artifactId>jakarta.ws.rs-api</artifactId>
@@ -196,7 +196,7 @@
       <dependency>
         <groupId>net.java.dev.jna</groupId>
         <artifactId>jna-platform</artifactId>
-        <version>5.15.0</version>
+        <version>5.19.1</version>
       </dependency>
       <!-- The cloud SDKs' own BOMs keep each SDK's modules at versions released together. -->
       <dependency>
@@ -384,7 +384,7 @@
           <trimStackTrace>false</trimStackTrace>
           <forkCount>${test.forks}</forkCount>
           <reuseForks>true</reuseForks>
-          <!-- Neo4j 5.26.27's Bolt server releases connection memory it never allocated and, with
+          <!-- Neo4j's Bolt server releases connection memory it never allocated and, with
                assertions on, logs an AssertionError whenever a connection closes; plain Neo4j
                Community does the same. -->
           <!-- Neo4j's decoders of transaction log commands assert on what they read, and so do the
@@ -394,7 +394,9 @@
                (PowerLossTest). -->
           <!-- The fork number, so that JVMs of one build take ports from different parts of
                TestPorts' range; in systemPropertyVariables, Maven 3.9 leaves it empty. -->
-          <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddozendb.test.fork=${surefire.forkNumber} -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker -da:org.neo4j.internal.recordstorage.LogCommandSerializationV4_2 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_0 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_11 -da:org.neo4j.kernel.impl.store.record.PropertyRecord -da:org.neo4j.kernel.impl.store.record.PropertyBlock</argLine>
+          <!-- The JDK modules that Neo4j's neo4j.conf opens to it (server.jvm.additional), as
+               its off-heap memory needs them. -->
+          <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddozendb.test.fork=${surefire.forkNumber} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker -da:org.neo4j.internal.recordstorage.LogCommandSerializationV4_2 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_0 -da:org.neo4j.kernel.impl.store.record.PropertyRecord -da:org.neo4j.kernel.impl.store.record.PropertyBlock</argLine>
           <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
           <properties>
             <configurationParameters>

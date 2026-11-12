@@ -25,11 +25,11 @@ import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.kernel.impl.transaction.CompleteBatchRepresentation
-import org.neo4j.kernel.impl.transaction.log.LogicalTransactionStore
-import org.neo4j.kernel.impl.transaction.log.checkpoint.CheckPointer
-import org.neo4j.kernel.impl.transaction.log.checkpoint.SimpleTriggerInfo
-import org.neo4j.kernel.impl.transaction.log.files.LogFiles
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.LogicalTransactionStore
+import org.neo4j.wal.WALService
+import org.neo4j.wal.checkpoint.CheckPointer
+import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 
 /**
  * Every member's transaction log holds the same transactions, field for field and command for
@@ -55,7 +55,7 @@ class TransactionLogIdentityTest {
         val kernelVersion: Byte,
         val timeStarted: Long,
         val latestCommittedWhenStarted: Long,
-        val previousChecksum: Int,
+        val sequenceNumber: Long,
         val header: String,
         val commandCount: Int,
         val commands: String,
@@ -81,9 +81,10 @@ class TransactionLogIdentityTest {
 
     private fun ClusterHarness.Member.entries(name: String): List<Entry> {
         val resolver = database(name).dependencyResolver
-        val logFile = resolver.resolveDependency(LogFiles::class.java).logFile
+        val logFile = resolver.resolveDependency(WALService::class.java).logFile
         val store = resolver.resolveDependency(LogicalTransactionStore::class.java)
-        val start = logFile.extractHeader(logFile.lowestLogVersion).startPosition
+        val lowest = logFile.matchedFiles.minOf(logFile::getLogVersion)
+        val start = logFile.extractHeader(lowest).startPosition
         val entries = mutableListOf<Entry>()
         store.getCommandBatches(start).use { cursor ->
             while (cursor.next()) {
@@ -104,7 +105,7 @@ class TransactionLogIdentityTest {
                         started.kernelVersion().version(),
                         started.timeWritten,
                         started.lastCommittedTxWhenTransactionStarted,
-                        started.previousChecksum,
+                        started.transactionSequenceNumber,
                         started.additionalHeader?.let { sha(it) } ?: "none",
                         batch.commandBatch().commandCount(),
                         sha(commands.toByteArray()),

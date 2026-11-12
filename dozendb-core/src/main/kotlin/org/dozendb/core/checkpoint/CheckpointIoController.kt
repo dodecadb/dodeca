@@ -52,7 +52,11 @@ internal constructor(
         }
     }
 
-    override fun maybeLimitIO(recentlyCompletedIOs: Int, flushEvent: FileFlushEvent) {
+    override fun maybeLimitIO(
+        recentlyCompletedIOs: Int,
+        affectedPages: Int,
+        flushEvent: FileFlushEvent,
+    ) {
         // Read once: the setting may change to none meanwhile.
         val limit = limit
         if (!limited(limit)) return
@@ -79,12 +83,15 @@ internal constructor(
         flushEvent.throttle(recentlyCompletedIOs.toLong(), millis)
     }
 
-    override fun reportIO(completedIOs: Int) {}
+    override fun reportIO(completedIOs: Int, affectedPages: Int) {}
 
     override fun configuredLimit(): Long = limit.let { if (limited(it)) it.toLong() else -1 }
 
     /** Whether the calling thread's flushes are limited now. */
     override fun isEnabled() = limited(limit)
+
+    /** The limit counts I/Os, not bytes: Neo4j's checkpoint log line says it in IOPS. */
+    override fun isIopsBasedLimit() = true
 
     private fun limited(limit: Int) = limit > 0 && lifts == 0 && background()
 

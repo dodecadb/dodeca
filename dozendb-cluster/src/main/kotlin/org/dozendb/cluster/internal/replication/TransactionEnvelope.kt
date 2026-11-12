@@ -8,11 +8,13 @@ import org.neo4j.io.fs.ByteBufferReadableChannel
 import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.kernel.KernelVersion
 import org.neo4j.kernel.impl.api.LeaseService
-import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.CommandBatch
 import org.neo4j.storageengine.api.CommandReaderFactory
+import org.neo4j.storageengine.api.Leases
 import org.neo4j.storageengine.api.StorageCommand
 import org.neo4j.storageengine.api.TransactionIdStore
+import org.neo4j.wal.CompleteCommandBatch
 
 /**
  * The payload of a replicated transaction: the kernel's commands in Neo4j's own log serialization
@@ -35,6 +37,8 @@ internal object TransactionEnvelope {
     private const val SUBJECT_USER: Byte = 3
 
     fun encode(batch: CommandBatch): ByteArray {
+        // Leases are of property shards, which Neo4j Community has none of.
+        require(batch.leases().size() == 0) { "a transaction with leases of property shards" }
         val buffer = ByteArrayOutputStream()
         val channel = OutputStreamWritableChannel(buffer)
         channel.put(FORMAT)
@@ -68,6 +72,7 @@ internal object TransactionEnvelope {
                 TransactionIdStore.BASE_TX_ID,
                 now,
                 LeaseService.NO_LEASE,
+                Leases.NO_LEASES,
                 kernelVersion,
                 Subject.SYSTEM,
             )
@@ -96,7 +101,8 @@ internal object TransactionEnvelope {
         val reader = readers.get(kernelVersion)
         val commands =
             List<StorageCommand>(count) {
-                reader.read(channel) ?: throw IOException("command ${it + 1} of $count is missing")
+                reader.read(channel, EmptyMemoryTracker.INSTANCE)
+                    ?: throw IOException("command ${it + 1} of $count is missing")
             }
         if (buffer.hasRemaining()) {
             throw IOException("${buffer.remaining()} unexpected bytes after $count commands")
@@ -108,6 +114,7 @@ internal object TransactionEnvelope {
             latestCommittedTxWhenStarted,
             timeCommitted,
             leaseId,
+            Leases.NO_LEASES,
             kernelVersion,
             subject,
         )

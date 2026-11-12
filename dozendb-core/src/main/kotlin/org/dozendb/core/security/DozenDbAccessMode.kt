@@ -3,10 +3,13 @@ package org.dozendb.core.security
 import java.net.InetAddress
 import java.net.URI
 import java.util.UUID
+import java.util.function.IntPredicate
 import java.util.function.Supplier
 import org.eclipse.collections.api.map.primitive.IntObjectMap
 import org.eclipse.collections.api.set.primitive.IntSet
+import org.eclipse.collections.impl.factory.primitive.IntObjectMaps
 import org.eclipse.collections.impl.factory.primitive.IntSets
+import org.neo4j.internal.kernel.api.LabelsSupplier
 import org.neo4j.internal.kernel.api.RelTypeSupplier
 import org.neo4j.internal.kernel.api.TokenSet
 import org.neo4j.internal.kernel.api.security.AccessMode
@@ -14,7 +17,7 @@ import org.neo4j.internal.kernel.api.security.LoginContext.IdLookup
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PermissionState
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
-import org.neo4j.internal.kernel.api.security.ReadSecurityPropertyProvider
+import org.neo4j.internal.kernel.api.security.SelectedPropertiesProvider
 import org.neo4j.messages.MessageUtil
 import org.neo4j.storageengine.api.PropertySelection
 import org.neo4j.token.api.TokenConstants
@@ -26,9 +29,10 @@ import org.neo4j.values.storable.Values
  * labels, relationship types, properties, procedures and functions by the ids [lookup] gives them.
  * Names that do not exist yet are left out, as nothing has them; [stale] tells when they do.
  *
- * Property rules decide with the values of the properties they ask about, which Neo4j reads for the
- * nodes they may apply to; without the values, a DENY rule that may apply denies and a GRANT rule
- * grants nothing.
+ * Property rules decide with the values of the properties they ask about, which Neo4j's provider
+ * reads, when asked, for the nodes they may apply to; without the values, a DENY rule that may
+ * apply denies and a GRANT rule grants nothing. Rules about relationships' properties are not
+ * supported (see [PrivilegeCommands]): relationships go by their types alone.
  */
 class DozenDbAccessMode(
     private val policy: PrivilegePolicy,
@@ -106,22 +110,23 @@ class DozenDbAccessMode(
         if (labels.size == 1 && labels[0] == TokenConstants.ANY_LABEL) allowsTraverseAllLabels()
         else traverseNodes.allowsAny(labels)
 
-    override fun getTraverseSecurityProperties(labels: IntArray): IntSet =
-        traverseNodes.keysFor(labels)
+    override fun hasNoTraverseNodePrivilege(): Boolean =
+        !traverseNodes.granted.any() && traverseNodes.patterns.granted.isEmpty()
 
-    override fun hasApplicableTraverseAllowPropertyRules(label: Int): Boolean =
+    override fun hasApplicableTraverseNodeAllowPropertyRules(label: Int): Boolean =
         !traverseNodes.denied.reaches(label) &&
             traverseNodes.patterns.granted.any { it.appliesTo(label) }
 
-    // Neo4j passes no property provider when no property rule applies.
-    override fun allowsTraverseNodeWithPropertyRules(
-        propertyProvider: ReadSecurityPropertyProvider?,
-        vararg labels: Int,
-    ): Boolean =
-        if (propertyProvider == null) allowsTraverseNode(*labels)
-        else traverseNodes.allowsAny(labels, propertyProvider.securityProperties)
-
-    override fun hasTraversePropertyRules(): Boolean = traverseNodes.patterns.any()
+    override fun allowsTraverseNode(
+        labels: LabelsSupplier,
+        selectedPropertiesProvider: SelectedPropertiesProvider,
+    ): Boolean {
+        if (!traverseNodes.patterns.any()) return traverseNodes.allowsAny { labels.labels.all() }
+        val ids = labels.labels.all()
+        val keys = traverseNodes.keysFor(ids)
+        return if (keys.isEmpty) traverseNodes.allowsAny(ids)
+        else traverseNodes.allowsAny(ids, selectedPropertiesProvider.get(selectionOf(keys)))
+    }
 
     override fun allowsTraverseAllRelTypes(): Boolean = traverseRelationships.everything()
 
@@ -129,80 +134,103 @@ class DozenDbAccessMode(
         if (relType == TokenConstants.ANY_RELATIONSHIP_TYPE) allowsTraverseAllRelTypes()
         else traverseRelationships.allowsAny(intArrayOf(relType))
 
+    override fun allowsTraverseAllRelsWithType(relType: Int): Boolean =
+        allowsTraverseRelType(relType) && allowsTraverseAllLabels()
+
     override fun disallowsTraverseRelType(relType: Int): Boolean =
         if (relType == TokenConstants.ANY_RELATIONSHIP_TYPE) traverseRelationships.denied.all
         else traverseRelationships.denied.reaches(relType)
 
-    override fun allowsReadPropertyAllLabels(propertyKey: Int): Boolean =
-        readNodes.of(propertyKey).everything()
+    override fun hasApplicableTraverseRelAllowPropertyRules(type: Int): Boolean = false
 
-    override fun disallowsReadPropertyForSomeLabel(propertyKey: Int): Boolean =
-        readNodes.of(propertyKey).let { it.denied.any() || it.patterns.denied.isNotEmpty() }
-
-    override fun allowsReadNodeProperties(
-        labels: Supplier<TokenSet>,
-        propertyKeys: IntArray,
-        propertyProvider: ReadSecurityPropertyProvider?,
-    ): Boolean = propertyKeys.all { allowsReadNodeProperty(labels, it, propertyProvider) }
+    override fun allowsTraverseRelationship(
+        type: Int,
+        selectedPropertiesProvider: SelectedPropertiesProvider,
+    ): Boolean = allowsTraverseRelType(type)
 
     override fun allowsReadNodeProperties(
-        labels: Supplier<TokenSet>,
+        labels: LabelsSupplier,
         propertyKeys: IntArray,
+        propertyProvider: Supplier<SelectedPropertiesProvider>,
     ): Boolean {
-        val tokens by lazy { labels.get().all() }
-        return propertyKeys.all { readNodes.of(it).allowsAny { tokens } }
+        val read = nodePropertyReads(labels, propertyProvider, propertyKeys::contains)
+        return propertyKeys.all(read::test)
     }
 
-    override fun allowsReadNodeProperty(
-        labels: Supplier<TokenSet>,
-        propertyKey: Int,
-        propertyProvider: ReadSecurityPropertyProvider?,
-    ): Boolean {
-        val rule = readNodes.of(propertyKey)
-        return if (propertyProvider == null || !rule.patterns.any()) {
-            rule.allowsAny { labels.get().all() }
-        } else {
-            rule.allowsAny(labels.get().all(), propertyProvider.securityProperties)
+    override fun allowedToReadNodeProperties(
+        labels: LabelsSupplier,
+        propertyProvider: Supplier<SelectedPropertiesProvider>,
+        selection: PropertySelection,
+    ): IntPredicate = nodePropertyReads(labels, propertyProvider, selection::test)
+
+    /**
+     * Which properties of a node with [labels] can be read: by labels, unless property rules apply,
+     * whose properties [propertyProvider] reads once, for the properties [selected], when asked.
+     */
+    private fun nodePropertyReads(
+        labels: LabelsSupplier,
+        propertyProvider: Supplier<SelectedPropertiesProvider>,
+        selected: (Int) -> Boolean,
+    ): IntPredicate {
+        val ids by lazy { labels.labels.all() }
+        if (!readNodes.patterns) return IntPredicate { key -> readNodes.of(key).allowsAny { ids } }
+        val values by lazy {
+            readNodes.securitySelection(selected)?.let { propertyProvider.get().get(it) }
+                ?: IntObjectMaps.immutable.empty()
+        }
+        return IntPredicate { key ->
+            val rule = readNodes.of(key)
+            if (!rule.patterns.any()) rule.allowsAny { ids } else rule.allowsAny(ids, values)
         }
     }
 
-    override fun allowsReadNodeProperty(labels: Supplier<TokenSet>, propertyKey: Int): Boolean =
-        readNodes.of(propertyKey).allowsAny { labels.get().all() }
+    /**
+     * Every node with one of [labels] can be traversed and its [propertyKeys] read, whatever its
+     * other labels and its properties' values, so that an index seek need not check each.
+     */
+    override fun allowsTraverseAndReadAllMatchingNodeProperties(
+        labels: IntArray,
+        propertyKeys: IntArray,
+    ): Boolean =
+        labels.all(::allowsTraverseAllNodesWithLabel) &&
+            propertyKeys.all { key ->
+                val rule = readNodes.of(key)
+                !rule.denied.any() &&
+                    rule.patterns.denied.isEmpty() &&
+                    labels.all { rule.allowsAny(intArrayOf(it)) }
+            }
 
-    override fun allowsReadPropertyAllRelTypes(propertyKey: Int): Boolean =
-        readRelationships.of(propertyKey).everything()
+    override fun allowsTraverseAndReadAllMatchingRelProperties(
+        relTypes: IntArray,
+        propertyKeys: IntArray,
+    ): Boolean =
+        relTypes.all(::allowsTraverseRelType) &&
+            allowsTraverseAllLabels() &&
+            propertyKeys.all { key ->
+                relTypes.all { readRelationships.of(key).allowsAny(intArrayOf(it)) }
+            }
 
-    override fun allowsReadRelationshipProperty(
+    override fun allowsReadRelProperties(
         relType: RelTypeSupplier,
-        propertyKey: Int,
-    ): Boolean = readRelationships.of(propertyKey).allowsAny { intArrayOf(relType.relType) }
+        propertyKeys: IntArray,
+        propertyProvider: Supplier<SelectedPropertiesProvider>,
+    ): Boolean = propertyKeys.all {
+        readRelationships.of(it).allowsAny { intArrayOf(relType.relType) }
+    }
+
+    override fun allowedToReadRelationshipProperties(
+        relType: RelTypeSupplier,
+        propertyProvider: Supplier<SelectedPropertiesProvider>,
+        selection: PropertySelection,
+    ): IntPredicate = IntPredicate { key ->
+        readRelationships.of(key).allowsAny { intArrayOf(relType.relType) }
+    }
 
     /** Lists a property key that some element could have read. */
     override fun allowsSeePropertyKeyToken(propertyKey: Int): Boolean =
         listOf(readNodes.of(propertyKey), readRelationships.of(propertyKey)).any {
             (it.granted.any() || it.patterns.granted.isNotEmpty()) && !it.denied.all
         }
-
-    override fun hasPropertyReadRules(): Boolean = readNodes.patterns
-
-    override fun hasPropertyReadRules(vararg propertyKeys: Int): Boolean = propertyKeys.any {
-        readNodes.of(it).patterns.any()
-    }
-
-    override fun getReadSecurityProperties(propertyKey: Int): IntSet =
-        readNodes.of(propertyKey).patterns.keys
-
-    override fun getAllReadSecurityProperties(): IntSet = readNodes.keys
-
-    /**
-     * The properties whose values decide whether those of [selection] can be read: none without
-     * property rules, null if the rules are about other properties. A selection may not know its
-     * keys, as one of all properties but some: the rules' properties are asked about instead.
-     */
-    override fun getSecurityPropertySelection(selection: PropertySelection): PropertySelection? {
-        if (!readNodes.patterns) return PropertySelection.NO_PROPERTIES
-        return readNodes.securitySelection(selection::test)
-    }
 
     override fun allowsExecuteProcedure(procedureId: Int): PermissionState =
         procedures(procedureId).execute
@@ -248,8 +276,8 @@ class DozenDbAccessMode(
     override fun allowsDeleteRelationship(relType: Int): Boolean =
         deleteRelationships.allowsAny(intArrayOf(relType))
 
-    override fun allowsSetProperty(labels: Supplier<TokenSet>, propertyKey: Int): Boolean =
-        setNodeProperties.of(propertyKey).allowsEvery(labels.get().all())
+    override fun allowsSetProperty(labels: LabelsSupplier, propertyKey: Int): Boolean =
+        setNodeProperties.of(propertyKey).allowsEvery(labels.labels.all())
 
     override fun allowsSetProperty(relType: RelTypeSupplier, propertyKey: Int): Boolean =
         setRelationshipProperties.of(propertyKey).allowsAny(intArrayOf(relType.relType))
@@ -290,20 +318,20 @@ class DozenDbAccessMode(
      */
     private fun pattern(pattern: PatternSegment): Any? {
         val ids =
-            if (pattern.labels().isEmpty()) null
+            if (pattern.elementTypes().isEmpty()) null
             else
                 pattern
-                    .labels()
+                    .elementTypes()
                     .mapNotNull { labels.id(it) }
                     .ifEmpty {
                         return null
                     }
         val holds: (Value) -> Boolean =
             when (pattern) {
-                is PatternSegment.ValuePatternSegment -> { value ->
+                is PatternSegment.NodeValuePatternSegment -> { value ->
                     pattern.operator().test(value, pattern.value())
                 }
-                is PatternSegment.NullPatternSegment -> pattern.operator()::test
+                is PatternSegment.NodeNullPatternSegment -> pattern.operator()::test
                 else -> return null
             }
         val key = keys.id(pattern.property())
@@ -540,7 +568,7 @@ class DozenDbAccessMode(
         }
 
         private fun selection(keys: IntSet): PropertySelection? =
-            if (keys.isEmpty) null else PropertySelection.selection(*keys.toArray())
+            if (keys.isEmpty) null else selectionOf(keys)
     }
 
     /** Names resolved to ids, remembering those that did not exist. */
@@ -560,6 +588,10 @@ class DozenDbAccessMode(
     }
 
     private companion object {
+        /** The properties [keys], to read their values. */
+        fun selectionOf(keys: IntSet): PropertySelection =
+            PropertySelection.selection(*keys.toArray())
+
         /** What a privilege about every node, relationship, label or property reaches. */
         val ALL = Any()
 

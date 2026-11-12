@@ -11,7 +11,7 @@ import org.dozendb.consensus.DatabaseRef
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.remote.RemoteFailure
-import org.neo4j.bolt.protocol.common.message.AccessMode
+import org.neo4j.boltmessages.AccessMode
 import org.neo4j.configuration.helpers.RemoteUri
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.fabric.executor.FabricException

@@ -8,9 +8,11 @@ import org.neo4j.io.fs.ByteBufferReadableChannel
 import org.neo4j.io.fs.OutputStreamWritableChannel
 import org.neo4j.kernel.KernelVersion
 import org.neo4j.kernel.impl.api.LeaseService
-import org.neo4j.kernel.impl.transaction.log.CompleteCommandBatch
+import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.CommandReaderFactory
+import org.neo4j.storageengine.api.Leases
 import org.neo4j.storageengine.api.StorageCommand
+import org.neo4j.wal.CompleteCommandBatch
 
 /**
  * A [CommittedTransaction] as bytes, as differential backups and secondaries' pulls carry it: its
@@ -70,7 +72,7 @@ object TransactionRecords {
         val reader = readers.get(kernelVersion)
         val commands =
             List<StorageCommand>(count) {
-                reader.read(channel)
+                reader.read(channel, EmptyMemoryTracker.INSTANCE)
                     ?: throw IOException(
                         "command ${it + 1} of $count of transaction $transactionId is missing"
                     )
@@ -89,6 +91,7 @@ object TransactionRecords {
                 latestCommittedTxWhenStarted,
                 timeCommitted,
                 LeaseService.NO_LEASE,
+                Leases.NO_LEASES,
                 kernelVersion,
                 Subject.ANONYMOUS,
             )

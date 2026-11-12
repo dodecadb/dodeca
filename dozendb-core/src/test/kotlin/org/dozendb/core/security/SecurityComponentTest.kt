@@ -290,7 +290,7 @@ class SecurityComponentTest {
                     PrivilegeScope.AllDatabases,
                     PrivilegeResource.AllProperties,
                     PrivilegeSegment.NodePattern(
-                        PatternSegment.NullPatternSegment(
+                        PatternSegment.NodeNullPatternSegment(
                             setOf("A", "B"),
                             "level",
                             PropertyRule.NullOperator.IS_NULL,
@@ -328,7 +328,7 @@ class SecurityComponentTest {
             PrivilegeScope.AllDatabases,
             PrivilegeResource.Graph,
             PrivilegeSegment.NodePattern(
-                PatternSegment.ValuePatternSegment(
+                PatternSegment.NodeValuePatternSegment(
                     setOf("Doc"),
                     "level",
                     value,
