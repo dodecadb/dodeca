@@ -14,13 +14,14 @@ if you wish.
 
 ## Supported versions
 
-Fixes go into the next release, which is built for the newest Neo4j 5.26 patch
-(see [`doc/RELEASING.md`](doc/RELEASING.md)); earlier releases are not patched.
+Fixes go into the next release, which is built for the newest Neo4j release
+DozenDB runs on (see [`doc/RELEASING.md`](doc/RELEASING.md#neo4j-versions));
+earlier releases are not patched.
 DozenDB is under development and not ready for production use.
 
 ## Vulnerabilities in Neo4j
 
 DozenDB runs on Neo4j Community, unmodified. Report a vulnerability in Neo4j
 itself to Neo4j, as [its security policy](https://github.com/neo4j/neo4j/security/policy)
-says. When a Neo4j 5.26 patch fixes one, the next DozenDB release is built for
-that patch.
+says. When a Neo4j release fixes one, the next DozenDB release is built for
+that release, as soon as DozenDB runs on it.

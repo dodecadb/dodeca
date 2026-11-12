@@ -23,7 +23,7 @@ one Neo4j version, which the names of its jar and image carry, as in
 What a number says to operators:
 
 - A patch release (`0.2.1`) fixes bugs, updates dependencies, or moves to a
-  newer Neo4j 5.26 patch.
+  newer Neo4j release.
 - A minor release (`0.3.0`) adds features. It may raise the format level
   ([`FORMATS.md`](FORMATS.md)), which
   [`finishUpgrade`](OPERATOR_GUIDE.md#upgrading-dozendb) then switches to.
@@ -44,26 +44,37 @@ works.
 
 ## Neo4j versions
 
-Each release is built for the newest Neo4j 5.26 patch, and only for it. When
-Neo4j publishes a patch, Dependabot opens a pull request that raises
+Neo4j publishes a release every month, named by its date (`2026.11.0`), and
+patch releases of it (`2026.10.2`). It fixes bugs, security fixes included, in
+its newest release only. DozenDB follows every Neo4j release, best effort: each
+DozenDB release is built for one Neo4j release, the newest that DozenDB has
+been ported to.
+DozenDB builds on Neo4j's internal classes, so a Neo4j release that changes them
+takes a port, which can take a while; until it is done, DozenDB stays on the
+Neo4j release before. DozenDB keeps no line of its own for Neo4j's long-term
+support releases, such as 5.26.
+
+When Neo4j publishes a release, Dependabot opens a pull request that raises
 `neo4j.version` (the `neo4j` group in `.github/dependabot.yml`), and CI runs
 every test on it. Before merging it:
 
-1. Read Neo4j's changelog for the patch, and recheck the Neo4j classes in
-   [`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md) for changes between
-   the two versions.
+1. Read Neo4j's changelogs since the version DozenDB runs on, and recheck the
+   Neo4j classes in [`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md) for
+   changes between the two versions. Port DozenDB on the pull request's
+   branch where they changed.
 2. Write the new version wherever the documents name the old one: `git grep
    -n 2026.10.2 -- '*.md'`.
 3. Raise the versions of what DozenDB takes from Neo4j's `lib/` to those the
    new Neo4j ships, if they changed: slf4j, JNA, Jackson and the JAX-RS API,
    which Dependabot leaves alone.
+4. Read what the operations and Cypher manuals of Neo4j Enterprise say is new
+   or changed in the release, and update [`COMPATIBILITY.md`](COMPATIBILITY.md):
+   the documents only, never Enterprise's code (see
+   [`CONTRIBUTING.md`](../CONTRIBUTING.md)).
 
 Then release, normally as a patch release, so that operators get Neo4j's fixes.
-Neo4j's security fixes come in its patches, which is why Dependabot proposes
+Neo4j's security fixes come in its releases, which is why Dependabot proposes
 them at once instead of a week later as other updates.
-
-Moving to another Neo4j line, such as Neo4j's calendar releases (2026.x), is a
-decision of its own, not an update: Dependabot ignores them.
 
 ## Dependency updates
 
