@@ -44,7 +44,12 @@ private constructor(
     private val log = globalModule.logService.internalLogProvider.getLog(javaClass)
 
     val registry =
-        MetricRegistry(config.get(MetricsSettings.prefix), config.get(MetricsSettings.filter), log)
+        MetricRegistry(
+            config.get(MetricsSettings.prefix),
+            config.get(MetricsSettings.filter),
+            log,
+            config.get(MetricsSettings.denyFilter),
+        )
 
     /** The Prometheus endpoint, when enabled. */
     val prometheus: PrometheusEndpoint? =

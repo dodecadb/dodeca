@@ -2217,6 +2217,7 @@ and `NEO4J_server_metrics_prometheus_endpoint=0.0.0.0:2004`, and publish port
 | `server.metrics.enabled` | `true` | `false` reports no metrics at all. |
 | `server.metrics.prefix` | `neo4j` | The start of every name. |
 | `server.metrics.filter` | Neo4j Enterprise's list | Globs of the names reported; `*` reports every metric. |
+| `server.metrics.deny_filter` | none | Globs of the names not reported although the filter reports them. |
 | `server.metrics.jmx.enabled` | `true` | MBeans in the domain `neo4j.metrics`, also read by `CALL dbms.queryJmx('neo4j.metrics:*')`. |
 | `server.metrics.prometheus.enabled` | `false` | |
 | `server.metrics.prometheus.endpoint` | `localhost:2004` | |

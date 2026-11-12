@@ -77,6 +77,16 @@ class MetricsSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "The metrics not reported although server.metrics.filter reports them: a " +
+                "comma-separated list of globbing patterns, as for the filter. For example the " +
+                "filter `*page_cache.*` and `*page_cache.page_faults` report every page cache " +
+                "metric but page faults. Named like Neo4j Enterprise's setting of 2025.10."
+        )
+        val denyFilter: Setting<List<GlobbingPattern>> =
+            newBuilder("server.metrics.deny_filter", listOf(GLOBBING_PATTERN), emptyList()).build()
+
+        @JvmField
+        @field:Description(
             "Writes the metrics to CSV files in server.directories.metrics: a file per metric, " +
                 "named after it, with a line every server.metrics.csv.interval."
         )

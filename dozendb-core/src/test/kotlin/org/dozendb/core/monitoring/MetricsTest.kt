@@ -108,6 +108,30 @@ class MetricsTest {
             }
     }
 
+    // Enterprise's example of server.metrics.deny_filter, 2025.10.
+    @Test
+    fun `the deny filter leaves out metrics the filter reports`() {
+        server(
+                MetricsSettings.filter to listOf(GlobbingPattern("*page_cache.*")),
+                MetricsSettings.denyFilter to listOf(GlobbingPattern("*page_cache.page_faults")),
+            )
+            .use { server ->
+                server.start()
+
+                val names =
+                    server
+                        .scrape("/metrics")
+                        .body()
+                        .decodeToString()
+                        .lines()
+                        .filter { it.isNotEmpty() && !it.startsWith("#") }
+                        .map { it.substringBefore(' ') }
+                assertThat(names).contains("neo4j_dbms_page_cache_hits_total")
+                assertThat(names).allMatch { "_page_cache_" in it }
+                assertThat(names).doesNotContain("neo4j_dbms_page_cache_page_faults_total")
+            }
+    }
+
     @Test
     fun `nothing is reported with metrics or every exporter disabled`() {
         server(MetricsSettings.enabled to false).use { server ->

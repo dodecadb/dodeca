@@ -287,6 +287,7 @@ class StandaloneIT {
                 "server.metrics.enabled",
                 "server.metrics.prefix",
                 "server.metrics.filter",
+                "server.metrics.deny_filter",
                 "server.metrics.csv.enabled",
                 "server.metrics.csv.interval",
                 "server.metrics.csv.rotation.size",

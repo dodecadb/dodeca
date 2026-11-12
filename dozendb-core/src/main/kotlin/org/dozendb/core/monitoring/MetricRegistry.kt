@@ -69,8 +69,8 @@ private class ReadCounter(private val read: () -> Long) : Counter() {
 
 /**
  * The metrics of a DBMS by full dotted name, in name order: `<prefix>.dbms.<name>` for the DBMS and
- * `<prefix>.database.<database>.<name>` for each database, as Neo4j Enterprise names them. Metrics
- * that [filter] leaves out are never registered, and cost nothing.
+ * `<prefix>.database.<database>.<name>` for each database, as Neo4j Enterprise names them. Only the
+ * metrics that [filter] names and [deny] does not are registered; the others cost nothing.
  *
  * Metrics are registered through [MetricGroup]s, which remove theirs when closed, so that a
  * database's metrics go when it stops. [dropwizard] holds the same metrics for Dropwizard's
@@ -80,7 +80,11 @@ class MetricRegistry(
     val prefix: String,
     private val filter: List<GlobbingPattern>,
     private val log: InternalLog,
+    private val deny: List<GlobbingPattern> = emptyList(),
 ) {
+    private fun reports(name: String): Boolean =
+        filter.any { it.matches(name) } && deny.none { it.matches(name) }
+
     private val metrics = ConcurrentSkipListMap<String, Metric>()
 
     /** The same metrics, for Dropwizard's JMX reporter. */
@@ -105,8 +109,8 @@ class MetricRegistry(
         private val registered = mutableListOf<String>()
         private var closed = false
 
-        /** Whether the filter reports the metric [name] of this group. */
-        fun enabled(name: String): Boolean = filter.any { it.matches(namePrefix + name) }
+        /** Whether the filters report the metric [name] of this group. */
+        fun enabled(name: String): Boolean = reports(namePrefix + name)
 
         /** A counter incremented by its source; null when the filter leaves it out. */
         fun counter(name: String, description: String): Counter? =
@@ -139,7 +143,7 @@ class MetricRegistry(
             value: com.codahale.metrics.Metric,
         ): Boolean {
             val fullName = namePrefix + name
-            if (closed || filter.none { it.matches(fullName) }) return false
+            if (closed || !reports(fullName)) return false
             val metric = Metric(fullName, type, description, value)
             if (metrics.putIfAbsent(fullName, metric) != null) {
                 log.warn("Metric $fullName is registered already; this one is not reported.")

@@ -981,7 +981,8 @@ as JSON lines since 2025.01.
 - **Defaults are Enterprise's of 2026.10**:
   `server.metrics.csv.rotation.compression` is `ZIP`, as since 2025.01, and
   `server.metrics.filter` is the list of 2025.06, with the `neo4j.count.*`
-  metrics. `server.metrics.deny_filter` (2025.10) is not supported.
+  metrics. `server.metrics.deny_filter` (2025.10) leaves out metrics that the
+  filter reports.
 - **CSV files are on by default**, as in Enterprise: a server moving from
   Neo4j Community or from an earlier DozenDB starts writing a file per metric
   in `server.directories.metrics` (`metrics` under the home directory),
