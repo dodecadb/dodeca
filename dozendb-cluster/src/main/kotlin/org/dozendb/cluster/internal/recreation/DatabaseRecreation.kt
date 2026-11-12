@@ -6,11 +6,14 @@ import org.dozendb.cluster.internal.ClusterPlacement
 import org.dozendb.cluster.internal.Neo4jSystemGraph
 import org.dozendb.core.Gql
 import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.edition.ServerSeedUri
 import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.security.PrivilegeRecords
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.Placements
+import org.dozendb.core.servers.ServerLifecycle
 import org.dozendb.core.servers.ServerRecords
+import org.dozendb.core.servers.Servers
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
@@ -42,9 +45,12 @@ import org.neo4j.kernel.database.NormalizedDatabaseName
  * that hosts a copy does not answer and is not cordoned, and when they are more than its copies.
  * Seeders whose copies are in quarantine are refused.
  *
- * @property reading runs a block while the system graph may be read, as catch-up may replace it.
+ * @property reading runs a block while the system graph may be read, as catch-up may replace it. A
+ *   `server:` seed names the server that reads it, by id or name; it is kept by id, and that server
+ *   is placed on the database and, unless a seeder's store recreates it, creates it.
  * @property seeder reads seeds at URIs, if this server can.
  * @property quarantined the servers whose copies of a database, by id, are in quarantine.
+ * @property servers the servers of the cluster.
  */
 class DatabaseRecreation
 internal constructor(
@@ -55,6 +61,7 @@ internal constructor(
     private val defaults: Placements.Defaults,
     private val seeder: () -> DatabaseSeeder?,
     private val quarantined: (UUID) -> Set<UUID>,
+    private val servers: Servers,
 ) {
     /**
      * Recreates the database [name] as [options] ask (see [RecreateOptions]); returns its new id.
@@ -97,6 +104,19 @@ internal constructor(
                 val secondaries =
                     asked.secondaries ?: Placements.secondaries(node) ?: current.secondaries
                 val seeders = seeders(tx, normalized, named, old, primaries + secondaries, failed)
+                val onServer =
+                    try {
+                        uri?.let(ServerSeedUri::parse)
+                    } catch (e: IllegalArgumentException) {
+                        throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
+                    }
+                val reader = onServer?.let {
+                    ServerLifecycle.enabled(
+                            ServerLifecycle.target(tx, it.server, servers, failed),
+                            failed,
+                        )
+                        .id
+                }
                 if (named != null && seeders.isEmpty() && uri == null) {
                     throw Gql.refused(
                         "$failed: no enabled server hosts a copy of it. Give " +
@@ -111,8 +131,13 @@ internal constructor(
                     ZonedDateTime.now(),
                 )
                 Neo4jSystemGraph.forgetCreation(node)
-                // Without the options of the seed it was created from, if any.
-                if (uri != null) UriSeed(uri).write(node) else UriSeed.remove(node)
+                // Without the options of the seed it was created from, if any; by the id of the
+                // server that reads a server: seed, which a RENAME SERVER does not change.
+                when {
+                    reader != null -> UriSeed(onServer.on("$reader")).write(node)
+                    uri != null -> UriSeed(uri).write(node)
+                    else -> UriSeed.remove(node)
+                }
                 asked.storeFormat?.let {
                     node.setProperty(
                         TopologyGraphDbmsModel.DATABASE_STORE_FORMAT_NEW_DB_PROPERTY,
@@ -132,7 +157,13 @@ internal constructor(
                     TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
                 )
                 try {
-                    placement.replace(tx, normalized, primaries, secondaries, seeders)
+                    placement.replace(
+                        tx,
+                        normalized,
+                        primaries,
+                        secondaries,
+                        (seeders + listOfNotNull(reader)).distinct(),
+                    )
                 } catch (e: AllocationException) {
                     throw Gql.refused("$failed: ${e.message}.", e)
                 }

@@ -80,6 +80,35 @@ class RecreateDatabaseTest {
     }
 
     @Test
+    fun `a database is recreated from the seeds directory of the server a server URI names`() {
+        val cluster = ClusterHarness(root, 3).also { harness = it }
+        cluster.start()
+        cluster.write(FILMS, 3)
+        val seed = cluster.backup(cluster.members[0])
+        cluster.write(FILMS, 2)
+        val reader = cluster.members[2]
+        Files.copy(seed, Files.createDirectories(reader.home.resolve("seeds")).resolve("f.backup"))
+        cluster.administer("RENAME SERVER '${reader.serverId}' TO 'gamma'")
+
+        assertThat(
+                catchThrowable {
+                    cluster.administer(
+                        "CALL dbms.recreateDatabase('$FILMS', {seedURI: 'server://delta/f.backup'})"
+                    )
+                }
+            )
+            .hasMessageContaining(
+                "Could not recreate database '$FILMS': there is no such server. SHOW SERVERS " +
+                    "lists the servers."
+            )
+        cluster.administer(
+            "CALL dbms.recreateDatabase('$FILMS', {seedURI: 'server://gamma/f.backup'})"
+        )
+
+        cluster.awaitFilms(cluster.members, 3)
+    }
+
+    @Test
     fun `the default database is recreated from a backup as any other`() {
         val cluster = ClusterHarness(root, 3).also { harness = it }
         cluster.start()

@@ -74,7 +74,14 @@ class BackupExtensionFactory :
         val config = dependencies.config()
         val fs = dependencies.fileSystemAbstraction()
         val logProvider = dependencies.logService().internalLogProvider
-        val seeder = StoreSeeder(fs, dependencies.pageCache(), config, logProvider)
+        val seeder =
+            StoreSeeder(
+                fs,
+                dependencies.pageCache(),
+                config,
+                logProvider,
+                dependencies.serverIdentity().serverId().uuid(),
+            )
         if (!config.get(BackupSettings.enabled)) return Extension(null, seeder)
         val source =
             BackupSource(

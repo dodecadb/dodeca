@@ -1,5 +1,8 @@
 package org.dozendb.core.edition
 
+import java.net.URI
+import java.net.URISyntaxException
+import java.nio.file.Path
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import org.dozendb.core.store.RestorePoint
@@ -101,6 +104,55 @@ data class UriSeed(
 
         private fun setOrRemove(node: Node, property: String, value: Any?) {
             if (value == null) node.removeProperty(property) else node.setProperty(property, value)
+        }
+    }
+}
+
+/**
+ * The URI of a seed in the seeds directory of a server, `server.directories.seeds`, as Neo4j
+ * Enterprise's ServerSeedProvider reads it: `server://<server id or name>/<artifact>`, or
+ * `server://<server id or name>/` for the directory itself.
+ *
+ * @property server the server, by id or name.
+ * @property artifact the file in its seeds directory; null for the directory.
+ */
+data class ServerSeedUri(val server: String, val artifact: String?) {
+    /** The URI, with [server] in place of the one it named. */
+    fun on(server: String): String = "$SCHEME://$server/${artifact ?: ""}"
+
+    companion object {
+        const val SCHEME = "server"
+
+        /**
+         * The server and artifact of [uri]; null if it is no `server:` URI.
+         *
+         * @throws IllegalArgumentException if it names no server, or a file outside the seeds
+         *   directory.
+         */
+        fun parse(uri: String): ServerSeedUri? {
+            val parsed =
+                try {
+                    URI(uri)
+                } catch (_: URISyntaxException) {
+                    return null
+                }
+            if (!SCHEME.equals(parsed.scheme, ignoreCase = true)) return null
+            val server =
+                parsed.authority?.takeIf { it.isNotBlank() }
+                    ?: throw IllegalArgumentException(
+                        "seedURI '$uri' names no server: give $SCHEME://<server id or " +
+                            "name>/<artifact>, or $SCHEME://<server id or name>/ for the seeds " +
+                            "directory"
+                    )
+            val artifact = parsed.path.orEmpty().trimStart('/').takeIf { it.isNotEmpty() }
+            if (artifact != null) {
+                val base = Path.of("seeds")
+                val resolved = base.resolve(artifact).normalize()
+                require(resolved.startsWith(base) && resolved != base) {
+                    "seedURI '$uri' names a file outside server.directories.seeds"
+                }
+            }
+            return ServerSeedUri(server, artifact)
         }
     }
 }

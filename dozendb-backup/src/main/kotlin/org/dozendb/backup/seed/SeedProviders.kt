@@ -5,8 +5,11 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import org.dozendb.core.edition.ServerSeedUri
 import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.cloud.storage.StorageSystemProviderFactory
+import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.service.Services
 
 /** Reads the seeds at URIs of some schemes, as Neo4j Enterprise's seed providers do. */
@@ -16,12 +19,14 @@ internal sealed class SeedProvider(val name: String) {
 
     /**
      * Passes [block] the seed at [uri]: a file or a folder, local or in cloud storage through [fs],
-     * or a copy in [directory], an existing directory, that it deletes afterwards.
+     * or a copy in [directory], an existing directory, that it deletes afterwards. [config] is the
+     * server's.
      */
     abstract fun <T> fetch(
         uri: URI,
         fs: SchemeFileSystemAbstraction,
         directory: Path,
+        config: Config,
         block: (Path) -> T,
     ): T
 
@@ -33,6 +38,7 @@ internal sealed class SeedProvider(val name: String) {
             uri: URI,
             fs: SchemeFileSystemAbstraction,
             directory: Path,
+            config: Config,
             block: (Path) -> T,
         ): T {
             val path = Path.of(uri)
@@ -49,6 +55,7 @@ internal sealed class SeedProvider(val name: String) {
             uri: URI,
             fs: SchemeFileSystemAbstraction,
             directory: Path,
+            config: Config,
             block: (Path) -> T,
         ): T {
             val download = Files.createTempFile(directory, "seed-", ".download")
@@ -74,6 +81,7 @@ internal sealed class SeedProvider(val name: String) {
             uri: URI,
             fs: SchemeFileSystemAbstraction,
             directory: Path,
+            config: Config,
             block: (Path) -> T,
         ): T = block(fs.resolve(uri.toString()))
     }
@@ -89,15 +97,42 @@ internal sealed class SeedProvider(val name: String) {
             uri: URI,
             fs: SchemeFileSystemAbstraction,
             directory: Path,
+            config: Config,
             block: (Path) -> T,
-        ): T = Cloud.fetch(uri, fs, directory, block)
+        ): T = Cloud.fetch(uri, fs, directory, config, block)
+    }
+
+    /**
+     * Seeds in the seeds directory of a server, `server.directories.seeds`: `server://<server id or
+     * name>/<artifact>`, a dump or a backup, or `server://<server id or name>/` for the directory,
+     * as Neo4j Enterprise's provider reads them. The server they name reads them, and creates the
+     * database.
+     */
+    data object Server : SeedProvider("ServerSeedProvider") {
+        override fun reads(scheme: String) = scheme == ServerSeedUri.SCHEME
+
+        override fun <T> fetch(
+            uri: URI,
+            fs: SchemeFileSystemAbstraction,
+            directory: Path,
+            config: Config,
+            block: (Path) -> T,
+        ): T {
+            val seeds = config.get(GraphDatabaseSettings.seeds_path)
+            val onServer =
+                ServerSeedUri.parse("$uri")
+                    ?: throw IllegalArgumentException("$uri is not a ${ServerSeedUri.SCHEME}: URI")
+            val path = onServer.artifact?.let(seeds::resolve) ?: seeds
+            if (!Files.exists(path)) throw IOException("$path does not exist")
+            return block(path)
+        }
     }
 
     companion object {
         // A getter: the providers extend this class, so a list made when it initialises would
         // hold nulls.
         val ALL: List<SeedProvider>
-            get() = listOf(File, UrlConnection, Cloud, S3)
+            get() = listOf(File, UrlConnection, Cloud, S3, Server)
 
         /** The provider named [name]; null for one DozenDB does not have. */
         fun named(name: String): SeedProvider? = ALL.firstOrNull { it.name == name }

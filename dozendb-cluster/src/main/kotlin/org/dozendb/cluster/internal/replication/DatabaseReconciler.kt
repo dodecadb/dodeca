@@ -14,6 +14,7 @@ import org.dozendb.cluster.internal.recreation.SeedElection
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.edition.ServerSeedUri
 import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.CopyMode
@@ -882,6 +883,12 @@ internal class DatabaseReconciler(
         }
     }
 
+    /** The server that reads the `server:` seed of [database], by its id; null for none. */
+    private fun reader(database: DesiredDatabase): MemberId? =
+        database.seed
+            ?.let { runCatching { ServerSeedUri.parse(it.uri) }.getOrNull() }
+            ?.let { runCatching { MemberId.parse(it.server) }.getOrNull() }
+
     /**
      * Names the creator of [database] among the servers it is placed on: for one recreated from the
      * stores of its seeders, the seeder whose store is the latest ([SeedElection]); else its
@@ -928,11 +935,11 @@ internal class DatabaseReconciler(
                             elected.message,
                             id,
                         )
-                        anyCreator(database, hosting)
+                        reader(database) ?: anyCreator(database, hosting)
                     }
                 }
             } else {
-                database.designatedSeeder ?: anyCreator(database, hosting)
+                database.designatedSeeder ?: reader(database) ?: anyCreator(database, hosting)
             }
         // It starts the database's group, so it must be one of its initial members.
         if (creator == null || hosting.none { it.id == creator }) {

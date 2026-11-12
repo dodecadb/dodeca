@@ -1516,7 +1516,8 @@ copy it from that server: the one that `existingDataSeedServer` names, which
 the database is placed on first, or else one the cluster chooses. That server
 must be able to read the seed: for a seed in cloud storage, give every server
 credentials. `dbms.databases.seed_from_uri_providers` lists the kinds of seed
-URIs servers read, by default `FileSeedProvider,CloudSeedProvider`:
+URIs servers read, by default
+`FileSeedProvider,CloudSeedProvider,ServerSeedProvider`:
 
 - `FileSeedProvider`: `file:` URIs.
 - `CloudSeedProvider`: `s3:`, `gs:` and `azb:` URIs (see
@@ -1527,6 +1528,15 @@ URIs servers read, by default `FileSeedProvider,CloudSeedProvider`:
   AWS SDK's own credentials are used.
 - `URLConnectionSeedProvider`: `http:`, `https:` and `ftp:` URIs, a dump or a
   full backup only, downloaded next to the database first.
+- `ServerSeedProvider`: `server:` URIs, which name a server, by id or name,
+  and a file in its seeds directory, `server.directories.seeds` (`seeds` in
+  the server's home by default): `server://server-2/films.backup`. That
+  server reads the seed and creates the database, and the others copy it, so
+  the seed need only be on that server. A differential backup restores with
+  the backups before it in that directory. `server://server-2/` restores the
+  latest chain there of the database of the same name, or, in Cypher 25, of
+  the one `seedSourceDatabase` names; a dump must be named. Delete the files
+  once the database is created.
 
 `CREATE OR REPLACE DATABASE films OPTIONS {seedURI: '...'}` drops `films`,
 its files too, and creates it from the seed.
@@ -1910,7 +1920,8 @@ Enterprise's options:
   copies.
 - `seedURI`: a backup or a dump to recreate the database from, read as `CREATE
   DATABASE` reads one (see [Creating a database from a backup or a
-  dump](#creating-a-database-from-a-backup-or-a-dump)). With `seedingServers`,
+  dump](#creating-a-database-from-a-backup-or-a-dump)); a `server:` seed is
+  read by the server it names, which then hosts a copy. With `seedingServers`,
   which must then be empty, it seeds the database only when none of the seeders
   holds a store.
 - `clearData`: `true` recreates the database empty, without its data, indexes

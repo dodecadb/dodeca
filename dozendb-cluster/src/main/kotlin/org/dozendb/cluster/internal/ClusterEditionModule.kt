@@ -1236,6 +1236,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
                         }
                         .mapTo(HashSet()) { it.id.uuid }
                 },
+                servers = servers(),
             )
         cluster.onRemoved = {
             reconciler.request()

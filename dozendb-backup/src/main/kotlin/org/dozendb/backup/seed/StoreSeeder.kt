@@ -4,11 +4,13 @@ import java.io.IOException
 import java.net.URI
 import java.net.URISyntaxException
 import java.nio.file.Path
+import java.util.UUID
 import org.dozendb.backup.ArtifactChain
 import org.dozendb.backup.ArtifactChains
 import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.StorePreparer
 import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.edition.ServerSeedUri
 import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
@@ -25,14 +27,16 @@ import org.neo4j.logging.InternalLogProvider
  * Creates the stores of databases from seeds at URIs, read by the first provider of
  * `dbms.databases.seed_from_uri_providers` for their scheme: a dump, a full backup, a differential
  * backup with the backups it continues in its folder, or a folder of backups, whose latest chain it
- * restores. A store is prepared next to the database's directories, with the DBMS's file system and
- * page cache, then moved into place.
+ * restores; or with `server:` URIs, which name this server, [self], the same in its seeds
+ * directory. A store is prepared next to the database's directories, with the DBMS's file system
+ * and page cache, then moved into place.
  */
 internal class StoreSeeder(
     private val fs: FileSystemAbstraction,
     private val pageCache: PageCache,
     private val config: Config,
     private val logProvider: InternalLogProvider,
+    private val self: UUID,
 ) : DatabaseSeeder {
     private val placement = StorePlacement(fs, Neo4jLayout.of(config))
 
@@ -50,6 +54,14 @@ internal class StoreSeeder(
 
     override fun seed(database: NamedDatabaseId, seed: UriSeed) {
         check(seed)
+        // The command that created the database named the server by its id.
+        val onServer = ServerSeedUri.parse(seed.uri)
+        if (onServer != null && onServer.server != "$self") {
+            throw IOException(
+                "the seed is on server ${onServer.server}, not on this server, $self, which " +
+                    "cannot read it"
+            )
+        }
         val parsed = parse(seed.uri)
         val provider = provider(parsed)
         val until = seed.restoreUntil
@@ -57,9 +69,9 @@ internal class StoreSeeder(
         val staged = placement.stage(name, PURPOSE)
         try {
             SchemeFileSystemAbstraction(fs, config, logProvider).use { schemes ->
-                provider.fetch(parsed, schemes, staged.databaseDirectory().parent) { path ->
+                provider.fetch(parsed, schemes, staged.databaseDirectory().parent, config) { path ->
                     val preparer = StorePreparer(schemes, pageCache, config, logProvider)
-                    when (val contents = contents(path, schemes, name, seed)) {
+                    when (val contents = contents(path, schemes, name, seed, onServer == null)) {
                         is Contents.Archive ->
                             preparer.prepare(contents.path, emptyList(), until, staged, true)
                         is Contents.Chain -> preparer.prepare(contents.chain, until, staged, true)
@@ -82,14 +94,16 @@ internal class StoreSeeder(
 
     /**
      * What [path], the seed of database [name] that [seed] describes, holds: of the backups it
-     * finds, those of `seedSourceDatabase` if given, and of their chains, the one that restores up
-     * to `seedRestoreUntil` if given.
+     * finds, those of `seedSourceDatabase` if given, else of [name], or with [anyName] of the only
+     * database it holds backups of; and of their chains, the one that restores up to
+     * `seedRestoreUntil` if given.
      */
     private fun contents(
         path: Path,
         fs: FileSystemAbstraction,
         name: String,
         seed: UriSeed,
+        anyName: Boolean,
     ): Contents {
         val until = seed.restoreUntil
         val source = seed.sourceDatabase
@@ -102,7 +116,7 @@ internal class StoreSeeder(
                 }
             val wanted = source ?: name
             val artifacts =
-                (if (source == null) byName.values.singleOrNull() else null)
+                (if (source == null && anyName) byName.values.singleOrNull() else null)
                     ?: byName[wanted]
                     ?: throw IOException(
                         if (byName.isEmpty()) "$shown holds no backups"

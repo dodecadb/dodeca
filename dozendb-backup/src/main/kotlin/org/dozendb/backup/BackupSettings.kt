@@ -49,14 +49,20 @@ class BackupSettings : SettingsDeclaration {
             "The providers of the seeds that CREATE DATABASE ... OPTIONS {seedURI: ...} reads, " +
                 "the first one for a URI's scheme first: FileSeedProvider for file: URIs, " +
                 "CloudSeedProvider for the s3:, gs: and azb: URIs of cloud storage, " +
-                "S3SeedProvider, Neo4j Enterprise's deprecated name for it, for s3: URIs, and " +
-                "URLConnectionSeedProvider for http:, https: and ftp: URIs. Empty disables seeds."
+                "S3SeedProvider, Neo4j Enterprise's deprecated name for it, for s3: URIs, " +
+                "URLConnectionSeedProvider for http:, https: and ftp: URIs, and " +
+                "ServerSeedProvider for server: URIs, which name a server and a seed in its " +
+                "server.directories.seeds. Empty disables seeds."
         )
         val seedProviders: Setting<List<String>> =
             newBuilder(
                     "dbms.databases.seed_from_uri_providers",
                     listOf(STRING),
-                    listOf(SeedProvider.File.name, SeedProvider.Cloud.name),
+                    listOf(
+                        SeedProvider.File.name,
+                        SeedProvider.Cloud.name,
+                        SeedProvider.Server.name,
+                    ),
                 )
                 .addConstraint(
                     object : SettingConstraint<List<String>>() {

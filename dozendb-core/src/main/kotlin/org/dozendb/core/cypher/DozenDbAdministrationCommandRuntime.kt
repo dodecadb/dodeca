@@ -38,6 +38,7 @@ import org.dozendb.core.Gql
 import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.SeedServers
+import org.dozendb.core.edition.ServerSeedUri
 import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.security.PrivilegeRecords
@@ -46,6 +47,8 @@ import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placement
 import org.dozendb.core.servers.Placements
+import org.dozendb.core.servers.ServerLifecycle
+import org.dozendb.core.servers.Servers
 import org.dozendb.core.store.RestorePoint
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.common.DependencyResolver
@@ -348,6 +351,8 @@ private class DatabaseCommands(
     private val admin = `AdministrationCommandRuntime$`.`MODULE$`
 
     private val placement by lazy { dependencies.resolveDependency(DatabasePlacement::class.java) }
+
+    private val servers by lazy { dependencies.resolveDependency(Servers::class.java) }
 
     override fun isDefinedAt(plan: LogicalPlan): Boolean = planner(plan) != null
 
@@ -899,6 +904,10 @@ private class DatabaseCommands(
         }
         val placement = StorePlacement(fs, Neo4jLayout.of(config))
         val normalized = NormalizedDatabaseName(name).name()
+        // A server: seed by the id of the server that reads it, which a RENAME SERVER does not
+        // change, and that server, which creates the database.
+        var resolved = seed
+        var reader: UUID? = null
         when {
             seed != null -> {
                 // Those of a database that is registered still, being dropped, as by OR REPLACE,
@@ -918,6 +927,10 @@ private class DatabaseCommands(
                     seeder.check(seed)
                 } catch (e: IllegalArgumentException) {
                     throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
+                }
+                seedReader(tx, seed, seedKey, seedServer, failed)?.let { (onServer, id) ->
+                    resolved = onServer
+                    reader = id
                 }
             }
             existingData && seedServer == null && clustered ->
@@ -947,11 +960,47 @@ private class DatabaseCommands(
                     ?.let { DeprecatedStoreFormat(it) },
             )
         return Creation(
-            seed,
-            seedServer?.let { UUID.fromString(it).toString() },
+            resolved,
+            (seedServer?.let(UUID::fromString) ?: reader?.takeIf { clustered })?.toString(),
             storeFormat,
             warnings,
         )
+    }
+
+    /**
+     * For a `server:` seed, which names the server that reads it by id or name, the seed naming
+     * that server by id, and the server; null for another seed. With clustering, the server creates
+     * the database, which other servers copy, as the one [seedKey] names would, which must then be
+     * the same server.
+     */
+    private fun seedReader(
+        tx: Transaction,
+        seed: UriSeed,
+        seedKey: String?,
+        seedServer: String?,
+        failed: String,
+    ): Pair<UriSeed, UUID>? {
+        val onServer =
+            try {
+                ServerSeedUri.parse(seed.uri)
+            } catch (e: IllegalArgumentException) {
+                throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
+            } ?: return null
+        val reader = ServerLifecycle.target(tx, onServer.server, servers, failed).id
+        if (seedServer != null && UUID.fromString(seedServer) != reader) {
+            throw Gql.refused(
+                "$failed: $seedKey names server $seedServer, but the seedURI names server " +
+                    "$reader, which reads the seed and creates the database. Give one of them."
+            )
+        }
+        try {
+            dependencies.resolveTypeDependencies(SeedServers::class.java).forEach {
+                it.check(reader)
+            }
+        } catch (e: IllegalArgumentException) {
+            throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
+        }
+        return seed.copy(uri = onServer.on("$reader")) to reader
     }
 
     /**

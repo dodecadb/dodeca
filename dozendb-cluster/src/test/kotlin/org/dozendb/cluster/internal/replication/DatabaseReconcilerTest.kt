@@ -851,6 +851,27 @@ class DatabaseReconcilerTest {
         // As for a new database: this member, as it is placed on it.
         assertThat(graph.named).containsExactly(seeded.id to self)
         assertThat(graph.recorded).isEmpty()
+
+        // A server: seed is read by the server it names, which creates it.
+        graph.named.clear()
+        val onServer = recreatedFromOthers(seed = UriSeed("server://${other.uuid}/films.backup"))
+        onServer.reported(creator, null)
+        onServer.reported(other, null)
+
+        reconciler.reconcile()
+
+        assertThat(graph.named).containsExactly(onServer.id to other)
+    }
+
+    @Test
+    fun `the system leader names the server that reads a server seed the creator`() {
+        graph.leading = true
+        graph.databases =
+            listOf(desired(films, seed = UriSeed("server://${creator.uuid}/films.backup")))
+
+        assertThat(reconciler.reconcile()).isTrue()
+
+        assertThat(graph.named).containsExactly(films to creator)
     }
 
     @Test

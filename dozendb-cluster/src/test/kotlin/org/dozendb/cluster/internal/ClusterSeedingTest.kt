@@ -189,6 +189,24 @@ class ClusterSeedingTest {
     }
 
     @Test
+    fun `the server a server URI names creates the database from its seeds, the others copy it`() {
+        val cluster = cluster()
+        val backup = seed(cluster, 200)
+        val seeder = cluster.members.last()
+        val seeds = Files.createDirectories(seeder.home.resolve("seeds"))
+        Files.copy(backup, seeds.resolve("films.backup"))
+        cluster.administer("RENAME SERVER '${seederId(seeder)}' TO 'beta'")
+
+        val waited =
+            cluster.administer(
+                "CREATE DATABASE films OPTIONS {seedURI: 'server://beta/films.backup'} WAIT"
+            )
+
+        assertThat(waited.map { it["success"] }).describedAs("$waited").containsOnly(true)
+        cluster.assertSeeded("films", 200)
+    }
+
+    @Test
     fun `a member that restored a database creates it, and the others copy it`() {
         val cluster = cluster()
         val seed = seed(cluster, 300)

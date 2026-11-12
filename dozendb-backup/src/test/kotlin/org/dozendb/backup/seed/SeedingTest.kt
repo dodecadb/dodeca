@@ -160,13 +160,14 @@ class SeedingTest {
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 'foo://bucket/films'}"))
             .hasMessage(
                 "$failed: no seed provider for 'foo' URIs is enabled: " +
-                    "dbms.databases.seed_from_uri_providers is FileSeedProvider, CloudSeedProvider."
+                    "dbms.databases.seed_from_uri_providers is FileSeedProvider, CloudSeedProvider, " +
+                    "ServerSeedProvider."
             )
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 'https://host/films'}"))
             .hasMessage(
                 "$failed: no seed provider for 'https' URIs is enabled: " +
                     "dbms.databases.seed_from_uri_providers is FileSeedProvider, " +
-                    "CloudSeedProvider; URLConnectionSeedProvider reads them."
+                    "CloudSeedProvider, ServerSeedProvider; URLConnectionSeedProvider reads them."
             )
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 'films.backup'}"))
             .hasMessage("$failed: seedURI 'films.backup' has no scheme.")
@@ -205,6 +206,69 @@ class SeedingTest {
                 server.rows("SHOW DATABASES YIELD name", StandaloneServer.SYSTEM).map { it["name"] }
             )
             .doesNotContain("films")
+    }
+
+    @Test
+    fun `creates databases from the seeds directory of the server a server URI names`() {
+        val server = start()
+        val seedsDirectory = Files.createDirectories(server.home.resolve("seeds"))
+        Files.copy(dump, seedsDirectory.resolve("films.dump"))
+        for (file in listOf("films-1.backup", "films-2.backup")) {
+            Files.copy(chain.resolve(file), seedsDirectory.resolve(file))
+        }
+        val id = server.rows("SHOW SERVERS YIELD serverId", StandaloneServer.SYSTEM).single()
+        server.administer("RENAME SERVER '${id["serverId"]}' TO 'alpha'")
+
+        for ((name, options, summary) in
+            listOf(
+                Triple("films", "seedURI: 'server://${id["serverId"]}/films.dump'", expected),
+                // A differential backup, with the backups before it in the directory.
+                Triple("books", "seedURI: 'server://alpha/films-2.backup'", expectedChain),
+                // The directory: the latest chain of the database seedSourceDatabase names.
+                Triple(
+                    "series",
+                    "seedURI: 'server://alpha/', seedSourceDatabase: 'neo4j'",
+                    expectedChain,
+                ),
+            )) {
+            val waited = server.waited("CYPHER 25 CREATE DATABASE $name OPTIONS {$options} WAIT")
+            assertThat(waited["success"]).describedAs("$name: $waited").isEqualTo(true)
+            assertThat(CommunityServer.summary(server.database(name))).isEqualTo(summary)
+        }
+        // Without seedSourceDatabase, the directory's backups of the database of the same name.
+        val none = server.waited("CREATE DATABASE shows OPTIONS {seedURI: 'server://alpha'} WAIT")
+        assertThat(none["success"]).isEqualTo(false)
+        assertThat(none["message"] as String)
+            .contains("$seedsDirectory holds backups of neo4j, none of shows")
+
+        val failed = "Failed to create the specified database 'plays'"
+        for ((uri, message) in
+            listOf(
+                "server://beta/films.dump" to
+                    "$failed: there is no such server. SHOW SERVERS lists the servers.",
+                "server:///films.dump" to
+                    "$failed: seedURI 'server:///films.dump' names no server: give " +
+                        "server://<server id or name>/<artifact>, or server://<server id or " +
+                        "name>/ for the seeds directory.",
+                "server://alpha/../films.backup" to
+                    "$failed: seedURI 'server://alpha/../films.backup' names a file outside " +
+                        "server.directories.seeds.",
+            )) {
+            assertThat(server.failure("CREATE DATABASE plays OPTIONS {seedURI: '$uri'}"))
+                .describedAs(uri)
+                .hasMessage(message)
+        }
+        assertThat(
+                server.failure(
+                    "CREATE DATABASE plays OPTIONS {seedURI: 'server://alpha/films.dump', " +
+                        "seedRestoreUntil: 2}"
+                )
+            )
+            .hasMessage(
+                "$failed: seedRestoreUntil is supported by FileSeedProvider and " +
+                    "CloudSeedProvider only, as in Neo4j Enterprise; ServerSeedProvider reads " +
+                    "'server' URIs."
+            )
     }
 
     @Test
@@ -324,7 +388,7 @@ class SeedingTest {
             .rootCause()
             .hasMessageContaining(
                 "DozenDB has no seed provider GcsSeedProvider: it has FileSeedProvider, " +
-                    "URLConnectionSeedProvider, CloudSeedProvider, S3SeedProvider"
+                    "URLConnectionSeedProvider, CloudSeedProvider, S3SeedProvider, ServerSeedProvider"
             )
     }
 

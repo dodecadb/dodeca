@@ -161,11 +161,17 @@ places the database on servers (see [Servers](#servers)), and
   {existingData: 'use', seedURI: '...'}`, works as in Enterprise with a dump or
   a full backup as the seed, from a file, a URL or cloud storage (see [Cloud
   storage](#cloud-storage)). `dbms.databases.seed_from_uri_providers` enables
-  `FileSeedProvider` (`file:`) and `CloudSeedProvider` (`s3:`, `gs:`, `azb:`) by
-  default, where Enterprise enables `CloudSeedProvider` alone since 2025.01,
-  and also takes `S3SeedProvider` and `URLConnectionSeedProvider` (`http:`,
-  `https:`, `ftp:`); other names fail the server's start, among them
-  Enterprise's `ServerSeedProvider` (`server:`). As a DozenDB
+  `FileSeedProvider` (`file:`), `CloudSeedProvider` (`s3:`, `gs:`, `azb:`) and
+  `ServerSeedProvider` (`server:`) by default, where Enterprise enables
+  `CloudSeedProvider` alone since 2025.01, and also takes `S3SeedProvider` and
+  `URLConnectionSeedProvider` (`http:`, `https:`, `ftp:`); other names fail
+  the server's start. `server://<server id or name>/<artifact>` seeds from a
+  dump or backup in `server.directories.seeds` of that server, and
+  `server://<server id or name>/` from the latest chain there of the database
+  of the same name, or of `seedSourceDatabase`, as in Enterprise 2026.04; the
+  server named reads it and creates the database, which the others copy, in
+  `CREATE DATABASE` and `dbms.recreateDatabase`. DozenDB keeps the URI with
+  the server's id, so that `RENAME SERVER` does not change the seed. As a DozenDB
   extension, a seed read by `FileSeedProvider` or `CloudSeedProvider` may also
   be a differential backup, restored with the backups it continues in its
   folder, or a folder of backups, whose latest chain is restored, as Enterprise
