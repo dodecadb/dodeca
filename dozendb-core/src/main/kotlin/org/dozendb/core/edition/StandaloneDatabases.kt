@@ -24,7 +24,8 @@ import org.neo4j.logging.InternalLogProvider
  *
  * `system` and the default database are created at startup and never created or dropped here; the
  * default database is started and stopped like any other. A database that failed to start is
- * started again only when its status changes, as by STOP DATABASE and START DATABASE.
+ * started again when it is asked to start again: by START DATABASE, which records when it was
+ * started even if its status stays online, as Neo4j Enterprise documents for retrying a start.
  *
  * A database in [quarantines] is left as it is, stopped, until its quarantine is lifted, which
  * follows the system graph again; one that is dropped goes with its quarantine. The quarantines of
@@ -41,14 +42,25 @@ internal class StandaloneDatabases(
 
     @Volatile private var started = false
 
-    /** The status each database was last asked to have, guarded by `this`. */
-    private val requested = HashMap<NamedDatabaseId, Boolean>()
+    /** What each database was last asked, guarded by `this`. */
+    private val requested = HashMap<NamedDatabaseId, Request>()
 
     /**
      * What the system graph asks of a database: whether it is online, its seed if any, and whether
      * it is the default database.
      */
-    private data class Desired(val online: Boolean, val seedUri: String?, val default: Boolean)
+    private data class Desired(
+        val online: Boolean,
+        val seedUri: String?,
+        val default: Boolean,
+        val request: Request,
+    )
+
+    /**
+     * A request for a database's status: each START DATABASE records when it was started, so that
+     * starting it again is a new request even if it is online already.
+     */
+    private data class Request(val online: Boolean, val startedAt: Any?)
 
     /** Follows the system graph from when it starts, once `system` and the default database run. */
     fun starter(): Lifecycle =
@@ -71,7 +83,8 @@ internal class StandaloneDatabases(
         data.assignedLabels().any { it.label() == TopologyGraphDbmsModel.DATABASE_LABEL } ||
             data.removedLabels().any { it.label() == TopologyGraphDbmsModel.DATABASE_LABEL } ||
             data.assignedNodeProperties().any {
-                it.key() == TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY
+                it.key() == TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY ||
+                    it.key() == TopologyGraphDbmsModel.DATABASE_STARTED_AT_PROPERTY
             }
 
     /** Follows the system graph now, as once a quarantine is lifted. */
@@ -96,7 +109,7 @@ internal class StandaloneDatabases(
 
     private fun follow(id: NamedDatabaseId, desired: Desired) {
         val online = desired.online
-        val changed = requested.put(id, online) != online
+        val changed = requested.put(id, desired.request) != desired.request
         val context = repository.getDatabaseContext(id).orElse(null)
         val seed = desired.seedUri?.let { DatabaseManager.Seed.Uri(it, seeder) }
         if (context != null && quarantines.of(id.databaseId().uuid()) != null) return
@@ -144,6 +157,8 @@ internal class StandaloneDatabases(
                         if (name == null || uuid == null) return@mapNotNull null
                         val status =
                             node.getProperty(TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY, null)
+                        val online =
+                            status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName()
                         val seedUri =
                             node.getProperty(
                                 TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY,
@@ -151,12 +166,19 @@ internal class StandaloneDatabases(
                             ) as? String
                         DatabaseIdFactory.from(name, UUID.fromString(uuid)) to
                             Desired(
-                                status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
+                                online,
                                 seedUri,
                                 node.getProperty(
                                     DefaultDatabase.PROPERTY,
                                     false,
                                 ) == true,
+                                Request(
+                                    online,
+                                    node.getProperty(
+                                        TopologyGraphDbmsModel.DATABASE_STARTED_AT_PROPERTY,
+                                        null,
+                                    ),
+                                ),
                             )
                     }
                     .filter { (id, _) -> !id.isSystemDatabase }

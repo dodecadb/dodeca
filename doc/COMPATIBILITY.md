@@ -192,11 +192,13 @@ places the database on servers (see [Servers](#servers)), and
   without clustering.
 - **Commands take effect once their transaction commits**, on every database
   the transaction changes, so a command that fails changes no database. A
-  database that failed to start before Neo4j began starting it, as on a seed
-  that could not be read, is started again by `STOP DATABASE` and
-  `START DATABASE`. One that failed while Neo4j started it stays failed until
-  the server restarts: Neo4j 2026 cannot start that database again in the same
-  process. On shutdown, `system` stops after every other database.
+  database that failed to start is started again by `START DATABASE` once
+  what failed it is gone, as Enterprise documents for retrying a start; other
+  commands leave it as it is. DozenDB starts it as a new database object, as
+  Neo4j 2026 cannot start one again whose start failed. In a cluster, a member
+  whose copy failed to start hands the leadership of the database's group
+  over, so that the others keep taking writes. On shutdown, `system` stops
+  after every other database.
 - **Failed databases show as `offline`**, with why in `statusMessage`, as
   Enterprise documents a database that is not running because of a problem,
   such as one that failed to start. A database that fails while running, such

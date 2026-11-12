@@ -85,6 +85,7 @@ internal class Neo4jSystemGraph(
             recreationFailed = node.getProperty(RECREATION_FAILED_PROPERTY, false) == true,
             seedAppendIndex =
                 (node.getProperty(SEED_APPEND_INDEX_PROPERTY, null) as? Number)?.toLong(),
+            startedAt = node.getProperty(TopologyGraphDbmsModel.DATABASE_STARTED_AT_PROPERTY, null),
         )
     }
 

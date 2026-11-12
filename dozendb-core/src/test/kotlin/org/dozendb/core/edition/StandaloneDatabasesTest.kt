@@ -1,5 +1,6 @@
 package org.dozendb.core.edition
 
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
 import java.nio.file.Path
@@ -15,6 +16,7 @@ import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.fs.watcher.FileWatcher
 import org.neo4j.io.fs.watcher.resource.WatchedResource
+import org.neo4j.kernel.KernelVersionProvider
 
 /** With clustering disabled, databases follow the system graph as soon as a command commits. */
 class StandaloneDatabasesTest {
@@ -75,15 +77,138 @@ class StandaloneDatabasesTest {
         assertThat(statuses()).containsEntry("films", "online")
     }
 
+    // Enterprise's documented retry: START DATABASE once what failed the start is gone.
+    @Test
+    fun `START DATABASE starts a database whose start failed, once what failed it is gone`() {
+        server.administer("CREATE DATABASE films")
+        server.database("films").executeTransactionally("CREATE (:Film {title: 'Alien'})")
+        server.administer("STOP DATABASE films")
+        // A directory where a store file belongs: nobody can open the store, root neither.
+        val nodes = storeOf("films").resolve("neostore.nodestore.db")
+        val aside = root.resolve("nodestore.aside")
+        Files.move(nodes, aside)
+        Files.createDirectory(nodes)
+
+        assertThat(startWaiting("films")).isFalse()
+        assertThat(statuses()).containsEntry("films", "offline")
+        assertThat(statusMessage("films")).contains("Unable to start")
+
+        Files.delete(nodes)
+        Files.move(aside, nodes)
+        assertThat(startWaiting("films")).isTrue()
+
+        assertThat(statuses()).containsEntry("films", "online")
+        assertThat(films()).isEqualTo(1)
+        assertStartedAfresh("films")
+    }
+
+    @Test
+    fun `a database whose start failed late starts afresh, by START DATABASE or STOP and START`() {
+        server.close()
+        val fileSystem = VanishingEntries()
+        server = StandaloneServer(root.resolve("watched"), fileSystem = fileSystem)
+        server.start()
+        server.administer("CREATE DATABASE films")
+        server.database("films").executeTransactionally("CREATE (:Film {title: 'Alien'})")
+        server.administer("STOP DATABASE films")
+
+        // Neo4j watches a database's directories once its transaction logs are open.
+        fileSystem.failWatches(true)
+        assertThat(startWaiting("films")).isFalse()
+        fileSystem.failWatches(false)
+        assertThat(startWaiting("films")).isTrue()
+        assertThat(films()).isEqualTo(1)
+        assertStartedAfresh("films")
+
+        server.administer("STOP DATABASE films")
+        fileSystem.failWatches(true)
+        assertThat(startWaiting("films")).isFalse()
+        fileSystem.failWatches(false)
+        server.administer("STOP DATABASE films")
+        server.administer("START DATABASE films")
+        assertThat(statuses()).containsEntry("films", "online")
+        server.database("films").executeTransactionally("CREATE (:Film {title: 'Aliens'})")
+        assertThat(films()).isEqualTo(2)
+        assertStartedAfresh("films")
+    }
+
+    @Test
+    fun `other commands leave a database whose start failed as it is`() {
+        server.close()
+        val fileSystem = VanishingEntries()
+        server = StandaloneServer(root.resolve("watched"), fileSystem = fileSystem)
+        server.start()
+        server.administer("CREATE DATABASE films")
+        server.administer("STOP DATABASE films")
+        fileSystem.failWatches(true)
+        assertThat(startWaiting("films")).isFalse()
+        fileSystem.failWatches(false)
+        val starts = starts("films")
+
+        server.administer("CREATE DATABASE series")
+        server.administer("ALTER DATABASE films SET ACCESS READ ONLY")
+
+        assertThat(starts("films")).isEqualTo(starts)
+        assertThat(statuses()).containsEntry("films", "offline")
+    }
+
+    /** Runs START DATABASE [name] WAIT; whether it reports success. */
+    private fun startWaiting(name: String): Boolean =
+        server.rows("START DATABASE $name WAIT", StandaloneServer.SYSTEM).single()["success"]
+            as Boolean
+
+    private fun statusMessage(name: String): String =
+        server
+            .rows(
+                "SHOW DATABASE $name YIELD statusMessage",
+                StandaloneServer.SYSTEM,
+            )
+            .single()["statusMessage"]
+            as String
+
+    /** How often [name] began to start. */
+    private fun starts(name: String): Int =
+        server.debugEntries().count {
+            it.message.startsWith("Starting 'DatabaseId{") && it.message.contains("[$name]}'")
+        }
+
+    /**
+     * Asserts that the last start of [name] started a new database object: one that began to start
+     * before keeps what it started then, so that its transaction log starts twice, or Neo4j finds
+     * two of its parts.
+     */
+    private fun assertStartedAfresh(name: String) {
+        val entries = server.debugEntries()
+        val last = entries.indexOfLast {
+            it.message.startsWith("Starting 'DatabaseId{") && it.message.contains("[$name]}'")
+        }
+        val logs =
+            entries.drop(last).count {
+                it.message.startsWith("[$name/") &&
+                    it.message.contains("Starting transaction log [") &&
+                    it.message.contains("neostore.transaction.db")
+            }
+        assertThat(logs).describedAs("transaction log starts").isEqualTo(1)
+        assertThat(
+                server
+                    .database(name)
+                    .dependencyResolver
+                    .resolveDependency(KernelVersionProvider::class.java)
+            )
+            .isNotNull()
+    }
+
     /**
      * Neo4j's file system, whose file watcher fails to watch a directory once after
      * [vanishOnNextWatch], as the JDK's polling watch service (macOS) does when an entry of the
-     * directory goes while it reads them, as another database's copy moves into place.
+     * directory goes while it reads them, as another database's copy moves into place; and every
+     * time while [failWatches], as when the system's watches run out.
      */
     private class VanishingEntries(
         private val delegate: FileSystemAbstraction = DefaultFileSystemAbstraction()
     ) : FileSystemAbstraction by delegate {
         private val vanish = AtomicBoolean()
+        private val fail = AtomicBoolean()
 
         @Volatile
         var vanished = false
@@ -91,10 +216,13 @@ class StandaloneDatabasesTest {
 
         fun vanishOnNextWatch() = vanish.set(true)
 
+        fun failWatches(failing: Boolean) = fail.set(failing)
+
         override fun fileWatcher(): FileWatcher {
             val watcher = delegate.fileWatcher()
             return object : FileWatcher by watcher {
                 override fun watch(path: Path): WatchedResource {
+                    if (fail.get()) throw IOException("No watches left for $path")
                     if (vanish.getAndSet(false)) {
                         vanished = true
                         throw NoSuchFileException(path.resolve(".dozendb-copy-gone").toString())

@@ -196,6 +196,30 @@ class MultiDatabaseTest {
         }
     }
 
+    // Enterprise's documented retry: START DATABASE once what failed the start is gone.
+    @Test
+    fun `START DATABASE starts a copy whose start failed again, once what failed it is gone`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE $FILMS")
+        cluster.awaitEverywhere(FILMS)
+        cluster.addFilm("Brazil")
+        cluster.awaitFilms(1)
+        val broken = cluster.running().last()
+        cluster.administer("STOP DATABASE $FILMS")
+        cluster.awaitStopped(FILMS)
+        val repair = broken.breakStore(FILMS)
+        cluster.administer("START DATABASE $FILMS")
+        eventually { assertThat(broken.failed(FILMS)).describedAs("$broken failed").isTrue() }
+
+        repair()
+        cluster.administer("START DATABASE $FILMS")
+
+        cluster.awaitEverywhere(FILMS)
+        assertThat(broken.failed(FILMS)).isFalse()
+        cluster.addFilm("Alien")
+        cluster.awaitFilms(2)
+    }
+
     private fun ClusterHarness.awaitStopped(name: String) {
         eventually {
             for (member in running()) {

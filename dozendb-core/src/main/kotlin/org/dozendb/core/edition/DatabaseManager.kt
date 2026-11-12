@@ -13,7 +13,8 @@
  * directory entry went meanwhile.
  * 2026-11-10: starts no database in quarantine; stops databases without the checkpoint I/O limit.
  * 2026-11-11: no longer starts a database again: Neo4j 2026 cannot, and the file watcher of
- * DozenDbDatabaseContextFactory watches again instead.
+ * DozenDbDatabaseContextFactory watches again instead. A database whose start failed gets a new
+ * database object, which a later start starts afresh.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -41,6 +42,10 @@ import org.neo4j.logging.InternalLogProvider
  * [repository]. A database that fails to start or stop is marked failed rather than throwing. A
  * database whose files [placement] left half-moved, as by an interrupted restore, fails to start. A
  * database in [quarantines] is not started at all.
+ *
+ * Neo4j cannot start a database object again once its start failed: the object keeps parts of the
+ * failed start, so that the next one starts the transaction logs twice, or finds two of a part and
+ * fails. A database whose start failed is therefore registered anew, failed, with a new object.
  *
  * Like Neo4j's own database lifecycles, it throws database management exceptions with the GQL
  * status of an internal error, 50N00.
@@ -168,6 +173,8 @@ class DatabaseManager(
         }
         try {
             log.info("Starting '%s'.", id)
+            // A failure until now, as of a start that failed before, is not this start's.
+            context.clearFailure()
             if (start(context.database())) {
                 counts.increaseStartCount()
             } else {
@@ -175,9 +182,22 @@ class DatabaseManager(
             }
         } catch (e: Throwable) {
             log.error("Failed to start '$id'.", e)
-            context.fail(UnableToStartDatabaseException.unableToStartDb(id, e))
+            renew(context).fail(UnableToStartDatabaseException.unableToStartDb(id, e))
             counts.increaseFailedCount()
         }
+    }
+
+    /**
+     * Registers a new context of the database of [context], whose start failed, in its place, and
+     * returns it; [context] if the database was dropped meanwhile.
+     */
+    @Synchronized
+    private fun renew(context: StandaloneDatabaseContext): StandaloneDatabaseContext {
+        val id = context.database().namedDatabaseId
+        if (repository.getDatabaseContext(id).orElse(null) !== context) return context
+        val renewed = contextFactory.create(id)
+        repository.add(id, renewed)
+        return renewed
     }
 
     fun stopDatabase(id: NamedDatabaseId) {

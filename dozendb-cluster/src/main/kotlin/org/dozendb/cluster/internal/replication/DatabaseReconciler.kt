@@ -56,6 +56,11 @@ internal data class DesiredDatabase(
      * creator's seed: the other seeders pull beyond it before they join its group.
      */
     val seedAppendIndex: Long? = null,
+    /**
+     * When START DATABASE last started it, as the system graph records it: a new value asks a copy
+     * whose start failed to start again, as Neo4j Enterprise documents for retrying a start.
+     */
+    val startedAt: Any? = null,
 )
 
 /** What the creator of a database creates its store from, instead of an empty one. */
@@ -347,6 +352,9 @@ internal class DatabaseReconciler(
     // Used on the reconciler thread only.
     /** The states of the seeds reported, read once each. */
     private val seedStates = HashMap<UUID, Seed?>()
+
+    /** The start request, [DesiredDatabase.startedAt], each copy here last started for. */
+    private val startRequests = HashMap<UUID, Any?>()
     private var nextRetryDelay = retryDelay
     private var defaultDatabase = initialDefault
     private var awaitingConfirmation = false
@@ -426,6 +434,7 @@ internal class DatabaseReconciler(
         for (database in desired) {
             again = !converge(database) || again
         }
+        startRequests.keys.retainAll(desired.mapTo(HashSet()) { it.id.uuid })
         return again
     }
 
@@ -740,8 +749,13 @@ internal class DatabaseReconciler(
                 databases.drop(id)
                 return false
             }
-            database.online && !state.started && !state.failed -> {
-                log.info("Starting database %s, online in the system graph", id)
+            database.online && !state.started && (!state.failed || newStartRequest(database)) -> {
+                if (state.failed) {
+                    log.info("Starting database %s again, as asked: its last start failed", id)
+                } else {
+                    log.info("Starting database %s, online in the system graph", id)
+                }
+                startRequests[id.uuid] = database.startedAt
                 databases.start(id, if (state.mode == CopyMode.PRIMARY) seed(database) else null)
             }
             // Stopping also clears a failure, so that starting it again tries anew.
@@ -752,6 +766,12 @@ internal class DatabaseReconciler(
         }
         // A copy no longer placed here waits until this member leaves the database's group.
         return !leaving
+    }
+
+    /** Whether [database] was asked to start since this member last started its copy. */
+    private fun newStartRequest(database: DesiredDatabase): Boolean {
+        val id = database.id.uuid
+        return id !in startRequests || startRequests[id] != database.startedAt
     }
 
     /** Creates [database] here, as [wanted] places it; returns false to be tried again. */
