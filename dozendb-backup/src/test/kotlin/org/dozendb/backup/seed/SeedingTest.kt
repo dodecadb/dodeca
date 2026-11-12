@@ -188,15 +188,6 @@ class SeedingTest {
             .hasMessageContaining("reuse")
         assertThat(
                 server.failure(
-                    "CREATE OR REPLACE DATABASE films OPTIONS {seedURI: '${backup.toUri()}'}"
-                )
-            )
-            .hasMessage(
-                "$failed: OR REPLACE cannot be combined with existingData, seedURI or " +
-                    "existingDataSeedServer. Drop the database first."
-            )
-        assertThat(
-                server.failure(
                     "CREATE DATABASE films OPTIONS {existingData: 'use', " +
                         "existingDataSeedServer: '2f3b4c5d-0000-4000-8000-000000000000'}"
                 )
@@ -214,6 +205,58 @@ class SeedingTest {
                 server.rows("SHOW DATABASES YIELD name", StandaloneServer.SYSTEM).map { it["name"] }
             )
             .doesNotContain("films")
+    }
+
+    @Test
+    fun `replaces a database by one created from a seed, with CREATE OR REPLACE`() {
+        val server = start()
+        server.administer("CREATE DATABASE films WAIT")
+        server.database("films").executeTransactionally("CREATE (:Old)")
+
+        for ((name, seed) in listOf("films" to backup, "books" to dump)) {
+            val waited =
+                server.waited(
+                    "CREATE OR REPLACE DATABASE $name OPTIONS {existingData: 'use', " +
+                        "seedURI: '${seed.toUri()}'} WAIT"
+                )
+            assertThat(waited["success"]).describedAs("$name: $waited").isEqualTo(true)
+            assertThat(CommunityServer.summary(server.database(name))).isEqualTo(expected)
+        }
+        assertThat(server.rows("MATCH (n:Old) RETURN count(n) AS count", "films").single())
+            .containsEntry("count", 0L)
+
+        val failed = "Failed to create the specified database 'films'"
+        assertThat(server.failure("CREATE OR REPLACE DATABASE films OPTIONS {existingData: 'use'}"))
+            .hasMessage(
+                "$failed: OR REPLACE with existingData 'use' needs a seedURI: the files in " +
+                    "place are those of the database it replaces."
+            )
+        assertThat(
+                server.failure(
+                    "CREATE OR REPLACE DATABASE films OPTIONS {seedURI: '${backup.toUri()}', " +
+                        "existingDataSeedServer: '2f3b4c5d-0000-4000-8000-000000000000'}"
+                )
+            )
+            .hasMessage(
+                "$failed: OR REPLACE cannot be combined with existingDataSeedServer, as in Neo4j " +
+                    "Enterprise. Drop the database first."
+            )
+        // Files in place that no database has are not replaced.
+        val stray = Neo4jLayout.of(server.home).databaseLayout("shows").databaseDirectory()
+        Files.createDirectories(stray)
+        Files.copy(
+            Neo4jLayout.of(server.home)
+                .databaseLayout("films")
+                .databaseDirectory()
+                .resolve("neostore"),
+            stray.resolve("neostore"),
+        )
+        assertThat(
+                server.failure(
+                    "CREATE OR REPLACE DATABASE shows OPTIONS {seedURI: '${backup.toUri()}'}"
+                )
+            )
+            .hasMessageContaining("its files are in place already")
     }
 
     @Test

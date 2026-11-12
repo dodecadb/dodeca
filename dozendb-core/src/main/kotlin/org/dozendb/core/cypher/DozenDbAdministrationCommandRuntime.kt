@@ -115,6 +115,7 @@ import org.neo4j.cypher.internal.runtime.`CypherRow$`
 import org.neo4j.dbms.api.DatabaseAliasExistsException
 import org.neo4j.dbms.api.DatabaseLimitReachedException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
+import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DefaultSystemGraphComponent
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.DatabaseAccess
@@ -865,14 +866,20 @@ private class DatabaseCommands(
         }
         val (seedKey, seedServer) = seedServers.singleOrNull() ?: (null to null)
         val storeFormat = find(`StoreFormatOption$`.`MODULE$`, options)
-        if (
-            plan.ifExistsDo() is `IfExistsReplace$` &&
-                (existingData || seedUri != null || seedServer != null)
-        ) {
-            throw Gql.refused(
-                "$failed: OR REPLACE cannot be combined with existingData, seedURI or " +
-                    "existingDataSeedServer. Drop the database first."
-            )
+        // As in Neo4j Enterprise, which takes seeds with OR REPLACE since 2025.01.
+        if (plan.ifExistsDo() is `IfExistsReplace$`) {
+            if (seedServer != null) {
+                throw Gql.refused(
+                    "$failed: OR REPLACE cannot be combined with $seedKey, as in Neo4j " +
+                        "Enterprise. Drop the database first."
+                )
+            }
+            if (existingData && seedUri == null) {
+                throw Gql.refused(
+                    "$failed: OR REPLACE with existingData 'use' needs a seedURI: the files in " +
+                        "place are those of the database it replaces."
+                )
+            }
         }
         val clustered = config.get(DozenDbSettings.clusterEnabled)
         if (seedServer != null) {
@@ -894,7 +901,9 @@ private class DatabaseCommands(
         val normalized = NormalizedDatabaseName(name).name()
         when {
             seed != null -> {
-                if (!clustered && placement.holdsStore(normalized)) {
+                // Those of a database that is registered still, being dropped, as by OR REPLACE,
+                // go with it before the seed is put in place.
+                if (!clustered && placement.holdsStore(normalized) && !registered(normalized)) {
                     throw Gql.refused(
                         "$failed: its files are in place already. Create it without seedURI to " +
                             "use them, or delete them first."
@@ -958,6 +967,14 @@ private class DatabaseCommands(
         val warnings: Set<InternalNotification> =
             warnings.fold(`Set$`.`MODULE$`.empty()) { set, warning -> set.incl(warning) }
     }
+
+    /** Whether a database named [name] is registered on this server. */
+    private fun registered(name: String): Boolean =
+        dependencies
+            .resolveDependency(DatabaseContextProvider::class.java)
+            .registeredDatabases()
+            .keys
+            .any { it.name() == name }
 
     /** The value of [option] in [options], checked as Neo4j checks it; null if absent. */
     private fun find(option: StringOptionValidator, options: MapValue): String? =

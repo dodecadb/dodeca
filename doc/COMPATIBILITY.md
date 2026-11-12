@@ -180,9 +180,11 @@ places the database on servers (see [Servers](#servers)), and
   database, which `WAIT` and `SHOW DATABASES` show, and the next start of the
   server tries it again.
   `existingData: 'use'` without a seed uses the files that `neo4j-admin database
-  restore` put in place, and fails the command if there are none. A seed with
-  `CREATE OR REPLACE DATABASE`, which Enterprise takes since 2025.01, fails:
-  drop the database first. With clustering, one member creates the
+  restore` put in place, and fails the command if there are none. `CREATE OR
+  REPLACE DATABASE` takes a seed, as Enterprise does since 2025.01: the
+  database is dropped, its files too, and created from the seed. As in
+  Enterprise, it takes no `existingDataSeedServer`, and `existingData: 'use'`
+  needs a `seedURI` there. With clustering, one member creates the
   database from the seed and the others copy it from that member: the system
   leader, which must then be able to read the seed, or the member that
   `existingDataSeedServer` names, which reads the seed, or without `seedURI`

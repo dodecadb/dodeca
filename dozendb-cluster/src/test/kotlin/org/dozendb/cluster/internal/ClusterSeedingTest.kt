@@ -170,6 +170,25 @@ class ClusterSeedingTest {
     }
 
     @Test
+    fun `CREATE OR REPLACE replaces a database by one created from a seed, on every member`() {
+        val cluster = cluster()
+        val seed = seed(cluster, 300)
+        cluster.administer("CREATE DATABASE films WAIT")
+        cluster.awaitLeader("films").database("films").executeTransactionally("CREATE (:Old)")
+
+        val waited =
+            cluster.administer(
+                "CREATE OR REPLACE DATABASE films OPTIONS {seedURI: '${seed.toUri()}'} WAIT"
+            )
+
+        assertThat(waited.map { it["success"] }).describedAs("$waited").containsOnly(true)
+        for (member in cluster.members) {
+            assertThat(member.count("films", "Old")).describedAs("$member").isZero
+        }
+        cluster.assertSeeded("films", 300)
+    }
+
+    @Test
     fun `a member that restored a database creates it, and the others copy it`() {
         val cluster = cluster()
         val seed = seed(cluster, 300)

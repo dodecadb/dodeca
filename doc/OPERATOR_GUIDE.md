@@ -1528,6 +1528,9 @@ URIs servers read, by default `FileSeedProvider,CloudSeedProvider`:
 - `URLConnectionSeedProvider`: `http:`, `https:` and `ftp:` URIs, a dump or a
   full backup only, downloaded next to the database first.
 
+`CREATE OR REPLACE DATABASE films OPTIONS {seedURI: '...'}` drops `films`,
+its files too, and creates it from the seed.
+
 A seed that cannot be read fails the database on that server, and
 `SHOW DATABASES` and `WAIT` say why.
 
