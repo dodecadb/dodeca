@@ -272,8 +272,13 @@ or code gives them.
   to everything in its scope when denied, and is logged; `SHOW SETTINGS`
   lists nothing without `SHOW SETTING`; any applying `DENY LOAD` blocks
   `LOAD CSV`; `GRANT` and `DENY` on a database that does not exist, or with a
-  database parameter of `*`, fail, where `REVOKE` only warns; and
+  database parameter of `*`, fail, where `REVOKE` only warns in Cypher 5; and
   impersonating oneself needs `IMPERSONATE` too.
+- **`REVOKE` of what cannot exist** (a role, user or database that does not
+  exist, or a database parameter of `*`) fails in Cypher 25, as Enterprise
+  documents, with Neo4j's errors (`42N10`, `42N09`, `42N00` and `42N86`), and
+  changes nothing. Cypher 5 warns, with `01N70`. Revoking what a role or user
+  does not have is a notification in both, `00N71`.
 - **Property-based rules** are evaluated when granted: `date()` is the date
   of the `GRANT`. A negated rule is kept as the opposite comparison
   (`NOT n.p > 1` as `n.p <= 1`), which differs only for NaN values. A `DENY`

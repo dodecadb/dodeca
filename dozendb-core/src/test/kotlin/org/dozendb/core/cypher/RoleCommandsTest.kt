@@ -91,6 +91,10 @@ class RoleCommandsTest {
             "$cypher succeeded"
         }
 
+    /** The GQL statuses of [this] and of its causes, outermost first. */
+    private fun Neo4jException.gqlChain(): List<String> =
+        generateSequence(this) { it.gqlCause().orElse(null) }.map { it.gqlStatus() }.toList()
+
     /**
      * The outermost GQL status of [this] and the one at the root of its causes: Neo4j gives 42001
      * for a role that exists or does not, caused by the code saying which.
@@ -249,12 +253,34 @@ class RoleCommandsTest {
             .hasMessage("Failed to grant role 'reader' to user 'nobody': User does not exist.")
 
         assertThat(admin.notifications("REVOKE ROLE reader FROM alice")).isEmpty()
-        assertThat(admin.notifications("REVOKE ROLE reader FROM alice"))
-            .containsExactly(
-                HAS_NO_EFFECT to
-                    noEffect("REVOKE ROLE reader FROM alice", "The user does not have the role.")
-            )
-        assertThat(admin.notifications("REVOKE ROLES missing, curator FROM nobody, bob"))
+        // What has no effect is a notification in both Cypher versions.
+        for (version in listOf("CYPHER 5", "CYPHER 25")) {
+            assertThat(admin.notifications("$version REVOKE ROLE reader FROM alice"))
+                .containsExactly(
+                    HAS_NO_EFFECT to
+                        noEffect(
+                            "REVOKE ROLE reader FROM alice",
+                            "The user does not have the role.",
+                        )
+                )
+        }
+        // A role or user that does not exist is an error in Cypher 25, as in Neo4j Enterprise,
+        // and the command changes nothing.
+        assertThat(admin.refused("CYPHER 25 REVOKE ROLE missing FROM bob"))
+            .satisfies({
+                assertThat(it.gqlChain()).containsExactly("42001", "42NA8", "42N10")
+                assertThat(it.message)
+                    .contains("Invalid reference in command 'REVOKE ROLE missing FROM bob'.")
+                    .contains("A role with the name `missing` was not found.")
+            })
+        assertThat(admin.refused("CYPHER 25 REVOKE ROLES curator FROM bob, nobody"))
+            .satisfies({
+                assertThat(it.gqlChain()).containsExactly("42001", "42NA8", "42N09")
+                assertThat(it.message).contains("A user with the name `nobody` was not found.")
+            })
+        assertThat(security().users.mapValues { it.value.roles })
+            .containsEntry("bob", setOf("curator", "reader"))
+        assertThat(admin.notifications("CYPHER 5 REVOKE ROLES missing, curator FROM nobody, bob"))
             .containsExactlyInAnyOrder(
                 IMPOSSIBLE_REVOKE to impossible("REVOKE ROLE missing FROM nobody", "Role"),
                 IMPOSSIBLE_REVOKE to impossible("REVOKE ROLE missing FROM bob", "Role"),

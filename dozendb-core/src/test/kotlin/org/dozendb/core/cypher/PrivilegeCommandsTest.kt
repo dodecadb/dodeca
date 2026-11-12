@@ -22,6 +22,7 @@ import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.driver.exceptions.ClientException
+import org.neo4j.driver.exceptions.Neo4jException
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
 import org.neo4j.logging.NullLog
 
@@ -103,6 +104,10 @@ class PrivilegeCommandsTest {
 
     private fun security(): SecurityGraph =
         server.database(SYSTEM).beginTx().use { SecurityGraph.read(it, NullLog.getInstance()) }
+
+    /** The GQL statuses of [this] and of its causes, outermost first. */
+    private fun Neo4jException.gqlChain(): List<String> =
+        generateSequence(this) { it.gqlCause().orElse(null) }.map { it.gqlStatus() }.toList()
 
     private fun privileges(role: String = "manager"): List<Privilege> =
         security().roles.getValue(role).privileges
@@ -186,7 +191,7 @@ class PrivilegeCommandsTest {
     }
 
     @Test
-    fun `refuses to grant on a database or to a role that does not exist, revoking is a warning`() {
+    fun `refuses to grant on a database or to a role that does not exist, revoking is a warning in Cypher 5`() {
         assertThat(admin.refused("GRANT ACCESS ON DATABASE nowhere TO manager"))
             .hasMessage(
                 "Failed to grant privilege to role 'manager': Database `nowhere` does not exist."
@@ -208,7 +213,9 @@ class PrivilegeCommandsTest {
                     "names do not support wildcards."
             )
 
-        assertThat(admin.notifications("REVOKE GRANT ACCESS ON DATABASE nowhere FROM manager"))
+        assertThat(
+                admin.notifications("CYPHER 5 REVOKE GRANT ACCESS ON DATABASE nowhere FROM manager")
+            )
             .containsExactly(
                 IMPOSSIBLE_REVOKE to
                     impossible(
@@ -216,7 +223,7 @@ class PrivilegeCommandsTest {
                         "Database `nowhere` does not exist.",
                     )
             )
-        assertThat(admin.notifications("REVOKE GRANT CREATE ROLE ON DBMS FROM missing"))
+        assertThat(admin.notifications("CYPHER 5 REVOKE GRANT CREATE ROLE ON DBMS FROM missing"))
             .containsExactly(
                 IMPOSSIBLE_REVOKE to
                     impossible(
@@ -226,7 +233,7 @@ class PrivilegeCommandsTest {
             )
         assertThat(
                 admin.notifications(
-                    "REVOKE GRANT ACCESS ON DATABASE \$database FROM manager",
+                    "CYPHER 5 REVOKE GRANT ACCESS ON DATABASE \$database FROM manager",
                     mapOf("database" to "*"),
                 )
             )
@@ -238,6 +245,51 @@ class PrivilegeCommandsTest {
                     )
             )
         assertThat(privileges()).isEmpty()
+    }
+
+    @Test
+    fun `revoking on a database or from a role that does not exist is an error in Cypher 25`() {
+        admin.run("GRANT ACCESS ON DATABASE neo4j TO manager")
+
+        assertThat(admin.refused("CYPHER 25 REVOKE GRANT ACCESS ON DATABASE nowhere FROM manager"))
+            .satisfies({
+                assertThat(it.gqlChain()).containsExactly("42001", "42NA8", "42N00")
+                assertThat(it.message)
+                    .contains(
+                        "Invalid reference in command " +
+                            "'REVOKE GRANT ACCESS ON DATABASE nowhere FROM manager'."
+                    )
+                    .contains("A graph reference with the name `nowhere` was not found.")
+            })
+        assertThat(admin.refused("CYPHER 25 REVOKE GRANT CREATE ROLE ON DBMS FROM missing"))
+            .satisfies({
+                assertThat(it.gqlChain()).containsExactly("42001", "42NA8", "42N10")
+                assertThat(it.message).contains("A role with the name `missing` was not found.")
+            })
+        assertThat(
+                admin.refused(
+                    "CYPHER 25 REVOKE GRANT ACCESS ON DATABASE \$database FROM manager",
+                    mapOf("database" to "*"),
+                )
+            )
+            .satisfies({
+                assertThat(it.gqlChain()).containsExactly("42N86")
+                assertThat(it.message)
+                    .contains("Parameterized database and graph names do not support wildcards.")
+            })
+        assertThat(
+                admin.refused(
+                    "CYPHER 25 REVOKE GRANT ACCESS ON DATABASE \$database FROM manager",
+                    mapOf("database" to "nowhere"),
+                )
+            )
+            .extracting { it.gqlChain() }
+            .isEqualTo(listOf("42001", "42NA8", "42N51", "42N00"))
+        // What was not granted is a notification, as in Cypher 5.
+        assertThat(admin.notifications("CYPHER 25 REVOKE GRANT CREATE ROLE ON DBMS FROM manager"))
+            .extracting<String> { it.first }
+            .containsExactly(HAS_NO_EFFECT)
+        assertThat(privileges()).isNotEmpty()
     }
 
     @Test

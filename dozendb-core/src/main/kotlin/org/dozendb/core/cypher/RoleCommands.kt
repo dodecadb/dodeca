@@ -18,6 +18,7 @@ import org.neo4j.common.DependencyResolver
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.AdministrationShowCommandUtils
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.expressions.Parameter
@@ -164,7 +165,14 @@ internal class RoleCommands(
             is AssertRolePrivilegesAreAllImmutable ->
                 Planner { assertAllImmutable(plan.roleName(), compile(plan.source(), it)) }
             is GrantRoleToUser -> Planner { grantRole(plan, compile(plan.source(), it)) }
-            is RevokeRoleFromUser -> Planner { revokeRole(plan, compile(plan.source(), it)) }
+            is RevokeRoleFromUser ->
+                Planner {
+                    revokeRole(
+                        plan,
+                        compile(plan.source(), it),
+                        it.runtimeContext().cypherVersion(),
+                    )
+                }
             is DoNothingIfExists ->
                 if (plan.entity() != `RoleEntity$`.`MODULE$`) null
                 else
@@ -618,10 +626,15 @@ internal class RoleCommands(
     }
 
     /**
-     * Revokes a role, but not PUBLIC; a role the user does not have is a notification, and so is a
-     * role or user that does not exist.
+     * Revokes a role, but not PUBLIC; a role the user does not have is a notification. A role or
+     * user that does not exist is a notification in Cypher 5 and an error from Cypher 25 on
+     * ([version]), as in Neo4j Enterprise.
      */
-    private fun revokeRole(plan: RevokeRoleFromUser, source: ExecutionPlan): ExecutionPlan {
+    private fun revokeRole(
+        plan: RevokeRoleFromUser,
+        source: ExecutionPlan,
+        version: CypherVersion,
+    ): ExecutionPlan {
         val role = admin.getNameFields("role", plan.roleName(), IDENTITY)
         val user = admin.getNameFields("user", plan.userName(), IDENTITY)
         return updating(
@@ -640,14 +653,31 @@ internal class RoleCommands(
                 arrayOf(role.nameValue(), user.nameValue()),
             ),
             QueryHandler.handleResult(
-                    Function3 { _, value, _ ->
+                    Function3 { _, value, params ->
                         val result = value as MapValue
+                        val strict = version != CypherVersion.Cypher5
                         when {
+                            !result.flag("role") && strict ->
+                                ThrowException(
+                                    InvalidArgumentException.invalidCommandMissingRole(
+                                        plan.command(),
+                                        show(plan.roleName(), params),
+                                        parameterName(plan.roleName()),
+                                    )
+                                )
                             !result.flag("role") ->
                                 notify(
                                     ImpossibleRevokeCommandWarning(
                                         plan.command(),
                                         "Role does not exist.",
+                                    )
+                                )
+                            !result.flag("user") && strict ->
+                                ThrowException(
+                                    InvalidArgumentException.invalidCommandMissingUser(
+                                        plan.command(),
+                                        show(plan.userName(), params),
+                                        parameterName(plan.userName()),
                                     )
                                 )
                             !result.flag("user") ->

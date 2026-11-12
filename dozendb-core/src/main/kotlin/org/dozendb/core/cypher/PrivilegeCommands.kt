@@ -11,6 +11,7 @@ import org.dozendb.core.security.PrivilegeSegment
 import org.neo4j.common.DependencyResolver
 import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
+import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.ActionResource
@@ -28,6 +29,7 @@ import org.neo4j.cypher.internal.ast.LabelQualifier
 import org.neo4j.cypher.internal.ast.LabelResource
 import org.neo4j.cypher.internal.ast.LoadAllQualifier
 import org.neo4j.cypher.internal.ast.LoadCidrQualifier
+import org.neo4j.cypher.internal.ast.ParameterName
 import org.neo4j.cypher.internal.ast.PatternQualifier
 import org.neo4j.cypher.internal.ast.PrivilegeQualifier
 import org.neo4j.cypher.internal.ast.ProcedureAllQualifier
@@ -170,6 +172,7 @@ internal class PrivilegeCommands(
                         plan.immutableOnly(),
                         plan.command(),
                         compile(plan.source(), it),
+                        it.runtimeContext().cypherVersion(),
                     )
                 }
             is AssertDbmsPrivilegeCanBeMutated ->
@@ -212,6 +215,7 @@ internal class PrivilegeCommands(
                         plan.immutableOnly(),
                         plan.command(),
                         compile(plan.source(), it),
+                        it.runtimeContext().cypherVersion(),
                     )
                 }
             is AssertDatabasePrivilegeCanBeMutated ->
@@ -254,6 +258,7 @@ internal class PrivilegeCommands(
                         plan.immutableOnly(),
                         plan.command(),
                         compile(plan.source(), it),
+                        it.runtimeContext().cypherVersion(),
                     )
                 }
             is AssertLoadPrivilegeCanBeMutated ->
@@ -296,6 +301,7 @@ internal class PrivilegeCommands(
                         plan.immutableOnly(),
                         plan.command(),
                         compile(plan.source(), it),
+                        it.runtimeContext().cypherVersion(),
                     )
                 }
             is AssertGraphPrivilegeCanBeMutated ->
@@ -359,10 +365,24 @@ internal class PrivilegeCommands(
         data class Found<T>(val value: T) : Resolved<T>
 
         /**
-         * Nothing, because the [database] does not exist, as [reason] says in the words of Neo4j's
-         * notifications.
+         * Nothing, because the [database], given by the [parameter] if any, does not exist, as
+         * [reason] says in the words of Neo4j's notifications.
          */
-        data class Missing(val database: String, val reason: String) : Resolved<Nothing>
+        data class Missing(val database: String, val parameter: String?, val reason: String) :
+            Resolved<Nothing> {
+            /** The error of Cypher 25 and later, which REVOKE [command] fails with. */
+            fun error(command: String): InvalidArgumentException =
+                if (database == "*") {
+                    InvalidArgumentException
+                        .invalidCommandParameterizedDatabaseNameDoesNotSupportWildcards(command)
+                } else {
+                    InvalidArgumentException.invalidCommandDatabaseDoesNotExists(
+                        command,
+                        database,
+                        parameter,
+                    )
+                }
+        }
 
         /** Nothing, because privileges cannot apply there, as [reason] says. */
         data class Refused(val reason: String) : Resolved<Nothing>
@@ -449,10 +469,12 @@ internal class PrivilegeCommands(
         tx: Transaction,
     ): Resolved<PrivilegeScope> {
         val shown = admin.runtimeStringValue(name, params)
+        val parameter = (name as? ParameterName)?.parameter()?.name()
         if (shown == "*") {
             // Only a parameter gives `*` here: the planner makes `DATABASE *` all databases.
             return Resolved.Missing(
                 shown,
+                parameter,
                 "Parameterized database and graph names do not support wildcards.",
             )
         }
@@ -493,7 +515,7 @@ internal class PrivilegeCommands(
                     "`$shown` is an alias of database `$target`: privileges are granted on the " +
                         "database."
                 )
-            else -> Resolved.Missing(shown, "Database `$shown` does not exist.")
+            else -> Resolved.Missing(shown, parameter, "Database `$shown` does not exist.")
         }
     }
 
@@ -656,7 +678,8 @@ internal class PrivilegeCommands(
     /**
      * REVOKE GRANT or REVOKE DENY: removes the privilege, both its mutable and its immutable one,
      * or only the immutable one for REVOKE IMMUTABLE. A role that does not have it is a
-     * notification, and so is a role or database that does not exist.
+     * notification. A role or database that does not exist is a notification in Cypher 5 and an
+     * error from Cypher 25 on ([version]), as in Neo4j Enterprise.
      */
     private fun revoke(
         access: Access,
@@ -665,6 +688,7 @@ internal class PrivilegeCommands(
         immutableOnly: Boolean,
         command: String,
         source: ExecutionPlan,
+        version: CypherVersion,
     ): ExecutionPlan {
         val role = admin.getNameFields("role", roleName, IDENTITY)
         val relationship = PrivilegeRecords.relationship(access).name()
@@ -705,7 +729,15 @@ internal class PrivilegeCommands(
                 ),
             source,
             transformer(role.nameConverter()) { tx, params ->
-                matching(access, template, roleName, params, tx, immutableOnly)
+                matching(
+                    access,
+                    template,
+                    roleName,
+                    params,
+                    tx,
+                    immutableOnly,
+                    command.takeIf { version != CypherVersion.Cypher5 },
+                )
             },
         )
     }
@@ -745,7 +777,15 @@ internal class PrivilegeCommands(
             ),
             source,
             transformer(role.nameConverter()) { tx, params ->
-                    matching(access, template, roleName, params, tx, immutableOnly = false)
+                    matching(
+                        access,
+                        template,
+                        roleName,
+                        params,
+                        tx,
+                        immutableOnly = false,
+                        failing = null,
+                    )
                 }
                 .generate(authDisabled()),
         )
@@ -753,7 +793,7 @@ internal class PrivilegeCommands(
 
     /**
      * The parameters naming the privileges that a REVOKE of [template] removes, with why there are
-     * none if the role or database does not exist.
+     * none if the role or database does not exist; or, given the [failing] command, its error.
      */
     private fun matching(
         access: Access,
@@ -762,6 +802,7 @@ internal class PrivilegeCommands(
         params: MapValue,
         tx: Transaction,
         immutableOnly: Boolean,
+        failing: String?,
     ): MapValue {
         val roleId = roleId(tx, show(roleName, params))
         val privilege = template.resolve(access, true, params, tx)
@@ -770,6 +811,16 @@ internal class PrivilegeCommands(
                 "Failed to revoke privilege from role '${show(roleName, params)}': " +
                     privilege.reason
             )
+        }
+        if (failing != null) {
+            if (roleId == null) {
+                throw InvalidArgumentException.invalidCommandMissingRole(
+                    failing,
+                    show(roleName, params),
+                    admin.getParameterName(roleName).getOrElse { null },
+                )
+            }
+            if (privilege is Resolved.Missing) throw privilege.error(failing)
         }
         val missing =
             when {
