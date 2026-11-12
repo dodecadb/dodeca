@@ -127,8 +127,13 @@ internal class PageCacheWarmer(
         return loaded
     }
 
-    /** The pages of the file, no more than a profile counts. */
-    private fun PagedFile.pageCount(): Long = minOf(lastPageId + 1, Int.MAX_VALUE.toLong())
+    /**
+     * The pages of the file, no more than a profile counts. Neo4j gives an empty file a negative
+     * last page id, not necessarily -1.
+     */
+    private fun PagedFile.pageCount(): Long = lastPageId.let {
+        if (it < 0) 0 else minOf(it + 1, Int.MAX_VALUE.toLong())
+    }
 
     private companion object {
         const val TAG = "pageCacheWarmup"

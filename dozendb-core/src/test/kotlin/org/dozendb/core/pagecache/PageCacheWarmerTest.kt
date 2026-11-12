@@ -164,6 +164,23 @@ class PageCacheWarmerTest {
         assertThat(held(index)).isEqualTo((0L..9L).toSet())
     }
 
+    // Neo4j gives an empty file a negative last page id, not necessarily -1.
+    @Test
+    fun `an empty file has a profile of no pages, which a warmup reads`() {
+        create(nodes, 100)
+        create(index, 0)
+        restart()
+        read(nodes, listOf(1))
+
+        assertThat(warmer().profile()).isEqualTo(2)
+        assertThat(PageCacheProfiles(fs, database).read(profile(index)))
+            .isEqualTo(PageCacheProfile(0, BitSet()))
+
+        restart()
+        assertThat(warmer().warmUp()).isEqualTo(1)
+        assertThat(output.toString()).doesNotContain("left out")
+    }
+
     @Test
     fun `a profile of a file that shrank or grew loads the pages both have`() {
         create(nodes, 100)
