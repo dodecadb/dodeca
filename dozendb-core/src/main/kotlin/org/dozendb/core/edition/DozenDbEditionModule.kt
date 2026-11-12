@@ -68,7 +68,6 @@ import org.neo4j.dbms.database.SystemGraphComponents
 import org.neo4j.dbms.database.TopologyInfoService
 import org.neo4j.dbms.routing.ClientRoutingDomainChecker
 import org.neo4j.dbms.routing.RoutingService
-import org.neo4j.dbms.systemgraph.CommunityDefaultQueryLanguageLookup
 import org.neo4j.dbms.systemgraph.ContextBasedSystemDatabaseProvider
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
 import org.neo4j.fabric.executor.Location
@@ -277,18 +276,19 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalModule.globalDependencies.satisfyDependency<SystemGraphComponents.UpgradeChecker>(
             SystemGraphComponents.UpgradeChecker.UPGRADE_ALWAYS_ALLOWED
         )
-        // The default Cypher version of each database, which the query router asks for.
+        // The default Cypher version of each database and remote alias, which the query router
+        // asks for.
         val languages =
-            CommunityDefaultQueryLanguageLookup(
+            DefaultLanguages(
                 systemDatabase,
                 globalModule.jobScheduler,
                 globalModule.logService.internalLogProvider,
             )
         globalModule.globalDependencies.satisfyDependency(languages)
-        globalModule.globalLife.add(languages.life())
+        globalModule.globalLife.add(languages.life)
         globalModule.transactionEventListeners.registerTransactionEventListener(
             GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
-            languages.transactionListener(),
+            languages.listener,
         )
         defaultLanguages = languages
         databaseManager = manager
@@ -471,15 +471,14 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
     protected lateinit var referenceCache: MapCachingDatabaseReferenceRepository
         private set
 
-    /** The default Cypher version of each database, as the system graph gives it. */
-    private lateinit var defaultLanguages: CommunityDefaultQueryLanguageLookup
-
     /**
-     * Has the default Cypher versions of the databases read again, as after a commit to `system`
-     * here: Community's listener reads nothing of the commit.
+     * The default Cypher version of each database and remote alias, as the system graph gives it.
      */
+    private lateinit var defaultLanguages: DefaultLanguages
+
+    /** Has the default Cypher versions read again, as after a commit to `system` here. */
     protected fun refreshDefaultLanguages() {
-        defaultLanguages.transactionListener().afterCommit(null, null, null)
+        defaultLanguages.refresh()
     }
 
     /**

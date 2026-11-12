@@ -215,6 +215,12 @@ class RemoteAliasCommandsTest {
                 )
             )
         assertThat(shown["properties"]).isEqualTo(mapOf("genre" to "drama"))
+        // Without a version of its own, it keeps the DBMS default it was created with.
+        assertThat(shown["defaultLanguage"])
+            .isEqualTo(
+                if (System.getProperty(StandaloneServer.CYPHER_PROPERTY) == "Cypher25") "CYPHER 25"
+                else "CYPHER 5"
+            )
         val (properties, password) = stored("remote-films")
         assertThat(password).isEqualTo("alice-secret")
         assertThat(String(properties["password"] as ByteArray)).doesNotContain("alice-secret")

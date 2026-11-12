@@ -165,6 +165,20 @@ internal typealias Planner = Function1<AdministrationCommandRuntimeContext, Exec
 internal fun nameOf(name: Either<String, Parameter>, params: MapValue): String =
     `AdministrationCommandRuntime$`.`MODULE$`.runtimeStringValue(name, params) { it }
 
+/** The value of [this], or null without one. */
+internal fun <T> Option<T>.valueOrNull(): T? = if (isDefined) get() else null
+
+/**
+ * The default Cypher version [given] for a new database or remote alias, or else the DBMS default
+ * (`db.query.default_language`), which it then keeps: as Neo4j Enterprise documents, a later change
+ * of the setting changes no database that exists.
+ */
+internal fun defaultLanguage(given: Option<CypherVersion>, config: Config): CypherVersion =
+    given.valueOrNull()
+        ?: DefaultSystemGraphComponent.cypherVersionFromConfig(
+            config.get(GraphDatabaseSettings.default_language)
+        )
+
 /**
  * Fails with "[feature] is not supported." once the checks of [source], such as privileges, passed.
  */
@@ -396,13 +410,7 @@ private class DatabaseCommands(
                     "${kind.lowercase()} are not supported."
             }
         }
-        // Without a language of its own, the database keeps the DBMS default it was created with,
-        // as Neo4j Enterprise documents: a later change of the setting does not change it.
-        val language =
-            plan.defaultLanguageVersion().valueOrNull()
-                ?: DefaultSystemGraphComponent.cypherVersionFromConfig(
-                    config.get(GraphDatabaseSettings.default_language)
-                )
+        val language = defaultLanguage(plan.defaultLanguageVersion(), config)
         val name = admin.getNameFields("databaseName", databaseName, Function1(::validName))
         val key = parameter(name.nameKey())
         val free =
@@ -1362,8 +1370,6 @@ private class DatabaseCommands(
         )
 
     private fun parameter(key: String) = "${'$'}`$key`"
-
-    private fun <T> Option<T>.valueOrNull(): T? = if (isDefined) get() else null
 
     private fun <T> seqOf(vararg items: T): Seq<T> =
         CollectionConverters.asScala(items.toList()).toSeq()

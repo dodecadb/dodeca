@@ -71,9 +71,8 @@ internal class RemoteAliasCommands(
             dependencies.resolveDependency(AbstractSecurityLog::class.java)
         )
     }
-    private val passwords by lazy {
-        AliasPasswords(dependencies.resolveDependency(Config::class.java))
-    }
+    private val config by lazy { dependencies.resolveDependency(Config::class.java) }
+    private val passwords by lazy { AliasPasswords(config) }
 
     private val admin = `AdministrationCommandRuntime$`.`MODULE$`
 
@@ -103,9 +102,6 @@ internal class RemoteAliasCommands(
         val credentials =
             plan.remoteAliasCredentials() as? RemoteAliasStoredCredentials
                 ?: return notSupportedPlan(source, "`OIDC CREDENTIAL FORWARDING`")
-        if (plan.defaultLanguageVersion().isDefined) {
-            return notSupportedPlan(source, "`DEFAULT LANGUAGE`")
-        }
         val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName(), false)
         val target = admin.getDatabaseNameFields("targetName", plan.targetName(), false)
         val free =
@@ -132,6 +128,7 @@ internal class RemoteAliasCommands(
                 ${TopologyGraphDbmsModel.REMOTE_USERNAME_PROPERTY}: ${parameter(USER)},
                 ${TopologyGraphDbmsModel.REMOTE_PASSWORD_PROPERTY}: ${parameter(PASSWORD)},
                 ${TopologyGraphDbmsModel.IV_PROPERTY}: ${parameter(IV)},
+                ${TopologyGraphDbmsModel.DATABASE_DEFAULT_LANGUAGE_PROPERTY}: ${parameter(LANGUAGE)},
                 ${TopologyGraphDbmsModel.VERSION_PROPERTY}: randomUUID()})
             CREATE (alias)-[:$CONNECTS_WITH]->(driver:$DRIVER_SETTINGS)
             SET driver = ${parameter(DRIVER)}
@@ -140,7 +137,14 @@ internal class RemoteAliasCommands(
             RETURN alias.${TopologyGraphDbmsModel.NAME_PROPERTY} AS name
             """
                 .trimIndent(),
-            VirtualValues.map(alias.keys() + target.keys(), alias.values() + target.values()),
+            VirtualValues.map(
+                alias.keys() + target.keys() + LANGUAGE,
+                alias.values() +
+                    target.values() +
+                    Values.utf8Value(
+                        defaultLanguage(plan.defaultLanguageVersion(), config).persistedValue
+                    ),
+            ),
             QueryHandler.handleError(
                 Function2 { error, params ->
                     val name = show(plan.aliasName(), params)
@@ -220,8 +224,6 @@ internal class RemoteAliasCommands(
         source: ExecutionPlan,
         version: CypherVersion,
     ): ExecutionPlan {
-        if (plan.defaultLanguage().isDefined)
-            return notSupportedPlan(source, "`SET DEFAULT LANGUAGE`")
         val alias = admin.getDatabaseNameFields("aliasName", plan.aliasName(), false)
         val target =
             if (plan.targetName().isDefined) {
@@ -308,6 +310,11 @@ internal class RemoteAliasCommands(
         if (sets.isNotEmpty() || plan.driverSettings().isDefined) {
             sets += "alias.${TopologyGraphDbmsModel.VERSION_PROPERTY} = randomUUID()"
         }
+        // The connections stay as they are: only queries that start later run in it.
+        val language = plan.defaultLanguage().valueOrNull()
+        if (language != null) {
+            set(TopologyGraphDbmsModel.DATABASE_DEFAULT_LANGUAGE_PROPERTY, LANGUAGE)
+        }
         val query =
             listOfNotNull(
                     "MATCH $node",
@@ -337,8 +344,10 @@ internal class RemoteAliasCommands(
             "AlterRemoteDatabaseAlias",
             query,
             VirtualValues.map(
-                alias.keys() + (target?.keys() ?: emptyArray()),
-                alias.values() + (target?.values() ?: emptyArray()),
+                alias.keys() + (target?.keys() ?: emptyArray()) + LANGUAGE,
+                alias.values() +
+                    (target?.values() ?: emptyArray()) +
+                    (language?.let { Values.utf8Value(it.persistedValue) } ?: Values.NO_VALUE),
             ),
             QueryHandler.handleError(
                 Function2 { error, params ->
@@ -548,5 +557,6 @@ internal class RemoteAliasCommands(
         const val IV = "__dozendb_aliasIv"
         const val DRIVER = "__dozendb_aliasDriver"
         const val PROPERTIES_KEY = "__dozendb_aliasProperties"
+        const val LANGUAGE = "__dozendb_aliasLanguage"
     }
 }

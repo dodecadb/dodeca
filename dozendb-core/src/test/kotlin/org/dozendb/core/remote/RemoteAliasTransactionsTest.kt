@@ -3,12 +3,16 @@ package org.dozendb.core.remote
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.KeyStore
+import java.time.Duration
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import javax.crypto.KeyGenerator
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowableOfType
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilAsserted
 import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.StandaloneServer.Companion.SYSTEM
@@ -17,6 +21,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.GraphDatabaseSettings.CypherVersion.Cypher5
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.driver.AuthToken
 import org.neo4j.driver.AuthTokens
@@ -46,11 +51,15 @@ class RemoteAliasTransactionsTest {
         servers.forEach(StandaloneServer::close)
     }
 
-    /** A server called [name], with a keystore for the passwords of its remote aliases. */
+    /**
+     * A server called [name], with a keystore for the passwords of its remote aliases, and [more]
+     * settings.
+     */
     private fun server(
         name: String,
         auth: Boolean = false,
         listeners: List<DatabaseEventListener> = emptyList(),
+        more: Map<Setting<*>, Any> = emptyMap(),
     ): StandaloneServer {
         val home = Files.createDirectories(root.resolve(name))
         val keystore = home.resolve("aliases.p12")
@@ -69,16 +78,19 @@ class RemoteAliasTransactionsTest {
                 DozenDbSettings.keystorePath to keystore,
                 DozenDbSettings.keystorePassword to SecureString(KEYSTORE_SECRET),
                 DozenDbSettings.keyName to "aliases",
-            )
+            ) + more
         return StandaloneServer(home, settings, listeners).also {
             servers += it
             it.start()
         }
     }
 
-    /** The DBMS that remote aliases name, with database films and alice, who publishes there. */
-    private fun there(): StandaloneServer =
-        server("there", auth = true).also {
+    /**
+     * The DBMS that remote aliases name, with database films and alice, who publishes there, and
+     * [more] settings.
+     */
+    private fun there(more: Map<Setting<*>, Any> = emptyMap()): StandaloneServer =
+        server("there", auth = true, more = more).also {
             it.administer("CREATE DATABASE films WAIT")
             it.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
             it.administer("GRANT ROLE publisher TO alice")
@@ -101,18 +113,46 @@ class RemoteAliasTransactionsTest {
             "$cypher succeeded"
         }
 
-    /** Creates remote alias [alias] here for [target] there, with [scheme], as alice. */
+    /**
+     * Creates remote alias [alias] here for [target] there, with [scheme], as alice, and [more] of
+     * the command after the driver settings.
+     */
     private fun StandaloneServer.alias(
         alias: String,
         there: StandaloneServer,
         scheme: String = "bolt",
         target: String = "films",
         password: String = "alice-secret-1",
+        more: String = "",
     ) =
         administer(
             "CREATE ALIAS `$alias` FOR DATABASE `$target` AT '$scheme://${there.boltAddress()}' " +
-                "USER alice PASSWORD '$password' DRIVER {ssl_enforced: false}"
+                "USER alice PASSWORD '$password' DRIVER {ssl_enforced: false} $more"
         )
+
+    /** The default Cypher version SHOW ALIASES gives each alias here. */
+    private fun StandaloneServer.languages(): Map<Any?, Any?> =
+        rows("SHOW ALIASES FOR DATABASE YIELD name, defaultLanguage", SYSTEM).associate {
+            it["name"] to it["defaultLanguage"]
+        }
+
+    /**
+     * The Cypher version that queries without a prefix run in, there, through remote alias [alias]:
+     * `coll.distinct` is a function of Cypher 25 only.
+     */
+    private fun Driver.language(alias: String): String =
+        when (val count = run(PROBE, alias).single()["count"]) {
+            0L -> CYPHER_5
+            1L -> CYPHER_25
+            else -> error("$count functions")
+        }
+
+    private fun Driver.awaitLanguage(alias: String, language: String) =
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(language(alias)).isEqualTo(language)
+            }
 
     private fun films(there: StandaloneServer): Long =
         there.rows("MATCH (f:Film) RETURN count(f) AS films", "films").single()["films"] as Long
@@ -446,7 +486,32 @@ class RemoteAliasTransactionsTest {
             )
     }
 
+    @Test
+    fun `runs the queries of a remote alias in its default Cypher version, there too`() {
+        val cypher5 = mapOf<Setting<*>, Any>(GraphDatabaseSettings.default_language to Cypher5)
+        val there = there(cypher5)
+        val here = server("here", more = cypher5)
+        here.alias("newer", there, more = "DEFAULT LANGUAGE CYPHER 25")
+        here.alias("older", there)
+        val driver = here.driver()
+
+        assertThat(here.languages()).isEqualTo(mapOf("newer" to CYPHER_25, "older" to CYPHER_5))
+        driver.awaitLanguage("newer", CYPHER_25)
+        assertThat(driver.language("older")).isEqualTo(CYPHER_5)
+        // A prefix overrides it.
+        assertThat(driver.run("CYPHER 5 $PROBE", "newer").single()["count"]).isEqualTo(0L)
+
+        here.administer("ALTER ALIAS older SET DATABASE DEFAULT LANGUAGE CYPHER 25")
+
+        assertThat(here.languages()["older"]).isEqualTo(CYPHER_25)
+        driver.awaitLanguage("older", CYPHER_25)
+    }
+
     private companion object {
         const val KEYSTORE_SECRET = "keystore-secret"
+        const val PROBE =
+            "SHOW FUNCTIONS YIELD name WHERE name = 'coll.distinct' RETURN count(*) AS count"
+        const val CYPHER_5 = "CYPHER 5"
+        const val CYPHER_25 = "CYPHER 25"
     }
 }

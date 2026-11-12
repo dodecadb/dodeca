@@ -226,7 +226,7 @@ internal class AliasCommands(
                 "WHERE alias.name = ${parameter(it.nameKey())} AND " +
                     "alias.namespace = ${parameter(it.namespaceKey())}"
             } ?: ""
-        // A remote alias's default Cypher version, as Neo4j stores it, which DozenDB does not set.
+        // A remote alias's default Cypher version, as Neo4j stores it; local aliases have none.
         val language =
             CypherVersion.entries.joinToString(" ") {
                 "WHEN '${it.persistedValue}' THEN '${it.description}'"
