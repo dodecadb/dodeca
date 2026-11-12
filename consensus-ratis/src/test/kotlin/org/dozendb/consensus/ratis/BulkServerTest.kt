@@ -39,12 +39,23 @@ class BulkServerTest {
         )
 
     private fun start(tls: TlsConfig?, sources: Map<String, BulkSource>): BulkServer =
-        BulkServer.start(InetSocketAddress("127.0.0.1", 0), tls, "test-bulk", sources::get).also {
-            servers += it
-        }
+        BulkServer.start(
+                InetSocketAddress("127.0.0.1", 0),
+                tls?.let(::ReloadableTls),
+                "test-bulk",
+                sources::get,
+            )
+            .also {
+                servers += it
+            }
 
     private fun BulkServer.fetch(tls: TlsConfig?, name: String = GREETING): String =
-        BulkServer.fetch(HostPort("127.0.0.1", port), tls, name, "you".toByteArray()) {
+        BulkServer.fetch(
+            HostPort("127.0.0.1", port),
+            tls?.let(::ReloadableTls),
+            name,
+            "you".toByteArray(),
+        ) {
             it.readAllBytes().decodeToString()
         }
 

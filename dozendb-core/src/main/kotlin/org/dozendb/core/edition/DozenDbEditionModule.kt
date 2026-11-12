@@ -43,6 +43,7 @@ import org.dozendb.core.servers.ServerOptions
 import org.dozendb.core.servers.Servers
 import org.dozendb.core.servers.SingleServerPlacement
 import org.dozendb.core.servers.SingleServerTopology
+import org.dozendb.core.ssl.TlsProcedures
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
@@ -706,7 +707,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
 
     /**
      * Neo4j Community's procedures, `dbms.setConfigValue`, `dbms.setDefaultDatabase`,
-     * `dbms.quarantineDatabase` and `dbms.unquarantineDatabase`.
+     * `dbms.quarantineDatabase`, `dbms.unquarantineDatabase` and `dbms.security.reloadTLS`.
      */
     override fun registerEditionSpecificProcedures(
         globalProcedures: GlobalProcedures,
@@ -719,6 +720,7 @@ open class DozenDbEditionModule(globalModule: GlobalModule) : CommunityEditionMo
         globalProcedures.registerProcedure(DefaultDatabaseProcedures::class.java)
         globalProcedures.registerProcedure(MonitoringProcedures::class.java)
         globalProcedures.registerProcedure(QuarantineProcedures::class.java)
+        globalProcedures.registerProcedure(TlsProcedures::class.java)
     }
 
     /** Starts the default database, then follows the system graph for the other databases. */

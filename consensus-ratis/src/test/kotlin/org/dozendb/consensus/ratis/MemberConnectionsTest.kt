@@ -63,13 +63,15 @@ class MemberConnectionsTest {
                     val certificate = authority.issue()
                     config.copy(
                         tls =
-                            TlsConfig(
-                                privateKey = certificate.privateKey,
-                                certificateChain = listOf(certificate.certificate),
-                                trustManagers =
-                                    TestAuthority.trusting(authority).trustManagers.toList(),
-                                requireClientCertificates = true,
-                                verifyHostname = false,
+                            ReloadableTls(
+                                TlsConfig(
+                                    privateKey = certificate.privateKey,
+                                    certificateChain = listOf(certificate.certificate),
+                                    trustManagers =
+                                        TestAuthority.trusting(authority).trustManagers.toList(),
+                                    requireClientCertificates = true,
+                                    verifyHostname = false,
+                                )
                             )
                     )
                 }

@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import org.dozendb.consensus.ratis.ReloadableTls
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.ssl.CipherSuites
 import org.neo4j.configuration.Config
@@ -7,6 +8,7 @@ import org.neo4j.configuration.ssl.ClientAuth
 import org.neo4j.configuration.ssl.SslPolicyConfig
 import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.logging.Log
+import org.neo4j.ssl.SslPolicy
 import org.neo4j.ssl.config.SslPolicyProvider
 
 /**
@@ -48,6 +50,42 @@ internal object ClusterTls {
                     "($clientAuth=NONE): any host that reaches the Raft port can act as a member."
             )
         }
+        return of(config, loaded)
+    }
+
+    /**
+     * Has [tls], the TLS between members, take the certificate and trusted authorities of the
+     * cluster policy each time [policies] reloads it (`dbms.security.reloadTLS`), and tells in
+     * [log] what else changed and waits for a restart.
+     */
+    fun follow(config: Config, policies: SslPolicyProvider, tls: ReloadableTls, log: Log) =
+        policies.addPolicyChangeListener { scope, loaded ->
+            if (scope != SslPolicyScope.CLUSTER) return@addPolicyChangeListener
+            val name = policy.base_directory.name().substringBeforeLast('.')
+            val next =
+                try {
+                    of(config, loaded)
+                } catch (e: RuntimeException) {
+                    log.error(
+                        "Unable to reload the TLS between members, the certificates in use stay: %s",
+                        e.message,
+                    )
+                    return@addPolicyChangeListener
+                }
+            val waiting = tls.reload(next)
+            log.info(
+                "Reloaded the certificate and trusted authorities of $name.*: connections " +
+                    "between members made from now on use them."
+            )
+            if (waiting.isNotEmpty()) {
+                log.warn(
+                    "The changed %s of $name.* take effect between members at the next restart.",
+                    waiting.joinToString(", "),
+                )
+            }
+        }
+
+    private fun of(config: Config, loaded: SslPolicy): TlsConfig {
         return TlsConfig(
             privateKey = loaded.privateKey(),
             certificateChain = loaded.certificateChain().toList(),

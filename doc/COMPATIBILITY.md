@@ -70,7 +70,7 @@ end its own way.
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
-| Reloading TLS certificates while running | Not supported | [Not supported](#not-supported) |
+| Reloading TLS certificates while running | Same, with differences | [Running a cluster](#running-a-cluster) |
 | Changing the default database | Same | [Databases](#databases) |
 | Disaster recovery: `unbind-system-db`, recreating databases, quarantine | Same, with differences | [Disaster recovery](#disaster-recovery) |
 | Change data capture | Not supported | [Not supported](#not-supported) |
@@ -583,11 +583,21 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   `verify_hostname`, true by default in Neo4j 2026 as in Enterprise since
   2025.01, a member checks that the certificate of the member it connects to
   names the host it dials; otherwise members accept any certificate from a
-  trusted authority, whichever member presents it. Certificates and the other
-  policy settings are read at start: Neo4j 2026 declares most of them
-  dynamic, but the traffic between members, and the backup server, keep what
-  they read until the server restarts. See [`OPERATOR_GUIDE.md`, "TLS between
-  members"](OPERATOR_GUIDE.md#tls-between-members).
+  trusted authority, whichever member presents it. See [`OPERATOR_GUIDE.md`,
+  "TLS between members"](OPERATOR_GUIDE.md#tls-between-members).
+- **Reloading TLS.** With `dbms.security.tls_reload_enabled=true`, an
+  administrator reloads a server's certificates with
+  `CALL dbms.security.reloadTLS()`, on each server, as in Enterprise since
+  2025.03. Connections made afterwards use the new certificates; open ones
+  keep theirs. Bolt, HTTPS and the routing connector, which are Neo4j's own,
+  take every change of their policies. Between members and on the backup
+  server, the certificate and the trusted authorities change, revocation lists
+  included, while the `tls_versions`, `ciphers`, `client_auth` and
+  `verify_hostname` of the `cluster` and `backup` policies keep their values
+  until the server restarts: a reload that changes them says so in
+  `neo4j.log`. A reload whose files cannot be read fails and keeps the
+  certificates in use. Without the setting, the procedure fails and says how
+  to turn it on.
 - **Cipher suites.** Members use the protocols and cipher suites of the
   policy, and with the default `tls_versions` negotiate TLS 1.3 with each
   other. Enterprise's documentation says that CBC suites are not supported
@@ -923,8 +933,8 @@ backups with Enterprise is not promised. The differences:
   `dbms.ssl.policy.backup.enabled` set explicitly, `true` or `false`, since
   the backup port has no other authentication. With TLS, `neo4j-admin` checks
   that the server's certificate names the host it connects to, unless
-  `dbms.ssl.policy.backup.verify_hostname=false`, and the server keeps the
-  policy it read at start (see [Clustering](#running-a-cluster)).
+  `dbms.ssl.policy.backup.verify_hostname=false`. The server takes reloaded
+  certificates as members do (see [Running a cluster](#running-a-cluster)).
 
 ## Cloud storage
 
@@ -1391,9 +1401,6 @@ error, and their procedures do not exist.
   `authorization_providers`, `dbms.security.ldap.*`, `dbms.security.oidc.*`,
   the auth cache settings and `dbms.security.clearAuthCache`. Remote aliases
   with `OIDC CREDENTIAL FORWARDING` fail.
-- **Reloading TLS certificates while running**:
-  `dbms.security.tls_reload_enabled` and `dbms.security.reloadTLS()`.
-  Certificates are read at start.
 - **Reloading procedures while running**: `dbms.reloadProcedures()`.
 - **Change data capture**: `txLogEnrichment`, `db.cdc.*` and `cdc.*`.
 - **The `block` and `high_limit` store formats.** As Neo4j Community, DozenDB

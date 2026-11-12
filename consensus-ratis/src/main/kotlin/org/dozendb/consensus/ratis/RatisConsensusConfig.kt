@@ -24,8 +24,8 @@ import org.dozendb.consensus.MemberId
  *   snapshot.
  * @property logSegmentSize the size at which a log segment is closed, raised to twice the largest
  *   entry if smaller. Logs are discarded a whole closed segment at a time.
- * @property tls TLS for all traffic between members; null sends it in plaintext. Members must agree
- *   on it.
+ * @property tls TLS for all traffic between members, whose certificates may change while the member
+ *   runs; null sends it in plaintext. Members must agree on it.
  */
 data class RatisConsensusConfig(
     val memberId: MemberId,
@@ -40,7 +40,7 @@ data class RatisConsensusConfig(
     val maxEntrySize: Int = DEFAULT_MAX_ENTRY_SIZE,
     val snapshotInterval: Duration = Duration.ofSeconds(10),
     val logSegmentSize: Long = DEFAULT_LOG_SEGMENT_SIZE,
-    val tls: TlsConfig? = null,
+    val tls: ReloadableTls? = null,
 ) {
     init {
         require(listenPort in 0..65535) { "listen port must be in 0..65535, was $listenPort" }

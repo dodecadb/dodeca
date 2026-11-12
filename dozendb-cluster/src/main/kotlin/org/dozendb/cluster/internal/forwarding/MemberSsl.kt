@@ -1,37 +1,26 @@
 package org.dozendb.cluster.internal.forwarding
 
-import java.security.KeyStore
 import java.security.SecureRandom
 import javax.net.ssl.KeyManager
-import javax.net.ssl.KeyManagerFactory
 import javax.net.ssl.SSLContext
 import javax.net.ssl.SSLContextSpi
 import javax.net.ssl.SSLEngine
 import javax.net.ssl.SSLParameters
 import javax.net.ssl.TrustManager
-import org.dozendb.consensus.ratis.TlsConfig
+import org.dozendb.consensus.ratis.ReloadableTls
 
 /**
- * The TLS of a member's connections to other members' routing connectors: its key and certificate
- * chain, the trust and the protocols and cipher suites of the cluster SSL policy, as for Raft.
+ * The TLS of a member's connections to other members' routing connectors: the current key,
+ * certificate chain and trust of the cluster SSL policy, and its protocols and cipher suites at
+ * start, as for Raft.
  */
 internal object MemberSsl {
-    fun context(tls: TlsConfig): SSLContext {
-        val password = CharArray(0)
-        val keyStore = KeyStore.getInstance("PKCS12")
-        keyStore.load(null, null)
-        keyStore.setKeyEntry(
-            "member",
-            tls.privateKey,
-            password,
-            tls.certificateChain.toTypedArray(),
-        )
-        val keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm())
-        keys.init(keyStore, password)
+    fun context(tls: ReloadableTls): SSLContext {
         val context = SSLContext.getInstance("TLS")
-        context.init(keys.keyManagers, tls.trustManagers.toTypedArray(), null)
-        if (tls.protocols == null && tls.cipherSuites == null) return context
-        return RestrictedContext(context, tls.protocols, tls.cipherSuites)
+        context.init(arrayOf(tls.keyManager), arrayOf(tls.trustManager), null)
+        val start = tls.start
+        if (start.protocols == null && start.cipherSuites == null) return context
+        return RestrictedContext(context, start.protocols, start.cipherSuites)
     }
 
     /** [context], whose engines use only [protocols] and [cipherSuites] where given. */

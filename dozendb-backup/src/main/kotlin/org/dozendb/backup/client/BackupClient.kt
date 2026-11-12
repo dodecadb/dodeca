@@ -9,6 +9,7 @@ import org.dozendb.backup.BackupProtocol
 import org.dozendb.backup.BackupProtocol.Request
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.ratis.BulkServer
+import org.dozendb.consensus.ratis.ReloadableTls
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.security.MetadataScript
 import org.dozendb.core.store.CommittedTransaction
@@ -26,7 +27,9 @@ import org.neo4j.storageengine.api.CommandReaderFactory
  * Every request throws [BackupProtocol.Refused] if the server refuses it, and an
  * [java.io.IOException] if it cannot be reached or fails.
  */
-internal class BackupClient(private val fs: FileSystemAbstraction, private val tls: TlsConfig?) {
+internal class BackupClient(private val fs: FileSystemAbstraction, tls: TlsConfig?) {
+    private val tls = tls?.let(::ReloadableTls)
+
     /** The databases of [server] that match the glob [pattern]. */
     fun list(server: HostPort, pattern: String): List<String> =
         fetch(server, Request.List(pattern), BackupProtocol::readNames)

@@ -2,6 +2,7 @@ package org.dozendb.backup
 
 import java.net.InetAddress
 import java.net.UnknownHostException
+import org.dozendb.consensus.ratis.ReloadableTls
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.core.ssl.CipherSuites
 import org.neo4j.configuration.Config
@@ -11,6 +12,7 @@ import org.neo4j.configuration.ssl.SslPolicyConfig
 import org.neo4j.configuration.ssl.SslPolicyScope
 import org.neo4j.logging.Log
 import org.neo4j.ssl.SslPolicy
+import org.neo4j.ssl.config.SslPolicyChangeListener
 import org.neo4j.ssl.config.SslPolicyProvider
 
 /**
@@ -61,6 +63,43 @@ internal object BackupTls {
         }
         return of(config, loaded)
     }
+
+    /**
+     * Has [tls], which serves backups, take the certificate and trusted authorities of the backup
+     * policy each time [policies] reloads it (`dbms.security.reloadTLS`), and tells in [log] what
+     * else changed and waits for a restart. Returns the listener, to remove when no longer serving.
+     */
+    fun follow(
+        config: Config,
+        policies: SslPolicyProvider,
+        tls: ReloadableTls,
+        log: Log,
+    ): SslPolicyChangeListener = SslPolicyChangeListener { scope, loaded ->
+        if (scope != SslPolicyScope.BACKUP) return@SslPolicyChangeListener
+        val name = policy.base_directory.name().substringBeforeLast('.')
+        val next =
+            try {
+                of(config, loaded)
+            } catch (e: RuntimeException) {
+                log.error(
+                    "Unable to reload the TLS of backups, those in use stay: %s",
+                    e.message,
+                )
+                return@SslPolicyChangeListener
+            }
+        val waiting = tls.reload(next)
+        log.info(
+            "Reloaded the certificate and trusted authorities of $name.*: backups " +
+                "requested from now on use them."
+        )
+        if (waiting.isNotEmpty()) {
+            log.warn(
+                "The changed %s of $name.* take effect for backups at the next restart.",
+                waiting.joinToString(", "),
+            )
+        }
+    }
+        .also(policies::addPolicyChangeListener)
 
     /** The TLS that [config] asks for to take backups, with [policies]; null for plaintext. */
     fun client(config: Config, policies: SslPolicyProvider): TlsConfig? =

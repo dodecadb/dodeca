@@ -6,11 +6,13 @@ import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.BackupTls
 import org.dozendb.consensus.BulkSource
 import org.dozendb.consensus.ratis.BulkServer
+import org.dozendb.consensus.ratis.ReloadableTls
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.connectors.ConnectorPortRegister
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
 import org.neo4j.logging.InternalLogProvider
+import org.neo4j.ssl.config.SslPolicyChangeListener
 import org.neo4j.ssl.config.SslPolicyProvider
 
 /**
@@ -26,10 +28,11 @@ internal class BackupListener(
 ) : LifecycleAdapter() {
     private val log = logProvider.getLog(BackupListener::class.java)
     private var server: BulkServer? = null
+    private var reloads: SslPolicyChangeListener? = null
 
     override fun start() {
         val address = config.get(BackupSettings.listenAddress)
-        val tls = BackupTls.server(config, address, policies, log)
+        val tls = BackupTls.server(config, address, policies, log)?.let(::ReloadableTls)
         val started =
             try {
                 BulkServer.start(
@@ -46,6 +49,7 @@ internal class BackupListener(
                 )
             }
         server = started
+        reloads = tls?.let { BackupTls.follow(config, policies, it, log) }
         ports.register(ConnectorType.BACKUP, InetSocketAddress(address.hostname, started.port))
         log.info(
             "Serving backups on %s:%d %s",
@@ -56,6 +60,8 @@ internal class BackupListener(
     }
 
     override fun stop() {
+        reloads?.let(policies::removePolicyChangeListener)
+        reloads = null
         val running = server ?: return
         server = null
         ports.deregister(ConnectorType.BACKUP)

@@ -33,6 +33,18 @@
       <artifactId>awaitility-kotlin</artifactId>
       <scope>test</scope>
     </dependency>
+    <!-- TestCertificates, for TLS tests; it uses Bouncy Castle. -->
+    <dependency>
+      <groupId>org.dozendb</groupId>
+      <artifactId>consensus-api</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <scope>test</scope>
+    </dependency>
   </dependencies>
   <build>
     <resources>

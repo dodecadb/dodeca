@@ -12,6 +12,7 @@ import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.consensus.testing.TestAuthority
+import org.dozendb.core.DozenDbSettings
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -118,6 +119,47 @@ class TlsMembersTest {
         restartEach(new, trusted = listOf(old, new))
         restartEach(new, trusted = listOf(new))
 
+        // The members no longer accept a certificate of the old authority.
+        val candidate = cluster.newMember()
+        starting(candidate) { cluster.refusesToAdd(candidate, "certification path") }
+    }
+
+    @Test
+    fun `members move to another authority's certificates by reloading them, without restarts`() {
+        val old = TestAuthority("Old CA")
+        val new = TestAuthority("New CA")
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings = mapOf(DozenDbSettings.tlsReloadEnabled to true),
+                    authority = old,
+                )
+                .also { harness = it }
+        cluster.start()
+        cluster.replicates()
+
+        // Has each member in turn reload a certificate of [issuer], trusting [trusted].
+        fun reloadEach(issuer: TestAuthority, trusted: List<TestAuthority>) {
+            for (member in cluster.members) {
+                issuer.issue().writeTo(member.certificates, trusted)
+                member.database(SYSTEM).executeTransactionally("CALL dbms.security.reloadTLS()")
+                cluster.replicates()
+            }
+        }
+
+        // As for restarts: trust the new authority, then take certificates from it, then stop
+        // trusting the old one.
+        reloadEach(old, trusted = listOf(old, new))
+        reloadEach(new, trusted = listOf(old, new))
+        reloadEach(new, trusted = listOf(new))
+
+        // A member that connects anew, trusting the new authority only, finds the others present
+        // its certificates and accept its own.
+        val restarted = cluster.members.last()
+        restarted.stop()
+        restarted.start()
+        cluster.replicates()
         // The members no longer accept a certificate of the old authority.
         val candidate = cluster.newMember()
         starting(candidate) { cluster.refusesToAdd(candidate, "certification path") }

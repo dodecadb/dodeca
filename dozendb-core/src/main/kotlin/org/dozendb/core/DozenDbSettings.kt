@@ -102,6 +102,15 @@ class DozenDbSettings : SettingsDeclaration {
 
         @JvmField
         @field:Description(
+            "Lets administrators reload the TLS certificates and configuration while the server " +
+                "runs, with dbms.security.reloadTLS(): connections made afterwards use them. Named " +
+                "like Neo4j Enterprise's setting."
+        )
+        val tlsReloadEnabled: Setting<Boolean> =
+            newBuilder("dbms.security.tls_reload_enabled", BOOL, false).build()
+
+        @JvmField
+        @field:Description(
             "Whether the server's process ends, with status 1, once a database panics, so that a " +
                 "process manager starts it again. Either way the database's copy on the server is " +
                 "put in quarantine, which a restart keeps. Named like Neo4j Enterprise's setting, " +

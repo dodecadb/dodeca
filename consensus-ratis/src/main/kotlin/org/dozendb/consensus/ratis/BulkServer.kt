@@ -43,7 +43,7 @@ private constructor(
          */
         fun start(
             address: InetSocketAddress,
-            tls: TlsConfig?,
+            tls: ReloadableTls?,
             name: String,
             sources: (String) -> BulkSource?,
         ): BulkServer {
@@ -93,7 +93,7 @@ private constructor(
          */
         fun <T> fetch(
             address: HostPort,
-            tls: TlsConfig?,
+            tls: ReloadableTls?,
             name: String,
             request: ByteArray,
             consume: (InputStream) -> T,

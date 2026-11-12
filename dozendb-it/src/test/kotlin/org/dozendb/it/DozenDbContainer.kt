@@ -12,16 +12,21 @@ import java.net.http.HttpResponse.BodyHandlers
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.KeyStore
+import java.security.cert.X509Certificate
 import java.time.Duration
 import java.util.Base64
 import java.util.UUID
 import javax.crypto.SecretKey
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocket
+import javax.net.ssl.X509TrustManager
 import org.assertj.core.api.Assertions.assertThat
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.withPollInterval
 import org.dozendb.consensus.testing.TestAuthority
+import org.dozendb.consensus.testing.TestCertificate
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
@@ -149,6 +154,58 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
             )
         }
         return this
+    }
+
+    /**
+     * Serves HTTPS, with a certificate for [alias] that [authority] issued, published for
+     * [presentedCertificate].
+     */
+    fun httpsTls(authority: TestAuthority): DozenDbContainer {
+        withEnv("NEO4J_server_https_enabled", "true")
+        withEnv("NEO4J_dbms_ssl_policy_https_enabled", "true")
+        withEnv("NEO4J_dbms_ssl_policy_https_client__auth", "NONE")
+        authority.issue(names = listOf(alias)).files().forEach { (path, text) ->
+            withCopyToContainer(
+                Transferable.of(text.toByteArray(), READABLE),
+                "$HTTPS_CERTIFICATES/$path",
+            )
+        }
+        addExposedPort(HTTPS_PORT)
+        return this
+    }
+
+    /**
+     * Replaces, in the running container, the files of the SSL policy of [scope], such as `cluster`
+     * or `bolt`, with [certificate] and the [trusted] authorities.
+     */
+    fun replaceCertificates(
+        scope: String,
+        certificate: TestCertificate,
+        trusted: List<TestAuthority>,
+    ) {
+        certificate.files(trusted).forEach { (path, text) ->
+            copyFileToContainer(
+                Transferable.of(text.toByteArray(), READABLE),
+                "/var/lib/neo4j/certificates/$scope/$path",
+            )
+        }
+    }
+
+    /** The certificate this server presents on a new TLS connection to its [port]. */
+    fun presentedCertificate(port: Int): X509Certificate {
+        val trustingAll =
+            object : X509TrustManager {
+                override fun checkClientTrusted(chain: Array<X509Certificate>, type: String) {}
+
+                override fun checkServerTrusted(chain: Array<X509Certificate>, type: String) {}
+
+                override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
+            }
+        val context = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trustingAll), null) }
+        return (context.socketFactory.createSocket(host, getMappedPort(port)) as SSLSocket).use {
+            it.startHandshake()
+            it.session.peerCertificates.first() as X509Certificate
+        }
     }
 
     /**
@@ -435,6 +492,7 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
     companion object {
         const val BOLT_PORT = 7687
         const val HTTP_PORT = 7474
+        const val HTTPS_PORT = 7473
         const val ROUTING_PORT = 7688
         const val PROMETHEUS_PORT = 2004
         const val BACKUP_PORT = 6362
@@ -452,6 +510,7 @@ class DozenDbContainer(image: DockerImageName, val alias: String) :
         /** Where Neo4j's image looks for the backup SSL policy's certificates. */
         const val BACKUP_CERTIFICATES = "/var/lib/neo4j/certificates/backup"
         private const val BOLT_CERTIFICATES = "/var/lib/neo4j/certificates/bolt"
+        private const val HTTPS_CERTIFICATES = "/var/lib/neo4j/certificates/https"
         private const val TRUST_STORE = "/var/lib/neo4j/certificates/trust.jks"
 
         /** Where [aliasKeystore] puts the keystore by default. */

@@ -80,7 +80,7 @@ import org.dozendb.consensus.Role
 import org.dozendb.consensus.Snapshot
 import org.dozendb.consensus.ratis.RatisConsensusConfig
 import org.dozendb.consensus.ratis.RatisConsensusLog
-import org.dozendb.consensus.ratis.TlsConfig
+import org.dozendb.consensus.ratis.ReloadableTls
 import org.dozendb.core.DozenDb
 import org.dozendb.core.edition.BackupSources
 import org.dozendb.core.edition.DatabaseHosting
@@ -214,7 +214,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
     private val localStores: Neo4jLocalStores
 
     /** The TLS between members, or null for plaintext. */
-    private val memberTls: TlsConfig?
+    private val memberTls: ReloadableTls?
 
     /** Why other members may not forward writes to this member, or null if they may. */
     private val forwardingRefusal: String?
@@ -315,15 +315,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             ) {
                 ConsensusTuning { it }
             }
-        val tls =
-            ClusterTls.of(
-                config,
-                globalModule.globalDependencies.resolveDependency(SslPolicyProvider::class.java),
-                logService.getUserLog(ClusterTls::class.java),
-            )
+        val policies =
+            globalModule.globalDependencies.resolveDependency(SslPolicyProvider::class.java)
+        val tlsLog = logService.getUserLog(ClusterTls::class.java)
+        val tls = ClusterTls.of(config, policies, tlsLog)?.let(::ReloadableTls)
+        tls?.let { ClusterTls.follow(config, policies, it, tlsLog) }
         memberTls = tls
-        forwardingRefusal = ForwardedWrites.refusal(config, tls)
-        sendingRefusal = ForwardedWrites.sendingRefusal(config, tls)
+        forwardingRefusal = ForwardedWrites.refusal(config, tls?.start)
+        sendingRefusal = ForwardedWrites.sendingRefusal(config, tls?.start)
         forwardingRefusal?.let {
             userLog.info(
                 "Other members do not forward writes to this member when it leads a database: " +
@@ -1807,7 +1806,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DozenDbEditionModule(gl
             RemoteTransactions(
                     config,
                     MemberSsl.context(tls),
-                    tls.verifyHostname,
+                    tls.start.verifyHostname,
                     ::lastSystemTransaction,
                     logs,
                 )

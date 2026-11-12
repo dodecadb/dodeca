@@ -11,8 +11,10 @@ import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.CommunityServer
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.ratis.BulkServer
+import org.dozendb.consensus.ratis.ReloadableTls
 import org.dozendb.consensus.ratis.TlsConfig
 import org.dozendb.consensus.testing.TestAuthority
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.StandaloneServer
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
@@ -48,7 +50,12 @@ class BackupListenerTest {
     /** Asks the backup port for a source no server serves, which only a listener answers. */
     private fun ask(port: Int, tls: TlsConfig? = null): String =
         try {
-            BulkServer.fetch(HostPort("127.0.0.1", port), tls, "nothing", ByteArray(0)) {
+            BulkServer.fetch(
+                HostPort("127.0.0.1", port),
+                tls?.let(::ReloadableTls),
+                "nothing",
+                ByteArray(0),
+            ) {
                 it.readAllBytes()
                 "served"
             }
@@ -56,11 +63,14 @@ class BackupListenerTest {
             e.message!!
         }
 
-    private fun clientTls(certificate: org.dozendb.consensus.testing.TestCertificate) =
+    private fun clientTls(
+        certificate: org.dozendb.consensus.testing.TestCertificate,
+        trusted: TestAuthority = authority,
+    ) =
         TlsConfig(
             privateKey = certificate.privateKey,
             certificateChain = listOf(certificate.certificate),
-            trustManagers = TestAuthority.trusting(authority).trustManagers.toList(),
+            trustManagers = TestAuthority.trusting(trusted).trustManagers.toList(),
             requireClientCertificates = true,
             verifyHostname = false,
         )
@@ -123,6 +133,26 @@ class BackupListenerTest {
             assertThat(ask(port, clientTls(TestAuthority("Foreign CA").issue())))
                 .contains("UNAVAILABLE")
             assertThat(ask(port)).contains("UNAVAILABLE")
+        }
+    }
+
+    @Test
+    fun `serves backups with the certificate and trust that dbms security reloadTLS reloaded`() {
+        server(policy.enabled to true, DozenDbSettings.tlsReloadEnabled to true).use { server ->
+            val certificates = server.home.resolve("certificates/backup")
+            authority.issue().writeTo(certificates)
+            server.start()
+            val port = checkNotNull(server.backupPort())
+            val next = TestAuthority("Next CA")
+            val client = clientTls(next.issue(), trusted = next)
+            // The server presents a certificate of the old authority, and does not trust the new.
+            assertThat(ask(port, client)).contains("UNAVAILABLE")
+
+            next.issue().writeTo(certificates, trusted = listOf(next))
+            server.administer("CALL dbms.security.reloadTLS()")
+
+            assertThat(ask(port, client)).contains("NOT_FOUND: no bulk source nothing")
+            assertThat(ask(port, clientTls(authority.issue()))).contains("UNAVAILABLE")
         }
     }
 

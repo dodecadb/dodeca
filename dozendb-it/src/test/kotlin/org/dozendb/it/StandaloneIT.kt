@@ -221,6 +221,7 @@ class StandaloneIT {
                 "dbms.setDefaultDatabase",
                 // Under Cypher 25, the default, as Enterprise's dbms.quarantineDatabase is not.
                 "dbms.unquarantineDatabase",
+                "dbms.security.reloadTLS",
             )
         assertThat(names(dozenDb, "SHOW FUNCTIONS YIELD name"))
             .isEqualTo(names(community, "SHOW FUNCTIONS YIELD name"))
@@ -292,6 +293,7 @@ class StandaloneIT {
                 "dbms.security.keystore.path",
                 "dbms.security.keystore.password",
                 "dbms.security.key.name",
+                "dbms.security.tls_reload_enabled",
                 "server.panic.shutdown_on_panic",
             )
     }

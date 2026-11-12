@@ -1070,7 +1070,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     /** How this member talks to the others, for the log. */
     private fun transport(): String =
-        config.tls?.let {
+        config.tls?.start?.let {
             listOf(
                     "TLS",
                     if (it.requireClientCertificates) "client certificates required"

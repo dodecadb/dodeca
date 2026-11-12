@@ -1035,11 +1035,30 @@ every member, and keep `ca.key` elsewhere.
 
 ### Replacing certificates
 
-Members read their certificates when they start. Replace a member's files and
-restart it, one member at a time. To move to another authority, first add its
-certificate to `trusted/` on every member, restarting each; then give each
-member a certificate from the new authority, restarting each; then remove the
-old authority from `trusted/`, restarting each.
+Members read their certificates when they start. With
+`dbms.security.tls_reload_enabled=true`, which itself takes a restart to
+change, a member also reloads them while it runs:
+
+1. Replace the files of the member's policies, such as `private.key` and
+   `public.crt` in `certificates/cluster`.
+2. Run `CALL dbms.security.reloadTLS()` on that member, as an administrator.
+   It reloads every SSL policy of the server: Bolt, HTTPS, the cluster and
+   backups.
+
+Connections made afterwards use the new certificates; open ones keep theirs.
+A reload whose files cannot be read fails and keeps the certificates in use.
+Between members and for backups, a reload takes the certificate and the
+trusted authorities (`trusted/`, `revoked/`); `tls_versions`, `ciphers`,
+`client_auth` and `verify_hostname` of these two policies change only when the
+member restarts, and `neo4j.log` says so when a reload finds them changed.
+
+Without reloads, replace a member's files and restart it, one member at a
+time.
+
+To move to another authority, either way, first add its certificate to
+`trusted/` on every member, reloading or restarting each; then give each member
+a certificate from the new authority; then remove the old authority from
+`trusted/`. Each step is done on every member before the next starts.
 
 ### Switching between TLS and plaintext
 
