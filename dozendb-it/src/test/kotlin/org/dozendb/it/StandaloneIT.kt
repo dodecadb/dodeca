@@ -617,6 +617,31 @@ class StandaloneIT {
             .containsExactly(mapOf("title" to "Alien"))
     }
 
+    @Test
+    @Order(ADDITIONS)
+    fun `gives a database a default Cypher version when creating it, which Community refuses`() {
+        refusedByCommunity("CREATE DATABASE versions DEFAULT LANGUAGE CYPHER 5", "system")
+        dozenDb.rows("CREATE DATABASE versions DEFAULT LANGUAGE CYPHER 5 WAIT", "system")
+        // Cypher 25 is the default, as the image's neo4j.conf makes it, but not this database's.
+        fun language() =
+            dozenDb
+                .rows(
+                    "SHOW FUNCTIONS YIELD name WHERE name = 'coll.distinct' RETURN count(*) AS n",
+                    "versions",
+                )
+                .single()["n"]
+        fun shown() =
+            dozenDb.rows("SHOW DATABASE versions YIELD defaultLanguage", "system").single()
+
+        assertThat(shown()).isEqualTo(mapOf("defaultLanguage" to "CYPHER 5"))
+        await atMost Duration.ofSeconds(30) untilAsserted { assertThat(language()).isEqualTo(0L) }
+
+        dozenDb.rows("ALTER DATABASE versions SET DEFAULT LANGUAGE CYPHER 25", "system")
+
+        assertThat(shown()).isEqualTo(mapOf("defaultLanguage" to "CYPHER 25"))
+        await atMost Duration.ofSeconds(30) untilAsserted { assertThat(language()).isEqualTo(1L) }
+    }
+
     private companion object {
         /** About a kilobyte of text, to fill a disk with few rows. */
         val PADDING = "x".repeat(1000)
