@@ -5,6 +5,7 @@
  * Modifications Copyright (c) DozenDB
  * 2026-10-23: Neo4j Community's DoNothingExecutionPlanner and EnsureNodeExistsExecutionPlanner for
  * the roles of DozenDB, with the role commands that Community refuses.
+ * 2026-11-12: SHOW ROLES WITH AUTH RULES; helpers shared with AuthRuleCommands in SecurityCommands.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -12,10 +13,10 @@
  */
 package org.dozendb.core.cypher
 
+import org.dozendb.core.security.AuthRule
 import org.dozendb.core.security.BuiltInRoles
 import org.dozendb.core.security.PrivilegeRecords
 import org.neo4j.common.DependencyResolver
-import org.neo4j.cypher.internal.`AdministrationCommandRuntime$`
 import org.neo4j.cypher.internal.AdministrationCommandRuntimeContext
 import org.neo4j.cypher.internal.AdministrationShowCommandUtils
 import org.neo4j.cypher.internal.CypherVersion
@@ -44,29 +45,22 @@ import org.neo4j.cypher.internal.logical.plans.`RoleEntity$`
 import org.neo4j.cypher.internal.logical.plans.ShowRoles
 import org.neo4j.cypher.internal.notification.GrantRoleCommandHasNoEffectNotification
 import org.neo4j.cypher.internal.notification.ImpossibleRevokeCommandWarning
-import org.neo4j.cypher.internal.notification.InternalNotification
 import org.neo4j.cypher.internal.notification.RevokeRoleCommandHasNoEffectNotification
 import org.neo4j.cypher.internal.procs.`Continue$`
-import org.neo4j.cypher.internal.procs.NotifyAndContinue
 import org.neo4j.cypher.internal.procs.ParameterTransformer
 import org.neo4j.cypher.internal.procs.PredicateExecutionPlan
 import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.QueryHandlerBuilder
-import org.neo4j.cypher.internal.procs.QueryHandlerResult
 import org.neo4j.cypher.internal.procs.SystemCommandExecutionPlan
 import org.neo4j.cypher.internal.procs.ThrowException
-import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY
-import org.neo4j.exceptions.DatabaseAdministrationOnFollowerException
 import org.neo4j.exceptions.InvalidArgumentException
 import org.neo4j.gqlstatus.PrivilegeGqlCodeEntity
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.RelationshipType
 import org.neo4j.graphdb.Transaction
 import org.neo4j.graphdb.security.AuthorizationViolationException
-import org.neo4j.internal.kernel.api.security.AbstractSecurityLog
-import org.neo4j.internal.kernel.api.security.SecurityAuthorizationHandler
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.util.Stringifier.backtick
 import org.neo4j.values.storable.BooleanValue
@@ -78,12 +72,6 @@ import scala.Function1
 import scala.Function2
 import scala.Function3
 import scala.Option
-import scala.PartialFunction
-import scala.Tuple2
-import scala.collection.immutable.Seq
-import scala.collection.immutable.Set
-import scala.collection.immutable.`Set$`
-import scala.jdk.javaapi.CollectionConverters
 import scala.util.Either
 
 /**
@@ -93,28 +81,9 @@ import scala.util.Either
  * PUBLIC, which every user has, cannot be created, renamed, dropped or revoked. Immutable roles
  * cannot be created, replaced, renamed or dropped while authentication is enabled.
  */
-internal class RoleCommands(
-    private val engine: ExecutionEngine,
-    private val dependencies: DependencyResolver,
-) : PartialFunction<LogicalPlan, Planner> {
-    /** Compiles a nested plan with all commands, set by the runtime that owns these commands. */
-    lateinit var compile: (LogicalPlan, AdministrationCommandRuntimeContext) -> ExecutionPlan
-
-    // Resolved on first use, like Community's runtime does.
-    private val authorization by lazy {
-        SecurityAuthorizationHandler(
-            dependencies.resolveDependency(AbstractSecurityLog::class.java)
-        )
-    }
-
-    private val admin = `AdministrationCommandRuntime$`.`MODULE$`
-
-    override fun isDefinedAt(plan: LogicalPlan): Boolean = planner(plan) != null
-
-    override fun apply(plan: LogicalPlan): Planner =
-        planner(plan) ?: throw IllegalArgumentException("Not a role command: $plan")
-
-    private fun planner(plan: LogicalPlan): Planner? =
+internal class RoleCommands(engine: ExecutionEngine, dependencies: DependencyResolver) :
+    SecurityCommands(engine, dependencies) {
+    override fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
             is ShowRoles -> Planner { showRoles(plan, it) }
             is CreateRole -> Planner { createRole(plan, compile(plan.source(), it)) }
@@ -212,7 +181,7 @@ internal class RoleCommands(
 
     /**
      * Every role, or those with users; PUBLIC has every user, and a role without users has null.
-     * Roles with auth rules are not supported.
+     * With auth rules, a row per rule that gives the role, and those POPULATED counts too.
      */
     private fun showRoles(
         plan: ShowRoles,
@@ -220,22 +189,31 @@ internal class RoleCommands(
     ): ExecutionPlan {
         val source = compile(plan.source(), context)
         val withUsers = plan.extensionType() == ShowRoles.`Users$`.`MODULE$`
-        if (plan.extensionType() == ShowRoles.`AuthRules$`.`MODULE$`) {
-            val unsupported = "`SHOW ROLES WITH AUTH RULES`"
-            return PredicateExecutionPlan.apply(
-                Function2 { _, _ -> false },
-                Option.apply(source),
-                Function3 { _, _, _ ->
-                    InvalidArgumentException(
-                        notSupported(unsupported),
-                        "Failed to show roles: $unsupported is not supported.",
-                    )
-                },
-            )
+        val withRules = plan.extensionType() == ShowRoles.`AuthRules$`.`MODULE$`
+        if (plan.asCommands()) {
+            return showRoleCommands(plan, withUsers, withRules, source, context)
         }
-        if (plan.asCommands()) return showRoleCommands(plan, withUsers, source, context)
         val user = USER_LABEL.name()
         val userName = USER_NAME_PROPERTY
+        val populated =
+            when {
+                plan.showAll() -> ""
+                withRules -> "WHERE size(members) > 0 OR size(rules) > 0"
+                else -> "WHERE size(members) > 0"
+            }
+        val extra =
+            when {
+                withUsers ->
+                    "UNWIND CASE size(members) WHEN 0 THEN [null] ELSE members END AS member"
+                withRules -> "UNWIND CASE size(rules) WHEN 0 THEN [null] ELSE rules END AS authRule"
+                else -> ""
+            }
+        val column =
+            when {
+                withUsers -> ", member"
+                withRules -> ", authRule"
+                else -> ""
+            }
         return SystemCommandExecutionPlan(
             "ShowRoles",
             engine,
@@ -246,11 +224,12 @@ internal class RoleCommands(
             WITH role, collect(assigned.$userName) AS assigned
             OPTIONAL MATCH (user:$user) WHERE role.$NAME = '${BuiltInRoles.PUBLIC}'
             WITH role, assigned, collect(user.$userName) AS everyone
-            WITH role, assigned + everyone AS members
-            ${if (plan.showAll()) "" else "WHERE size(members) > 0"}
-            ${if (withUsers) "UNWIND CASE size(members) WHEN 0 THEN [null] ELSE members END AS member" else ""}
-            WITH role.$NAME AS role, role.$IMMUTABLE AS immutable${if (withUsers) ", member" else ""}
-            ${AdministrationShowCommandUtils.generateReturnClause(plan.returnColumns(), plan.yields(), plan.returns(), seqOf("role", "member"))}
+            OPTIONAL MATCH (rule:$RULE)-[:$GIVES_ROLE]->(role)
+            WITH role, assigned + everyone AS members, collect(rule.${AuthRule.NAME}) AS rules
+            $populated
+            $extra
+            WITH role.$NAME AS role, role.$IMMUTABLE AS immutable$column
+            ${AdministrationShowCommandUtils.generateReturnClause(plan.returnColumns(), plan.yields(), plan.returns(), seqOf("role", if (withRules) "authRule" else "member"))}
             """
                 .trimIndent(),
             VirtualValues.EMPTY_MAP,
@@ -264,12 +243,14 @@ internal class RoleCommands(
 
     /**
      * The roles as the commands that create them, PUBLIC left out: the built-in roles in the order
-     * of Neo4j's docs, then the others by name. With users, the commands that grant them, one per
-     * role and user, so that roles without users have none and POPULATED changes nothing.
+     * of Neo4j's docs, then the others by name. With users or auth rules, the commands that grant
+     * them, one per role and user or rule, so that roles without any have none and POPULATED
+     * changes nothing.
      */
     private fun showRoleCommands(
         plan: ShowRoles,
         withUsers: Boolean,
+        withRules: Boolean,
         source: ExecutionPlan,
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan {
@@ -281,7 +262,7 @@ internal class RoleCommands(
             """
             UNWIND ${parameter(rows)} AS row
             WITH row.command AS command, row.role AS role, row.member AS member,
-              row.immutable AS immutable
+              row.authRule AS authRule, row.immutable AS immutable
             ${AdministrationShowCommandUtils.generateReturnClause(plan.returnColumns(), plan.yields(), plan.returns(), seqOf())}
             """
                 .trimIndent(),
@@ -291,7 +272,7 @@ internal class RoleCommands(
             ParameterTransformer.apply { tx, _, _ ->
                 VirtualValues.map(
                     arrayOf(rows),
-                    arrayOf(roleCommands(tx, withUsers, plan.showAll())),
+                    arrayOf(roleCommands(tx, withUsers, withRules, plan.showAll())),
                 )
             },
             SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
@@ -299,8 +280,18 @@ internal class RoleCommands(
         )
     }
 
-    private fun roleCommands(tx: Transaction, withUsers: Boolean, all: Boolean): ListValue {
-        class Role(val name: String, val immutable: Boolean, val members: List<String>)
+    private fun roleCommands(
+        tx: Transaction,
+        withUsers: Boolean,
+        withRules: Boolean,
+        all: Boolean,
+    ): ListValue {
+        class Role(
+            val name: String,
+            val immutable: Boolean,
+            val members: List<String>,
+            val rules: List<String>,
+        )
         val roles =
             tx.findNodes(PrivilegeRecords.ROLE).use { nodes ->
                 nodes
@@ -314,10 +305,16 @@ internal class RoleCommands(
                                         it.startNode.getProperty(USER_NAME_PROPERTY) as String
                                     }
                                 }
+                        val rules =
+                            node.getRelationships(Direction.INCOMING, AuthRule.GIVES_ROLE).use {
+                                given ->
+                                given.map { it.startNode.getProperty(AuthRule.NAME) as String }
+                            }
                         Role(
                             node.getProperty(NAME) as String,
                             node.getProperty(IMMUTABLE, false) as Boolean,
                             members.sorted(),
+                            rules.sorted(),
                         )
                     }
                     .filter { it.name != BuiltInRoles.PUBLIC }
@@ -330,18 +327,30 @@ internal class RoleCommands(
                     )
                     .toList()
             }
-        fun row(command: String, role: Role, member: String?) =
+        fun row(command: String, role: Role, member: String?, rule: String? = null) =
             VirtualValues.map(
-                arrayOf("command", "role", "member", "immutable"),
+                arrayOf("command", "role", "member", "authRule", "immutable"),
                 arrayOf(
                     Values.stringValue(command),
                     Values.stringValue(role.name),
                     member?.let(Values::stringValue) ?: Values.NO_VALUE,
+                    rule?.let(Values::stringValue) ?: Values.NO_VALUE,
                     Values.booleanValue(role.immutable),
                 ),
             )
         val commands =
-            if (withUsers) {
+            if (withRules) {
+                roles.flatMap { role ->
+                    role.rules.map { rule ->
+                        row(
+                            "GRANT ROLE ${backtick(role.name)} TO AUTH RULE ${backtick(rule)}",
+                            role,
+                            null,
+                            rule,
+                        )
+                    }
+                }
+            } else if (withUsers) {
                 roles.flatMap { role ->
                     role.members.map { member ->
                         row(
@@ -918,49 +927,6 @@ internal class RoleCommands(
         )
     }
 
-    private fun updating(
-        name: String,
-        query: String,
-        parameters: MapValue,
-        handler: QueryHandler,
-        source: ExecutionPlan,
-        transformer: ParameterTransformer,
-    ): ExecutionPlan =
-        UpdatingSystemCommandExecutionPlan(
-            name,
-            engine,
-            authorization,
-            query,
-            parameters,
-            handler,
-            Option.apply(source),
-            UpdatingSystemCommandExecutionPlan.`$lessinit$greater$default$8`(),
-            UpdatingSystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
-            transformer,
-            UpdatingSystemCommandExecutionPlan.`$lessinit$greater$default$11`(),
-        )
-
-    /** Converts the parameters of names, then [check]s them before the command runs. */
-    private fun transformer(
-        vararg converters: Function2<Transaction, MapValue, MapValue>,
-        check: (MapValue) -> Unit,
-    ): ParameterTransformer =
-        converters
-            .fold(
-                ParameterTransformer(
-                    ParameterTransformer.`$lessinit$greater$default$1`(),
-                    ParameterTransformer.`$lessinit$greater$default$2`(),
-                )
-            ) { transformer, converter ->
-                transformer.convert(converter)
-            }
-            .validate(
-                Function2 { _, params ->
-                    check(params)
-                    Tuple2(params, `Set$`.`MODULE$`.empty<InternalNotification>())
-                }
-            )
-
     /**
      * Neo4j's check of role names, and that they begin with a letter, as its docs require and its
      * check does not.
@@ -976,40 +942,10 @@ internal class RoleCommands(
         }
     }
 
-    private fun notify(notification: InternalNotification): QueryHandlerResult =
-        NotifyAndContinue(Set.Set1(notification))
-
-    private fun failed(command: String, operation: String, error: Throwable): Throwable =
-        when {
-            hasStatus(error, Status.Cluster.NotALeader) ->
-                DatabaseAdministrationOnFollowerException.notALeader(
-                    command,
-                    "Failed to $operation",
-                    error,
-                )
-            error is Status.HasStatus -> error
-            else -> IllegalStateException("Failed to $operation.", error)
-        }
-
-    private fun hasStatus(error: Throwable, status: Status): Boolean =
-        generateSequence(error) { it.cause }.any { it is Status.HasStatus && it.status() == status }
-
-    private fun MapValue.flag(key: String): Boolean = (get(key) as BooleanValue).booleanValue()
-
-    private fun show(name: Either<String, Parameter>, params: MapValue): String =
-        nameOf(name, params)
-
-    private fun parameter(key: String) = "${'$'}`$key`"
-
-    /** The parameter that gives [name], if a parameter does. */
-    private fun parameterName(name: Either<String, Parameter>): String? =
-        admin.getParameterName(name).getOrElse { null }
-
-    private fun <T> seqOf(vararg items: T): Seq<T> =
-        CollectionConverters.asScala(items.toList()).toSeq()
-
     private companion object {
         val ROLE = PrivilegeRecords.ROLE.name()
+        val RULE = AuthRule.LABEL.name()
+        val GIVES_ROLE = AuthRule.GIVES_ROLE.name()
         val PRIVILEGE = PrivilegeRecords.PRIVILEGE.name()
         val HAS_ROLE = PrivilegeRecords.HAS_ROLE.name()
         val GRANTED = PrivilegeRecords.GRANTED.name()
@@ -1020,7 +956,6 @@ internal class RoleCommands(
         const val KEY = PrivilegeRecords.KEY
 
         val ROLE_ENTITY = PrivilegeGqlCodeEntity.ROLE
-        val IDENTITY = Function1<String, String> { it }
 
         /** The parameter of whether a new role is immutable. */
         const val IMMUTABLE_ROLE = "__dozendb_immutable"

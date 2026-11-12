@@ -6,6 +6,7 @@
  * 2026-10-20: Neo4j Community's CommunitySecurityModule with a realm that refuses suspended users.
  * 2026-10-23: logins whose transactions have the privileges of their users' roles,
  * `dbms.showCurrentUser()` with their roles, and impersonation.
+ * 2026-11-12: the roles of auth rules, and property rules with the tags of users.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -14,6 +15,7 @@
 package org.dozendb.core.security
 
 import java.util.UUID
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.Gql
 import org.dozendb.core.logging.SecurityLog
 import org.neo4j.collection.Dependencies
@@ -71,8 +73,15 @@ class DozenDbSecurityModule(
 ) : CommunitySecurityModule(logService, config, dependencies, securityLog) {
     private lateinit var realm: AuthManager
     private lateinit var members: AuthManager
+    private lateinit var abac: AttributeBasedAccess
 
     override fun setup() {
+        abac =
+            AttributeBasedAccess(
+                dependencies.resolveDependency(GlobalProcedures::class.java),
+                config.get(DozenDbSettings.abacAuthorizationProviders),
+                logService.internalLogProvider.getLog(AttributeBasedAccess::class.java),
+            )
         val system =
             Suppliers.lazySingleton<GraphDatabaseService> {
                 dependencies
@@ -104,6 +113,7 @@ class DozenDbSecurityModule(
                 helper,
                 createAuthenticationStrategy(config),
                 security,
+                abac,
                 securityLog,
                 defaultDatabase,
             )
@@ -140,6 +150,7 @@ class DozenDbSecurityModule(
         return DozenDbLoginContext(
             BasicLoginContext(user, result, connection),
             security,
+            abac,
             defaultDatabase,
         )
     }
@@ -148,6 +159,7 @@ class DozenDbSecurityModule(
         helper: SecurityGraphHelper,
         strategy: AuthenticationStrategy,
         private val security: SystemGraphSecurity,
+        private val abac: AttributeBasedAccess,
         private val securityLog: SecurityLog,
         private val defaultDatabase: (String) -> String,
     ) : BasicSystemGraphRealm(helper, strategy) {
@@ -181,7 +193,7 @@ class DozenDbSecurityModule(
                     connectionInfo,
                 )
             }
-            return DozenDbLoginContext(login, security, defaultDatabase).also {
+            return DozenDbLoginContext(login, security, abac, defaultDatabase).also {
                 securityLog.loggedIn(it)
             }
         }
@@ -193,12 +205,14 @@ class DozenDbSecurityModule(
 
 /**
  * A user's login: each of their transactions gets the privileges their roles have when it starts,
- * as [SystemGraphSecurity] reads them. Community's [login] answers for failed logins and expired
- * passwords. The [subject] of an impersonating login executes as another user.
+ * as [SystemGraphSecurity] reads them, with those of auth rules and their tags ([abac]).
+ * Community's [login] answers for failed logins and expired passwords. The [subject] of an
+ * impersonating login executes as another user.
  */
 internal class DozenDbLoginContext(
     private val login: LoginContext,
     private val security: SystemGraphSecurity,
+    private val abac: AttributeBasedAccess,
     private val defaultDatabase: (String) -> String,
     subject: AuthSubject = login.subject(),
 ) : LoginContext(subject, login.connectionInfo()) {
@@ -217,12 +231,13 @@ internal class DozenDbLoginContext(
         }
         val user = subject().executingUser()
         val graph = current(subject().authenticatedUser(), user)
-        val roles = graph.roles(user)
+        val roles = abac.roles(graph, user, timeOfEvaluationMillis)
+        val granted = abac.privileges(graph, roles, user)
         val home = graph.databaseId(NormalizedDatabaseName(defaultDatabase(user)).name())
-        val policy = PrivilegePolicy(graph.privileges(roles), home)
+        val policy = PrivilegePolicy(granted.privileges, home)
         val name = NormalizedDatabaseName(owner(dbReference)).name()
         val database = graph.databaseId(name) ?: NO_DATABASE
-        val mode = accessMode(graph, roles, home, database, policy, idLookup)
+        val mode = accessMode(graph, roles, granted.tags, home, database, policy, idLookup)
         val authorization =
             DozenDbSecurityContext.Authorization(name, policy, roles, graph, this, mode)
         val context =
@@ -266,8 +281,9 @@ internal class DozenDbLoginContext(
         }
         val self = subject().authenticatedUser()
         val graph = current(self)
+        val roles = abac.roles(graph, self, System.currentTimeMillis())
         val permission =
-            PrivilegePolicy(graph.privileges(graph.roles(self)), null)
+            PrivilegePolicy(abac.privileges(graph, roles, self).privileges, null)
                 .admin(PrivilegeAction.IMPERSONATE, null, PrivilegeSegment.Users(user))
         val refusal =
             when {
@@ -281,6 +297,7 @@ internal class DozenDbLoginContext(
                     return DozenDbLoginContext(
                             login,
                             security,
+                            abac,
                             defaultDatabase,
                             ImpersonatingSubject(subject(), user),
                         )
@@ -314,17 +331,21 @@ internal class DozenDbLoginContext(
         return graph
     }
 
-    /** The access mode of [roles] in [database], compiled once per read of the system graph. */
+    /**
+     * The access mode of [roles], with [tags] for their property rules, in [database], compiled
+     * once per read of the system graph.
+     */
     private fun accessMode(
         graph: SecurityGraph,
         roles: Set<String>,
+        tags: List<String>?,
         home: UUID?,
         database: UUID,
         policy: PrivilegePolicy,
         lookup: IdLookup,
     ): DozenDbAccessMode {
         if (!lookup.isCachableLookup) return DozenDbAccessMode(policy, database, lookup, roles)
-        val key = SecurityGraph.AccessModeKey(roles, home, database)
+        val key = SecurityGraph.AccessModeKey(roles, home, database, tags)
         val cached = graph.accessModes[key]
         if (cached != null && !cached.stale(lookup)) return cached
         return DozenDbAccessMode(policy, database, lookup, roles).also {

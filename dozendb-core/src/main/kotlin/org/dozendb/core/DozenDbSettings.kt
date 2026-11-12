@@ -3,6 +3,7 @@ package org.dozendb.core
 import java.nio.file.Path
 import org.neo4j.configuration.Description
 import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.SettingConstraint
 import org.neo4j.configuration.SettingConstraints.min
 import org.neo4j.configuration.SettingConstraints.noDuplicates
 import org.neo4j.configuration.SettingImpl.newBuilder
@@ -17,6 +18,7 @@ import org.neo4j.configuration.SettingValueParsers.ofEnum
 import org.neo4j.configuration.SettingsDeclaration
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
+import org.neo4j.graphdb.config.Configuration
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.string.SecureString
 
@@ -108,6 +110,35 @@ class DozenDbSettings : SettingsDeclaration {
         )
         val tlsReloadEnabled: Setting<Boolean> =
             newBuilder("dbms.security.tls_reload_enabled", BOOL, false).build()
+
+        @JvmField
+        @field:Description(
+            "The authorization providers whose attributes of users auth rules and property rules " +
+                "with abac.native.user_tags() use: native, for the tags of users, or none. " +
+                "Without one, auth rules give no roles and such property rules are left out. " +
+                "Named like Neo4j Enterprise's setting, which takes OIDC providers too; DozenDB " +
+                "has none."
+        )
+        val abacAuthorizationProviders: Setting<List<String>> =
+            newBuilder("dbms.security.abac.authorization_providers", listOf(STRING), emptyList())
+                .addConstraint(noDuplicates())
+                .addConstraint(
+                    object : SettingConstraint<List<String>>() {
+                        override fun validate(value: List<String>, config: Configuration?) {
+                            val unknown = value.filter { it != NATIVE }
+                            require(unknown.isEmpty()) {
+                                "DozenDB has no authorization provider ${unknown.joinToString()}: " +
+                                    "it has $NATIVE only"
+                            }
+                        }
+
+                        override fun getDescription() = "is empty or $NATIVE"
+                    }
+                )
+                .build()
+
+        /** The provider of native users, the only one DozenDB has. */
+        const val NATIVE = "native"
 
         @JvmField
         @field:Description(

@@ -82,16 +82,17 @@ object PrivilegeText {
 
     /**
      * Whether only Cypher 25 has a command for [privilege]: one of [DATABASE_AND_DBMS] on a
-     * database, or on the home database, as Neo4j Enterprise 2025.08 grants them, and a rule that
-     * looks for a value in a list property (2026.08).
+     * database, or on the home database, as Neo4j Enterprise 2025.08 grants them, a rule that looks
+     * for a value in a list property (2026.08), and one with a user's tags (2026.10).
      */
-    fun cypher25Only(privilege: Privilege): Boolean =
-        (privilege.action in DATABASE_AND_DBMS &&
+    fun cypher25Only(privilege: Privilege): Boolean {
+        val rule = (privilege.segment as? PrivilegeSegment.PropertyRule)?.pattern
+        return (privilege.action in DATABASE_AND_DBMS &&
             (privilege.scope is PrivilegeScope.Database ||
                 privilege.scope == PrivilegeScope.Home)) ||
-            ((privilege.segment as? PrivilegeSegment.PropertyRule)?.pattern
-                    as? PatternSegment.ValuePatternSegment)
-                ?.operator() in IN_LIST_PROPERTY
+            (rule as? PatternSegment.ValuePatternSegment)?.operator() in IN_LIST_PROPERTY ||
+            rule is PatternSegment.AbacPatternSegment
+    }
 
     /** The operators of rules that look for a value in a list property. */
     private val IN_LIST_PROPERTY =
@@ -215,6 +216,8 @@ object PrivilegeText {
                     pattern.operator().toPredicateString(property, literal(pattern.value()))
                 is PatternSegment.NullPatternSegment ->
                     pattern.operator().toPredicateString(property)
+                is PatternSegment.AbacPatternSegment ->
+                    pattern.operator().toPredicateString(property, "${pattern.functionName()}()")
                 else -> throw IllegalArgumentException("Unknown property rule: $pattern")
             }
         return "$element WHERE $rule"

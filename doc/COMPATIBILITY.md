@@ -52,7 +52,7 @@ end its own way.
 | Users and roles as commands (`SHOW USERS AS COMMANDS`, `SHOW ROLES AS COMMANDS`) | Same | [Users](#users) |
 | Roles and privileges, impersonation | Same, with differences | [Roles and privileges](#roles-and-privileges) |
 | User tags (`SET TAGS`, `ADD TAGS`, `ALTER USERS`) | Same | [Users](#users) |
-| Attribute-based access control: auth rules | Not supported | [Not supported](#not-supported) |
+| Attribute-based access control: auth rules, user tags in property rules | Same, with native user tags | [Attribute-based access control](#attribute-based-access-control) |
 | LDAP, single sign-on and Kerberos | Not supported | [Not supported](#not-supported) |
 | Local and remote database aliases | Same, with differences | [Database aliases](#database-aliases) |
 | Clustering: replication, failover, routing | Own design, same for clients | [Clustering](#clustering) |
@@ -341,8 +341,9 @@ or code gives them.
   n.p`, which Neo4j turns around (`n.p > 1`), and a rule may look for a value
   in a list property, as in `'EU' IN n.regions` or `NOT 'EU' IN n.regions`,
   both as Enterprise does since 2026.08. `NOT` applies only to elements whose
-  property is a list, as Neo4j's operator has it. Rules with `abac` functions
-  (2026.10) are refused.
+  property is a list, as Neo4j's operator has it. Rules with the tags of
+  users (2026.10) are described under
+  [Attribute-based access control](#attribute-based-access-control).
 - **`SHOW PRIVILEGES`** names the home database graph `HOME`, a `LOAD`
   privilege's segment `ALL DATA` or `CIDR('range')`, and keeps `IMMUTABLE` in
   `AS COMMANDS`. `SHOW SUPPORTED PRIVILEGES` gives the documented rows
@@ -360,13 +361,13 @@ or code gives them.
 - **`SHOW ... PRIVILEGES AS [REVOKE] COMMANDS`** in Cypher 25 has
   Enterprise's columns `command`, `access`, `action`, `roles` and `immutable`,
   and `users` for the privileges of users: each command once, with the roles
-  that hold it, and for users with `$role` in place of the role and the users
-  that have it. There is no `authRules` column, as there are no auth rules.
-  Cypher 5 shows `command` and `immutable` only. `SHOW ROLES WITH AUTH RULES`
-  fails.
+  that hold it, and for users and auth rules with `$role` in place of the
+  role and the users or rules that have it (`users`, `authRules`). Cypher 5
+  shows `command` and `immutable` only.
 - **`SHOW ROLES [WITH USERS] AS COMMANDS`** in Cypher 25 gives a `CREATE
   ROLE` command per role, and with users a `GRANT ROLE ... TO USER ...`
-  command per role and user, as in Enterprise 2026.09. `PUBLIC` never
+  command per role and user, as in Enterprise 2026.09; with auth rules, a
+  `GRANT ROLE ... TO AUTH RULE ...` command per role and rule. `PUBLIC` never
   appears, and roles without users have no `GRANT ROLE` command. Where the
   docs say nothing: an immutable role's command is `CREATE IMMUTABLE ROLE`,
   and the rows come in the docs' example order, `admin`, `architect`,
@@ -385,6 +386,50 @@ or code gives them.
   `EXECUTE BOOSTED`, APOC triggers and other code that opens its own
   transactions, constraint violation messages that name existing values, and
   query plans estimated from counts.
+
+## Attribute-based access control
+
+Auth rules give users roles by their attributes, as Enterprise 2026.10 has
+them with its native provider, whose attributes are the tags of users (see
+[Users](#users)). In Cypher 25: `CREATE [OR REPLACE] AUTH RULE name [IF NOT
+EXISTS] SET CONDITION ... [SET ENABLED ...]`, `ALTER`, `RENAME` and `DROP AUTH
+RULE`, `GRANT` and `REVOKE ROLE ... TO` or `FROM AUTH RULE`, `SHOW AUTH RULES
+[AS COMMANDS]`, `SHOW ROLES WITH AUTH RULES [AS COMMANDS]` and `SHOW AUTH RULE
+... PRIVILEGES [AS COMMANDS]`, with the privileges `AUTH RULE MANAGEMENT`,
+`CREATE`, `RENAME`, `ALTER`, `DROP` and `SHOW AUTH RULE`; `GRANT` and `REVOKE
+ROLE` take `ASSIGN ROLE` and `REMOVE ROLE`. A condition is a Cypher expression
+of `abac.native.user_tags()` and the functions Neo4j allows there, such as
+`'finance' IN abac.native.user_tags() AND time.transaction('UTC').hour < 18`.
+Property rules compare with the tags as well:
+`GRANT READ {*} ON GRAPH * FOR (n:Document) WHERE n.classification IN
+abac.native.user_tags() TO regularUsers`.
+
+- **`dbms.security.abac.authorization_providers=native`** turns it on, as in
+  Enterprise, where the setting is empty by default. Without it, auth rules
+  give no roles and property rules with tags are left out, which `debug.log`
+  says. DozenDB takes no other provider, as it has no OIDC; Enterprise's
+  `dbms.security.authorization_providers`, which must name `native` too, does
+  not exist in DozenDB, whose only provider is native.
+- **Each transaction** starts with the roles granted to the user, and those
+  of the enabled rules whose conditions hold for the user's tags at that
+  moment; `time.transaction()` and the like give that moment. So changes to
+  tags and rules apply from the next transaction, as documented. A role given
+  both ways stays, and suspended users get none.
+- **`abac.oidc.user_attribute()`** is accepted in conditions, as in
+  Enterprise without an OIDC provider, but a rule that calls it never holds;
+  `debug.log` says so.
+- **Roles that rules give have no denied privileges**, as documented: `GRANT
+  ROLE ... TO AUTH RULE` of a role with a `DENY` fails (`22ND2`), and so does
+  a `DENY` to a role a rule gives (`22ND1`). Property rules with tags are
+  `GRANT` only and cannot be negated, as Neo4j's parser has them.
+- **Where the docs say nothing**: `SHOW USERS`, `SHOW CURRENT USER` and `SHOW
+  USER PRIVILEGES` show the roles granted to users, not those rules give,
+  while `dbms.showCurrentUser()` shows every role of its transaction. `SHOW
+  AUTH RULES` lists rules by name, with `roles` null without `SHOW ROLE`, and
+  conditions as Neo4j prints them, which is how they are kept and read again.
+  `SHOW POPULATED ROLES WITH AUTH RULES` shows the roles with users or rules.
+  A condition that fails when evaluated gives no roles and is logged once.
+  Backups with `--include-metadata` leave auth rules out.
 
 ## Database aliases
 
@@ -1426,8 +1471,6 @@ error, and their procedures do not exist.
   validate`, which checks their backups.
 - **Graph types**, Cypher 25's `ALTER CURRENT GRAPH TYPE` and the commands
   around it. DozenDB adds nothing to Neo4j Community there.
-- **Attribute-based access control**: auth rules (`SHOW ROLES WITH AUTH
-  RULES` fails), and `abac` functions in property rules, which are refused.
 - **LDAP, single sign-on and Kerberos.** Users log in with native users and
   passwords only: `dbms.security.authentication_providers`,
   `authorization_providers`, `dbms.security.ldap.*`, `dbms.security.oidc.*`,

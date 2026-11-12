@@ -3,6 +3,7 @@ package org.dozendb.core.cypher
 import org.dozendb.core.security.PrivilegeSegment
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.cypher.internal.CypherVersion
+import org.neo4j.cypher.internal.ast.`AdministrationCommand$`
 import org.neo4j.cypher.internal.ast.LabelQualifier
 import org.neo4j.cypher.internal.ast.`Node$`
 import org.neo4j.cypher.internal.ast.PatternQualifier
@@ -52,7 +53,8 @@ import scala.jdk.javaapi.CollectionConverters
  * The property rules of graph privileges, `FOR (n:L) WHERE n.p > 1`, `FOR ()-[r:T]-() WHERE r.p >
  * 1` and the like, as Neo4j's semantic checks leave them: one property compared with a value, a
  * list or null, or a value looked for in a list property, perhaps negated, in the kernel's
- * [PatternSegment]s. Rules about users' attributes, with `abac` functions, are refused.
+ * [PatternSegment]s; or one property among the tags of the user, `n.p IN abac.native.user_tags()`,
+ * whose value each user's tags give when their transactions start.
  */
 internal object PropertyRuleQualifiers {
     private const val FAILED = "Failed to administer property rule."
@@ -69,6 +71,44 @@ internal object PropertyRuleQualifiers {
     ): PrivilegeSegment.PropertyRule {
         fun evaluate(expression: Expression) = evaluate(expression, params, version, tx)
         val nodes = qualifier.element() is `Node$`
+        // The labels of nodes, or the types of relationships.
+        val labels =
+            CollectionConverters.asJava(qualifier.elementTypeQualifiers())
+                .mapNotNull {
+                    (it as? LabelQualifier)?.label() ?: (it as? RelationshipQualifier)?.reltype()
+                }
+                .toSet()
+        // `n.p IN abac.native.user_tags()`, which Neo4j's checks allow in GRANT only, unnegated.
+        val tagged = qualifier.expression()
+        val lhs = (tagged as? In)?.lhs()
+        val rhs = (tagged as? In)?.rhs()
+        if (
+            lhs is Property &&
+                rhs is FunctionInvocationLike &&
+                `AdministrationCommand$`.`MODULE$`.isUserTagsFunction(rhs)
+        ) {
+            val property = lhs.propertyKey().name()
+            val function = `AdministrationCommand$`.`MODULE$`.userTagsFunctionName()
+            return if (nodes) {
+                PrivilegeSegment.NodePattern(
+                    PatternSegment.NodeAbacPatternSegment(
+                        labels,
+                        property,
+                        function,
+                        ComparisonOperator.IN,
+                    )
+                )
+            } else {
+                PrivilegeSegment.RelationshipPattern(
+                    PatternSegment.RelAbacPatternSegment(
+                        labels,
+                        property,
+                        function,
+                        ComparisonOperator.IN,
+                    )
+                )
+            }
+        }
         val abac =
             (listOf(qualifier.expression()) +
                     CollectionConverters.asJava(qualifier.expression().subExpressions()))
@@ -77,13 +117,6 @@ internal object PropertyRuleQualifiers {
         if (abac != null) {
             throw unsupported("Property rules with `${abac.functionName().fullName()}()` are")
         }
-        // The labels of nodes, or the types of relationships.
-        val labels =
-            CollectionConverters.asJava(qualifier.elementTypeQualifiers())
-                .mapNotNull {
-                    (it as? LabelQualifier)?.label() ?: (it as? RelationshipQualifier)?.reltype()
-                }
-                .toSet()
         fun valueRule(property: String, value: Value, operator: ComparisonOperator) =
             if (nodes) {
                 PrivilegeSegment.NodePattern(

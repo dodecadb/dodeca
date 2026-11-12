@@ -52,7 +52,6 @@ import org.neo4j.cypher.internal.logical.plans.DenyDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.DenyDbmsAction
 import org.neo4j.cypher.internal.logical.plans.DenyGraphAction
 import org.neo4j.cypher.internal.logical.plans.DenyLoadAction
-import org.neo4j.cypher.internal.logical.plans.EnsureRoleNotGrantedToAnyAuthRules
 import org.neo4j.cypher.internal.logical.plans.GrantDatabaseAction
 import org.neo4j.cypher.internal.logical.plans.GrantDbmsAction
 import org.neo4j.cypher.internal.logical.plans.GrantGraphAction
@@ -137,10 +136,6 @@ internal class PrivilegeCommands(
 
     private fun planner(plan: LogicalPlan): Planner? =
         when (plan) {
-            // Neo4j Enterprise's auth rules can have roles, whose denials it then refuses; there
-            // are
-            // no auth rules here.
-            is EnsureRoleNotGrantedToAnyAuthRules -> Planner { compile(plan.source().get(), it) }
             is GrantDbmsAction ->
                 Planner {
                     assign(

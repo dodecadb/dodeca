@@ -12,6 +12,7 @@ import org.neo4j.cypher.internal.ExecutionEngine
 import org.neo4j.cypher.internal.ExecutionPlan
 import org.neo4j.cypher.internal.ast.Return
 import org.neo4j.cypher.internal.ast.ShowAllPrivileges
+import org.neo4j.cypher.internal.ast.ShowAuthRulesPrivileges
 import org.neo4j.cypher.internal.ast.ShowPrivilegeScope
 import org.neo4j.cypher.internal.ast.ShowRolesPrivileges
 import org.neo4j.cypher.internal.ast.ShowUserPrivileges
@@ -44,10 +45,10 @@ import scala.collection.immutable.Seq
 import scala.jdk.javaapi.CollectionConverters
 
 /**
- * SHOW PRIVILEGES, with AS COMMANDS or AS REVOKE COMMANDS, and SHOW SUPPORTED PRIVILEGES, which
- * Neo4j Community plans but refuses to run. The rows come from one read of the system graph, in
- * [PrivilegeText]'s formats, and pass through Cypher, so that YIELD, WHERE and RETURN work as on
- * Neo4j's other SHOW commands.
+ * SHOW PRIVILEGES, with AS COMMANDS or AS REVOKE COMMANDS, of all, roles, users or auth rules, and
+ * SHOW SUPPORTED PRIVILEGES, which Neo4j Community plans but refuses to run. The rows come from one
+ * read of the system graph, in [PrivilegeText]'s formats, and pass through Cypher, so that YIELD,
+ * WHERE and RETURN work as on Neo4j's other SHOW commands.
  */
 internal class ShowPrivilegeCommands(
     private val engine: ExecutionEngine,
@@ -117,8 +118,11 @@ internal class ShowPrivilegeCommands(
         context: AdministrationCommandRuntimeContext,
     ): ExecutionPlan? = if (plan.isDefined) compile(plan.get(), context) else null
 
-    /** A privilege of a role, of a user's for user scopes. */
-    private data class Held(val role: String, val user: String?)
+    /**
+     * A privilege of a role, of a user's or auth rule's ([holder]) for scopes of users and auth
+     * rules.
+     */
+    private data class Held(val role: String, val holder: String?)
 
     /** Rows of the columns SHOW PRIVILEGES shows, in the order of Neo4j's docs. */
     private fun privileges(
@@ -129,10 +133,10 @@ internal class ShowPrivilegeCommands(
         source: ExecutionPlan?,
         version: CypherVersion,
     ): ExecutionPlan {
-        val users = isUserScope(scope)
+        val holder = holderColumn(scope)
         val fields =
             listOf("access", "action", "resource", "graph", "segment", "role", "immutable") +
-                if (users) listOf("user") else emptyList()
+                listOfNotNull(holder)
         val order = listOf("role", "segment", "action", "graph", "resource", "access")
         return show(
             "ShowPrivileges",
@@ -140,7 +144,7 @@ internal class ShowPrivilegeCommands(
             columns,
             yields,
             returns,
-            if (users) listOf("user") + order else order,
+            listOfNotNull(holder) + order,
             source,
             version,
         ) { graph, securityContext, params ->
@@ -157,7 +161,7 @@ internal class ShowPrivilegeCommands(
                                 Values.utf8Value(row.segment),
                                 Values.utf8Value(held.role),
                                 Values.booleanValue(row.immutable),
-                            ) + listOfNotNull(held.user?.let(Values::utf8Value)),
+                            ) + listOfNotNull(held.holder?.let(Values::utf8Value)),
                         )
                     }
                 }
@@ -167,8 +171,8 @@ internal class ShowPrivilegeCommands(
 
     /**
      * The commands of SHOW PRIVILEGES AS [REVOKE] COMMANDS, each once, with the roles that hold the
-     * privilege and, for users, the users; for users, with `$role` for the role, as Neo4j's docs
-     * show them. Cypher 5 shows the command and whether it is immutable only.
+     * privilege and, for users and auth rules, the users or rules; for those, with `$role` for the
+     * role, as Neo4j's docs show them. Cypher 5 shows the command and whether it is immutable only.
      */
     private fun commands(
         scope: ShowPrivilegeScope,
@@ -179,10 +183,9 @@ internal class ShowPrivilegeCommands(
         source: ExecutionPlan?,
         version: CypherVersion,
     ): ExecutionPlan {
-        val users = isUserScope(scope)
+        val holder = holderColumn(scope)?.let { "${it}s" }
         val fields =
-            listOf("command", "access", "action", "roles", "immutable") +
-                if (users) listOf("users") else emptyList()
+            listOf("command", "access", "action", "roles", "immutable") + listOfNotNull(holder)
         return show(
             "ShowPrivilegeCommands",
             fields,
@@ -199,7 +202,7 @@ internal class ShowPrivilegeCommands(
                         val command =
                             PrivilegeText.command(
                                 privilege,
-                                if (users) null else held.role,
+                                if (holder != null) null else held.role,
                                 revoke,
                                 graph::databaseName,
                                 version,
@@ -219,15 +222,18 @@ internal class ShowPrivilegeCommands(
                             strings(holders.map { it.second.role }),
                             Values.booleanValue(command.immutable),
                         ) +
-                            if (users) listOf(strings(holders.mapNotNull { it.second.user }))
-                            else emptyList(),
+                            if (holder != null) {
+                                listOf(strings(holders.mapNotNull { it.second.holder }))
+                            } else {
+                                emptyList()
+                            },
                     )
                 }
         }
     }
 
     private fun strings(values: List<String>): AnyValue =
-        Values.stringArray(*values.distinct().sorted().toTypedArray())
+        VirtualValues.fromList(values.distinct().sorted().map(Values::utf8Value))
 
     private fun supported(
         columns: ScalaList<LogicalVariable>,
@@ -253,8 +259,9 @@ internal class ShowPrivilegeCommands(
                         Values.utf8Value(it.action),
                         it.qualifier?.let(Values::utf8Value) ?: Values.NO_VALUE,
                         Values.utf8Value(it.target),
-                        it.scope?.let { scope -> Values.stringArray(*scope.toTypedArray()) }
-                            ?: Values.NO_VALUE,
+                        it.scope?.let { scope ->
+                            VirtualValues.fromList(scope.map(Values::utf8Value))
+                        } ?: Values.NO_VALUE,
                         Values.utf8Value(it.description),
                     ),
                 )
@@ -262,12 +269,19 @@ internal class ShowPrivilegeCommands(
         }
     }
 
-    private fun isUserScope(scope: ShowPrivilegeScope) =
-        scope is ShowUserPrivileges || scope is ShowUsersPrivileges
+    /** The column of who holds the privileges of [scope]: users, auth rules, or none. */
+    private fun holderColumn(scope: ShowPrivilegeScope): String? =
+        when (scope) {
+            is ShowUserPrivileges,
+            is ShowUsersPrivileges -> "user"
+            is ShowAuthRulesPrivileges -> "authRule"
+            else -> null
+        }
 
     /**
-     * The roles whose privileges [scope] shows: all, the named ones, or those of the named users,
-     * PUBLIC included, or of the current user. A suspended user has none.
+     * The roles whose privileges [scope] shows: all, the named ones, those of the named users,
+     * PUBLIC included, or of the current user, or those the named auth rules give. A suspended user
+     * has none. The roles that auth rules give users are not theirs, as SHOW USERS has it.
      */
     private fun holders(
         scope: ShowPrivilegeScope,
@@ -288,6 +302,12 @@ internal class ShowPrivilegeCommands(
             is ShowUsersPrivileges ->
                 names(scope.users(), params).distinct().flatMap { user ->
                     graph.roles(user).map { Held(it, user) }
+                }
+            is ShowAuthRulesPrivileges ->
+                names(scope.authRules(), params).distinct().flatMap { name ->
+                    graph.authRules
+                        .filter { it.name == name }
+                        .flatMap { rule -> rule.roles.map { Held(it, name) } }
                 }
             else -> throw IllegalArgumentException("Unknown scope: $scope")
         }

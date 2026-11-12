@@ -2190,6 +2190,34 @@ GRANT EXECUTE PROCEDURE apoc.* ON DBMS TO developer
 A `DENY` to `PUBLIC` would not do: it applies to every user, whatever their
 other roles grant.
 
+### Roles by tags: auth rules
+
+Auth rules give users roles by their tags, and property rules can compare
+with the tags, as in Neo4j Enterprise 2026.10. Both need, on every member:
+
+```properties
+dbms.security.abac.authorization_providers=native
+```
+
+Then tag users, give roles to rules, and let rules decide who has them, all
+in Cypher 25 on `system`:
+
+```cypher
+CYPHER 25 ALTER USER alice ADD TAGS ['finance', 'on-call']
+CYPHER 25 CREATE AUTH RULE finance SET CONDITION 'finance' IN abac.native.user_tags()
+CYPHER 25 GRANT ROLE analyst TO AUTH RULE finance
+CYPHER 25 GRANT READ {*} ON GRAPH * FOR (n:Document) WHERE n.classification IN abac.native.user_tags() TO analyst
+```
+
+Each transaction of a user starts with the roles of the rules that hold for
+the user then, so changes apply from the next transaction. `SHOW AUTH
+RULES`, `SHOW ROLES WITH AUTH RULES` and `SHOW AUTH RULE finance PRIVILEGES`
+show what the rules give, and `CALL dbms.showCurrentUser()` the roles a user
+has in a transaction; `SHOW USERS` shows only the roles granted to users.
+Roles that rules give cannot have `DENY` privileges. Without the setting,
+rules give nothing and property rules with tags are left out, which
+`debug.log` says.
+
 ### Moving roles from or to Neo4j Enterprise
 
 DozenDB keeps roles and privileges in the system graph in nodes of its own,
@@ -2203,6 +2231,8 @@ Move them as commands instead, in either direction:
    CYPHER 25 SHOW ROLES AS COMMANDS
    CYPHER 25 SHOW USERS AS COMMANDS
    CYPHER 25 SHOW ROLES WITH USERS AS COMMANDS
+   CYPHER 25 SHOW AUTH RULES AS COMMANDS
+   CYPHER 25 SHOW ROLES WITH AUTH RULES AS COMMANDS
    CYPHER 25 SHOW PRIVILEGES AS COMMANDS
    ```
 
@@ -2210,7 +2240,8 @@ Move them as commands instead, in either direction:
    with the passwords they have. Neo4j Enterprise before 2026.09 lists users
    and roles only as `SHOW USERS` and `SHOW ROLES WITH USERS`: write their
    `CREATE USER`, `CREATE ROLE` and `GRANT ROLE` commands from those, with
-   new passwords.
+   new passwords, and those of auth rules from `SHOW AUTH RULES` and `SHOW
+   ROLES WITH AUTH RULES` if it lacks their `AS COMMANDS`.
 2. Move the databases other than `system` as dumps (`neo4j-admin database
    dump`), and create them on the new servers from those ([Creating a database
    from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).

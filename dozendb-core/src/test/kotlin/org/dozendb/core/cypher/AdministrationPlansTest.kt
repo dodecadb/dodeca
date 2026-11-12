@@ -41,13 +41,14 @@ class AdministrationPlansTest {
     private companion object {
         /**
          * Planned by DozenDB's commands. Of DoNothingIfExists, DoNothingIfNotExists and
-         * EnsureNodeExists, it plans those for roles and Community those for users.
+         * EnsureNodeExists, it plans those for roles and auth rules, and Community those for users.
          */
         val DOZENDB =
             setOf(
                 // Users
                 "CreateUser",
                 "AlterUser",
+                "AlterUsers",
                 "ShowUsers",
                 // Roles
                 "ShowRoles",
@@ -67,6 +68,15 @@ class AdministrationPlansTest {
                 "DoNothingIfExists",
                 "DoNothingIfNotExists",
                 "EnsureNodeExists",
+                // Auth rules
+                "ShowAuthRules",
+                "CreateAuthRule",
+                "AlterAuthRule",
+                "RenameAuthRule",
+                "DropAuthRule",
+                "GrantRoleToAuthRule",
+                "RevokeRoleFromAuthRule",
+                "EnsureRoleHasNoDeniedPrivileges",
                 // Privileges
                 "GrantDbmsAction",
                 "DenyDbmsAction",
@@ -140,7 +150,6 @@ class AdministrationPlansTest {
                 "RenameUser",
                 "DropUser",
                 "SetOwnPassword",
-                "AlterUsers",
                 "AssertCanAlterDatabase",
                 "AssertNotGraphShard",
                 "AssertNotPropertyShard",
@@ -153,14 +162,6 @@ class AdministrationPlansTest {
                 "EnsureAliasIsNotRemote" to "Neo4j does not plan it",
                 "CreateShardedDatabase" to "Neo4j Enterprise's sharded databases",
                 "AlterShardedDatabase" to "Neo4j Enterprise's sharded databases",
-                "CreateAuthRule" to "Neo4j Enterprise's auth rules",
-                "AlterAuthRule" to "Neo4j Enterprise's auth rules",
-                "RenameAuthRule" to "Neo4j Enterprise's auth rules",
-                "DropAuthRule" to "Neo4j Enterprise's auth rules",
-                "ShowAuthRules" to "Neo4j Enterprise's auth rules",
-                "GrantRoleToAuthRule" to "Neo4j Enterprise's auth rules",
-                "RevokeRoleFromAuthRule" to "Neo4j Enterprise's auth rules",
-                "EnsureRoleHasNoDeniedPrivileges" to "Neo4j Enterprise's auth rules, only",
             )
     }
 }

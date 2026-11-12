@@ -143,6 +143,14 @@ sealed interface PrivilegeSegment {
                         pattern.property(),
                         pattern.operator(),
                     )
+                is PatternSegment.AbacPatternSegment ->
+                    listOf(
+                        pattern.javaClass,
+                        pattern.elementTypes(),
+                        pattern.property(),
+                        pattern.operator(),
+                        pattern.functionName(),
+                    )
                 else -> listOf(pattern)
             }
 
@@ -154,7 +162,10 @@ sealed interface PrivilegeSegment {
         override fun toString() = pattern.toString()
     }
 
-    /** Nodes whose property satisfies a rule: `FOR (n:A) WHERE n.p > 1`. */
+    /**
+     * Nodes whose property satisfies a rule: `FOR (n:A) WHERE n.p > 1`, or `WHERE n.p IN
+     * abac.native.user_tags()`, whose value each user's tags give.
+     */
     class NodePattern(pattern: PatternSegment) : PropertyRule(pattern)
 
     /** Relationships whose property satisfies a rule: `FOR ()-[r:T]-() WHERE r.p > 1`. */

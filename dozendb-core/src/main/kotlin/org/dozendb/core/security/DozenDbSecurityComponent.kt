@@ -19,10 +19,10 @@ import org.neo4j.server.security.auth.CommunitySecurityModule
 import org.neo4j.server.security.auth.FileUserRepository
 
 /**
- * Roles and privileges in the system graph, in [PrivilegeRecords]' model. The first start with it
- * creates the built-in roles, gives `admin` to one user and leaves the others with PUBLIC alone, as
- * Neo4j Enterprise does: the user named by `neo4j-admin dbms set-default-admin`, else `neo4j`, else
- * the only user.
+ * Roles and privileges in the system graph, in [PrivilegeRecords]' model, and auth rules, whose
+ * names are unique ([AuthRule]). The first start with it creates the built-in roles, gives `admin`
+ * to one user and leaves the others with PUBLIC alone, as Neo4j Enterprise does: the user named by
+ * `neo4j-admin dbms set-default-admin`, else `neo4j`, else the only user.
  *
  * A system graph with Neo4j Enterprise's roles is refused: DozenDB cannot read them, and starting
  * without them would give their users other privileges than they had.
@@ -61,6 +61,7 @@ class DozenDbSecurityComponent(
         initializeSystemGraphConstraint(system, PrivilegeRecords.ROLE, PrivilegeRecords.ROLE_NAME)
         initializeSystemGraphConstraint(system, PrivilegeRecords.ROLE, PrivilegeRecords.ROLE_ID)
         initializeSystemGraphConstraint(system, PrivilegeRecords.PRIVILEGE, PrivilegeRecords.KEY)
+        initializeSystemGraphConstraint(system, AuthRule.LABEL, AuthRule.NAME)
     }
 
     override fun initializeSystemGraphModel(tx: Transaction, system: GraphDatabaseService) {

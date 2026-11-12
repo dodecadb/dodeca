@@ -7,6 +7,7 @@ import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_HOME_DB_PROPERTY a
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_LABEL
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_NAME_PROPERTY as USER_NAME
 import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_SUSPENDED_PROPERTY as USER_SUSPENDED
+import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_TAGS_PROPERTY as USER_TAGS
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Node
@@ -15,9 +16,9 @@ import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLog
 
 /**
- * The users, roles and privileges of the system graph as one transaction read them. [initialized]
- * tells whether the roles exist yet: in a cluster formed before DozenDB had roles, not until its
- * leader created them.
+ * The users, roles, privileges and auth rules of the system graph as one transaction read them.
+ * [initialized] tells whether the roles exist yet: in a cluster formed before DozenDB had roles,
+ * not until its leader created them.
  */
 class SecurityGraph(
     val initialized: Boolean,
@@ -26,8 +27,14 @@ class SecurityGraph(
     private val databases: Map<String, UUID>,
     private val aliases: Map<String, UUID> = emptyMap(),
     private val remoteAliases: Set<String> = emptySet(),
+    val authRules: List<AuthRule> = emptyList(),
 ) {
-    class User(val suspended: Boolean, val home: String?, val roles: Set<String>)
+    class User(
+        val suspended: Boolean,
+        val home: String?,
+        val roles: Set<String>,
+        val tags: List<String> = emptyList(),
+    )
 
     class Role(val immutable: Boolean, val privileges: List<Privilege>)
 
@@ -60,8 +67,8 @@ class SecurityGraph(
     fun databaseName(id: UUID): String? = names[id]
 
     /**
-     * The roles whose privileges [user] has: theirs and PUBLIC, or none while the user is suspended
-     * or unknown.
+     * The roles granted to [user], and PUBLIC, or none while the user is suspended or unknown;
+     * [AttributeBasedAccess] adds those of auth rules.
      */
     fun roles(user: String): Set<String> {
         val record = users[user]
@@ -77,8 +84,24 @@ class SecurityGraph(
     /** The access modes compiled for this read of the system graph, which is their lifetime. */
     internal val accessModes = ConcurrentHashMap<AccessModeKey, DozenDbAccessMode>()
 
-    /** Who an access mode is for: the same roles and home database give the same privileges. */
-    internal data class AccessModeKey(val roles: Set<String>, val home: UUID?, val database: UUID)
+    /**
+     * Who an access mode is for: the same roles and home database give the same privileges, and the
+     * same [tags] where property rules compare with them.
+     */
+    internal data class AccessModeKey(
+        val roles: Set<String>,
+        val home: UUID?,
+        val database: UUID,
+        val tags: List<String>? = null,
+    )
+
+    /** The conditions of [authRules], compiled for this read of the system graph. */
+    internal val conditions = ConcurrentHashMap<AuthRule, AttributeBasedAccess.Condition>()
+
+    private val logged = ConcurrentHashMap.newKeySet<String>()
+
+    /** Whether [message] is new for this read of the system graph, so to be logged. */
+    internal fun firstTime(message: String): Boolean = logged.add(message)
 
     companion object {
         /**
@@ -102,6 +125,9 @@ class SecurityGraph(
                                 node.getProperty(USER_SUSPENDED, false) == true,
                                 node.getProperty(USER_HOME_DB, null) as String?,
                                 roles.toSet(),
+                                (node.getProperty(USER_TAGS, null) as Array<*>?)
+                                    ?.map { it as String }
+                                    .orEmpty(),
                             )
                     }
                 }
@@ -168,7 +194,34 @@ class SecurityGraph(
                         .map { it.getProperty(TopologyGraphDbmsModel.NAME_PROPERTY) as String }
                         .toSet()
                 }
-            return SecurityGraph(initialized, users, roles, databases, aliases, remoteAliases)
+            val authRules =
+                tx.findNodes(AuthRule.LABEL).use { nodes ->
+                    nodes
+                        .asSequence()
+                        .mapNotNull { node ->
+                            try {
+                                AuthRule.read(node)
+                            } catch (e: RuntimeException) {
+                                log.error(
+                                    "An auth rule cannot be read, so gives no roles: " +
+                                        "${node.allProperties}.",
+                                    e,
+                                )
+                                null
+                            }
+                        }
+                        .sortedBy { it.name }
+                        .toList()
+                }
+            return SecurityGraph(
+                initialized,
+                users,
+                roles,
+                databases,
+                aliases,
+                remoteAliases,
+                authRules,
+            )
         }
 
         private fun privileges(role: Node, name: String, log: InternalLog): List<Privilege> =

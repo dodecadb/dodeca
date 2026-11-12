@@ -24,6 +24,7 @@
  * sets its topology and access.
  * 2026-11-09: CREATE DATABASE takes storeFormat and existingDataSeedInstance, warning of the
  * deprecated ones.
+ * 2026-11-12: the auth rule commands of AuthRuleCommands are added.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -221,6 +222,7 @@ private constructor(
     private val databaseCommands: DatabaseCommands,
     private val userCommands: UserCommands,
     private val roleCommands: RoleCommands,
+    private val authRuleCommands: AuthRuleCommands,
     private val privilegeCommands: PrivilegeCommands,
     private val showPrivilegeCommands: ShowPrivilegeCommands,
     private val aliasCommands: AliasCommands,
@@ -234,6 +236,7 @@ private constructor(
         databaseCommands
             .orElse(userCommands)
             .orElse(roleCommands)
+            .orElse(authRuleCommands)
             .orElse(privilegeCommands)
             .orElse(showPrivilegeCommands)
             .orElse(aliasCommands)
@@ -250,6 +253,7 @@ private constructor(
         DatabaseCommands(engine, dependencies),
         UserCommands(engine, dependencies),
         RoleCommands(engine, dependencies),
+        AuthRuleCommands(engine, dependencies),
         PrivilegeCommands(engine, dependencies),
         ShowPrivilegeCommands(engine, dependencies),
         AliasCommands(engine, dependencies),
@@ -264,6 +268,7 @@ private constructor(
         databaseCommands
             .orElse(userCommands)
             .orElse(roleCommands)
+            .orElse(authRuleCommands)
             .orElse(privilegeCommands)
             .orElse(showPrivilegeCommands)
             .orElse(aliasCommands)
@@ -276,6 +281,7 @@ private constructor(
         databaseCommands.compile = ::compile
         userCommands.compile = ::compile
         roleCommands.compile = ::compile
+        authRuleCommands.compile = ::compile
         privilegeCommands.compile = ::compile
         showPrivilegeCommands.compile = ::compile
         aliasCommands.compile = ::compile
@@ -302,6 +308,7 @@ private constructor(
         return databaseCommands.isDefinedAt(command) ||
             userCommands.isDefinedAt(command) ||
             roleCommands.isDefinedAt(command) ||
+            authRuleCommands.isDefinedAt(command) ||
             privilegeCommands.isDefinedAt(command) ||
             showPrivilegeCommands.isDefinedAt(command) ||
             aliasCommands.isDefinedAt(command) ||

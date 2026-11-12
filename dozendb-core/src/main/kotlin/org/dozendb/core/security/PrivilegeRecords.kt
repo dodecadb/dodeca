@@ -52,6 +52,9 @@ object PrivilegeRecords {
     private const val PATTERN_OPERATOR = "patternOperator"
     private const val PATTERN_VALUE = "patternValue"
 
+    /** The function whose value for each user a rule compares with, such as `user_tags()`. */
+    private const val PATTERN_FUNCTION = "patternFunction"
+
     fun relationship(access: Access): RelationshipType =
         if (access == Access.GRANTED) GRANTED else DENIED
 
@@ -229,6 +232,10 @@ object PrivilegeRecords {
                     }
                     is PatternSegment.NullPatternSegment ->
                         put(PATTERN_OPERATOR, pattern.operator().name)
+                    is PatternSegment.AbacPatternSegment -> {
+                        put(PATTERN_OPERATOR, pattern.operator().name)
+                        put(PATTERN_FUNCTION, pattern.functionName())
+                    }
                     else -> throw IllegalArgumentException("unknown property rule $pattern")
                 }
             }
@@ -256,7 +263,22 @@ object PrivilegeRecords {
             properties[PATTERN_OPERATOR] as? String
                 ?: throw IllegalArgumentException("no $PATTERN_OPERATOR")
         val value = properties[PATTERN_VALUE]
+        val function = properties[PATTERN_FUNCTION] as String?
         return when {
+            function != null && nodes ->
+                PatternSegment.NodeAbacPatternSegment(
+                    labels,
+                    property,
+                    function,
+                    PropertyRule.ComparisonOperator.valueOf(operator),
+                )
+            function != null ->
+                PatternSegment.RelAbacPatternSegment(
+                    labels,
+                    property,
+                    function,
+                    PropertyRule.ComparisonOperator.valueOf(operator),
+                )
             value == null && nodes ->
                 PatternSegment.NodeNullPatternSegment(
                     labels,

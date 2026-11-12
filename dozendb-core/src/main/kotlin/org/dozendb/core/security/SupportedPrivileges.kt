@@ -154,6 +154,18 @@ object SupportedPrivileges {
             dbms("remove role", "enables the specified roles to remove roles from users"),
             dbms("show role", "enables the specified roles to list roles"),
             dbms(
+                "auth rule management",
+                "enables the specified roles to create, delete, rename, modify and list auth rules",
+            ),
+            dbms("create auth rule", "enables the specified roles to create new auth rules"),
+            dbms(
+                "rename auth rule",
+                "enables the specified roles to change the name of auth rules",
+            ),
+            dbms("alter auth rule", "enables the specified roles to modify auth rules"),
+            dbms("drop auth rule", "enables the specified roles to delete auth rules"),
+            dbms("show auth rule", "enables the specified roles to list auth rules"),
+            dbms(
                 "user management",
                 "enables the specified roles to create, delete, modify, and list users",
             ),

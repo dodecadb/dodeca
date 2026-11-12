@@ -294,6 +294,7 @@ class StandaloneIT {
                 "dbms.security.keystore.password",
                 "dbms.security.key.name",
                 "dbms.security.tls_reload_enabled",
+                "dbms.security.abac.authorization_providers",
                 "server.panic.shutdown_on_panic",
             )
     }
