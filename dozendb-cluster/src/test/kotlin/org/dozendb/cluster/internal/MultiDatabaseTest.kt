@@ -1,5 +1,6 @@
 package org.dozendb.cluster.internal
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
 import java.util.concurrent.CountDownLatch
@@ -20,6 +21,7 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.connectors.BoltConnector
 import org.neo4j.dbms.database.DatabaseContextProvider
+import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
 import org.neo4j.graphdb.config.Setting
@@ -169,6 +171,62 @@ class MultiDatabaseTest {
         cluster.addFilm("Brazil")
         cluster.awaitFilms(1)
     }
+
+    // STOP DATABASE leaves the group with its leader, which leads again once the database starts.
+    @Test
+    fun `the member that led a database hands leadership over when its copy fails to start`() {
+        val cluster = cluster()
+        cluster.administer("CREATE DATABASE $FILMS")
+        cluster.awaitEverywhere(FILMS)
+        val leader = cluster.awaitLeader(FILMS)
+        cluster.administer("STOP DATABASE $FILMS")
+        cluster.awaitStopped(FILMS)
+        leader.breakStore(FILMS)
+
+        cluster.administer("START DATABASE $FILMS")
+
+        eventually { assertThat(leader.failed(FILMS)).describedAs("$leader failed").isTrue() }
+        val others = cluster.running() - leader
+        cluster
+            .awaitLeader(FILMS) { others }
+            .database(FILMS)
+            .executeTransactionally("CREATE (:Film {title: 'Brazil'})")
+        eventually {
+            for (member in others) assertThat(member.films()).describedAs("$member").isEqualTo(1)
+        }
+    }
+
+    private fun ClusterHarness.awaitStopped(name: String) {
+        eventually {
+            for (member in running()) {
+                assertThat(member.registered(name)?.isStarted).describedAs("$member").isFalse()
+            }
+        }
+    }
+
+    /**
+     * Puts a directory where a store file of [name] belongs on this member, so that its copy cannot
+     * open its store, root neither; returns what puts the file back.
+     */
+    private fun ClusterHarness.Member.breakStore(name: String): () -> Unit {
+        val nodes = home.resolve("data/databases/$name/neostore.nodestore.db")
+        val aside = home.resolve("nodestore.aside")
+        Files.move(nodes, aside)
+        Files.createDirectory(nodes)
+        return {
+            Files.delete(nodes)
+            Files.move(aside, nodes)
+        }
+    }
+
+    /** Whether the database [name] of this member failed, as the database manager has it. */
+    private fun ClusterHarness.Member.failed(name: String): Boolean =
+        database(SYSTEM)
+            .dependencyResolver
+            .resolveDependency(DatabaseContextProvider::class.java)
+            .getDatabaseContext(name)
+            .map { (it as StandaloneDatabaseContext).isFailed }
+            .orElseThrow()
 
     @Test
     fun `dropping a database deletes its store and Raft group on every member`() {

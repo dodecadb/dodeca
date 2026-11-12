@@ -167,6 +167,20 @@ internal class ReplicationService(
     fun replica(namedDatabaseId: NamedDatabaseId): ReplicatedDatabase? =
         databases[namedDatabaseId.name()]?.takeIf { it.namedDatabaseId == namedDatabaseId }
 
+    /**
+     * Has this member hand leadership of the group of [namedDatabaseId], whose database does not
+     * run here, over whenever it leads, as after its start failed. STOP DATABASE leaves the group
+     * with the leader it had, which leads again once the database starts; one whose database cannot
+     * start would lead a group it cannot apply, and no member could write.
+     */
+    fun handOverWhileStopped(namedDatabaseId: NamedDatabaseId) {
+        val ref = groups.of(namedDatabaseId)
+        if (ref.id !in consensus.localGroups() || replica(namedDatabaseId)?.isRunning() == true) {
+            return
+        }
+        consensus.detachGroup(ref, handOverLeadership = true)
+    }
+
     /** The replication of [database] on this member, if it was created. */
     fun replica(database: DatabaseRef): ReplicatedDatabase? =
         databases[database.name]?.takeIf { it.ref == database }

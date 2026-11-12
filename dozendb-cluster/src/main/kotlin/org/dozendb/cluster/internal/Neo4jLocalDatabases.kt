@@ -106,6 +106,9 @@ internal class Neo4jLocalDatabases(
         ) {
             stores.unmarkSeed(id.name())
         }
+        if (repository.getDatabaseContext(id).map { it.isFailed }.orElse(false)) {
+            replication.handOverWhileStopped(id)
+        }
     }
 
     override fun stop(id: NamedDatabaseId) {
