@@ -2,12 +2,16 @@
 
 DozenDB is Neo4j Community Edition with one jar added to its `lib/`, and adds
 much of what Neo4j otherwise keeps for its Enterprise Edition. This document
-compares DozenDB with Neo4j Enterprise 5.26, area by area: what works as in
+compares DozenDB with Neo4j Enterprise 2026.10, area by area: what works as in
 Enterprise, where DozenDB differs, what it decided where Enterprise's
 documentation says nothing, and what it does not support. DozenDB is built from
 that documentation alone, Enterprise's operations manual and Cypher manual, so
 "as in Enterprise" means as the documentation describes. "Neo4j Community"
-means Neo4j Community Edition without DozenDB.
+means Neo4j Community Edition of the pinned version without DozenDB.
+
+Neo4j 2026 runs queries in Cypher 5 or Cypher 25, as `db.query.default_language`
+or a `CYPHER 5` or `CYPHER 25` prefix chooses. Where Enterprise answers
+differently in the two, the sections below say what DozenDB does.
 
 ## Pinned versions
 
@@ -16,15 +20,15 @@ form, join or rejoin a cluster whose members run a different Neo4j version.
 
 | Component | Version | Notes |
 |---|---|---|
-| Neo4j | 5.26.27 (Community) | Unmodified; the DozenDB jar goes into its `lib/`. |
-| Test image | `neo4j:5.26.27-community` | Neo4j's official image: test baseline and installation target. `StandaloneIT` compares DozenDB, with clustering disabled, against it. |
+| Neo4j | 2026.10.2 (Community) | Unmodified; the DozenDB jar goes into its `lib/`. |
+| Test image | `neo4j:2026.10.2-community` | Neo4j's official image: test baseline and installation target. `StandaloneIT` compares DozenDB, with clustering disabled, against it. |
 | Apache Ratis | 3.3.1 | Uses the already shaded `ratis-thirdparty` 1.1.0 for gRPC, Netty and protobuf. |
 | Kotlin | 2.4.21, kotlinx-coroutines 1.11.0 | Bundled and relocated to `org.dozendb.shaded`. |
 | Dropwizard Metrics | 4.2.40 | `metrics-core` and `metrics-jmx`, for the metrics and their exporters. Bundled and relocated. |
 | AWS SDK for Java | 2.57.13 | S3, with Apache HttpClient 5. Bundled and relocated, as every cloud SDK and the libraries they use. |
 | Google Cloud Storage | 2.78.0 (`libraries-bom` 26.93.0) | Over HTTP: without its gRPC transport. |
 | Azure SDK | `azure-sdk-bom` 1.3.9: Storage Blob 12.36.0, Identity 1.18.7 | With the JDK's HTTP client. Uses the JNA that Neo4j ships. |
-| JDK | build 17, run 17 or 21 | Bytecode targets Java 17 like Neo4j 5.26. The test image runs Temurin 21. |
+| JDK | build 21, run 21 or 25 | Bytecode targets Java 21 like Neo4j 2026, which runs on Java 21 and 25. |
 
 ## At a glance
 
@@ -37,12 +41,17 @@ end its own way.
 |---|---|---|
 | Many databases: `CREATE`, `DROP`, `START` and `STOP DATABASE`, `WAIT` | Same, with differences | [Databases](#databases) |
 | Creating a database from a seed | Same, with differences | [Databases](#databases) |
+| Default Cypher versions of databases and aliases (`DEFAULT LANGUAGE`) | Not supported | [Not supported](#not-supported) |
 | Composite databases | Not supported | [Not supported](#not-supported) |
+| Replica databases (cross-cluster database replication) | Not supported | [Not supported](#not-supported) |
+| Sharded property databases | Not supported | [Not supported](#not-supported) |
 | Property existence, key and type constraints | Same | [Constraints](#constraints) |
+| Graph types | Not supported | [Not supported](#not-supported) |
 | User status and home databases | Same | [Users](#users) |
-| Roles and privileges, impersonation | Same | [Roles and privileges](#roles-and-privileges) |
+| Roles and privileges, impersonation | Same, with differences | [Roles and privileges](#roles-and-privileges) |
+| Attribute-based access control: auth rules, user tags | Not supported | [Not supported](#not-supported) |
 | LDAP, single sign-on and Kerberos | Not supported | [Not supported](#not-supported) |
-| Local and remote database aliases | Same | [Database aliases](#database-aliases) |
+| Local and remote database aliases | Same, with differences | [Database aliases](#database-aliases) |
 | Clustering: replication, failover, routing | Own design, same for clients | [Clustering](#clustering) |
 | Server-side routing | Same | [Clustering](#clustering) |
 | Routing policies (the load balancing plugin) | Same, with differences | [Routing policies](#routing-policies) |
@@ -60,6 +69,7 @@ end its own way.
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
 | Changing settings while running | Same | [Metrics and logs](#metrics-and-logs) |
+| Reloading TLS certificates while running | Not supported | [Not supported](#not-supported) |
 | Changing the default database | Same | [Databases](#databases) |
 | Disaster recovery: `unbind-system-db`, recreating databases, quarantine | Same, with differences | [Disaster recovery](#disaster-recovery) |
 | Change data capture | Not supported | [Not supported](#not-supported) |
@@ -82,6 +92,13 @@ to udc.neo4j.com unless told not to, is off in DozenDB unless the operator
 turns it on. Turned on, it reports the server as Neo4j Enterprise, as
 `dbms.components()` does.
 
+Neo4j 2026's fleet discovery (`server.fleet_discovery.enabled`), which
+announces each server on the local network every 30 seconds, with its version
+and edition, is off in DozenDB for the same reason unless the operator turns it
+on. Neo4j's Fleet Manager (`dbms.fleet_manager.enabled`) sends nothing until an
+operator registers a token with `fleetManagement.registerToken`; once it does,
+it reports the server as Neo4j Enterprise too.
+
 ## Databases
 
 `CREATE`, `CREATE OR REPLACE`, `DROP`, `START` and `STOP DATABASE` work as in
@@ -102,13 +119,16 @@ places the database on servers (see [Servers](#servers)), and
 - **`existingDataSeedInstance`**, the deprecated name of
   `existingDataSeedServer`, works as that option, with a deprecation warning.
   Given both, the command fails.
-- **Not supported:** `CREATE COMPOSITE DATABASE`, `DROP DATABASE ... DUMP
-  DATA`, `ALTER DATABASE ... SET OPTION`, and `CREATE DATABASE ... OPTIONS`
+- **Not supported:** `CREATE COMPOSITE DATABASE`, `CREATE REPLICA DATABASE`,
+  `ALTER DATABASE ... SET REPLICAS`, `DROP DATABASE ... DUMP DATA`,
+  `ALTER DATABASE ... SET OPTION`, `DEFAULT LANGUAGE` of `CREATE DATABASE` and
+  `SET DEFAULT LANGUAGE` of `ALTER DATABASE`, and `CREATE DATABASE ... OPTIONS`
   with an option other than `existingData`, `seedURI`, `storeFormat` and,
   with clustering, `existingDataSeedServer` or `existingDataSeedInstance`:
-  `seedConfig`, `seedCredentials`, `txLogEnrichment` or a misspelt key. Each
-  fails with an error. To keep a database's data, back it up, or stop it and
-  dump it with `neo4j-admin database dump`, before dropping it.
+  `seedConfig`, `seedCredentials`, `seedRestoreUntil`, `seedSourceDatabase`,
+  `txLogEnrichment` or a misspelt key. Each fails with an error. To keep a
+  database's data, back it up, or stop it and dump it with `neo4j-admin
+  database dump`, before dropping it.
 - **`dbms.max_databases`** counts every database, online or offline, as in
   Enterprise, and `system` too, which Enterprise's documentation leaves open.
 - **`WAIT`** on `CREATE`, `DROP`, `START` and `STOP DATABASE` works as in
@@ -123,14 +143,19 @@ places the database on servers (see [Servers](#servers)), and
   `WAIT` a command returns once committed: without clustering the database has
   then started or failed to, and `SHOW DATABASES` shows why in
   `statusMessage`; with clustering the members follow in the background.
+  These rows are Cypher 5's. In Cypher 25, Enterprise answers `WAIT` with a
+  notification per server instead (`03N85` caught up, `01N80` failed, `01N81`
+  catching up, `01N82` not available); DozenDB gives the rows in Cypher 25 too,
+  and none of these notifications.
 - **Creating a database from a seed**, `CREATE DATABASE ... OPTIONS
   {existingData: 'use', seedURI: '...'}`, works as in Enterprise with a dump or
   a full backup as the seed, from a file, a URL or cloud storage (see [Cloud
   storage](#cloud-storage)). `dbms.databases.seed_from_uri_providers` enables
   `FileSeedProvider` (`file:`) and `CloudSeedProvider` (`s3:`, `gs:`, `azb:`) by
-  default, where Enterprise enables `S3SeedProvider` and `CloudSeedProvider`,
+  default, where Enterprise enables `CloudSeedProvider` alone since 2025.01,
   and also takes `S3SeedProvider` and `URLConnectionSeedProvider` (`http:`,
-  `https:`, `ftp:`); other names fail the server's start. As a DozenDB
+  `https:`, `ftp:`); other names fail the server's start, among them
+  Enterprise's `ServerSeedProvider` (`server:`). As a DozenDB
   extension, a seed read by `FileSeedProvider` or `CloudSeedProvider` may also
   be a differential backup, restored with the backups it continues in its
   folder, or a folder of backups, whose latest chain is restored, as Enterprise
@@ -138,14 +163,15 @@ places the database on servers (see [Servers](#servers)), and
   the command; a seed that cannot be read fails the database, which `WAIT` and
   `SHOW DATABASES` show, and the next start of the server tries it again.
   `existingData: 'use'` without a seed uses the files that `neo4j-admin database
-  restore` put in place, and fails the command if there are none. A seed is
-  never combined with `OR REPLACE`. With clustering, one member creates the
+  restore` put in place, and fails the command if there are none. A seed with
+  `CREATE OR REPLACE DATABASE`, which Enterprise takes since 2025.01, fails:
+  drop the database first. With clustering, one member creates the
   database from the seed and the others copy it from that member: the system
   leader, which must then be able to read the seed, or the member that
   `existingDataSeedServer` names, which reads the seed, or without `seedURI`
   uses the database that `neo4j-admin database restore` prepared on it.
   `existingDataSeedServer` must name a member, and `existingData: 'use'` needs
-  it or a `seedURI`. Neo4j 5.26 keeps the seeding server in the
+  it or a `seedURI`. Neo4j keeps the seeding server in the
   `seeding_servers` property of the `Database` node, as DozenDB does;
   `designated_seeder` is deprecated.
 - **The default database** is the one `initial.dbms.default_database` names
@@ -155,8 +181,9 @@ places the database on servers (see [Servers](#servers)), and
   another database the default once the default database is stopped, as in
   Enterprise; sessions that name no database, and users without a home
   database, then use it, and the old one is a database like any other,
-  which may be started again or dropped. Where Enterprise's documentation is
-  silent, DozenDB refuses aliases and `system`, and naming the default
+  which may be started again or dropped. DozenDB refuses an alias, which
+  Enterprise takes as the default database since 2025.04, and, where
+  Enterprise's documentation is silent, `system`; naming the default
   database changes nothing. The default database cannot be dropped or
   replaced, but `dbms.cluster.recreateDatabase` recreates it under a new id
   as any other database (see [Disaster recovery](#disaster-recovery)).
@@ -165,8 +192,11 @@ places the database on servers (see [Servers](#servers)), and
   without clustering.
 - **Commands take effect once their transaction commits**, on every database
   the transaction changes, so a command that fails changes no database. A
-  database that failed to start is started again by `STOP DATABASE` and
-  `START DATABASE`. On shutdown, `system` stops after every other database.
+  database that failed to start before Neo4j began starting it, as on a seed
+  that could not be read, is started again by `STOP DATABASE` and
+  `START DATABASE`. One that failed while Neo4j started it stays failed until
+  the server restarts: Neo4j 2026 cannot start that database again in the same
+  process. On shutdown, `system` stops after every other database.
 - **Failed databases show as `offline`**, with why in `statusMessage`, as
   Enterprise documents a database that is not running because of a problem,
   such as one that failed to start. A database that fails while running, such
@@ -176,8 +206,9 @@ places the database on servers (see [Servers](#servers)), and
   that failed while running as `online`, although it serves nothing.
 - **`server.panic.shutdown_on_panic`** ends the server's process, with status
   1, once a database panics, as in Enterprise, so that a process manager
-  starts it again. It is false by default; Enterprise's documentation makes it
-  true on Kubernetes, which DozenDB does not tell apart: set it there.
+  starts it again. It is false by default, as it was in Enterprise before
+  2025.01, which made it true: set it to `true` to end the process as
+  Enterprise does by default.
 
 ## Constraints
 
@@ -197,9 +228,12 @@ User status and home databases work as in Enterprise. A suspended user cannot
 log in, as with a wrong password, and the user's open sessions lose access at
 their next transaction. A user's home database is the database of the user's
 sessions that name none, also through routing. `SHOW USERS` and
-`SHOW CURRENT USER` show both; Neo4j Community refuses both. Only native
+`SHOW CURRENT USER` show both, and the user's roles; Neo4j Community refuses
+to set either, and its `SHOW CURRENT USER` shows null for them and for the
+roles. Only native
 authentication exists: `SET AUTH` with another provider than native, and
-`REMOVE AUTH`, fail.
+`REMOVE AUTH`, fail, and so do `SET TAGS`, `ADD TAGS` and `REMOVE TAGS`, as
+there are no user tags (see [Not supported](#not-supported)).
 
 ## Roles and privileges
 
@@ -247,12 +281,24 @@ or code gives them.
   of mixed types and `IN` without a list are refused, parameters included.
   Rules cost a read of the property for each node: in a benchmark, scanning a
   million nodes took 2.5 times as long with a rule, 1.8 times with a label
-  denied.
+  denied. Rules on relationships, which Enterprise has since 2025.04, and rules
+  with `abac` functions (2026.10) are refused. In Cypher 25 the property may
+  come second, as in `1 < n.p`, which Neo4j turns around (`n.p > 1`), as
+  Enterprise does since 2026.08. Rules that look for a value in a list
+  property, such as `'a' IN n.tags` (2026.08), are refused: `IN` takes a list
+  of values.
 - **`SHOW PRIVILEGES`** names the home database graph `HOME`, a `LOAD`
   privilege's segment `ALL DATA` or `CIDR('range')`, and keeps `IMMUTABLE` in
   `AS COMMANDS`. `SHOW SUPPORTED PRIVILEGES` gives the documented rows
   verbatim and describes the others in DozenDB's words. `DROP ROLE` removes
   the role from its users.
+- **`SHOW ... PRIVILEGES AS [REVOKE] COMMANDS`** in Cypher 25 has
+  Enterprise's columns `command`, `access`, `action`, `roles` and `immutable`,
+  and `users` for the privileges of users: each command once, with the roles
+  that hold it, and for users with `$role` in place of the role and the users
+  that have it. There is no `authRules` column, as there are no auth rules.
+  Cypher 5 shows `command` and `immutable` only. `SHOW ROLES AS COMMANDS` and
+  `SHOW ROLES WITH AUTH RULES` fail.
 - **With clustering**, roles and privileges reach every member through Raft;
   a follower applies a change a moment after the leader. Transactions keep
   the privileges they started with. Administration commands that change
@@ -281,9 +327,18 @@ names wherever a database name goes: driver sessions, `USE`, routing tables,
 home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
 
 - **Names.** Without composite databases, a dotted name such as
-  `films.classic` is a name of its own; `SHOW ALIASES` shows `composite` as
-  null. A local alias targets a standard database, never `system` or another
-  alias.
+  `films.classic` is a name of its own, as Enterprise reads a dot when no
+  composite database has the name before it; `SHOW ALIASES` shows `composite`
+  as null. Cypher 25 takes a name with several dots as one name too; Cypher 5
+  refuses more than one dot in a local alias's name, as Neo4j does. A local
+  alias targets a standard database, never `system` or another alias.
+- **`SHOW ALIASES`** in Cypher 25 has Enterprise's `credentials` column:
+  `STORED NATIVE CREDENTIALS` for a remote alias and null for a local one.
+  DozenDB creates no aliases with `OIDC CREDENTIAL FORWARDING`, which fails
+  (see [Not supported](#not-supported)); it shows that value only for such an
+  alias in a store from Enterprise.
+- **`DEFAULT LANGUAGE`** and `SET DEFAULT LANGUAGE` of remote aliases fail,
+  as they do for databases.
 - **Database commands given a local alias**, `START`, `STOP`,
   `DROP DATABASE` and `WAIT`, act on its database, as the documentation's
   "in all other Cypher commands in place of the target database" suggests;
@@ -298,7 +353,9 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
 - **A home database** set to a local alias is its database; one set to a
   remote alias is that alias, also for `ACCESS ON HOME DATABASE`.
 - **`initial.dbms.default_database`** naming an alias stops the server from
-  starting, with a message saying so: Neo4j does not support aliases there.
+  starting, with a message saying so, and `dbms.setDefaultDatabase` refuses
+  an alias (see [Databases](#databases)). Enterprise takes an alias as the
+  default database since 2025.04.
 - **Privileges.** Access through a local alias is checked on its database,
   and `GRANT`, `DENY` and `REVOKE` on a local alias are refused naming the
   database. A remote alias has privileges of its own, kept by its name:
@@ -479,10 +536,22 @@ DozenDB's own are named `*.dozendb.cluster.*`.
 - **Traffic between members.** A clustered member does not start until
   `dbms.ssl.policy.cluster.enabled` is set: `true` for mutual TLS, configured
   with Neo4j's SSL policy settings of the `cluster` scope as in Enterprise, or
-  `false` for plaintext. `client_auth=OPTIONAL` is refused. Certificates are
-  read at start, and members accept any certificate from a trusted authority,
-  whichever member presents it. See [`OPERATOR_GUIDE.md`, "TLS between
+  `false` for plaintext. `client_auth=OPTIONAL` is refused. With
+  `verify_hostname`, true by default in Neo4j 2026 as in Enterprise since
+  2025.01, a member checks that the certificate of the member it connects to
+  names the host it dials; otherwise members accept any certificate from a
+  trusted authority, whichever member presents it. Certificates and the other
+  policy settings are read at start: Neo4j 2026 declares most of them
+  dynamic, but the traffic between members, and the backup server, keep what
+  they read until the server restarts. See [`OPERATOR_GUIDE.md`, "TLS between
   members"](OPERATOR_GUIDE.md#tls-between-members).
+- **Cipher suites.** Members use the protocols and cipher suites of the
+  policy, and with the default `tls_versions` negotiate TLS 1.3 with each
+  other. Without `ciphers`, Neo4j 2026.10.2 enables the JDK's default suites,
+  CBC suites among them, also for Bolt and HTTPS: it means to leave out CBC,
+  DH and ECDH suites, but its filter matches none. Enterprise's documentation
+  says that CBC suites are not supported since 2025.01, and that 2025.10 took
+  four of them out of the defaults. Set `ciphers` to restrict them.
 - **Checking connectivity.** `dbms.cluster.checkConnectivity` checks, as in
   Enterprise, whether the member it runs on reaches each other member at its
   ports. DozenDB carries the traffic of Enterprise's cluster and Raft ports on
@@ -563,8 +632,17 @@ Neo4j Community has no routing policies. DozenDB has Enterprise's
 (`dbms.routing.load_balancing.config.server_policies.<name>`, in the rules of
 `server.cluster.catchup.user_defined_upstream_strategy`) and
 `dbms.routing.load_balancing.shuffle_enabled`. [`OPERATOR_GUIDE.md`, "Routing
-policies"](OPERATOR_GUIDE.md#routing-policies), describes how to use them. Where
-Enterprise's documentation says nothing:
+policies"](OPERATOR_GUIDE.md#routing-policies), describes how to use them.
+`dbms.routing.load_balancing.plugin`, which Enterprise deprecated in 2025.05,
+takes only `server_policies`, its default. `groups()`, Enterprise's
+deprecated name of `tags()`, is taken for it.
+
+- **Not supported:** Enterprise's built-in policies of 2025.12
+  (`builtin_default`, `builtin_all`, `builtin_prefer_secondaries` and
+  `builtin_add_writer`): a driver that names one fails as with any unknown
+  policy. The `roles()` filter of 2025.12 fails the server's start.
+
+Where Enterprise's documentation says nothing:
 
 - **A policy chooses readers and routers.** The writer is the leader whatever
   the policy says. A policy that passes no reader gives a table without
@@ -610,17 +688,15 @@ from upstreams; the settings `initial.server.tags`,
 `server.cluster.system_database_mode`, `db.cluster.catchup.pull_interval`,
 `server.cluster.catchup.upstream_strategy` with its strategies,
 `server.cluster.catchup.connect_randomly_to_server_tags`,
-`server.cluster.catchup.connect_randomly_to_server_group`,
 `server.cluster.catchup.user_defined_upstream_strategy` and
 `dbms.routing.reads_on_primaries_enabled`; and the procedures
-`dbms.cluster.cordonServer`, `dbms.cluster.uncordonServer`,
+`dbms.cluster.cordonServer`,
 `dbms.cluster.deallocateDatabaseFromServer(s)`,
 `dbms.cluster.deallocateNumberOfDatabases`, `dbms.cluster.reallocateDatabase`,
 `dbms.cluster.reallocateNumberOfDatabases`,
 `dbms.cluster.setAutomaticallyEnableFreeServers`,
-`dbms.setDefaultAllocationNumbers`, `dbms.showTopologyGraphConfig`,
-`dbms.cluster.secondaryReplicationDisable` and its deprecated name
-`dbms.cluster.readReplicaToggle`; and `neo4j-admin server unbind`. See
+`dbms.setDefaultAllocationNumbers`, `dbms.showTopologyGraphConfig` and
+`dbms.cluster.secondaryReplicationDisable`; and `neo4j-admin server unbind`. See
 `OPERATOR_GUIDE.md`, "[Servers](OPERATOR_GUIDE.md#servers)", "[Placing
 databases](OPERATOR_GUIDE.md#placing-databases)",
 "[Secondaries](OPERATOR_GUIDE.md#secondaries)" and "[Unbinding a
@@ -630,6 +706,20 @@ decides what Enterprise does not document:
 - `ALTER DATABASE ... SET TOPOLOGY` without `SECONDARIES` keeps the number of
   secondaries; `CREATE DATABASE ... TOPOLOGY` without it takes the default
   number.
+- The allowed and denied databases of a server, its `allowedDatabases` and
+  `deniedDatabases` options and the `initial.server.*` settings, are database
+  names, compared regardless of case. Enterprise also takes name patterns
+  there since 2025.12.
+- DozenDB still takes the server groups that Enterprise removed in 2025.01,
+  as tags: `server.groups`, for `initial.server.tags`, with Neo4j's warning
+  that names the setting replacing it;
+  `server.cluster.catchup.connect_randomly_to_server_group`; and the
+  strategies `connect-randomly-to-server-group` and
+  `connect-randomly-within-server-group`, which log a warning at start. It keeps
+  `dbms.cluster.uncordonServer` and `dbms.cluster.readReplicaToggle`, which
+  Enterprise's Cypher 25 replaced with `ENABLE SERVER` and
+  `dbms.cluster.secondaryReplicationDisable`, in both Cypher versions, with a
+  deprecation warning.
 - A copy whose server loses its mode but may host the other keeps its store
   and changes its mode in place, both ways, primary to secondary once its
   replacement votes. A server changes how it hosts `system` when restarted
@@ -641,7 +731,8 @@ decides what Enterprise does not document:
 - A secondary that finds no upstream that answers retries every pull
   interval; `SHOW DATABASES` shows it online, its lag growing.
   `replicationLag` counts the transactions behind the copy with the newest, as
-  a negative number, as Neo4j's listing page for 5.26 defines it.
+  a negative number, as Enterprise's documentation of `SHOW DATABASES`
+  defines it.
 - `dbms.cluster.secondaryReplicationDisable` returns `state`, `paused` or
   `running`. A pause ends when the database or the server starts again, so
   that a forgotten pause does not stop a secondary for good, and routing
@@ -650,8 +741,7 @@ decides what Enterprise does not document:
 - Strategies are also accepted as `connect-randomly-to-server-with-tag`, the
   name of Enterprise's settings page, and `user_defined`. A comma between the
   rules of `user_defined_upstream_strategy`, which one Enterprise example has,
-  is refused, as its meaning is not documented. The deprecated group
-  strategies log a warning at start.
+  is refused, as its meaning is not documented.
 - A server with `modeConstraint: 'SECONDARY'` cannot be the
   `existingDataSeedServer` of `CREATE DATABASE`: the seed server creates the
   database, which only a primary does.
@@ -678,8 +768,6 @@ decides what Enterprise does not document:
   replaced otherwise, Neo4j Community's `neo4j-admin server unbind` included,
   refuses to start until `neo4j-admin server unbind` is run, as under a new id
   it would delete its databases.
-- The deprecated `server.groups` is taken for `initial.server.tags`, which
-  replaced it in Enterprise, with Neo4j's warning that says so.
 - A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
   a `Free` server votes in the Raft group of `system`, as every server does
   that hosts `system` as a primary. A server that hosts `system` as a
@@ -727,9 +815,10 @@ a database with a priority tag when it balances the others, and leaves the
 leadership where it is while no member with the tag can take it over. A
 database whose name contains a dot cannot have a priority tag of its own:
 Neo4j reads the setting's name only up to the dot, and ignores the setting.
-The deprecated `db.cluster.raft.leader_transfer.priority_group` and
-`db.cluster.raft.leader_transfer.priority_group.<database>` are taken for the
-priority tag, with Neo4j's warning that names the setting replacing them.
+`db.cluster.raft.leader_transfer.priority_group` and
+`db.cluster.raft.leader_transfer.priority_group.<database>`, which Enterprise
+removed in 2025.01, are still taken for the priority tag, with Neo4j's warning
+that names the setting replacing them.
 
 ## Backup and restore
 
@@ -747,10 +836,26 @@ not promised. The differences:
 - Backups go to, and are restored, inspected, checked and aggregated from,
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
   them where they are, as it restores them, and never needs `--temp-path`.
-- `--parallel-recovery` and `--inspect-path` are not supported.
+- Not supported: `--parallel-recovery` and `--inspect-path` of `backup`, and
+  the options Enterprise added since 2025.01: `--prefer-diff-as-parent`,
+  `--remote-address-resolution`, `--parallel-download`, `--skip-recovery`,
+  `--skip-empty-diffs` and `--split-archive-part-size` of `backup`, a list of
+  users in `--include-metadata=users=...`, and `--source-database` of
+  `restore`; nor `server.backup.advertised_address`.
+  `server.split_archive.part_size`, which Neo4j Community declares, does not
+  split backups.
+- `neo4j-admin backup aggregate`, Enterprise's name for `neo4j-admin database
+  aggregate-backup` since 2025.01, does not exist: DozenDB has
+  `aggregate-backup` only.
 - The script that `--include-metadata` keeps, and `restore` writes to
   `data/scripts/<database>/restore_metadata.cypher`, is DozenDB's own.
-- `neo4j-admin backup inspect` without `--show-metadata` lists only the files.
+- `neo4j-admin backup inspect` without `--show-metadata` lists only the files,
+  as Enterprise did before 2025.07; Enterprise now shows the metadata always
+  and ignores `--show-metadata`. DozenDB has no `RECOVERED` column
+  (Enterprise 2025.06).
+- A differential backup continues the latest backup only while the source's
+  transaction logs still hold that backup's last transaction, with the same
+  checksum; otherwise the command takes a full backup instead.
 - Backup files are named in UTC.
 - `--temp-path` of `backup` and `aggregate-backup` defaults to the backups'
   folder, which must then be local; with a folder in cloud storage, it must
@@ -759,7 +864,10 @@ not promised. The differences:
   was taken with.
 - Serving backups on an address that is not a loopback one needs
   `dbms.ssl.policy.backup.enabled` set explicitly, `true` or `false`, since
-  the backup port has no other authentication.
+  the backup port has no other authentication. With TLS, `neo4j-admin` checks
+  that the server's certificate names the host it connects to, unless
+  `dbms.ssl.policy.backup.verify_hostname=false`, and the server keeps the
+  policy it read at start (see [Clustering](#running-a-cluster)).
 
 ## Cloud storage
 
@@ -779,6 +887,9 @@ Neo4j's classpath. The differences:
   tells to give the servers the AWS SDK's own credentials instead.
 - The default `dbms.databases.seed_from_uri_providers` is
   `FileSeedProvider,CloudSeedProvider`; see [Databases](#databases).
+- `dbms.integrations.cloud_storage.s3.target_throughput_gbps` and
+  `dbms.integrations.cloud_storage.gs.project_id` (Enterprise 2025.03) are not
+  supported.
 
 Where Enterprise's documentation says nothing, DozenDB's choices:
 
@@ -821,18 +932,29 @@ disaster recovery guide shows, with the same commands; see
   that reaches only other lost servers cannot tell, so they must be kept from
   starting. A lost server rejoins as the same server once unbound from
   `system` and added with `dozendb.cluster.addMember`.
-- **`dbms.cluster.recreateDatabase`** takes Enterprise's options and status
-  messages. The recreated database gets a new id, as when it is dropped and
-  created again: element ids change, and bookmarks of the old database are not
-  waited for. Privileges on it are kept. A seeder that does not answer is
-  waited for, with a status message naming it; a recreation that failed waits
-  to be recreated again. Seeders whose stores fall behind the latest one pull
-  the transactions they lack from it; one whose history differs is copied.
-  The procedure exists only on cluster members, as the other
+- **`dbms.cluster.recreateDatabase`** takes Enterprise's options `seedURI`,
+  `seedingServers`, `primaries` and `secondaries`, and gives its status
+  messages. `clearData` (Enterprise 2025.02) and `storeFormat` (2025.04) fail,
+  as does a `server:` seed. Enterprise 2025.04 added `dbms.recreateDatabase`
+  and deprecated `dbms.cluster.recreateDatabase`, which its Cypher 25 keeps;
+  DozenDB has only the latter. The recreated database gets a new id, as when
+  it is dropped and created again: element ids change, and bookmarks of the
+  old database are not waited for. Privileges on it are kept. A seeder that
+  does not answer is waited for, with a status message naming it; a
+  recreation that failed waits to be recreated again. Seeders whose stores
+  fall behind the latest one pull the transactions they lack from it; one
+  whose history differs is copied. The procedure exists only on cluster
+  members, as the other
   `dbms.cluster.*` procedures; on a standalone server, drop the database and
   create it from a seed.
 - **`dbms.quarantineDatabase`** and copies that fail while running behave as in
-  Enterprise. Quarantines are kept in `data/quarantine`, a file of DozenDB's own
+  Enterprise 5.26. Enterprise deprecated the procedure in 2025.01, and its
+  Cypher 25 has no command that puts a database in quarantine; DozenDB keeps
+  it in both Cypher versions, without a deprecation warning. It lacks
+  Enterprise's `dbms.unquarantineDatabase(server, database, operation)`
+  (2025.01): lift a quarantine with `dbms.quarantineDatabase(database,
+  false)` on the server, which leaves the store and cluster state as they
+  are. Quarantines are kept in `data/quarantine`, a file of DozenDB's own
   ([`FORMATS.md`](FORMATS.md)); that of `system` lasts until the server
   restarts.
 - **`dbms.cluster.protocols`** lists DozenDB's protocols
@@ -846,12 +968,18 @@ DozenDB reports metrics and writes the query log and the security log as
 Enterprise's operations manual describes them; Neo4j Community declares the
 query log settings and ships the log files' configuration, but writes neither
 log. [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#monitoring) describes how to use
-them.
+them. DozenDB logs its own messages in Neo4j's `debug.log`, which Neo4j writes
+as JSON lines since 2025.01.
 
 - **Exporters:** CSV files, Graphite, Prometheus and JMX (domain
-  `neo4j.metrics`), with Enterprise's settings and defaults. Neo4j Community
-  refuses the `server.metrics.*` settings at startup with "Unrecognized
-  setting".
+  `neo4j.metrics`), with Enterprise's settings and defaults, but for the
+  differences below. Neo4j Community refuses the `server.metrics.*` settings
+  at startup with "Unrecognized setting".
+- **Defaults that Enterprise changed in 2025** keep their 5.26 values:
+  `server.metrics.csv.rotation.compression` is `NONE`, where Enterprise's is
+  `ZIP` since 2025.01; `server.metrics.filter` is 5.26's, which, unlike
+  Enterprise's of 2026.10, leaves out the `neo4j.count.*` metrics.
+  `server.metrics.deny_filter` (2025.10) is not supported.
 - **CSV files are on by default**, as in Enterprise: a server moving from
   Neo4j Community or from an earlier DozenDB starts writing a file per metric
   in `server.directories.metrics` (`metrics` under the home directory),
@@ -875,7 +1003,8 @@ them.
   after 10 seconds; a server that cannot be reached is logged once, until
   sending succeeds again.
 - **Names** are Enterprise's, `<prefix>.dbms.<name>` and
-  `<prefix>.database.<database>.<name>`, with its settings and default filter.
+  `<prefix>.database.<database>.<name>`, but for `store.size.total`, which
+  Enterprise renamed `store.size.full` in 2025.01.
   Metrics Enterprise does not have are named under a `dozendb` segment, such
   as `dozendb.cluster.raft.follower_lag_max`. Enterprise's exact Prometheus
   output is not documented; DozenDB's replaces characters other than letters,
@@ -897,7 +1026,12 @@ them.
   the pipelined and parallel runtimes' metrics, Cypher's `compiled` counts and
   `bolt.accumulated_queue_time`. Followers are reported together on the
   leader (`dozendb.cluster.raft.followers`, `follower_lag_max`), not one
-  series each.
+  series each. Nor does DozenDB report the metrics Enterprise added since
+  2025.01: `vm.cpu_load.system` and `vm.cpu_load.process`,
+  `vm.threads.virtual`, `transaction.lowest_available_committed_tx_id`,
+  `transaction.rollbacks_deadlocked`, `page_cache.pages_snapshot_loaded` and
+  `page_cache.async_*`, and the new metrics of its Raft internals, such as
+  `cluster.raft.snapshot_*` and those of elections.
 - **The query log is on by default**, at Neo4j's declared default
   `db.logs.query.enabled=VERBOSE`: every member logs the start and end of every
   query with its parameters, rotated by the shipped `server-logs.xml` (7 files
@@ -990,6 +1124,9 @@ ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
   `check_point.*` metrics (pages, I/Os, the limit, pauses) count the flushes of
   that database alone. Neo4j Community counts those of databases that
   checkpoint at the same time together.
+- **`db.checkpoint.throughput.limit`**, Enterprise's limit of the bytes
+  checkpoints write a second since 2025.07, which Neo4j Community declares,
+  has no effect: DozenDB limits I/Os only, with `db.checkpoint.iops.limit`.
 
 ## Page cache warmup
 
@@ -1019,6 +1156,9 @@ describes how to use it. Where Enterprise's documentation says nothing:
 - **`internal.db.memory.pagecache.warmup.blocking_enabled`**, an internal
   setting Neo4j Community declares, has no effect: the warmup never holds up
   a database's start.
+- **`db.memory.pagecache.warmup.order`**, with which Enterprise orders the
+  files it warms up since 2026.03, and which Neo4j Community declares, has no
+  effect.
 
 ## Import and copy
 
@@ -1063,6 +1203,11 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
   the database's Raft group, which the others' stores do not match: the
   database fails there, with a message naming `dbms.cluster.recreateDatabase`
   seeded from that server.
+- **Not supported**: updating and deleting existing nodes and relationships,
+  which Enterprise's incremental import does since 2025.03; `--dry-run`
+  (Enterprise 2026.02) and `--schema`, which are refused. `import full`
+  lacks `--target-format` (2026.04), with which Enterprise writes a backup
+  instead of a database.
 
 ### Resuming a full import
 
@@ -1089,6 +1234,10 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
 - **Formats**: `--to-format` takes `same`, `standard` and `aligned`;
   `high_limit` and `block` are refused. A store in a format of an earlier
   Neo4j version is refused until it is migrated.
+- **Not supported**: `--target-format`, `--target-location`,
+  `--source-format`, `--source-location` and `--compress`, which Enterprise
+  added between 2025.12 and 2026.04 to copy from and to backups. The copy
+  reads and writes databases only.
 - **Schema**: one statement per index and constraint, with its index
   configuration. Index providers are left out, so that the copy gets the
   current ones. Token lookup indexes are not in the statements: the copy
@@ -1127,19 +1276,39 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
 
 DozenDB does not support these Enterprise features, checked against the
 Enterprise-only features, procedures, `neo4j-admin` commands and settings of
-Enterprise's 5.26 documentation. Unless an item says otherwise, their
-settings are not declared, so a configuration that names one stops the server
-at startup with "Unrecognized setting", as Neo4j does by default
+Enterprise's 5.26 documentation and the changes its documentation lists up to
+2026.10. The sections above list smaller gaps, such as options of commands.
+Unless an item says otherwise, their settings are not declared, so a
+configuration that names one stops the server at startup with "Unrecognized
+setting", as Neo4j does by default
 (`server.config.strict_validation.enabled`); their commands fail with an
 error, and their procedures do not exist.
 
 - **Composite databases.** `CREATE COMPOSITE DATABASE` and the other commands
   for composite databases fail. A dotted name is a name of its own (see
   [Database aliases](#database-aliases)).
+- **Default Cypher versions of databases and aliases**: `DEFAULT LANGUAGE`
+  and `SET DEFAULT LANGUAGE` of databases and remote aliases fail. Queries
+  use `db.query.default_language` or the version they ask for.
+- **Replica databases**, Enterprise's replication of databases between
+  clusters: `CREATE REPLICA DATABASE` and `ALTER DATABASE ... SET REPLICAS`
+  fail, and `dbms.promoteReplicaDatabase` does not exist.
+- **Sharded property databases** (Infinigraph), and `neo4j-admin backup
+  validate`, which checks their backups.
+- **Graph types**, Cypher 25's `ALTER CURRENT GRAPH TYPE` and the commands
+  around it. DozenDB adds nothing to Neo4j Community there.
+- **Attribute-based access control**: auth rules (`SHOW ROLES WITH AUTH
+  RULES` fails), native user tags (`SET TAGS`, `ADD TAGS` and `REMOVE TAGS`
+  fail), and `abac` functions in property rules, which are refused.
 - **LDAP, single sign-on and Kerberos.** Users log in with native users and
   passwords only: `dbms.security.authentication_providers`,
   `authorization_providers`, `dbms.security.ldap.*`, `dbms.security.oidc.*`,
-  the auth cache settings and `dbms.security.clearAuthCache`.
+  the auth cache settings and `dbms.security.clearAuthCache`. Remote aliases
+  with `OIDC CREDENTIAL FORWARDING` fail.
+- **Reloading TLS certificates while running**:
+  `dbms.security.tls_reload_enabled` and `dbms.security.reloadTLS()`.
+  Certificates are read at start.
+- **Reloading procedures while running**: `dbms.reloadProcedures()`.
 - **Change data capture**: `txLogEnrichment`, `db.cdc.*` and `cdc.*`.
 - **The `block` and `high_limit` store formats.** As Neo4j Community, DozenDB
   reads and creates only the `aligned` and `standard` formats.
@@ -1147,10 +1316,11 @@ error, and their procedures do not exist.
   Neo4j Community's slotted runtime with a notification, as in Neo4j
   Community, or fails with `dbms.cypher.hints_error=true`. Neo4j Community
   declares `server.cypher.parallel.worker_limit`, which has no effect.
-- **Shared query caches**: `server.memory.query_cache.sharing_enabled` and
-  `shared_cache_num_entries`.
-- **Settings of features DozenDB has in its own way**: `server.max_databases`,
-  `initial.dbms.database_allocator` and `dbms.setDatabaseAllocator`,
+- **Shared query caches**:
+  `server.memory.query_cache.shared_cache_num_entries`. Neo4j Community
+  declares `server.memory.query_cache.sharing_enabled`; DozenDB adds nothing
+  to it.
+- **Settings of features DozenDB has in its own way**:
   `server.backup.exec_connector.*` and
   `server.backup.store_copy_max_retry_time_per_request`.
 - **Neo4j Browser's Enterprise settings**: `browser.allow_outgoing_connections`,
@@ -1172,7 +1342,8 @@ the built-in roles and gives `admin` to one user (see
 shows: it writes the query log, at Neo4j's declared default `VERBOSE`, and
 metrics to CSV files in `metrics` under the home directory (see
 [Metrics and logs](#metrics-and-logs)); failed databases show as `offline`;
-`dbms.components()` reports the Enterprise edition; and the default database
+`dbms.components()` reports the Enterprise edition; fleet discovery is off
+unless turned on (see [Edition](#edition)); and the default database
 changes with `dbms.setDefaultDatabase`, no longer with
 `initial.dbms.default_database`.
 
@@ -1198,11 +1369,14 @@ changes with `dbms.setDefaultDatabase`, no longer with
 
 DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and contains a port
 of the DozerDB code it built on
-([`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md)). Neo4j Community with the
-DozenDB jar starts on the data directory of DozerDB 5.26.27.0 as it is:
-databases, users and constraints carry over, and the first start gives `admin`
-to one user as it does on Neo4j Community's. Compared with DozerDB 5.26.27.0, as
-verified against the `graphstack/dozerdb:5.26.27.0` image:
+([`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md)). Neo4j Community
+2026.10.2 with the DozenDB jar starts on the data directory of DozerDB
+5.26.27.0, which runs on Neo4j 5.26.27, as it is: databases, users, data and
+constraints carry over, writes work, and the first start gives `admin` to one
+user as it does on Neo4j Community's. The other
+users have `PUBLIC`, which reaches the home database only, where DozerDB let
+every user do everything. Compared with DozerDB 5.26.27.0, as verified against
+the `graphstack/dozerdb:5.26.27.0` image:
 
 - `ALTER USER` works; DozerDB fails every `ALTER USER` with an
   `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`.
