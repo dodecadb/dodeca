@@ -751,10 +751,12 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val committed = division?.let {
             runCatching { raftLog(it, database).lastCommittedIndex }.getOrNull()
         }
+        val applied = division?.let(::appliedIndex)
         if (
             division == null ||
                 info == null ||
                 committed == null ||
+                applied == null ||
                 !info.isAlive ||
                 !isVoter(division.raftConf)
         ) {
@@ -784,7 +786,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             leader,
             info.currentTerm,
             committed,
-            info.lastAppliedIndex,
+            applied,
         )
     }
 
@@ -1188,3 +1190,15 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             if (e is CompletionException && e.cause != null) e.cause!! else e
     }
 }
+
+/**
+ * The index of the last entry that [division] applied, or null while Ratis starts its group: it
+ * counts a starting group as running, with its log loaded, a moment before it creates the updater
+ * that applies the log, and until then fails to tell.
+ */
+internal fun appliedIndex(division: RaftServer.Division): Long? =
+    try {
+        division.info.lastAppliedIndex
+    } catch (_: IllegalStateException) {
+        null
+    }
