@@ -29,8 +29,9 @@ import org.testcontainers.lifecycle.Startables
 
 /**
  * Roles and privileges in a cluster, through `neo4j://` drivers as applications use them: reads on
- * readers and the writer, denials, impersonation, and an admin locked out who gets the role back
- * with auth disabled on every member, as Neo4j's operations manual describes.
+ * readers and the writer, denials, impersonation, the roles of auth rules and property rules with
+ * user tags, and an admin locked out who gets the role back with auth disabled on every member, as
+ * Neo4j's operations manual describes.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
@@ -46,7 +47,8 @@ class RbacIT {
     private val drivers = mutableListOf<Driver>()
 
     /**
-     * The members, on their data volumes, with the environment [settings] on top of the image's.
+     * The members, on their data volumes, with auth rules and user tags on, and the environment
+     * [settings] on top of the image's.
      */
     private fun members(settings: Map<String, String> = emptyMap()): List<DozenDbContainer> =
         aliases.mapIndexed { index, alias ->
@@ -55,6 +57,7 @@ class RbacIT {
                 .clusterMember(aliases.map { "$it:7700" })
                 .boltOnHostPort(boltPorts[index])
                 .withDataVolume(volumes[index])
+                .withEnv("NEO4J_dbms_security_abac_authorization__providers", "native")
                 .also { member -> settings.forEach(member::withEnv) }
         }
 
@@ -191,6 +194,53 @@ class RbacIT {
 
     @Test
     @Order(3)
+    fun `auth rules give roles by user tags, whose property rules apply on readers and the writer`() {
+        val admin = driver(AuthTokens.basic("neo4j", DozenDbContainer.PASSWORD))
+        admin.session(SessionConfig.forDatabase("films")).use { session ->
+            session.executeWrite {
+                it.run(
+                        "CREATE (:Movie {title: 'Solaris', genre: 'scifi'}), " +
+                            "(:Movie {title: 'Heat', genre: 'crime'})"
+                    )
+                    .consume()
+            }
+        }
+        for (command in
+            listOf(
+                "CREATE USER dana SET PASSWORD 'dana-secret-1' CHANGE NOT REQUIRED " +
+                    "SET TAGS ['scifi']",
+                "CREATE ROLE genre_reader",
+                "GRANT ACCESS ON DATABASE films TO genre_reader",
+                "GRANT MATCH {*} ON GRAPH films FOR (n:Movie) WHERE n.genre IN " +
+                    "abac.native.user_tags() TO genre_reader",
+                "CREATE AUTH RULE tagged SET CONDITION size(abac.native.user_tags()) > 0",
+                "GRANT ROLE genre_reader TO AUTH RULE tagged",
+            )) {
+            admin.system("CYPHER 25 $command")
+        }
+        val dana = driver(AuthTokens.basic("dana", "dana-secret-1"))
+        val films = SessionConfig.forDatabase("films")
+
+        // Followers apply the rules a moment after the leader.
+        eventually {
+            assertThat(dana.titles(films)).containsExactly(listOf("Solaris"), listOf("Solaris"))
+        }
+        admin.system("CYPHER 25 ALTER USER dana SET TAGS ['crime', 'scifi']")
+        eventually {
+            assertThat(dana.titles(films))
+                .containsExactly(listOf("Heat", "Solaris"), listOf("Heat", "Solaris"))
+        }
+        // Without tags the rule does not hold, so dana has no access to films at all.
+        admin.system("CYPHER 25 ALTER USER dana SET TAGS []")
+        eventually {
+            assertThat(catchThrowable { dana.titles(films) })
+                .isInstanceOf(ClientException::class.java)
+                .hasMessage("Database access is not allowed for user 'dana' with roles [PUBLIC].")
+        }
+    }
+
+    @Test
+    @Order(4)
     fun `an admin locked out gets the role back with auth disabled on every member`() {
         val admin = driver(AuthTokens.basic("neo4j", DozenDbContainer.PASSWORD))
         admin.system("REVOKE ROLE admin FROM neo4j")
