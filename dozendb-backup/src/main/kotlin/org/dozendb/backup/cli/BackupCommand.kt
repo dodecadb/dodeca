@@ -102,6 +102,20 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     )
     private var remoteAddressResolution = false
 
+    @Option(
+        names = ["--parallel-download"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Accepted as by Neo4j Enterprise. DozenDB takes each backup from one server, the " +
+                    "first that serves it."
+            ],
+    )
+    private var parallelDownload = false
+
     // Required unless --inspect-path is given.
     @Option(
         names = ["--to-path"],

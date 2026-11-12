@@ -881,8 +881,10 @@ not promised. The differences:
 - Backups go to, and are restored, inspected, checked and aggregated from,
   cloud storage too (see [Cloud storage](#cloud-storage)). `restore` reads
   them where they are, as it restores them, and never needs `--temp-path`.
-- Not supported: the options Enterprise added to `backup` since 2025.01
-  `--parallel-download` and `--split-archive-part-size`.
+- Not supported: `--split-archive-part-size` of `backup`, which Enterprise
+  added in 2026.09.
+- `--parallel-download` of `backup` is accepted and changes nothing: each
+  backup comes from one server, the first that serves it.
 - `server.backup.advertised_address`, which Enterprise's backup pages do not
   describe, defaults to the host of `server.default_advertised_address` and
   the port of `server.backup.listen_address`.

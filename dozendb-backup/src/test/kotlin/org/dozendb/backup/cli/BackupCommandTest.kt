@@ -487,7 +487,8 @@ class BackupCommandTest {
     fun `with --remote-address-resolution, backs up from the address the server advertises`() {
         val source = source().apply { start() }
 
-        val result = backup(source, "--remote-address-resolution")
+        // --parallel-download as Enterprise has it; DozenDB takes each backup from one server.
+        val result = backup(source, "--remote-address-resolution", "--parallel-download")
 
         assertThat(result.exitCode).describedAs(result.toString()).isZero
         val advertised = "localhost:${source.backupPort}"
