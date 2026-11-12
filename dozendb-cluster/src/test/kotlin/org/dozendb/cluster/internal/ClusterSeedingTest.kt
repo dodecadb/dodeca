@@ -6,6 +6,7 @@ import java.io.PrintStream
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.time.ZonedDateTime
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
@@ -128,6 +129,44 @@ class ClusterSeedingTest {
         assertThat(waited.map { it["success"] }).describedAs("$waited").containsOnly(true)
         // A backup of a clustered database starts a new group: its writes are taken at once.
         cluster.assertSeeded("films", 500)
+    }
+
+    @Test
+    fun `the creator restores the seed up to seedRestoreUntil, of seedSourceDatabase`() {
+        val cluster = cluster()
+        val full = seed(cluster, 100)
+        val before = ZonedDateTime.now()
+        // The later writes commit after that time, to the millisecond.
+        Thread.sleep(10)
+        cluster
+            .awaitLeader()
+            .database()
+            .executeTransactionally("UNWIND range(1, 50) AS i CREATE (:Seed {i: i})")
+        admin(
+            root.resolve("client"),
+            ::BackupCommand,
+            "--from=127.0.0.1:${cluster.members.first().backupPort()}",
+            "--to-path=${full.parent}",
+            "--type=DIFF",
+        )
+
+        val waited =
+            cluster.administer(
+                "CYPHER 25 CREATE DATABASE films OPTIONS {seedURI: '${full.parent.toUri()}', " +
+                    "seedSourceDatabase: 'neo4j', seedRestoreUntil: datetime('$before')} WAIT"
+            )
+
+        assertThat(waited.map { it["success"] }).describedAs("$waited").containsOnly(true)
+        // Without it, the whole chain.
+        val whole =
+            cluster.administer(
+                "CREATE DATABASE series OPTIONS {seedURI: '${full.parent.toUri()}'} WAIT"
+            )
+        assertThat(whole.map { it["success"] }).describedAs("$whole").containsOnly(true)
+        for (member in cluster.members) {
+            assertThat(member.count("series", "Seed")).describedAs("$member").isEqualTo(150)
+        }
+        cluster.assertSeeded("films", 100)
     }
 
     @Test

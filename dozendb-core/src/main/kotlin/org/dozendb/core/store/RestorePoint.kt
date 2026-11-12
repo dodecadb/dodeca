@@ -1,11 +1,10 @@
-package org.dozendb.backup
+package org.dozendb.core.store
 
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneOffset.UTC
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
-import org.dozendb.core.store.CommittedTransaction
 
 /** Where a restore to a point in time stops, as `neo4j-admin database restore --restore-until`. */
 sealed interface RestorePoint {

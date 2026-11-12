@@ -84,9 +84,9 @@ class DatabaseManager(
 
     /** What a database without a store is created from. */
     sealed interface Seed {
-        /** A dump or full backup at [uri], which [seeder] reads. */
-        class Uri(val uri: String, val seeder: () -> DatabaseSeeder?) : Seed {
-            override fun toString() = "its seed $uri"
+        /** A backup or dump at a URI, [seed], which [seeder] reads. */
+        class Uri(val seed: UriSeed, val seeder: () -> DatabaseSeeder?) : Seed {
+            override fun toString() = "its seed $seed"
         }
 
         /** The store that `neo4j-admin database restore` prepared on this server. */
@@ -128,7 +128,7 @@ class DatabaseManager(
                                 ?: throw IllegalStateException(
                                     "this server cannot create databases from seeds"
                                 )
-                        seeder.seed(id, seed.uri)
+                        seeder.seed(id, seed.seed)
                     }
                     Seed.Restored -> {
                         val staged =

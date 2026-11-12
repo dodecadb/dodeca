@@ -1493,7 +1493,22 @@ CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 'file:///backups/fi
 CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 's3://backups/films/'}
 ```
 
-A folder of backups of several databases seeds the database of the same name.
+A folder of backups of several databases seeds the database of the same name,
+or, in Cypher 25, the database that `seedSourceDatabase` names, whose backups
+seed it under the new name. A backup file must then be one of its backups.
+
+`seedRestoreUntil` restores a seed read by `FileSeedProvider` or
+`CloudSeedProvider` up to a point, as `neo4j-admin database restore
+--restore-until` does: before a transaction, `seedRestoreUntil: 123`, or the
+transactions committed before a time, `seedRestoreUntil:
+datetime('2026-10-21T13:00:00Z')`. Of a folder, it takes the latest chain that
+reaches that point; of a differential backup, the chain ending with it. A full
+backup or a dump holds every transaction up to its last, and fails if that one
+is not restored:
+
+```
+CYPHER 25 CREATE DATABASE films2 OPTIONS {seedURI: 's3://backups/', seedSourceDatabase: 'films', seedRestoreUntil: datetime('2026-10-21T13:00:00Z')}
+```
 
 Without clustering the server reads the seed. In a cluster, one of the servers
 the database is placed on reads it and creates the database, and the others

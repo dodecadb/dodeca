@@ -6,6 +6,7 @@ import org.dozendb.cluster.internal.ClusterPlacement
 import org.dozendb.cluster.internal.Neo4jSystemGraph
 import org.dozendb.core.Gql
 import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.security.PrivilegeRecords
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.Placements
@@ -76,7 +77,7 @@ internal constructor(
                         "$failed: this server cannot recreate databases from seeds."
                     )
             try {
-                seeder.check(uri)
+                seeder.check(UriSeed(uri))
             } catch (e: IllegalArgumentException) {
                 throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
             }
@@ -110,11 +111,8 @@ internal constructor(
                     ZonedDateTime.now(),
                 )
                 Neo4jSystemGraph.forgetCreation(node)
-                if (uri != null) {
-                    node.setProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, uri)
-                } else {
-                    node.removeProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY)
-                }
+                // Without the options of the seed it was created from, if any.
+                if (uri != null) UriSeed(uri).write(node) else UriSeed.remove(node)
                 asked.storeFormat?.let {
                     node.setProperty(
                         TopologyGraphDbmsModel.DATABASE_STORE_FORMAT_NEW_DB_PROPERTY,

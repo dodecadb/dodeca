@@ -51,7 +51,7 @@ internal class StandaloneDatabases(
      */
     private data class Desired(
         val online: Boolean,
-        val seedUri: String?,
+        val seed: UriSeed?,
         val default: Boolean,
         val request: Request,
     )
@@ -111,7 +111,7 @@ internal class StandaloneDatabases(
         val online = desired.online
         val changed = requested.put(id, desired.request) != desired.request
         val context = repository.getDatabaseContext(id).orElse(null)
-        val seed = desired.seedUri?.let { DatabaseManager.Seed.Uri(it, seeder) }
+        val seed = desired.seed?.let { DatabaseManager.Seed.Uri(it, seeder) }
         if (context != null && quarantines.of(id.databaseId().uuid()) != null) return
         when {
             context == null && desired.default -> Unit
@@ -159,15 +159,10 @@ internal class StandaloneDatabases(
                             node.getProperty(TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY, null)
                         val online =
                             status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName()
-                        val seedUri =
-                            node.getProperty(
-                                TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY,
-                                null,
-                            ) as? String
                         DatabaseIdFactory.from(name, UUID.fromString(uuid)) to
                             Desired(
                                 online,
-                                seedUri,
+                                UriSeed.of(node),
                                 node.getProperty(
                                     DefaultDatabase.PROPERTY,
                                     false,

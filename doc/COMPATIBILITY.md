@@ -123,9 +123,10 @@ places the database on servers (see [Servers](#servers)), and
 - **Not supported:** `CREATE COMPOSITE DATABASE`, `CREATE REPLICA DATABASE`,
   `ALTER DATABASE ... SET REPLICAS`, `DROP DATABASE ... DUMP DATA`,
   `ALTER DATABASE ... SET OPTION`, and `CREATE DATABASE ... OPTIONS`
-  with an option other than `existingData`, `seedURI`, `storeFormat` and,
-  with clustering, `existingDataSeedServer` or `existingDataSeedInstance`:
-  `seedConfig`, `seedCredentials`, `seedRestoreUntil`, `seedSourceDatabase`,
+  with an option other than `existingData`, `seedURI`, `seedRestoreUntil`,
+  `seedSourceDatabase` (Cypher 25 only, as in Enterprise), `storeFormat`
+  and, with clustering, `existingDataSeedServer` or
+  `existingDataSeedInstance`: `seedConfig`, `seedCredentials`,
   `txLogEnrichment` or a misspelt key. Each fails with an error. To keep a
   database's data, back it up, or stop it and dump it with `neo4j-admin
   database dump`, before dropping it.
@@ -168,9 +169,16 @@ places the database on servers (see [Servers](#servers)), and
   extension, a seed read by `FileSeedProvider` or `CloudSeedProvider` may also
   be a differential backup, restored with the backups it continues in its
   folder, or a folder of backups, whose latest chain is restored, as Enterprise
-  documents for cloud seeds. A URI whose scheme no enabled provider reads fails
-  the command; a seed that cannot be read fails the database, which `WAIT` and
-  `SHOW DATABASES` show, and the next start of the server tries it again.
+  documents for cloud seeds. `seedRestoreUntil`, a transaction id or a
+  datetime, restores the seed up to that point, with `FileSeedProvider` and
+  `CloudSeedProvider` only, as in Enterprise; with another provider the
+  command fails. `seedSourceDatabase`, in Cypher 25 only, picks the backups of
+  that database in a folder of several databases' backups, as in Enterprise;
+  a backup file of another database then fails the database, and a dump,
+  which names no database, is taken as it is. A URI whose scheme no enabled
+  provider reads fails the command; a seed that cannot be read fails the
+  database, which `WAIT` and `SHOW DATABASES` show, and the next start of the
+  server tries it again.
   `existingData: 'use'` without a seed uses the files that `neo4j-admin database
   restore` put in place, and fails the command if there are none. A seed with
   `CREATE OR REPLACE DATABASE`, which Enterprise takes since 2025.01, fails:

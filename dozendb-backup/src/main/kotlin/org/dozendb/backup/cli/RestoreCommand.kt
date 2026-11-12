@@ -8,9 +8,9 @@ import java.time.format.DateTimeFormatter
 import java.util.Optional
 import org.dozendb.backup.ArtifactChain
 import org.dozendb.backup.ArtifactChains
-import org.dozendb.backup.RestorePoint
 import org.dozendb.backup.StorePreparer
 import org.dozendb.core.DozenDbSettings
+import org.dozendb.core.store.RestorePoint
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException

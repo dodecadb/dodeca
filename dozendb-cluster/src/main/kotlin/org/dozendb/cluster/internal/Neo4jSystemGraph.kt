@@ -9,6 +9,7 @@ import org.dozendb.cluster.internal.replication.SystemGraph
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
 import org.dozendb.core.edition.DefaultDatabase
+import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.Placements
 import org.dozendb.core.servers.ServerRecords
@@ -68,9 +69,7 @@ internal class Neo4jSystemGraph(
             DatabaseIdFactory.from(name, UUID.fromString(uuid)),
             online = status == TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
             creator = creator(node),
-            seedUri =
-                node.getProperty(TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY, null)
-                    as? String,
+            seed = UriSeed.of(node),
             designatedSeeder = seeders.firstOrNull(),
             seeders = seeders.toSet(),
             hosts = Placements.hosts(node, CopyMode.PRIMARY).mapTo(HashSet(), ::MemberId),

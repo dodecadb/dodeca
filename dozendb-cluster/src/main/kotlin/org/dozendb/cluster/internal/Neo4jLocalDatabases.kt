@@ -100,7 +100,7 @@ internal class Neo4jLocalDatabases(
             when (seed) {
                 null,
                 StoreSeed.Kept -> null
-                is StoreSeed.Uri -> DatabaseManager.Seed.Uri(seed.uri, seeder)
+                is StoreSeed.Uri -> DatabaseManager.Seed.Uri(seed.seed, seeder)
                 StoreSeed.Restored -> DatabaseManager.Seed.Restored
             },
         )

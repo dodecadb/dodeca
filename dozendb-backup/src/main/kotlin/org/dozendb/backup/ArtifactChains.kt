@@ -2,6 +2,7 @@ package org.dozendb.backup
 
 import java.io.IOException
 import java.nio.file.Path
+import org.dozendb.core.store.RestorePoint
 import org.neo4j.io.fs.FileSystemAbstraction
 
 /** A backup artifact file and its header. */

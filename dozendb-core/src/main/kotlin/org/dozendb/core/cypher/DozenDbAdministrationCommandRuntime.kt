@@ -38,6 +38,7 @@ import org.dozendb.core.Gql
 import org.dozendb.core.edition.DatabaseProgress
 import org.dozendb.core.edition.DatabaseSeeder
 import org.dozendb.core.edition.SeedServers
+import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.logging.SecurityLog
 import org.dozendb.core.security.PrivilegeRecords
 import org.dozendb.core.servers.AllocationException
@@ -45,6 +46,7 @@ import org.dozendb.core.servers.CopyMode
 import org.dozendb.core.servers.DatabasePlacement
 import org.dozendb.core.servers.Placement
 import org.dozendb.core.servers.Placements
+import org.dozendb.core.store.RestorePoint
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.common.DependencyResolver
 import org.neo4j.configuration.Config
@@ -70,7 +72,7 @@ import org.neo4j.cypher.internal.ast.OptionsParam
 import org.neo4j.cypher.internal.ast.ParameterName
 import org.neo4j.cypher.internal.ast.`ReadOnlyAccess$`
 import org.neo4j.cypher.internal.ast.Topology
-import org.neo4j.cypher.internal.evaluator.Evaluator
+import org.neo4j.cypher.internal.evaluator.StaticEvaluation
 import org.neo4j.cypher.internal.expressions.Parameter
 import org.neo4j.cypher.internal.logical.plans.AlterDatabase
 import org.neo4j.cypher.internal.logical.plans.AssertCanDropDatabase
@@ -95,6 +97,8 @@ import org.neo4j.cypher.internal.notification.InternalNotification
 import org.neo4j.cypher.internal.optionsmap.`ExistingDataOption$`
 import org.neo4j.cypher.internal.optionsmap.`ExistingSeedInstanceOption$`
 import org.neo4j.cypher.internal.optionsmap.`ExistingSeedServerOption$`
+import org.neo4j.cypher.internal.optionsmap.`SeedRestoreUntilOption$`
+import org.neo4j.cypher.internal.optionsmap.`SeedSourceDatabaseOption$`
 import org.neo4j.cypher.internal.optionsmap.`SeedURIOption$`
 import org.neo4j.cypher.internal.optionsmap.`StoreFormatOption$`
 import org.neo4j.cypher.internal.optionsmap.StringOptionValidator
@@ -107,6 +111,7 @@ import org.neo4j.cypher.internal.procs.QueryHandler
 import org.neo4j.cypher.internal.procs.QueryHandlerResult
 import org.neo4j.cypher.internal.procs.ThrowException
 import org.neo4j.cypher.internal.procs.UpdatingSystemCommandExecutionPlan
+import org.neo4j.cypher.internal.runtime.`CypherRow$`
 import org.neo4j.dbms.api.DatabaseAliasExistsException
 import org.neo4j.dbms.api.DatabaseLimitReachedException
 import org.neo4j.dbms.api.DatabaseNotFoundHelper
@@ -135,6 +140,7 @@ import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.database.NormalizedDatabaseName
+import org.neo4j.kernel.impl.coreapi.InternalTransaction
 import org.neo4j.kernel.impl.query.TransactionalContext
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.values.storable.IntegralValue
@@ -430,7 +436,7 @@ private class DatabaseCommands(
                 tx,
                 params ->
                 val database = show(databaseName, params)
-                val creation = creationOptions(plan, database, params, version)
+                val creation = creationOptions(plan, database, params, version, tx)
                 val placed =
                     placed(database, "create") {
                         val requested =
@@ -446,7 +452,19 @@ private class DatabaseCommands(
                         )
                     }
                 params
-                    .updatedWith(SEED_URI, creation.uri?.let(Values::utf8Value) ?: Values.NO_VALUE)
+                    .updatedWith(
+                        SEED_URI,
+                        creation.seed?.uri?.let(Values::utf8Value) ?: Values.NO_VALUE,
+                    )
+                    .updatedWith(
+                        SEED_SOURCE_DATABASE,
+                        creation.seed?.sourceDatabase?.let(Values::utf8Value) ?: Values.NO_VALUE,
+                    )
+                    .updatedWith(
+                        SEED_RESTORE_UNTIL,
+                        creation.seed?.restoreUntil?.let { Values.of(UriSeed.storedValue(it)) }
+                            ?: Values.NO_VALUE,
+                    )
                     .updatedWith(
                         SEEDING_SERVERS,
                         creation.server?.let { Values.stringArray(it) } ?: Values.NO_VALUE,
@@ -488,6 +506,10 @@ private class DatabaseCommands(
                 database.status = ${'$'}status,
                 database.uuid = randomUUID(),
                 database.${TopologyGraphDbmsModel.DATABASE_SEED_URI_PROPERTY} = ${parameter(SEED_URI)},
+                database.${TopologyGraphDbmsModel.DATABASE_SEED_RESTORE_UNTIL_PROPERTY} =
+                    ${parameter(SEED_RESTORE_UNTIL)},
+                database.${TopologyGraphDbmsModel.DATABASE_SEED_SOURCE_DATABASE_PROPERTY} =
+                    ${parameter(SEED_SOURCE_DATABASE)},
                 database.${TopologyGraphDbmsModel.DATABASE_SEEDING_SERVERS_PROPERTY} =
                     ${parameter(SEEDING_SERVERS)},
                 database.${TopologyGraphDbmsModel.DATABASE_STORE_FORMAT_NEW_DB_PROPERTY} =
@@ -742,28 +764,37 @@ private class DatabaseCommands(
 
     /**
      * What the options of [plan] ask of the database [name] it creates, which it checks: DozenDB
-     * takes `existingData`, `seedURI`, `storeFormat` and, with clustering, `existingDataSeedServer`
-     * or its deprecated name `existingDataSeedInstance`, and refuses every other option rather than
-     * ignore it. Ignoring one such as a seed would create an empty database instead of the expected
-     * data.
+     * takes `existingData`, `seedURI`, `seedRestoreUntil`, `seedSourceDatabase` in Cypher 25,
+     * `storeFormat` and, with clustering, `existingDataSeedServer` or its deprecated name
+     * `existingDataSeedInstance`, and refuses every other option rather than ignore it. Ignoring
+     * one such as a seed would create an empty database instead of the expected data.
      */
     private fun creationOptions(
         plan: CreateDatabase,
         name: String,
         params: MapValue,
         version: CypherVersion,
+        tx: Transaction,
     ): Creation {
-        val options = evaluate(plan.options(), params, version)
+        val options = evaluate(plan.options(), params, version, tx)
         if (options.isEmpty) return Creation(null, null, null, emptyList())
         val failed = "Failed to create the specified database '$name'"
         val keys = options.keySet().toList()
-        val unsupported = keys.filter { key -> SUPPORTED_OPTIONS.none { it.equals(key, true) } }
+        val supported = supportedOptions(version)
+        val sourceDatabaseKey = `SeedSourceDatabaseOption$`.`MODULE$`.KEY()
+        if (version == CypherVersion.Cypher5 && keys.any { it.equals(sourceDatabaseKey, true) }) {
+            throw Gql.refused(
+                "$failed: $sourceDatabaseKey is available only in Cypher 25, as in Neo4j " +
+                    "Enterprise."
+            )
+        }
+        val unsupported = keys.filter { key -> supported.none { it.equals(key, true) } }
         val credentials = unsupported.filter { key ->
             SEED_CREDENTIALS.any { it.equals(key, true) }
         }
         if (credentials.isNotEmpty()) {
             throw InvalidArgumentException(
-                GqlHelper.getGql42001_22N04(credentials.first(), "option", SUPPORTED_OPTIONS),
+                GqlHelper.getGql42001_22N04(credentials.first(), "option", supported),
                 "$failed: unsupported option(s) ${credentials.sorted().joinToString { "'$it'" }}, which " +
                     "Neo4j Enterprise's deprecated S3SeedProvider takes. DozenDB reads seeds in " +
                     "cloud storage with each cloud's own credentials, which every server that " +
@@ -773,9 +804,9 @@ private class DatabaseCommands(
         }
         if (unsupported.isNotEmpty()) {
             throw InvalidArgumentException(
-                GqlHelper.getGql42001_22N04(unsupported.first(), "option", SUPPORTED_OPTIONS),
+                GqlHelper.getGql42001_22N04(unsupported.first(), "option", supported),
                 "$failed: unsupported option(s) ${unsupported.joinToString { "'$it'" }}. " +
-                    "DozenDB supports ${SUPPORTED_OPTIONS.joinToString { "'$it'" }}.",
+                    "DozenDB supports ${supported.joinToString { "'$it'" }}.",
             )
         }
         val existingData = find(`ExistingDataOption$`.`MODULE$`, options) != null
@@ -790,6 +821,39 @@ private class DatabaseCommands(
                         .singleUri()
                         .get()
                 }
+        val restoreUntil =
+            try {
+                    `SeedRestoreUntilOption$`.`MODULE$`
+                        .findIn(options, Option.apply(config), CREATE_DATABASE)
+                        .valueOrNull()
+                } catch (e: IllegalArgumentException) {
+                    // Neo4j's check of a transaction id.
+                    throw Gql.refused(
+                        "$failed: seedRestoreUntil must be a transaction id, 1 or more, or a " +
+                            "datetime.",
+                        e,
+                    )
+                }
+                ?.let { until ->
+                    val transactionId = until.txId()
+                    if (transactionId.isPresent) {
+                        RestorePoint.BeforeTransaction(transactionId.asLong)
+                    } else {
+                        RestorePoint.BeforeTime(until.dateTime().get().toInstant())
+                    }
+                }
+        if (restoreUntil != null && seedUri == null) {
+            throw Gql.refused("$failed: seedRestoreUntil needs a seedURI.")
+        }
+        val sourceDatabase =
+            `SeedSourceDatabaseOption$`.`MODULE$`
+                .findIn(options, Option.apply(config), CREATE_DATABASE)
+                .valueOrNull()
+                ?.name()
+        if (sourceDatabase != null && seedUri == null) {
+            throw Gql.refused("$failed: $sourceDatabaseKey needs a seedURI.")
+        }
+        val seed = seedUri?.let { UriSeed(it, restoreUntil, sourceDatabase) }
         val seedServers =
             listOf(`ExistingSeedServerOption$`.`MODULE$`, `ExistingSeedInstanceOption$`.`MODULE$`)
                 .mapNotNull { option -> find(option, options)?.let { option.KEY() to it } }
@@ -829,7 +893,7 @@ private class DatabaseCommands(
         val placement = StorePlacement(fs, Neo4jLayout.of(config))
         val normalized = NormalizedDatabaseName(name).name()
         when {
-            seedUri != null -> {
+            seed != null -> {
                 if (!clustered && placement.holdsStore(normalized)) {
                     throw Gql.refused(
                         "$failed: its files are in place already. Create it without seedURI to " +
@@ -842,7 +906,7 @@ private class DatabaseCommands(
                             "$failed: this server cannot create databases from seeds."
                         )
                 try {
-                    seeder.check(seedUri)
+                    seeder.check(seed)
                 } catch (e: IllegalArgumentException) {
                     throw Gql.refused("$failed: ${e.message?.removeSuffix(".")}.", e)
                 }
@@ -874,7 +938,7 @@ private class DatabaseCommands(
                     ?.let { DeprecatedStoreFormat(it) },
             )
         return Creation(
-            seedUri,
+            seed,
             seedServer?.let { UUID.fromString(it).toString() },
             storeFormat,
             warnings,
@@ -882,11 +946,11 @@ private class DatabaseCommands(
     }
 
     /**
-     * What a database is created from: a seed [uri], read by the [server] if named, or else a new
+     * What a database is created from: a [seed], read by the [server] if named, or else a new
      * store, in the [storeFormat] if asked for; and the [warnings] the options deserve.
      */
     private class Creation(
-        val uri: String?,
+        val seed: UriSeed?,
         val server: String?,
         val storeFormat: String?,
         warnings: List<InternalNotification>,
@@ -899,14 +963,29 @@ private class DatabaseCommands(
     private fun find(option: StringOptionValidator, options: MapValue): String? =
         option.findIn(options, Option.apply(config), CREATE_DATABASE).getOrElse { null }
 
-    /** The values of [options], evaluated as Neo4j evaluates the options of its commands. */
-    private fun evaluate(options: Options, params: MapValue, version: CypherVersion): MapValue =
+    /**
+     * The values of [options], evaluated as Neo4j evaluates the options of its commands, with the
+     * functions of [tx], as `datetime('...')` of `seedRestoreUntil`.
+     */
+    private fun evaluate(
+        options: Options,
+        params: MapValue,
+        version: CypherVersion,
+        tx: Transaction,
+    ): MapValue =
         when (options) {
             is OptionsMap -> {
-                val evaluator = Evaluator.expressionEvaluator(version)
+                val evaluator =
+                    StaticEvaluation.from(
+                        (tx as InternalTransaction).kernelTransaction().procedures(),
+                        version,
+                    )
                 val builder = MapValueBuilder()
                 CollectionConverters.asJava(options.map()).forEach { (key, expression) ->
-                    builder.add(key, evaluator.evaluate(expression, params))
+                    builder.add(
+                        key,
+                        evaluator.evaluate(expression, params, `CypherRow$`.`MODULE$`.empty()),
+                    )
                 }
                 builder.build()
             }
@@ -1380,6 +1459,12 @@ private class DatabaseCommands(
         /** The parameter of the seed URI the `Database` node keeps. */
         const val SEED_URI = "__dozendb_seedURI"
 
+        /** The parameter of the seed's `seedRestoreUntil`, which the `Database` node keeps. */
+        const val SEED_RESTORE_UNTIL = "__dozendb_seedRestoreUntil"
+
+        /** The parameter of the seed's `seedSourceDatabase`, which the `Database` node keeps. */
+        const val SEED_SOURCE_DATABASE = "__dozendb_seedSourceDatabase"
+
         /** The parameter of the servers a clustered database is created on first: one. */
         const val SEEDING_SERVERS = "__dozendb_seedingServers"
 
@@ -1397,10 +1482,18 @@ private class DatabaseCommands(
         const val MAX_PRIMARIES = 11
         const val MAX_SECONDARIES = 20
 
-        val SUPPORTED_OPTIONS =
-            listOf(
+        /**
+         * The options of CREATE DATABASE that DozenDB takes in [version]: `seedSourceDatabase` in
+         * Cypher 25 only, as in Neo4j Enterprise.
+         */
+        fun supportedOptions(version: CypherVersion): List<String> =
+            listOfNotNull(
                 `ExistingDataOption$`.`MODULE$`.KEY(),
                 `SeedURIOption$`.`MODULE$`.KEY(),
+                `SeedRestoreUntilOption$`.`MODULE$`.KEY(),
+                `SeedSourceDatabaseOption$`.`MODULE$`.KEY().takeIf {
+                    version != CypherVersion.Cypher5
+                },
                 `ExistingSeedServerOption$`.`MODULE$`.KEY(),
                 `ExistingSeedInstanceOption$`.`MODULE$`.KEY(),
                 `StoreFormatOption$`.`MODULE$`.KEY(),

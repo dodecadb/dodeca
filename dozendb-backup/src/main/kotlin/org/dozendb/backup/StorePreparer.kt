@@ -6,6 +6,7 @@ import java.time.Clock
 import java.util.Optional
 import java.util.concurrent.TimeUnit
 import org.dozendb.core.store.CommittedTransaction
+import org.dozendb.core.store.RestorePoint
 import org.neo4j.commandline.dbms.StoreVersionLoader
 import org.neo4j.common.Subject
 import org.neo4j.configuration.Config

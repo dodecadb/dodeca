@@ -7,6 +7,7 @@ import java.time.Instant
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.dozendb.core.store.CommittedTransaction
+import org.dozendb.core.store.RestorePoint
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test

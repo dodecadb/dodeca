@@ -14,6 +14,7 @@ import org.dozendb.cluster.internal.recreation.SeedElection
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.CopyMode
 import org.neo4j.kernel.database.NamedDatabaseId
@@ -25,8 +26,8 @@ internal data class DesiredDatabase(
     val online: Boolean,
     /** The member that creates its store, once the system leader named one. */
     val creator: MemberId?,
-    /** The seed its creator creates its store from, a dump or full backup; null for none. */
-    val seedUri: String? = null,
+    /** The seed its creator creates its store from, a backup or dump; null for none. */
+    val seed: UriSeed? = null,
     /** The member to name its creator, which may hold its restored store; null for any. */
     val designatedSeeder: MemberId? = null,
     /**
@@ -65,8 +66,8 @@ internal data class DesiredDatabase(
 
 /** What the creator of a database creates its store from, instead of an empty one. */
 internal sealed interface StoreSeed {
-    /** A dump or full backup at [uri]. */
-    data class Uri(val uri: String) : StoreSeed
+    /** A backup or dump at a URI, [seed]. */
+    data class Uri(val seed: UriSeed) : StoreSeed
 
     /** The store `neo4j-admin database restore` prepared on this member. */
     data object Restored : StoreSeed
@@ -853,7 +854,7 @@ internal class DatabaseReconciler(
         when {
             database.creator != self -> null
             seeded(database) -> StoreSeed.Kept
-            database.seedUri != null -> StoreSeed.Uri(database.seedUri)
+            database.seed != null -> StoreSeed.Uri(database.seed)
             database.designatedSeeder == self -> StoreSeed.Restored
             else -> null
         }
@@ -918,7 +919,7 @@ internal class DatabaseReconciler(
                         return true
                     }
                     is Election.NoStore -> {
-                        if (database.seedUri == null) {
+                        if (database.seed == null) {
                             recordRecreation(database, elected.message, failed = true)
                             return true
                         }

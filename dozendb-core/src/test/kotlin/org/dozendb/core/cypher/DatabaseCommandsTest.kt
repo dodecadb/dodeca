@@ -129,19 +129,22 @@ class DatabaseCommandsTest {
         // Seeds need DozenDB's backup module, which this server lacks.
         assertThat(server.failure("CREATE DATABASE films OPTIONS {seedURI: 's3://bucket/films'}"))
             .hasMessage("$failed: this server cannot create databases from seeds.")
-        val option = catchThrowable {
-            server.administer(
-                "CREATE DATABASE films OPTIONS \$options",
-                mapOf("options" to mapOf("txLogEnrichment" to "FULL")),
-            )
+        // seedSourceDatabase in Cypher 25 only, as in Neo4j Enterprise.
+        for ((version, sourceDatabase) in listOf("5" to "", "25" to "'seedSourceDatabase', ")) {
+            val option = catchThrowable {
+                server.administer(
+                    "CYPHER $version CREATE DATABASE films OPTIONS \$options",
+                    mapOf("options" to mapOf("txLogEnrichment" to "FULL")),
+                )
+            }
+            assertThat(option)
+                .hasMessage(
+                    "$failed: unsupported option(s) 'txLogEnrichment'. DozenDB supports " +
+                        "'existingData', 'seedURI', 'seedRestoreUntil', $sourceDatabase" +
+                        "'existingDataSeedServer', 'existingDataSeedInstance', 'storeFormat'."
+                )
+            assertThat(gqlStatusesOf(option)).contains("22N04")
         }
-        assertThat(option)
-            .hasMessage(
-                "$failed: unsupported option(s) 'txLogEnrichment'. DozenDB supports " +
-                    "'existingData', 'seedURI', 'existingDataSeedServer', " +
-                    "'existingDataSeedInstance', 'storeFormat'."
-            )
-        assertThat(gqlStatusesOf(option)).contains("22N04")
         // Neo4j Enterprise's S3SeedProvider took credentials in the command.
         val credentials = catchThrowable {
             server.administer(

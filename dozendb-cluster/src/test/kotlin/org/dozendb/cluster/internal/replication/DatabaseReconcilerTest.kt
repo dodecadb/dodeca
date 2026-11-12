@@ -9,6 +9,7 @@ import org.dozendb.cluster.internal.recreation.Seed
 import org.dozendb.consensus.HostPort
 import org.dozendb.consensus.Member
 import org.dozendb.consensus.MemberId
+import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.servers.AllocationException
 import org.dozendb.core.servers.CopyMode
 import org.junit.jupiter.api.Test
@@ -65,7 +66,7 @@ class DatabaseReconcilerTest {
         id: NamedDatabaseId,
         online: Boolean = true,
         creator: MemberId? = null,
-        seedUri: String? = null,
+        seed: UriSeed? = null,
         designatedSeeder: MemberId? = null,
         hosts: Set<MemberId> = members.map { it.id }.filter { it !in graph.free }.toSet(),
         created: Boolean = false,
@@ -76,7 +77,7 @@ class DatabaseReconcilerTest {
             id,
             online,
             creator,
-            seedUri,
+            seed,
             designatedSeeder,
             hosts = hosts,
             secondaries = secondaries,
@@ -86,14 +87,14 @@ class DatabaseReconcilerTest {
 
     @Test
     fun `the creator of a seeded database creates its store from the seed, the others copy it`() {
-        val seed = "file:///seeds/films.backup"
-        graph.databases = listOf(desired(films, creator = self, seedUri = seed))
+        val seed = UriSeed("file:///seeds/films.backup")
+        graph.databases = listOf(desired(films, creator = self, seed = seed))
 
         assertThat(reconciler.reconcile()).isFalse()
         assertThat(local.seeds).containsExactly(entry(films, StoreSeed.Uri(seed)))
 
         val series = database("series")
-        graph.databases = listOf(desired(series, creator = creator, seedUri = seed))
+        graph.databases = listOf(desired(series, creator = creator, seed = seed))
 
         assertThat(reconciler.reconcile()).isFalse()
         assertThat(local.copies).containsExactly(creatorAddress to series)
@@ -671,7 +672,7 @@ class DatabaseReconcilerTest {
     /** [films] recreated from the stores of [creator] and [other], this member leading system. */
     private fun recreatedFromOthers(
         secondaries: Set<MemberId> = emptySet(),
-        seedUri: String? = null,
+        seed: UriSeed? = null,
     ): DesiredDatabase {
         systemMembers = members + Member(other, otherAddress)
         graph.leading = true
@@ -679,7 +680,7 @@ class DatabaseReconcilerTest {
             .copy(
                 hosts = setOf(self, creator, other) - secondaries,
                 secondaries = secondaries,
-                seedUri = seedUri,
+                seed = seed,
             )
             .also { graph.databases = listOf(it) }
     }
@@ -841,7 +842,7 @@ class DatabaseReconcilerTest {
             )
 
         graph.recorded.clear()
-        val seeded = recreatedFromOthers(seedUri = "file:///seeds/films.backup")
+        val seeded = recreatedFromOthers(seed = UriSeed("file:///seeds/films.backup"))
         seeded.reported(creator, null)
         seeded.reported(other, null)
 

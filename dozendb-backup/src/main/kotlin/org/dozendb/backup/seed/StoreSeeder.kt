@@ -9,6 +9,7 @@ import org.dozendb.backup.ArtifactChains
 import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.StorePreparer
 import org.dozendb.core.edition.DatabaseSeeder
+import org.dozendb.core.edition.UriSeed
 import org.dozendb.core.store.StorePlacement
 import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.cloud.storage.StorageUtils
@@ -17,6 +18,7 @@ import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.kernel.database.NamedDatabaseId
+import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.logging.InternalLogProvider
 
 /**
@@ -34,23 +36,33 @@ internal class StoreSeeder(
 ) : DatabaseSeeder {
     private val placement = StorePlacement(fs, Neo4jLayout.of(config))
 
-    override fun check(uri: String) {
-        provider(parse(uri))
+    override fun check(seed: UriSeed) {
+        val uri = parse(seed.uri)
+        val provider = provider(uri)
+        if (seed.restoreUntil != null && provider !in RESTORING_UNTIL) {
+            throw IllegalArgumentException(
+                "seedRestoreUntil is supported by " +
+                    "${RESTORING_UNTIL.joinToString(" and ") { it.name }} only, as in Neo4j " +
+                    "Enterprise; ${provider.name} reads '${uri.scheme}' URIs"
+            )
+        }
     }
 
-    override fun seed(database: NamedDatabaseId, uri: String) {
-        val parsed = parse(uri)
+    override fun seed(database: NamedDatabaseId, seed: UriSeed) {
+        check(seed)
+        val parsed = parse(seed.uri)
         val provider = provider(parsed)
+        val until = seed.restoreUntil
         val name = database.name()
         val staged = placement.stage(name, PURPOSE)
         try {
             SchemeFileSystemAbstraction(fs, config, logProvider).use { schemes ->
-                provider.fetch(parsed, schemes, staged.databaseDirectory().parent) { seed ->
+                provider.fetch(parsed, schemes, staged.databaseDirectory().parent) { path ->
                     val preparer = StorePreparer(schemes, pageCache, config, logProvider)
-                    when (val contents = contents(seed, schemes, name)) {
+                    when (val contents = contents(path, schemes, name, seed)) {
                         is Contents.Archive ->
-                            preparer.prepare(contents.path, emptyList(), null, staged, true)
-                        is Contents.Chain -> preparer.prepare(contents.chain, null, staged, true)
+                            preparer.prepare(contents.path, emptyList(), until, staged, true)
+                        is Contents.Chain -> preparer.prepare(contents.chain, until, staged, true)
                     }
                 }
             }
@@ -68,38 +80,59 @@ internal class StoreSeeder(
         data class Chain(val chain: ArtifactChain) : Contents
     }
 
-    /** What [seed], the seed of database [name], holds. */
-    private fun contents(seed: Path, fs: FileSystemAbstraction, name: String): Contents {
-        val shown = StorageUtils.toString(seed)
-        if (!fs.fileExists(seed)) throw IOException("$shown does not exist")
-        if (fs.isDirectory(seed)) {
+    /**
+     * What [path], the seed of database [name] that [seed] describes, holds: of the backups it
+     * finds, those of `seedSourceDatabase` if given, and of their chains, the one that restores up
+     * to `seedRestoreUntil` if given.
+     */
+    private fun contents(
+        path: Path,
+        fs: FileSystemAbstraction,
+        name: String,
+        seed: UriSeed,
+    ): Contents {
+        val until = seed.restoreUntil
+        val source = seed.sourceDatabase
+        val shown = StorageUtils.toString(path)
+        if (!fs.fileExists(path)) throw IOException("$shown does not exist")
+        if (fs.isDirectory(path)) {
             val byName =
-                ArtifactChains.find(listOf(seed), fs).artifacts.groupBy {
-                    it.header.databaseName
+                ArtifactChains.find(listOf(path), fs).artifacts.groupBy {
+                    NormalizedDatabaseName(it.header.databaseName).name()
                 }
+            val wanted = source ?: name
             val artifacts =
-                byName.values.singleOrNull()
-                    ?: byName[name]
+                (if (source == null) byName.values.singleOrNull() else null)
+                    ?: byName[wanted]
                     ?: throw IOException(
                         if (byName.isEmpty()) "$shown holds no backups"
                         else
                             "$shown holds backups of ${byName.keys.sorted().joinToString()}, " +
-                                "none of $name: seed from one of its backups"
+                                "none of $wanted: seed from one of its backups"
                     )
-            return Contents.Chain(ArtifactChains.select(artifacts, null))
+            return Contents.Chain(ArtifactChains.select(artifacts, until))
         }
         val artifact =
             try {
-                ArtifactChains.find(listOf(seed), fs).artifacts.single()
+                ArtifactChains.find(listOf(path), fs).artifacts.single()
             } catch (_: IOException) {
-                return Contents.Archive(seed)
+                // A dump, which names no database.
+                return Contents.Archive(path)
             }
-        if (artifact.header.full) return Contents.Archive(seed)
+        if (
+            source != null && NormalizedDatabaseName(artifact.header.databaseName).name() != source
+        ) {
+            throw IOException(
+                "$shown is a backup of database '${artifact.header.databaseName}', not of " +
+                    "'$source' as seedSourceDatabase names"
+            )
+        }
+        if (artifact.header.full) return Contents.Archive(path)
         val continued =
-            ArtifactChains.find(listOfNotNull(seed.toAbsolutePath().parent), fs).artifacts.filter {
+            ArtifactChains.find(listOfNotNull(path.toAbsolutePath().parent), fs).artifacts.filter {
                 it.header.databaseName == artifact.header.databaseName
             }
-        return Contents.Chain(ArtifactChains.select(continued + artifact, null, artifact))
+        return Contents.Chain(ArtifactChains.select(continued + artifact, until, artifact))
     }
 
     private fun parse(uri: String): URI =
@@ -124,5 +157,8 @@ internal class StoreSeeder(
 
     private companion object {
         const val PURPOSE = "seeding"
+
+        /** The providers whose seeds are restored up to a point, as in Neo4j Enterprise. */
+        val RESTORING_UNTIL = listOf(SeedProvider.File, SeedProvider.Cloud)
     }
 }
