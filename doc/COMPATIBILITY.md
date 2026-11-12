@@ -26,9 +26,9 @@ form, join or rejoin a cluster whose members run a different Neo4j version.
 | Apache Ratis | 3.3.1 | Uses the already shaded `ratis-thirdparty` 1.1.0 for gRPC, Netty and protobuf. |
 | Kotlin | 2.4.21, kotlinx-coroutines 1.11.0 | Bundled and relocated to `org.dozendb.shaded`. |
 | Dropwizard Metrics | 4.2.40 | `metrics-core` and `metrics-jmx`, for the metrics and their exporters. Bundled and relocated. |
-| AWS SDK for Java | 2.57.13 | S3, with Apache HttpClient 5. Bundled and relocated, as every cloud SDK and the libraries they use. |
+| AWS SDK for Java | 2.58.0 | S3, with Apache HttpClient 5. Bundled and relocated, as every cloud SDK and the libraries they use. |
 | Google Cloud Storage | 2.78.0 (`libraries-bom` 26.93.0) | Over HTTP: without its gRPC transport. |
-| Azure SDK | `azure-sdk-bom` 1.3.9: Storage Blob 12.36.0, Identity 1.18.7 | With the JDK's HTTP client. Uses the JNA that Neo4j ships. |
+| Azure SDK | `azure-sdk-bom` 1.3.10: Storage Blob 12.37.2, Identity 1.19.0 | With the JDK's HTTP client. Uses the JNA that Neo4j ships. |
 | JDK | build 21, run 21 or 25 | Bytecode targets Java 21 like Neo4j 2026, which runs on Java 21 and 25. |
 
 ## At a glance
