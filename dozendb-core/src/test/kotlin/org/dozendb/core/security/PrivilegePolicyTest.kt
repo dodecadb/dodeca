@@ -450,10 +450,10 @@ class PrivilegePolicyTest {
                 ),
             )
 
-        assertThat(graph.traverseRelationship("ACTED_IN")).isTrue
-        assertThat(graph.traverseRelationship("DIRECTED")).isFalse
-        assertThat(graph.readRelationshipProperty("ACTED_IN", "role")).isTrue
-        assertThat(graph.readRelationshipProperty("ACTED_IN", "salary")).isFalse
+        assertThat(graph.traverseRelationship("ACTED_IN", none)).isTrue
+        assertThat(graph.traverseRelationship("DIRECTED", none)).isFalse
+        assertThat(graph.readRelationshipProperty("ACTED_IN", "role", none)).isTrue
+        assertThat(graph.readRelationshipProperty("ACTED_IN", "salary", none)).isFalse
         assertThat(graph.traverseNode(setOf("Person"), none)).isFalse
     }
 
@@ -738,11 +738,21 @@ class PrivilegePolicyTest {
             check("remove label $label", subject.removeLabel(label), reference.removeLabel(label))
         }
         for (type in TYPES) {
-            check(
-                "traverse $type",
-                subject.traverseRelationship(type),
-                reference.traverseRelationship(type),
-            )
+            for (value in VALUES) {
+                val properties = { key: String -> if (key == "p") value else Values.NO_VALUE }
+                check(
+                    "traverse $type with p = $value",
+                    subject.traverseRelationship(type, properties),
+                    reference.traverseRelationship(type, properties),
+                )
+                for (key in KEYS) {
+                    check(
+                        "read $key of $type with p = $value",
+                        subject.readRelationshipProperty(type, key, properties),
+                        reference.readRelationshipProperty(type, key, properties),
+                    )
+                }
+            }
             check(
                 "create $type",
                 subject.createRelationship(type),
@@ -754,11 +764,6 @@ class PrivilegePolicyTest {
                 reference.deleteRelationship(type),
             )
             for (key in KEYS) {
-                check(
-                    "read $key of $type",
-                    subject.readRelationshipProperty(type, key),
-                    reference.readRelationshipProperty(type, key),
-                )
                 check(
                     "set $key of $type",
                     subject.setRelationshipProperty(type, key),
@@ -793,7 +798,14 @@ class PrivilegePolicyTest {
         val LABEL_SETS = listOf(emptySet(), setOf("A"), setOf("B"), setOf("A", "B"), setOf("C"))
         val TYPES = listOf("R", "S")
         val KEYS = listOf("p", "q")
-        val VALUES: List<Value> = listOf(Values.NO_VALUE, Values.intValue(1), Values.intValue(2))
+        val VALUES: List<Value> =
+            listOf(
+                Values.NO_VALUE,
+                Values.intValue(1),
+                Values.intValue(2),
+                Values.intArray(intArrayOf(1, 2)),
+                Values.intArray(intArrayOf()),
+            )
         val GRAPH_ACTIONS =
             setOf(
                 PrivilegeAction.TRAVERSE,

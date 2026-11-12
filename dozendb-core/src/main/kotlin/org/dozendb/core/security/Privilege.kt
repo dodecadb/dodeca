@@ -122,10 +122,10 @@ sealed interface PrivilegeSegment {
     }
 
     /**
-     * Nodes whose property satisfies a rule: `FOR (n:A) WHERE n.p > 1`. Equal by the rule, which
-     * Neo4j's segments are not: they compare by identity since Neo4j 2026.
+     * Elements whose property satisfies a rule: [NodePattern] or [RelationshipPattern]. Equal by
+     * the rule, which Neo4j's segments are not: they compare by identity since Neo4j 2026.
      */
-    class NodePattern(val pattern: PatternSegment) : PrivilegeSegment {
+    sealed class PropertyRule(val pattern: PatternSegment) : PrivilegeSegment {
         private val rule: List<Any?> =
             when (pattern) {
                 is PatternSegment.ValuePatternSegment ->
@@ -146,12 +146,19 @@ sealed interface PrivilegeSegment {
                 else -> listOf(pattern)
             }
 
-        override fun equals(other: Any?): Boolean = other is NodePattern && other.rule == rule
+        override fun equals(other: Any?): Boolean =
+            other is PropertyRule && other.javaClass == javaClass && other.rule == rule
 
         override fun hashCode(): Int = rule.hashCode()
 
         override fun toString() = pattern.toString()
     }
+
+    /** Nodes whose property satisfies a rule: `FOR (n:A) WHERE n.p > 1`. */
+    class NodePattern(pattern: PatternSegment) : PropertyRule(pattern)
+
+    /** Relationships whose property satisfies a rule: `FOR ()-[r:T]-() WHERE r.p > 1`. */
+    class RelationshipPattern(pattern: PatternSegment) : PropertyRule(pattern)
 
     /** Transactions or impersonation of [user], every user for null. */
     data class Users(val user: String?) : PrivilegeSegment {

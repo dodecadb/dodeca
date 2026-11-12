@@ -279,6 +279,49 @@ class PrivilegeTextTest {
     }
 
     @Test
+    fun `names relationship rules, and rules about list properties as Cypher 25 has them`() {
+        fun rule(segment: PrivilegeSegment) =
+            Privilege(
+                Access.DENIED,
+                PrivilegeAction.TRAVERSE,
+                PrivilegeScope.AllDatabases,
+                PrivilegeResource.Graph,
+                segment,
+            )
+        val relationships =
+            rule(
+                PrivilegeSegment.RelationshipPattern(
+                    PatternSegment.RelValuePatternSegment(
+                        setOf("KNOWS", "ACTED IN"),
+                        "since",
+                        Values.longValue(2000),
+                        PropertyRule.ComparisonOperator.LESS_THAN,
+                    )
+                )
+            )
+        val lists =
+            rule(
+                PrivilegeSegment.NodePattern(
+                    PatternSegment.NodeValuePatternSegment(
+                        emptySet(),
+                        "regions",
+                        Values.stringValue("EU"),
+                        PropertyRule.ComparisonOperator.NOT_VALUE_IN_LIST_PROPERTY,
+                    )
+                )
+            )
+
+        assertThat(commands("r", relationships, lists))
+            .containsExactly(
+                "DENY TRAVERSE ON GRAPH * FOR ()-[r:`ACTED IN`|KNOWS]-() WHERE r.since < 2000 " +
+                    "TO `r`",
+                "DENY TRAVERSE ON GRAPH * FOR (n) WHERE NOT 'EU' IN n.regions TO `r`",
+            )
+        assertThat(PrivilegeText.cypher25Only(relationships)).isFalse()
+        assertThat(PrivilegeText.cypher25Only(lists)).isTrue()
+    }
+
+    @Test
     fun `has a command for every privilege`() {
         val generator = PrivilegeGenerator(kotlin.random.Random(20261023), listOf(neo4j))
         repeat(2000) {

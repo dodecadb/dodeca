@@ -58,10 +58,10 @@ class RandomGraphPrivilegesTest {
                 .also { it.start() }
         server.administer("CREATE DATABASE films")
         server.rows(
-            "CREATE (a:A {p: 1, q: 2}), (b:B {p: 3}), (ab:A:B {q: 4}), (c:C {p: 5, q: 6}), " +
-                "(none {p: 7}), (abc:A:B:C), " +
-                "(a)-[:R {p: 8}]->(b), (a)-[:S {q: 9}]->(ab), (ab)-[:R]->(c), " +
-                "(c)-[:S {p: 10, q: 11}]->(none), (none)-[:R]->(a), (abc)-[:S]->(abc), " +
+            "CREATE (a:A {p: 1, q: 2, l: [1, 2]}), (b:B {p: 3, l: [2]}), (ab:A:B {q: 4}), " +
+                "(c:C {p: 5, q: 6, l: []}), (none {p: 7}), (abc:A:B:C), " +
+                "(a)-[:R {p: 8, l: [8, 9]}]->(b), (a)-[:S {q: 9, l: [9]}]->(ab), (ab)-[:R]->(c), " +
+                "(c)-[:S {p: 10, q: 11, l: []}]->(none), (none)-[:R]->(a), (abc)-[:S]->(abc), " +
                 "(b)-[:R {q: 12}]->(abc), (:B {q: 13}), (:C), ()"
         )
         nodes =
@@ -74,7 +74,7 @@ class RandomGraphPrivilegesTest {
                     Element(
                         it["id"] as String,
                         (it["labels"] as List<String>).toSet(),
-                        it["p"] as Map<String, Any?>,
+                        lists(it["p"] as Map<String, Any?>),
                     )
                 }
         relationships =
@@ -88,7 +88,7 @@ class RandomGraphPrivilegesTest {
                     Element(
                         it["id"] as String,
                         emptySet(),
-                        it["p"] as Map<String, Any?>,
+                        lists(it["p"] as Map<String, Any?>),
                         it["type"] as String,
                         it["start"] as String,
                         it["end"] as String,
@@ -101,6 +101,20 @@ class RandomGraphPrivilegesTest {
                 AuthTokens.basic("alice", "alice-secret-1"),
             )
     }
+
+    /**
+     * [properties] with lists for arrays, as Bolt gives them, where Neo4j's embedded API does not.
+     */
+    private fun lists(properties: Map<String, Any?>): Map<String, Any?> =
+        properties.mapValues { (_, value) ->
+            if (value?.javaClass?.isArray == true) {
+                List(java.lang.reflect.Array.getLength(value)) {
+                    java.lang.reflect.Array.get(value, it)
+                }
+            } else {
+                value
+            }
+        }
 
     @AfterEach
     fun stop() {
@@ -126,7 +140,7 @@ class RandomGraphPrivilegesTest {
         val nodes = pick("NODES *", "NODES A", "NODES B", "NODES Z", "")
         val properties = pick("{*}", "{p}", "{q}")
         val label = pick("*", "A", "C")
-        val rule =
+        val nodeRule =
             "FOR ${pick("(n)", "(n:A)", "(n:B|Z)")} WHERE " +
                 pick(
                     "n.p > 1",
@@ -137,7 +151,22 @@ class RandomGraphPrivilegesTest {
                     "n.q IS NULL",
                     "n.p IS NOT NULL",
                     "n.r IS NULL",
+                    "2 IN n.l",
+                    "NOT 1 IN n.l",
                 )
+        val relationshipRule =
+            "FOR ${pick("()-[r]-()", "()-[r:R]-()", "()-[r:S|Z]-()")} WHERE " +
+                pick(
+                    "r.p > 8",
+                    "r.q = 9",
+                    "NOT r.q = 9",
+                    "r.p IN [8, 10]",
+                    "r.q IS NULL",
+                    "r.p IS NOT NULL",
+                    "9 IN r.l",
+                    "NOT 8 IN r.l",
+                )
+        val rule = pick(nodeRule, relationshipRule)
         val privilege =
             when (nextInt(14)) {
                 0 -> "TRAVERSE ON $graph $elements"
@@ -158,7 +187,9 @@ class RandomGraphPrivilegesTest {
             }
         // MERGE cannot be denied.
         val access = if (privilege.startsWith("MERGE")) "GRANT" else pick("GRANT", "DENY")
-        return "$access $privilege TO r"
+        // A value in a list property is Cypher 25's.
+        val version = if (Regex(" IN [nr]\\.l").containsMatchIn(privilege)) "CYPHER 25 " else ""
+        return "$version$access $privilege TO r"
     }
 
     private fun Driver.rows(cypher: String, parameters: Map<String, Any> = emptyMap()) =
@@ -214,11 +245,19 @@ class RandomGraphPrivilegesTest {
         val neo4j = checkNotNull(security.databaseId("neo4j"))
         val policy =
             ReferencePolicy(security.privileges(security.roles("alice")), neo4j).graph(neo4j)
-        fun properties(node: Element) = { key: String -> Values.of(node.properties[key]) }
+        fun properties(element: Element) = { key: String ->
+            when (val value = element.properties[key]) {
+                // Cypher gives lists for the arrays that properties hold.
+                is List<*> -> Values.longArray(value.map { (it as Number).toLong() }.toLongArray())
+                else -> Values.of(value)
+            }
+        }
         val found = nodes.filter { policy.traverseNode(it.labels, properties(it)) }
         val foundIds = found.map { it.id }.toSet()
         val traversed = relationships.filter {
-            it.start in foundIds && it.end in foundIds && policy.traverseRelationship(it.type!!)
+            it.start in foundIds &&
+                it.end in foundIds &&
+                policy.traverseRelationship(it.type!!, properties(it))
         }
         val soft = SoftAssertions()
 
@@ -252,7 +291,11 @@ class RandomGraphPrivilegesTest {
                 traversed.associate { relationship ->
                     relationship.id to
                         relationship.properties.filterKeys {
-                            policy.readRelationshipProperty(relationship.type!!, it)
+                            policy.readRelationshipProperty(
+                                relationship.type!!,
+                                it,
+                                properties(relationship),
+                            )
                         }
                 }
             )

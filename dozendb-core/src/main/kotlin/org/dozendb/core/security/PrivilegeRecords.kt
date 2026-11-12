@@ -126,7 +126,9 @@ object PrivilegeRecords {
                 "DATABASE" -> PrivilegeSegment.Database
                 "NODES" -> PrivilegeSegment.Nodes(optional(QUALIFIER))
                 "RELATIONSHIPS" -> PrivilegeSegment.Relationships(optional(QUALIFIER))
-                "NODE_PATTERN" -> PrivilegeSegment.NodePattern(pattern(properties))
+                "NODE_PATTERN" -> PrivilegeSegment.NodePattern(pattern(properties, nodes = true))
+                "RELATIONSHIP_PATTERN" ->
+                    PrivilegeSegment.RelationshipPattern(pattern(properties, nodes = false))
                 "USERS" -> PrivilegeSegment.Users(optional(QUALIFIER))
                 "PROCEDURES" -> PrivilegeSegment.Procedures(text(QUALIFIER))
                 "FUNCTIONS" -> PrivilegeSegment.Functions(text(QUALIFIER))
@@ -211,8 +213,12 @@ object PrivilegeRecords {
             PrivilegeSegment.Database -> segment("DATABASE", null)
             is PrivilegeSegment.Nodes -> segment("NODES", segment.label)
             is PrivilegeSegment.Relationships -> segment("RELATIONSHIPS", segment.type)
-            is PrivilegeSegment.NodePattern -> {
-                segment("NODE_PATTERN", null)
+            is PrivilegeSegment.PropertyRule -> {
+                segment(
+                    if (segment is PrivilegeSegment.NodePattern) "NODE_PATTERN"
+                    else "RELATIONSHIP_PATTERN",
+                    null,
+                )
                 val pattern = segment.pattern
                 put(PATTERN_LABELS, pattern.elementTypes().sorted().toTypedArray())
                 put(PATTERN_PROPERTY, pattern.property())
@@ -236,7 +242,8 @@ object PrivilegeRecords {
         put(IMMUTABLE, privilege.immutable)
     }
 
-    private fun pattern(properties: Map<String, Any>): PatternSegment {
+    /** The rule of a pattern about [nodes], or about relationships, whose types are its labels. */
+    private fun pattern(properties: Map<String, Any>, nodes: Boolean): PatternSegment {
         val labels =
             (properties[PATTERN_LABELS] as? Array<*>
                     ?: throw IllegalArgumentException("no $PATTERN_LABELS"))
@@ -249,19 +256,33 @@ object PrivilegeRecords {
             properties[PATTERN_OPERATOR] as? String
                 ?: throw IllegalArgumentException("no $PATTERN_OPERATOR")
         val value = properties[PATTERN_VALUE]
-        return if (value == null) {
-            PatternSegment.NodeNullPatternSegment(
-                labels,
-                property,
-                PropertyRule.NullOperator.valueOf(operator),
-            )
-        } else {
-            PatternSegment.NodeValuePatternSegment(
-                labels,
-                property,
-                Values.of(value),
-                PropertyRule.ComparisonOperator.valueOf(operator),
-            )
+        return when {
+            value == null && nodes ->
+                PatternSegment.NodeNullPatternSegment(
+                    labels,
+                    property,
+                    PropertyRule.NullOperator.valueOf(operator),
+                )
+            value == null ->
+                PatternSegment.RelNullPatternSegment(
+                    labels,
+                    property,
+                    PropertyRule.NullOperator.valueOf(operator),
+                )
+            nodes ->
+                PatternSegment.NodeValuePatternSegment(
+                    labels,
+                    property,
+                    Values.of(value),
+                    PropertyRule.ComparisonOperator.valueOf(operator),
+                )
+            else ->
+                PatternSegment.RelValuePatternSegment(
+                    labels,
+                    property,
+                    Values.of(value),
+                    PropertyRule.ComparisonOperator.valueOf(operator),
+                )
         }
     }
 

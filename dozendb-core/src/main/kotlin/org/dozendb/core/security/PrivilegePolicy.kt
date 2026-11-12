@@ -224,8 +224,8 @@ data class Execution(
 
 /**
  * What a user may do with one graph, from the graph privileges that apply to its database. Nodes
- * are given by their labels, and by their properties for property rules: a missing one is
- * [org.neo4j.values.storable.Values.NO_VALUE].
+ * are given by their labels and relationships by their type, and both by their properties for
+ * property rules: a missing one is [org.neo4j.values.storable.Values.NO_VALUE].
  */
 class GraphPolicy(private val privileges: List<Privilege>) {
     /** Finding a node. */
@@ -233,9 +233,10 @@ class GraphPolicy(private val privileges: List<Privilege>) {
         decide(privileges) { it.traverses() && it.segment.coversNode(labels, properties) }
             .allowsAccess()
 
-    /** Finding relationships of [type]; their nodes must be found too. */
-    fun traverseRelationship(type: String): Boolean =
-        decide(privileges) { it.traverses() && it.segment.coversRelationship(type) }.allowsAccess()
+    /** Finding a relationship of [type]; its nodes must be found too. */
+    fun traverseRelationship(type: String, properties: (String) -> Value): Boolean =
+        decide(privileges) { it.traverses() && it.segment.coversRelationship(type, properties) }
+            .allowsAccess()
 
     /** Reading the property [key] of a node that is found. */
     fun readNodeProperty(labels: Set<String>, key: String, properties: (String) -> Value): Boolean =
@@ -243,8 +244,13 @@ class GraphPolicy(private val privileges: List<Privilege>) {
             .allowsAccess()
 
     /** Reading the property [key] of a relationship of [type] that is found. */
-    fun readRelationshipProperty(type: String, key: String): Boolean =
-        decide(privileges) { it.reads(key) && it.segment.coversRelationship(type) }.allowsAccess()
+    fun readRelationshipProperty(
+        type: String,
+        key: String,
+        properties: (String) -> Value,
+    ): Boolean =
+        decide(privileges) { it.reads(key) && it.segment.coversRelationship(type, properties) }
+            .allowsAccess()
 
     /** Creating a node with [labels]. */
     fun createNode(labels: Set<String>): Boolean =
@@ -376,6 +382,7 @@ private fun PrivilegeSegment.coversNode(
         else -> false
     }
 
+/** Whether this segment covers every relationship of [type], as writes ask. */
 private fun PrivilegeSegment.coversRelationship(type: String): Boolean =
     when (this) {
         PrivilegeSegment.Database -> true
@@ -383,8 +390,21 @@ private fun PrivilegeSegment.coversRelationship(type: String): Boolean =
         else -> false
     }
 
+/** Whether this segment covers a relationship of [type] with [properties]. */
+private fun PrivilegeSegment.coversRelationship(
+    type: String,
+    properties: (String) -> Value,
+): Boolean =
+    when (this) {
+        PrivilegeSegment.Database -> true
+        is PrivilegeSegment.Relationships -> this.type == null || this.type == type
+        is PrivilegeSegment.RelationshipPattern -> pattern.covers(setOf(type), properties)
+        else -> false
+    }
+
 /**
- * Whether the rule applies to the node: it has one of the labels, if any, and satisfies it.
+ * Whether the rule applies to the element: it has one of the labels or is of one of the types, if
+ * any, and satisfies it.
  */
 private fun PatternSegment.covers(labels: Set<String>, properties: (String) -> Value): Boolean {
     if (elementTypes().isNotEmpty() && elementTypes().none { it in labels }) return false

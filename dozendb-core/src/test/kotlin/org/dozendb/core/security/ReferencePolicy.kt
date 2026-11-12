@@ -112,8 +112,10 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
         fun traverseNode(labels: Set<String>, properties: (String) -> Value): Boolean =
             allowed(facts.filter { it.action == TRAVERSE && it.findsNode(labels, properties) })
 
-        fun traverseRelationship(type: String): Boolean =
-            allowed(facts.filter { it.action == TRAVERSE && it.findsRelationship(type) })
+        fun traverseRelationship(type: String, properties: (String) -> Value): Boolean =
+            allowed(
+                facts.filter { it.action == TRAVERSE && it.findsRelationship(type, properties) }
+            )
 
         fun readNodeProperty(
             labels: Set<String>,
@@ -126,10 +128,16 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
                 }
             )
 
-        fun readRelationshipProperty(type: String, key: String): Boolean =
+        fun readRelationshipProperty(
+            type: String,
+            key: String,
+            properties: (String) -> Value,
+        ): Boolean =
             allowed(
                 facts.filter {
-                    it.action == READ && it.hasProperty(key) && it.findsRelationship(type)
+                    it.action == READ &&
+                        it.hasProperty(key) &&
+                        it.findsRelationship(type, properties)
                 }
             )
 
@@ -188,20 +196,30 @@ class ReferencePolicy(privileges: Collection<Privilege>, private val home: UUID?
             when (val segment = segment) {
                 PrivilegeSegment.Database -> true
                 is PrivilegeSegment.Nodes -> segment.label == null || segment.label in labels
-                is PrivilegeSegment.NodePattern -> {
-                    val pattern = segment.pattern
-                    val labelled =
-                        pattern.elementTypes().isEmpty() ||
-                            pattern.elementTypes().intersect(labels).isNotEmpty()
-                    labelled && pattern.holdsFor(properties(pattern.property()))
-                }
+                is PrivilegeSegment.NodePattern -> segment.pattern.holdsFor(labels, properties)
                 else -> false
             }
 
+        /** Whether this fact is about relationships of [type]; never by property rules. */
         private fun Fact.findsRelationship(type: String): Boolean =
             segment == PrivilegeSegment.Database ||
                 segment == PrivilegeSegment.Relationships(null) ||
                 segment == PrivilegeSegment.Relationships(type)
+
+        private fun Fact.findsRelationship(type: String, properties: (String) -> Value): Boolean =
+            when (val segment = segment) {
+                is PrivilegeSegment.RelationshipPattern ->
+                    segment.pattern.holdsFor(setOf(type), properties)
+                else -> findsRelationship(type)
+            }
+
+        /** Whether the rule is about one of [types], labels or a type, if any, and holds. */
+        private fun PatternSegment.holdsFor(
+            types: Set<String>,
+            properties: (String) -> Value,
+        ): Boolean =
+            (elementTypes().isEmpty() || elementTypes().intersect(types).isNotEmpty()) &&
+                holdsFor(properties(property()))
 
         private fun Fact.hasProperty(key: String): Boolean =
             resource == PrivilegeResource.Graph ||

@@ -436,11 +436,7 @@ internal class PrivilegeCommands(
             scope(scope),
             if (qualifier is PatternQualifier) {
                 val version = context.runtimeContext().cypherVersion()
-                ({ params, tx ->
-                    PrivilegeSegment.NodePattern(
-                        PropertyRuleQualifiers.rule(qualifier, params, version, tx)
-                    )
-                })
+                ({ params, tx -> PropertyRuleQualifiers.rule(qualifier, params, version, tx) })
             } else {
                 segment(qualifier)
             },

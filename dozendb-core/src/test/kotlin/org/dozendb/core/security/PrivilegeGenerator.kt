@@ -147,25 +147,70 @@ class PrivilegeGenerator(private val random: Random, private val databases: List
         }
     }
 
-    private fun pattern(): PrivilegeSegment =
-        PrivilegeSegment.NodePattern(
-            if (random.nextBoolean()) {
-                PatternSegment.NodeValuePatternSegment(
-                    listOf(emptySet(), setOf("A"), setOf("A", "B")).random(random),
-                    listOf("p", "q").random(random),
-                    Values.intValue(random.nextInt(0, 3)),
-                    PropertyRule.ComparisonOperator.entries.random(random),
+    /**
+     * A property rule about nodes or relationships, as commands give them: a list for IN, one value
+     * otherwise, and the operators Cypher has.
+     */
+    private fun pattern(): PrivilegeSegment {
+        val nodes = random.nextBoolean()
+        val property = listOf("p", "q").random(random)
+        if (random.nextBoolean()) {
+            val types =
+                if (nodes) listOf(emptySet(), setOf("A"), setOf("A", "B"))
+                else listOf(emptySet(), setOf("R"), setOf("R", "S"))
+            val operator = OPERATORS.random(random)
+            val value =
+                if (operator in LISTS) {
+                    Values.intArray(IntArray(random.nextInt(0, 3)) { random.nextInt(0, 3) })
+                } else {
+                    Values.intValue(random.nextInt(0, 3))
+                }
+            return if (nodes) {
+                PrivilegeSegment.NodePattern(
+                    PatternSegment.NodeValuePatternSegment(
+                        types.random(random),
+                        property,
+                        value,
+                        operator,
+                    )
                 )
             } else {
-                PatternSegment.NodeNullPatternSegment(
-                    listOf(emptySet(), setOf("B")).random(random),
-                    listOf("p", "q").random(random),
-                    PropertyRule.NullOperator.entries.random(random),
+                PrivilegeSegment.RelationshipPattern(
+                    PatternSegment.RelValuePatternSegment(
+                        types.random(random),
+                        property,
+                        value,
+                        operator,
+                    )
                 )
             }
-        )
+        }
+        val operator = PropertyRule.NullOperator.entries.random(random)
+        return if (nodes) {
+            PrivilegeSegment.NodePattern(
+                PatternSegment.NodeNullPatternSegment(
+                    listOf(emptySet(), setOf("B")).random(random),
+                    property,
+                    operator,
+                )
+            )
+        } else {
+            PrivilegeSegment.RelationshipPattern(
+                PatternSegment.RelNullPatternSegment(
+                    listOf(emptySet(), setOf("S")).random(random),
+                    property,
+                    operator,
+                )
+            )
+        }
+    }
 
     private companion object {
+        /** The operators of rules that commands give; Neo4j's others are not Cypher's. */
+        val OPERATORS =
+            PropertyRule.ComparisonOperator.entries - PropertyRule.ComparisonOperator.ANY_IN_LIST
+        val LISTS =
+            setOf(PropertyRule.ComparisonOperator.IN, PropertyRule.ComparisonOperator.NOT_IN)
         val GLOBS = arrayOf("*", "db.*", "apoc.load.?son", "dbms.security*", "DB.LABELS")
         val DATABASE_ACTIONS =
             setOf(

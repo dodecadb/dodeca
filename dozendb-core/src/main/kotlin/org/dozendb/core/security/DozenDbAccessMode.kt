@@ -30,9 +30,9 @@ import org.neo4j.values.storable.Values
  * Names that do not exist yet are left out, as nothing has them; [stale] tells when they do.
  *
  * Property rules decide with the values of the properties they ask about, which Neo4j's provider
- * reads, when asked, for the nodes they may apply to; without the values, a DENY rule that may
- * apply denies and a GRANT rule grants nothing. Rules about relationships' properties are not
- * supported (see [PrivilegeCommands]): relationships go by their types alone.
+ * reads, when asked, for the nodes and relationships they may apply to; without the values, a DENY
+ * rule that may apply denies and a GRANT rule grants nothing. A relationship's type stands where a
+ * node's labels do.
  */
 class DozenDbAccessMode(
     private val policy: PrivilegePolicy,
@@ -141,19 +141,32 @@ class DozenDbAccessMode(
         if (relType == TokenConstants.ANY_RELATIONSHIP_TYPE) traverseRelationships.denied.all
         else traverseRelationships.denied.reaches(relType)
 
-    override fun hasApplicableTraverseRelAllowPropertyRules(type: Int): Boolean = false
+    override fun hasApplicableTraverseRelAllowPropertyRules(type: Int): Boolean =
+        !traverseRelationships.denied.reaches(type) &&
+            traverseRelationships.patterns.granted.any { it.appliesTo(type) }
 
     override fun allowsTraverseRelationship(
         type: Int,
         selectedPropertiesProvider: SelectedPropertiesProvider,
-    ): Boolean = allowsTraverseRelType(type)
+    ): Boolean {
+        val ids = intArrayOf(type)
+        val keys = traverseRelationships.keysFor(ids)
+        return if (keys.isEmpty) traverseRelationships.allowsAny(ids)
+        else traverseRelationships.allowsAny(ids, selectedPropertiesProvider.get(selectionOf(keys)))
+    }
 
     override fun allowsReadNodeProperties(
         labels: LabelsSupplier,
         propertyKeys: IntArray,
         propertyProvider: Supplier<SelectedPropertiesProvider>,
     ): Boolean {
-        val read = nodePropertyReads(labels, propertyProvider, propertyKeys::contains)
+        val read =
+            propertyReads(
+                readNodes,
+                { labels.labels.all() },
+                propertyProvider,
+                propertyKeys::contains,
+            )
         return propertyKeys.all(read::test)
     }
 
@@ -161,26 +174,29 @@ class DozenDbAccessMode(
         labels: LabelsSupplier,
         propertyProvider: Supplier<SelectedPropertiesProvider>,
         selection: PropertySelection,
-    ): IntPredicate = nodePropertyReads(labels, propertyProvider, selection::test)
+    ): IntPredicate =
+        propertyReads(readNodes, { labels.labels.all() }, propertyProvider, selection::test)
 
     /**
-     * Which properties of a node with [labels] can be read: by labels, unless property rules apply,
-     * whose properties [propertyProvider] reads once, for the properties [selected], when asked.
+     * Which properties of an element with the labels or type [ids] can be read: by those, unless
+     * property rules of [rules] apply, whose properties [propertyProvider] reads once, for the
+     * properties [selected], when asked.
      */
-    private fun nodePropertyReads(
-        labels: LabelsSupplier,
+    private fun propertyReads(
+        rules: PropertyRules,
+        ids: () -> IntArray,
         propertyProvider: Supplier<SelectedPropertiesProvider>,
         selected: (Int) -> Boolean,
     ): IntPredicate {
-        val ids by lazy { labels.labels.all() }
-        if (!readNodes.patterns) return IntPredicate { key -> readNodes.of(key).allowsAny { ids } }
+        val known by lazy(ids)
+        if (!rules.patterns) return IntPredicate { key -> rules.of(key).allowsAny { known } }
         val values by lazy {
-            readNodes.securitySelection(selected)?.let { propertyProvider.get().get(it) }
+            rules.securitySelection(selected)?.let { propertyProvider.get().get(it) }
                 ?: IntObjectMaps.immutable.empty()
         }
         return IntPredicate { key ->
-            val rule = readNodes.of(key)
-            if (!rule.patterns.any()) rule.allowsAny { ids } else rule.allowsAny(ids, values)
+            val rule = rules.of(key)
+            if (!rule.patterns.any()) rule.allowsAny { known } else rule.allowsAny(known, values)
         }
     }
 
@@ -214,17 +230,28 @@ class DozenDbAccessMode(
         relType: RelTypeSupplier,
         propertyKeys: IntArray,
         propertyProvider: Supplier<SelectedPropertiesProvider>,
-    ): Boolean = propertyKeys.all {
-        readRelationships.of(it).allowsAny { intArrayOf(relType.relType) }
+    ): Boolean {
+        val read =
+            propertyReads(
+                readRelationships,
+                { intArrayOf(relType.relType) },
+                propertyProvider,
+                propertyKeys::contains,
+            )
+        return propertyKeys.all(read::test)
     }
 
     override fun allowedToReadRelationshipProperties(
         relType: RelTypeSupplier,
         propertyProvider: Supplier<SelectedPropertiesProvider>,
         selection: PropertySelection,
-    ): IntPredicate = IntPredicate { key ->
-        readRelationships.of(key).allowsAny { intArrayOf(relType.relType) }
-    }
+    ): IntPredicate =
+        propertyReads(
+            readRelationships,
+            { intArrayOf(relType.relType) },
+            propertyProvider,
+            selection::test,
+        )
 
     /** Lists a property key that some element could have read. */
     override fun allowsSeePropertyKeyToken(propertyKey: Int): Boolean =
@@ -307,31 +334,32 @@ class DozenDbAccessMode(
                 PrivilegeSegment.Database -> ALL
                 is PrivilegeSegment.Nodes ->
                     if (segment.label == null) ALL else labels.id(segment.label)
-                is PrivilegeSegment.NodePattern -> pattern(segment.pattern)
+                is PrivilegeSegment.NodePattern -> pattern(segment.pattern, labels)
                 else -> null
             }
         }
 
     /**
-     * The rule [pattern] compiled for nodes with the labels that exist. A property that does not
-     * exist has no value on any node: the rule then applies by labels alone, or not at all.
+     * The rule [pattern] compiled for elements with the labels or types, of [names], that exist. A
+     * property that does not exist has no value on any element: the rule then applies by labels or
+     * types alone, or not at all.
      */
-    private fun pattern(pattern: PatternSegment): Any? {
+    private fun pattern(pattern: PatternSegment, names: Names): Any? {
         val ids =
             if (pattern.elementTypes().isEmpty()) null
             else
                 pattern
                     .elementTypes()
-                    .mapNotNull { labels.id(it) }
+                    .mapNotNull { names.id(it) }
                     .ifEmpty {
                         return null
                     }
         val holds: (Value) -> Boolean =
             when (pattern) {
-                is PatternSegment.NodeValuePatternSegment -> { value ->
+                is PatternSegment.ValuePatternSegment -> { value ->
                     pattern.operator().test(value, pattern.value())
                 }
-                is PatternSegment.NodeNullPatternSegment -> pattern.operator()::test
+                is PatternSegment.NullPatternSegment -> pattern.operator()::test
                 else -> return null
             }
         val key = keys.id(pattern.property())
@@ -342,13 +370,17 @@ class DozenDbAccessMode(
         }
     }
 
-    /** Relationships by their type, from privileges about them or every element. */
+    /**
+     * Relationships by their type, from privileges about them or every element, and by the value of
+     * a property for property rules.
+     */
     private fun relationshipRule(privileges: List<Privilege>): Rule =
         rule(privileges) { privilege ->
             when (val segment = privilege.segment) {
                 PrivilegeSegment.Database -> ALL
                 is PrivilegeSegment.Relationships ->
                     if (segment.type == null) ALL else types.id(segment.type)
+                is PrivilegeSegment.RelationshipPattern -> pattern(segment.pattern, types)
                 else -> null
             }
         }
@@ -441,8 +473,8 @@ class DozenDbAccessMode(
     }
 
     /**
-     * A property rule compiled: it applies to nodes with one of [labels], or to every node for
-     * null, whose value of the property [key] [holds].
+     * A property rule compiled: it applies to elements with one of [labels], the types of
+     * relationships, or to every element for null, whose value of the property [key] [holds].
      */
     class Pattern(
         private val labels: IntSet?,

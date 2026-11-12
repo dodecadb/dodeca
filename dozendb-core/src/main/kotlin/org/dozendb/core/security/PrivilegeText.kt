@@ -5,6 +5,7 @@ import java.util.regex.Pattern
 import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.internal.kernel.api.security.PatternSegment
 import org.neo4j.internal.kernel.api.security.PrivilegeAction
+import org.neo4j.internal.kernel.api.security.PropertyRule
 import org.neo4j.util.Stringifier
 import org.neo4j.values.storable.ArrayValue
 import org.neo4j.values.storable.DateTimeValue
@@ -81,11 +82,23 @@ object PrivilegeText {
 
     /**
      * Whether only Cypher 25 has a command for [privilege]: one of [DATABASE_AND_DBMS] on a
-     * database, or on the home database, as Neo4j Enterprise 2025.08 grants them.
+     * database, or on the home database, as Neo4j Enterprise 2025.08 grants them, and a rule that
+     * looks for a value in a list property (2026.08).
      */
     fun cypher25Only(privilege: Privilege): Boolean =
-        privilege.action in DATABASE_AND_DBMS &&
-            (privilege.scope is PrivilegeScope.Database || privilege.scope == PrivilegeScope.Home)
+        (privilege.action in DATABASE_AND_DBMS &&
+            (privilege.scope is PrivilegeScope.Database ||
+                privilege.scope == PrivilegeScope.Home)) ||
+            ((privilege.segment as? PrivilegeSegment.PropertyRule)?.pattern
+                    as? PatternSegment.ValuePatternSegment)
+                ?.operator() in IN_LIST_PROPERTY
+
+    /** The operators of rules that look for a value in a list property. */
+    private val IN_LIST_PROPERTY =
+        setOf(
+            PropertyRule.ComparisonOperator.VALUE_IN_LIST_PROPERTY,
+            PropertyRule.ComparisonOperator.NOT_VALUE_IN_LIST_PROPERTY,
+        )
 
     private fun body(
         privilege: Privilege,
@@ -181,18 +194,21 @@ object PrivilegeText {
                         is PrivilegeSegment.Nodes -> " NODE ${segment.label?.let(::name) ?: "*"}"
                         is PrivilegeSegment.Relationships ->
                             " RELATIONSHIP ${segment.type?.let(::name) ?: "*"}"
-                        is PrivilegeSegment.NodePattern -> " FOR ${pattern(segment.pattern)}"
+                        is PrivilegeSegment.PropertyRule -> " FOR ${pattern(segment)}"
                         else -> ""
                     }
             }
         return "${keyword(action)}$properties ON $graph$elements"
     }
 
-    /** A property rule, as `(n:A|B) WHERE n.p > 1`. */
-    private fun pattern(pattern: PatternSegment): String {
-        val labels = pattern.elementTypes().sorted().joinToString("|") { name(it) }
-        val node = if (labels.isEmpty()) "(n)" else "(n:$labels)"
-        val property = "n.${name(pattern.property())}"
+    /** A property rule, as `(n:A|B) WHERE n.p > 1` or `()-[r:T]-() WHERE r.p > 1`. */
+    private fun pattern(segment: PrivilegeSegment.PropertyRule): String {
+        val pattern = segment.pattern
+        val types = pattern.elementTypes().sorted().joinToString("|") { name(it) }
+        val qualified = if (types.isEmpty()) "" else ":$types"
+        val nodes = segment is PrivilegeSegment.NodePattern
+        val element = if (nodes) "(n$qualified)" else "()-[r$qualified]-()"
+        val property = "${if (nodes) "n" else "r"}.${name(pattern.property())}"
         val rule =
             when (pattern) {
                 is PatternSegment.ValuePatternSegment ->
@@ -201,7 +217,7 @@ object PrivilegeText {
                     pattern.operator().toPredicateString(property)
                 else -> throw IllegalArgumentException("Unknown property rule: $pattern")
             }
-        return "$node WHERE $rule"
+        return "$element WHERE $rule"
     }
 
     /** [value] as a Cypher literal, a temporal value or point as the function that makes it. */

@@ -1,10 +1,12 @@
 package org.dozendb.core.cypher
 
+import org.dozendb.core.security.PrivilegeSegment
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.cypher.internal.CypherVersion
 import org.neo4j.cypher.internal.ast.LabelQualifier
 import org.neo4j.cypher.internal.ast.`Node$`
 import org.neo4j.cypher.internal.ast.PatternQualifier
+import org.neo4j.cypher.internal.ast.RelationshipQualifier
 import org.neo4j.cypher.internal.ast.prettifier.`ExpressionStringifier$`
 import org.neo4j.cypher.internal.evaluator.Evaluator
 import org.neo4j.cypher.internal.expressions.Equals
@@ -47,11 +49,10 @@ import org.neo4j.values.virtual.VirtualValues
 import scala.jdk.javaapi.CollectionConverters
 
 /**
- * The property rules of graph privileges, `FOR (n:L) WHERE n.p > 1` and the like, as Neo4j's
- * semantic checks leave them: one property compared with a value, a list or null, perhaps negated,
- * in the kernel's [PatternSegment]s. Rules about relationships, which Neo4j allows only
- * with an internal feature on, and rules about users' attributes, with `abac` functions, are
- * refused.
+ * The property rules of graph privileges, `FOR (n:L) WHERE n.p > 1`, `FOR ()-[r:T]-() WHERE r.p >
+ * 1` and the like, as Neo4j's semantic checks leave them: one property compared with a value, a
+ * list or null, or a value looked for in a list property, perhaps negated, in the kernel's
+ * [PatternSegment]s. Rules about users' attributes, with `abac` functions, are refused.
  */
 internal object PropertyRuleQualifiers {
     private const val FAILED = "Failed to administer property rule."
@@ -65,10 +66,9 @@ internal object PropertyRuleQualifiers {
         params: MapValue,
         version: CypherVersion,
         tx: Transaction,
-    ): PatternSegment {
+    ): PrivilegeSegment.PropertyRule {
         fun evaluate(expression: Expression) = evaluate(expression, params, version, tx)
-        if (qualifier.element() !is `Node$`)
-            throw unsupported("Property rules on relationships are")
+        val nodes = qualifier.element() is `Node$`
         val abac =
             (listOf(qualifier.expression()) +
                     CollectionConverters.asJava(qualifier.expression().subExpressions()))
@@ -77,44 +77,67 @@ internal object PropertyRuleQualifiers {
         if (abac != null) {
             throw unsupported("Property rules with `${abac.functionName().fullName()}()` are")
         }
+        // The labels of nodes, or the types of relationships.
         val labels =
             CollectionConverters.asJava(qualifier.elementTypeQualifiers())
-                .mapNotNull { (it as? LabelQualifier)?.label() }
+                .mapNotNull {
+                    (it as? LabelQualifier)?.label() ?: (it as? RelationshipQualifier)?.reltype()
+                }
                 .toSet()
+        fun valueRule(property: String, value: Value, operator: ComparisonOperator) =
+            if (nodes) {
+                PrivilegeSegment.NodePattern(
+                    PatternSegment.NodeValuePatternSegment(labels, property, value, operator)
+                )
+            } else {
+                PrivilegeSegment.RelationshipPattern(
+                    PatternSegment.RelValuePatternSegment(labels, property, value, operator)
+                )
+            }
         var predicate = qualifier.expression()
         var negated = false
         while (predicate is Not) {
             negated = !negated
             predicate = predicate.rhs()
         }
-        // Neo4j turns `1 < n.p` around in Cypher 25, but not `'a' IN n.p`, a value in a list.
+        // Neo4j turns `1 < n.p` around in Cypher 25, which Cypher 5 refuses.
         fun property(lhs: Expression): String =
             (lhs as? Property)?.propertyKey()?.name()
-                ?: throw unsupported(
-                    if (predicate is In) {
-                        "Property rules that look for a value in a list property are"
-                    } else {
-                        "Property rules without the property on the left are"
-                    }
-                )
+                ?: throw unsupported("Property rules without the property on the left are")
         fun compare(
             lhs: Expression,
             operator: ComparisonOperator,
             rhs: Expression,
-        ): PatternSegment {
+        ): PrivilegeSegment.PropertyRule {
             val property = property(lhs)
             val applied = if (negated) NEGATED.getValue(operator) else operator
             val value = value(evaluate(rhs), applied)
             // Neo4j hands `p <> v` over as `NOT p = v`: the rule is named as written.
             value ?: throw alwaysNull(applied, "$property ${applied.symbol} NULL")
-            return PatternSegment.NodeValuePatternSegment(labels, property, value, applied)
+            return valueRule(property, value, applied)
         }
-        fun isNull(lhs: Expression, operator: NullOperator): PatternSegment =
-            PatternSegment.NodeNullPatternSegment(
-                labels,
-                property(lhs),
-                if (negated) NEGATED_NULL.getValue(operator) else operator,
-            )
+        fun isNull(lhs: Expression, operator: NullOperator): PrivilegeSegment.PropertyRule {
+            val applied = if (negated) NEGATED_NULL.getValue(operator) else operator
+            return if (nodes) {
+                PrivilegeSegment.NodePattern(
+                    PatternSegment.NodeNullPatternSegment(labels, property(lhs), applied)
+                )
+            } else {
+                PrivilegeSegment.RelationshipPattern(
+                    PatternSegment.RelNullPatternSegment(labels, property(lhs), applied)
+                )
+            }
+        }
+        /** `'a' IN n.p`, a value in a list property, as Cypher 25 has it (2026.08). */
+        fun inList(value: Expression, list: Property): PrivilegeSegment.PropertyRule {
+            val property = list.propertyKey().name()
+            val applied =
+                if (negated) ComparisonOperator.NOT_VALUE_IN_LIST_PROPERTY
+                else ComparisonOperator.VALUE_IN_LIST_PROPERTY
+            val evaluated =
+                value(evaluate(value), applied) ?: throw alwaysNull(applied, "NULL IN $property")
+            return valueRule(property, evaluated, applied)
+        }
         return when (predicate) {
             is Equals -> compare(predicate.lhs(), ComparisonOperator.EQUAL, predicate.rhs())
             is NotEquals -> compare(predicate.lhs(), ComparisonOperator.NOT_EQUAL, predicate.rhs())
@@ -125,7 +148,11 @@ internal object PropertyRuleQualifiers {
             is LessThan -> compare(predicate.lhs(), ComparisonOperator.LESS_THAN, predicate.rhs())
             is LessThanOrEqual ->
                 compare(predicate.lhs(), ComparisonOperator.LESS_THAN_OR_EQUAL, predicate.rhs())
-            is In -> compare(predicate.lhs(), ComparisonOperator.IN, predicate.rhs())
+            is In -> {
+                val list = predicate.rhs()
+                if (list is Property && predicate.lhs() !is Property) inList(predicate.lhs(), list)
+                else compare(predicate.lhs(), ComparisonOperator.IN, list)
+            }
             is IsNull -> isNull(predicate.lhs(), NullOperator.IS_NULL)
             is IsNotNull -> isNull(predicate.lhs(), NullOperator.IS_NOT_NULL)
             is MapExpression -> {
@@ -142,7 +169,7 @@ internal object PropertyRuleQualifiers {
                                 "always evaluates to `NULL`. Use `WHERE` syntax in combination " +
                                 "with `IS NULL` instead.",
                         )
-                PatternSegment.NodeValuePatternSegment(labels, key, evaluated, applied)
+                valueRule(key, evaluated, applied)
             }
             else ->
                 throw InvalidArgumentException(
@@ -203,9 +230,16 @@ internal object PropertyRuleQualifiers {
      */
     private fun value(evaluated: AnyValue, operator: ComparisonOperator): Value? {
         val lists = operator == ComparisonOperator.IN || operator == ComparisonOperator.NOT_IN
+        val one = operator in IN_LIST_PROPERTY
         val value =
             when {
                 evaluated === Values.NO_VALUE -> return null
+                one && evaluated !is Value ->
+                    throw InvalidArgumentException(
+                        invalidRule(null),
+                        "$FAILED The value `$evaluated` is not supported for property-based " +
+                            "access control: IN a list property needs one value.",
+                    )
                 evaluated is ListValue ->
                     try {
                         evaluated.toStorableArray()
@@ -300,6 +334,17 @@ internal object PropertyRuleQualifiers {
             ComparisonOperator.LESS_THAN_OR_EQUAL to ComparisonOperator.GREATER_THAN,
             ComparisonOperator.IN to ComparisonOperator.NOT_IN,
             ComparisonOperator.NOT_IN to ComparisonOperator.IN,
+            ComparisonOperator.VALUE_IN_LIST_PROPERTY to
+                ComparisonOperator.NOT_VALUE_IN_LIST_PROPERTY,
+            ComparisonOperator.NOT_VALUE_IN_LIST_PROPERTY to
+                ComparisonOperator.VALUE_IN_LIST_PROPERTY,
+        )
+
+    /** The operators that look for a value in a list property. */
+    val IN_LIST_PROPERTY =
+        setOf(
+            ComparisonOperator.VALUE_IN_LIST_PROPERTY,
+            ComparisonOperator.NOT_VALUE_IN_LIST_PROPERTY,
         )
 
     private val NEGATED_NULL =

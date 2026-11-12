@@ -321,12 +321,14 @@ or code gives them.
   of mixed types and `IN` without a list are refused, parameters included.
   Rules cost a read of the property for each node: in a benchmark, scanning a
   million nodes took 2.5 times as long with a rule, 1.8 times with a label
-  denied. Rules on relationships, which Enterprise has since 2025.04, and rules
-  with `abac` functions (2026.10) are refused. In Cypher 25 the property may
-  come second, as in `1 < n.p`, which Neo4j turns around (`n.p > 1`), as
-  Enterprise does since 2026.08. Rules that look for a value in a list
-  property, such as `'a' IN n.tags` (2026.08), are refused: `IN` takes a list
-  of values.
+  denied. Rules on relationships (`FOR ()-[r:T]-() WHERE r.p > 1`), as
+  Enterprise has them since 2025.04, work as those on nodes, with the type in
+  place of the labels. In Cypher 25 the property may come second, as in `1 <
+  n.p`, which Neo4j turns around (`n.p > 1`), and a rule may look for a value
+  in a list property, as in `'EU' IN n.regions` or `NOT 'EU' IN n.regions`,
+  both as Enterprise does since 2026.08. `NOT` applies only to elements whose
+  property is a list, as Neo4j's operator has it. Rules with `abac` functions
+  (2026.10) are refused.
 - **`SHOW PRIVILEGES`** names the home database graph `HOME`, a `LOAD`
   privilege's segment `ALL DATA` or `CIDR('range')`, and keeps `IMMUTABLE` in
   `AS COMMANDS`. `SHOW SUPPORTED PRIVILEGES` gives the documented rows

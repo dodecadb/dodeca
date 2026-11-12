@@ -182,17 +182,18 @@ class DozenDbAccessModeTest {
                         intArrayOf(Lookup().getRelTypeId(type)),
                         intArrayOf(id),
                     ),
-                    graph.traverseRelationship(type) && graph.readRelationshipProperty(type, key),
+                    graph.traverseRelationship(type, none) &&
+                        graph.readRelationshipProperty(type, key, none),
                 )
             }
             soundly(
                 "list $key",
                 !mode.allowsSeePropertyKeyToken(id),
                 LABEL_SETS.none { graph.readNodeProperty(it, key, none) } &&
-                    TYPES.none { graph.readRelationshipProperty(it, key) },
+                    TYPES.none { graph.readRelationshipProperty(it, key, none) },
             )
         }
-        val anyType = TYPES.all { graph.traverseRelationship(it) }
+        val anyType = TYPES.all { graph.traverseRelationship(it, none) }
         soundly("traverse all types", mode.allowsTraverseAllRelTypes(), anyType)
         soundly(
             "traverse any type",
@@ -204,12 +205,12 @@ class DozenDbAccessModeTest {
             expect(
                 "traverse $type",
                 mode.allowsTraverseRelType(id),
-                graph.traverseRelationship(type),
+                graph.traverseRelationship(type, none),
             )
             soundly(
                 "none of $type",
                 mode.disallowsTraverseRelType(id),
-                !graph.traverseRelationship(type),
+                !graph.traverseRelationship(type, none),
             )
             expect(
                 "create $type",
@@ -228,7 +229,7 @@ class DozenDbAccessModeTest {
                     mode.allowsReadRelProperties(type(id), intArrayOf(keyId)) {
                         provider(emptyMap())
                     },
-                    graph.readRelationshipProperty(type, key),
+                    graph.readRelationshipProperty(type, key, none),
                 )
                 expect(
                     "read $key of $type, as the kernel asks",
@@ -239,7 +240,7 @@ class DozenDbAccessModeTest {
                             PropertySelection.selection(keyId),
                         )
                         .test(keyId),
-                    graph.readRelationshipProperty(type, key),
+                    graph.readRelationshipProperty(type, key, none),
                 )
                 expect(
                     "set $key of $type",
@@ -285,9 +286,19 @@ class DozenDbAccessModeTest {
     fun `answers as the policy on random property rules, as Neo4j's kernel asks`() {
         val random = Random(20261024)
         val generator = PrivilegeGenerator(random, listOf(database, UUID(0, 2)))
-        val values = listOf(null, Values.intValue(0), Values.intValue(1), Values.intValue(2))
+        val values =
+            listOf(
+                null,
+                Values.intValue(0),
+                Values.intValue(1),
+                Values.intValue(2),
+                Values.intArray(intArrayOf(0, 1)),
+            )
         val nodes = LABEL_SETS.flatMap { labels ->
             values.flatMap { p -> values.map { q -> labels to mapOf("p" to p, "q" to q) } }
+        }
+        val relationships = TYPES.flatMap { type ->
+            values.flatMap { p -> values.map { q -> type to mapOf("p" to p, "q" to q) } }
         }
         repeat(500) { round ->
             val privileges = List(random.nextInt(1, 7)) { generator.next(patterns = true) }
@@ -332,6 +343,7 @@ class DozenDbAccessModeTest {
                         .isTrue
                 }
             }
+            checkRelationships(mode, graph, relationships, context)
             for (key in KEYS) {
                 for (label in LABELS) {
                     val all =
@@ -350,6 +362,101 @@ class DozenDbAccessModeTest {
                                 }
                         )
                         .describedAs("traverse and read $key of all with $label, $context")
+                        .isTrue
+                }
+            }
+        }
+    }
+
+    /**
+     * What the kernel asks about [relationships] of each type with their properties, as
+     * `DefaultRelationshipCursor`, `DefaultPropertyCursor` and the counts ask, against [graph].
+     */
+    private fun checkRelationships(
+        mode: DozenDbAccessMode,
+        graph: GraphPolicy,
+        relationships: List<Pair<String, Map<String, Value?>>>,
+        context: String,
+    ) {
+        fun known(properties: Map<String, Value?>) = { key: String ->
+            properties[key] ?: Values.NO_VALUE
+        }
+        for ((type, properties) in relationships) {
+            val id = Lookup().getRelTypeId(type)
+            assertThat(mode.allowsTraverseRelationship(id, provider(properties)))
+                .describedAs("traverse $type $properties, $context")
+                .isEqualTo(graph.traverseRelationship(type, known(properties)))
+            for (key in KEYS) {
+                val keyId = Lookup().getPropertyKeyId(key)
+                val expected = graph.readRelationshipProperty(type, key, known(properties))
+                for (selection in SELECTIONS) {
+                    assertThat(
+                            mode
+                                .allowedToReadRelationshipProperties(
+                                    type(id),
+                                    { provider(properties) },
+                                    selection(keyId),
+                                )
+                                .test(keyId)
+                        )
+                        .describedAs("read $key of $type $properties, $context")
+                        .isEqualTo(expected)
+                }
+                assertThat(
+                        mode.allowsReadRelProperties(type(id), intArrayOf(keyId)) {
+                            provider(properties)
+                        }
+                    )
+                    .describedAs("read only $key of $type $properties, $context")
+                    .isEqualTo(expected)
+            }
+        }
+        // The shortcuts that skip looking at relationships must not let through what rules deny.
+        fun all(type: String?, also: (Map<String, Value?>) -> Boolean = { true }) =
+            relationships
+                .filter { type == null || it.first == type }
+                .all { (t, p) -> graph.traverseRelationship(t, known(p)) && also(p) }
+        if (mode.allowsTraverseAllRelTypes()) {
+            assertThat(all(null)).describedAs("traverse all types, $context").isTrue
+        }
+        for (type in TYPES) {
+            val id = Lookup().getRelTypeId(type)
+            if (mode.allowsTraverseRelType(id)) {
+                assertThat(all(type)).describedAs("traverse all of $type, $context").isTrue
+            }
+            if (mode.disallowsTraverseRelType(id)) {
+                assertThat(
+                        relationships
+                            .filter { it.first == type }
+                            .none { (t, p) -> graph.traverseRelationship(t, known(p)) }
+                    )
+                    .describedAs("none of $type, $context")
+                    .isTrue
+            }
+            if (
+                !mode.hasApplicableTraverseRelAllowPropertyRules(id) &&
+                    !mode.allowsTraverseRelType(id)
+            ) {
+                assertThat(
+                        relationships
+                            .filter { it.first == type }
+                            .none { (t, p) -> graph.traverseRelationship(t, known(p)) }
+                    )
+                    .describedAs("no rule finds $type, $context")
+                    .isTrue
+            }
+            for (key in KEYS) {
+                val keyId = Lookup().getPropertyKeyId(key)
+                if (
+                    mode.allowsTraverseAndReadAllMatchingRelProperties(
+                        intArrayOf(id),
+                        intArrayOf(keyId),
+                    )
+                ) {
+                    assertThat(
+                            all(type) { p -> graph.readRelationshipProperty(type, key, known(p)) }
+                        )
+                        .describedAs("traverse and read $key of all of $type, $context")
                         .isTrue
                 }
             }
