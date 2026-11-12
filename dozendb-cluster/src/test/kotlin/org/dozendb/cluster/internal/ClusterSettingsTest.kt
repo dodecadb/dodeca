@@ -60,10 +60,9 @@ class ClusterSettingsTest {
             )
             .forEach { (removed, replacement) ->
                 assertThatThrownBy { config(removed to "eu") }
-                    .rootCause()
                     .hasMessageStartingWith(
-                        "Setting '$removed' was removed in Neo4j 2025.01; use '$replacement' " +
-                            "instead."
+                        "Unrecognized setting. No declared setting with name: $removed (removed " +
+                            "in Neo4j 2025.01; use $replacement instead)."
                     )
             }
     }

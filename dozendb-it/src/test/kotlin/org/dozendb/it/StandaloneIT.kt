@@ -311,8 +311,8 @@ class StandaloneIT {
         assertThat(exitCode).isNotZero()
         assertThat(logs)
             .contains(
-                "Setting 'server.groups' was removed in Neo4j 2025.01; use 'initial.server.tags' " +
-                    "instead."
+                "Error: Unrecognized setting. No declared setting with name: server.groups " +
+                    "(removed in Neo4j 2025.01; use initial.server.tags instead)."
             )
     }
 
