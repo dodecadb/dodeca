@@ -2196,19 +2196,33 @@ DozenDB keeps roles and privileges in the system graph in nodes of its own,
 and refuses to start on a system database that holds Neo4j Enterprise's.
 Move them as commands instead, in either direction:
 
-1. On the server that has them, save the output of `SHOW ROLES WITH USERS`
-   and `SHOW PRIVILEGES AS COMMANDS`, and the users from `SHOW USERS`.
+1. On the server that has them, save the commands these give, in this
+   order, as a user with `SHOW USER CREDENTIALS` (which `admin` has):
+
+   ```cypher
+   CYPHER 25 SHOW ROLES AS COMMANDS
+   CYPHER 25 SHOW USERS AS COMMANDS
+   CYPHER 25 SHOW ROLES WITH USERS AS COMMANDS
+   CYPHER 25 SHOW PRIVILEGES AS COMMANDS
+   ```
+
+   The user commands keep the encrypted passwords, so that users log in
+   with the passwords they have. Neo4j Enterprise before 2026.09 lists users
+   and roles only as `SHOW USERS` and `SHOW ROLES WITH USERS`: write their
+   `CREATE USER`, `CREATE ROLE` and `GRANT ROLE` commands from those, with
+   new passwords.
 2. Move the databases other than `system` as dumps (`neo4j-admin database
    dump`), and create them on the new servers from those ([Creating a database
    from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
    Neo4j Community, and so DozenDB, reads only the `aligned` and `standard`
    store formats: migrate a database in another format with `neo4j-admin
    database migrate --to-format=aligned` first.
-3. On the new servers, create the users (`CREATE USER`, with new passwords:
-   no command shows the old ones) and the roles (`CREATE ROLE`), give the
-   users their roles (`GRANT ROLE`), and run the saved privilege commands.
-   Commands about databases or features the new servers lack fail and can
-   be left out.
+3. On the new servers, run the saved commands in the same order, each
+   prefixed with `CYPHER 25`, on `system`. Leave out those of what the new
+   servers have from the start: the `CREATE ROLE` commands of the built-in
+   roles, and `CREATE USER neo4j`. Commands about databases or features the
+   new servers lack fail and can be left out, such as users of single
+   sign-on on DozenDB.
 
 
 ## Database aliases

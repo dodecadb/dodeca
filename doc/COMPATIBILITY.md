@@ -49,6 +49,7 @@ end its own way.
 | Property existence, key and type constraints | Same | [Constraints](#constraints) |
 | Graph types | Not supported | [Not supported](#not-supported) |
 | User status and home databases | Same | [Users](#users) |
+| Users and roles as commands (`SHOW USERS AS COMMANDS`, `SHOW ROLES AS COMMANDS`) | Same | [Users](#users) |
 | Roles and privileges, impersonation | Same, with differences | [Roles and privileges](#roles-and-privileges) |
 | Attribute-based access control: auth rules, user tags | Not supported | [Not supported](#not-supported) |
 | LDAP, single sign-on and Kerberos | Not supported | [Not supported](#not-supported) |
@@ -261,6 +262,14 @@ authentication exists: `SET AUTH` with another provider than native, and
 `REMOVE AUTH`, fail, and so do `SET TAGS`, `ADD TAGS` and `REMOVE TAGS`, as
 there are no user tags (see [Not supported](#not-supported)).
 
+In Cypher 25, `SHOW USERS [WITH AUTH] AS COMMANDS` gives the `CREATE USER`
+commands that make the users again, with their encrypted passwords (`SET
+ENCRYPTED PASSWORD`), status and home database, as Enterprise 2026.09 does.
+It takes `SHOW USER` and `SHOW USER CREDENTIALS`. `USER MANAGEMENT`, and so
+`ALL DBMS PRIVILEGES` and `admin`, include `SHOW USER CREDENTIALS`, as Neo4j's
+kernel has it; the docs do not say. Cypher 5 has no `AS COMMANDS` for users
+or roles.
+
 ## Roles and privileges
 
 DozenDB implements roles and privileges as Enterprise's operations manual
@@ -321,8 +330,9 @@ or code gives them.
 - **`SHOW PRIVILEGES`** names the home database graph `HOME`, a `LOAD`
   privilege's segment `ALL DATA` or `CIDR('range')`, and keeps `IMMUTABLE` in
   `AS COMMANDS`. `SHOW SUPPORTED PRIVILEGES` gives the documented rows
-  verbatim and describes the others in DozenDB's words. `DROP ROLE` removes
-  the role from its users.
+  verbatim and describes the others in DozenDB's words. It lists `show user
+  credentials`, which the docs' example of 2026.10 lacks, as it lists every
+  privilege `GRANT` takes. `DROP ROLE` removes the role from its users.
 - **`ALTER DATABASE`, `SET DATABASE ACCESS` and `SET DATABASE DEFAULT
   LANGUAGE`** are granted on the DBMS, and in Cypher 25 also on databases and
   the home database, as in Enterprise 2025.08; `ALL DATABASE PRIVILEGES` does
@@ -336,8 +346,15 @@ or code gives them.
   and `users` for the privileges of users: each command once, with the roles
   that hold it, and for users with `$role` in place of the role and the users
   that have it. There is no `authRules` column, as there are no auth rules.
-  Cypher 5 shows `command` and `immutable` only. `SHOW ROLES AS COMMANDS` and
-  `SHOW ROLES WITH AUTH RULES` fail.
+  Cypher 5 shows `command` and `immutable` only. `SHOW ROLES WITH AUTH RULES`
+  fails.
+- **`SHOW ROLES [WITH USERS] AS COMMANDS`** in Cypher 25 gives a `CREATE
+  ROLE` command per role, and with users a `GRANT ROLE ... TO USER ...`
+  command per role and user, as in Enterprise 2026.09. `PUBLIC` never
+  appears, and roles without users have no `GRANT ROLE` command. Where the
+  docs say nothing: an immutable role's command is `CREATE IMMUTABLE ROLE`,
+  and the rows come in the docs' example order, `admin`, `architect`,
+  `publisher`, `editor`, `reader`, then the other roles by name.
 - **With clustering**, roles and privileges reach every member through Raft;
   a follower applies a change a moment after the leader. Transactions keep
   the privileges they started with. Administration commands that change

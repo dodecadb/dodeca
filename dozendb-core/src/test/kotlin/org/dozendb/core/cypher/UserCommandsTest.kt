@@ -4,6 +4,7 @@ import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.dozendb.core.StandaloneServer
+import org.dozendb.core.StandaloneServer.Companion.SYSTEM
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -158,6 +159,97 @@ class UserCommandsTest {
         assertThat(remove)
             .hasMessage("Failed to alter the specified user 'bob': `REMOVE AUTH` is not supported.")
         assertThat(gqlStatusesOf(remove)).contains("51N31")
+    }
+
+    @Test
+    fun `lists users as commands that recreate them, with their passwords`() {
+        server.administer(
+            "CREATE USER alice SET PASSWORD 'alice-secret-1' SET STATUS SUSPENDED " +
+                "SET HOME DATABASE films"
+        )
+        server.administer("CREATE USER `bob.smith` SET PASSWORD 'bob-secret-1' CHANGE NOT REQUIRED")
+        val password = "SET ENCRYPTED PASSWORD '1,[0-9a-fA-F]+,[0-9a-fA-F]+'"
+
+        val commands =
+            server.rows("CYPHER 25 SHOW USERS AS COMMANDS YIELD user, command", SYSTEM).associate {
+                it["user"] to it["command"] as String
+            }
+
+        assertThat(commands.getValue("alice"))
+            .matches(
+                "CREATE USER alice SET STATUS SUSPENDED SET HOME DATABASE films " +
+                    "SET AUTH PROVIDER 'native' \\{ $password }"
+            )
+        assertThat(commands.getValue("bob.smith"))
+            .matches(
+                "CREATE USER `bob.smith` SET AUTH PROVIDER 'native' " +
+                    "\\{ $password SET PASSWORD CHANGE NOT REQUIRED }"
+            )
+        assertThat(server.rows("CYPHER 25 SHOW USERS AS COMMANDS", SYSTEM).map { it.keys })
+            .containsOnly(setOf("command"))
+        assertThat(
+                server.rows(
+                    "CYPHER 25 SHOW USERS WITH AUTH AS COMMANDS WHERE command CONTAINS 'bob'",
+                    SYSTEM,
+                )
+            )
+            .containsExactly(
+                mapOf(
+                    "command" to commands.getValue("bob.smith"),
+                    "provider" to "native",
+                    "auth" to mapOf("password" to "***", "changeRequired" to false),
+                )
+            )
+
+        // The command recreates bob with his password, on this server as on another.
+        server.administer("DROP USER `bob.smith`")
+        server.administer(commands.getValue("bob.smith"))
+        assertThat(driver("bob.smith", "bob-secret-1").run("SHOW CURRENT USER YIELD user", SYSTEM))
+            .containsExactly(mapOf("user" to "bob.smith"))
+    }
+
+    @Test
+    fun `lists users as commands with SHOW USER and SHOW USER CREDENTIALS, or USER MANAGEMENT`() {
+        server.administer("CREATE USER carol SET PASSWORD 'carol-secret-1' CHANGE NOT REQUIRED")
+        server.administer("CREATE ROLE viewer")
+        server.administer("GRANT ROLE viewer TO carol")
+        server.administer("GRANT SHOW USER ON DBMS TO viewer")
+        val carol = driver("carol", "carol-secret-1")
+        fun commands() = carol.run("CYPHER 25 SHOW USERS AS COMMANDS", SYSTEM)
+
+        assertThat(carol.run("SHOW USERS", SYSTEM)).hasSize(2)
+        assertThat(catchThrowable { commands() })
+            .hasMessageStartingWith("Permission has not been granted for SHOW USER CREDENTIALS.")
+
+        server.administer("CYPHER 25 GRANT SHOW USER CREDENTIALS ON DBMS TO viewer")
+        assertThat(commands()).hasSize(2)
+        server.administer("REVOKE SHOW USER ON DBMS FROM viewer")
+        assertThat(catchThrowable { commands() })
+            .hasMessageStartingWith("Permission has not been granted for SHOW USER.")
+
+        server.administer("CYPHER 25 REVOKE SHOW USER CREDENTIALS ON DBMS FROM viewer")
+        server.administer("GRANT USER MANAGEMENT ON DBMS TO viewer")
+        assertThat(commands()).hasSize(2)
+        server.administer("CYPHER 25 DENY SHOW USER CREDENTIALS ON DBMS TO viewer")
+        assertThat(catchThrowable { commands() })
+            .hasMessageStartingWith("Permission denied for SHOW USER CREDENTIALS.")
+        assertThat(
+                server.rows("CYPHER 25 SHOW ROLE viewer PRIVILEGES AS COMMANDS", SYSTEM).map {
+                    it["command"]
+                }
+            )
+            .containsExactlyInAnyOrder(
+                "GRANT USER MANAGEMENT ON DBMS TO `viewer`",
+                "DENY SHOW USER CREDENTIALS ON DBMS TO `viewer`",
+            )
+        assertThat(
+                server.rows(
+                    "SHOW SUPPORTED PRIVILEGES YIELD action, target " +
+                        "WHERE action = 'show user credentials'",
+                    SYSTEM,
+                )
+            )
+            .containsExactly(mapOf("action" to "show user credentials", "target" to "dbms"))
     }
 
     /** The GQL statuses of [error] and of its causes, outermost first. */

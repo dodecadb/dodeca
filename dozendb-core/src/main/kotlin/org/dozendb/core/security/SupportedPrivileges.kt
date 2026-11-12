@@ -161,6 +161,10 @@ object SupportedPrivileges {
             dbms("rename user", "enables the specified roles to rename users"),
             dbms("drop user", "enables the specified roles to delete users"),
             dbms("show user", "enables the specified roles to list users"),
+            dbms(
+                "show user credentials",
+                "enables the specified roles to list users as commands, with show user",
+            ),
             dbms("alter user", "enables the specified roles to modify users"),
             dbms("set user status", "enables the specified roles to suspend and activate users"),
             dbms("set passwords", "enables the specified roles to set the passwords of users"),
@@ -243,7 +247,7 @@ object SupportedPrivileges {
             ),
             dbms(
                 "show settings",
-                "enables the specified roles to query given configuration settings",
+                "enables the specified roles to show the specified configuration settings",
                 "setting",
             ),
             Supported(

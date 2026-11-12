@@ -1,0 +1,104 @@
+package org.dozendb.core.security
+
+import java.nio.file.Path
+import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.core.StandaloneServer
+import org.dozendb.core.StandaloneServer.Companion.SYSTEM
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.CleanupMode
+import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.GraphDatabaseSettings
+import org.neo4j.configuration.connectors.BoltConnector
+import org.neo4j.driver.AuthTokens
+import org.neo4j.driver.Driver
+import org.neo4j.driver.GraphDatabase
+import org.neo4j.driver.SessionConfig
+
+/**
+ * Users, roles and privileges moved to another DBMS as the operator guide's "Moving roles from or
+ * to Neo4j Enterprise" says: with the commands that `SHOW ... AS COMMANDS` gives.
+ */
+class MovingRolesTest {
+    // Kept when a test fails, for the servers' logs.
+    @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path
+    private val servers = mutableListOf<StandaloneServer>()
+    private val drivers = mutableListOf<Driver>()
+
+    @AfterEach
+    fun stop() {
+        drivers.forEach(Driver::close)
+        servers.forEach(StandaloneServer::close)
+    }
+
+    private fun server(name: String): StandaloneServer =
+        StandaloneServer(
+                root.resolve(name),
+                mapOf(GraphDatabaseSettings.auth_enabled to true, BoltConnector.enabled to true),
+            )
+            .also {
+                servers += it
+                it.start()
+            }
+
+    private fun StandaloneServer.commands(show: String): List<String> =
+        rows("CYPHER 25 $show", SYSTEM).map { it["command"] as String }
+
+    private fun StandaloneServer.security(): Map<String, Set<Any?>> =
+        mapOf(
+            "users" to
+                rows(
+                        "SHOW USERS YIELD user, roles, passwordChangeRequired, suspended, home",
+                        SYSTEM,
+                    )
+                    .toSet(),
+            "roles" to rows("SHOW ROLES WITH USERS YIELD *", SYSTEM).toSet(),
+            "privileges" to commands("SHOW PRIVILEGES AS COMMANDS").toSet(),
+        )
+
+    @Test
+    fun `moves users with their passwords, roles and privileges to another DBMS as commands`() {
+        val from = server("from")
+        from.administer("CREATE ROLE curator")
+        from.administer("GRANT MATCH {title} ON GRAPH neo4j NODES Movie TO curator")
+        from.administer("DENY READ {budget} ON GRAPH * NODES * TO curator")
+        from.administer("CYPHER 25 GRANT SHOW USER CREDENTIALS ON DBMS TO curator")
+        from.administer(
+            "CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED " +
+                "SET HOME DATABASE neo4j"
+        )
+        from.administer("CREATE USER bob SET PASSWORD 'bob-secret-1' SET STATUS SUSPENDED")
+        from.administer("GRANT ROLE curator, reader TO alice")
+        from.administer("GRANT ROLE editor TO bob")
+        val script =
+            listOf(
+                    "SHOW ROLES AS COMMANDS",
+                    "SHOW USERS AS COMMANDS",
+                    "SHOW ROLES WITH USERS AS COMMANDS",
+                    "SHOW PRIVILEGES AS COMMANDS",
+                )
+                .flatMap { from.commands(it) }
+
+        // The new DBMS has its built-in roles and neo4j, so their commands are left out.
+        val to = server("to")
+        val existing = to.commands("SHOW ROLES AS COMMANDS").toSet()
+        for (command in
+            script.filterNot { it in existing || it.startsWith("CREATE USER neo4j ") }) {
+            to.administer("CYPHER 25 $command")
+        }
+
+        assertThat(to.security()).isEqualTo(from.security())
+        val alice =
+            GraphDatabase.driver(
+                    "bolt://${to.boltAddress()}",
+                    AuthTokens.basic("alice", "alice-secret-1"),
+                )
+                .also { drivers += it }
+        assertThat(
+                alice.session(SessionConfig.forDatabase(SYSTEM)).use {
+                    it.run("SHOW CURRENT USER YIELD user, roles").single().asMap()
+                }
+            )
+            .isEqualTo(mapOf("user" to "alice", "roles" to listOf("curator", "reader", "PUBLIC")))
+    }
+}

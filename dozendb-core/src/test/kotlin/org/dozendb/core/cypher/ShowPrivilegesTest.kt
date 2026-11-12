@@ -279,19 +279,30 @@ class ShowPrivilegesTest {
 
     @Test
     fun `shows the supported privileges as the docs show them`() {
-        assertThat(
-                admin.run(
-                    "SHOW SUPPORTED PRIVILEGES YIELD * ORDER BY action DESC LIMIT 10 " +
-                        "RETURN action, qualifier, target, scope, description"
-                )
-            )
-            .containsExactly(
+        // Neo4j's docs' example of 2026.10, verbatim.
+        val documented =
+            listOf(
+                supported(
+                    "write secrets",
+                    null,
+                    "dbms",
+                    null,
+                    "enables the specified roles to write secrets to the secrets manager",
+                ),
                 supported(
                     "write",
                     null,
                     "graph",
                     null,
                     "allows all WRITE operations on an entire graph",
+                ),
+                supported(
+                    "user metadata management",
+                    null,
+                    "dbms",
+                    null,
+                    "enables the specified roles to set, remove, and view attributes and tags on " +
+                        "users",
                 ),
                 supported(
                     "user management",
@@ -338,6 +349,13 @@ class ShowPrivilegesTest {
                     "allows the specified database to be started",
                 ),
                 supported(
+                    "show user metadata",
+                    null,
+                    "dbms",
+                    null,
+                    "enables the specified roles to view attributes and tags on users",
+                ),
+                supported(
                     "show user",
                     null,
                     "dbms",
@@ -357,9 +375,32 @@ class ShowPrivilegesTest {
                     "setting",
                     "dbms",
                     null,
-                    "enables the specified roles to query given configuration settings",
+                    "enables the specified roles to show the specified configuration settings",
                 ),
             )
+        // DozenDB has no secrets manager, and no user metadata yet. The example lacks SHOW USER
+        // CREDENTIALS, which Enterprise grants since 2026.09.
+        val missing = setOf("write secrets", "user metadata management", "show user metadata")
+        val credentials =
+            supported(
+                "show user credentials",
+                null,
+                "dbms",
+                null,
+                "enables the specified roles to list users as commands, with show user",
+            )
+        val expected =
+            (documented.filter { it["action"] !in missing } + credentials).sortedByDescending {
+                it["action"] as String
+            }
+
+        assertThat(
+                admin.run(
+                    "SHOW SUPPORTED PRIVILEGES YIELD * ORDER BY action DESC " +
+                        "LIMIT ${expected.size} RETURN action, qualifier, target, scope, description"
+                )
+            )
+            .containsExactlyElementsOf(expected)
     }
 
     private fun supported(

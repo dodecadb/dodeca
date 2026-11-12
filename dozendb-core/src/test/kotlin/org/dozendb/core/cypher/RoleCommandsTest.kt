@@ -331,6 +331,56 @@ class RoleCommandsTest {
     }
 
     @Test
+    fun `lists roles and who has them as commands, without PUBLIC`() {
+        admin.run("CREATE ROLE curator")
+        server.administer("CREATE IMMUTABLE ROLE locked")
+        server.administer("CREATE USER `dana.smith` SET PASSWORD 'dana-secret-1'")
+        admin.run("GRANT ROLE reader, curator TO alice")
+        admin.run("GRANT ROLE curator TO `dana.smith`")
+        fun commands(cypher: String) = admin.run("CYPHER 25 $cypher").map { it["command"] }
+
+        assertThat(commands("SHOW ROLES AS COMMANDS"))
+            .containsExactly(
+                "CREATE ROLE admin",
+                "CREATE ROLE architect",
+                "CREATE ROLE publisher",
+                "CREATE ROLE editor",
+                "CREATE ROLE reader",
+                "CREATE ROLE curator",
+                "CREATE IMMUTABLE ROLE locked",
+            )
+        assertThat(commands("SHOW ALL ROLES AS COMMANDS"))
+            .isEqualTo(commands("SHOW ROLES AS COMMANDS"))
+        assertThat(commands("SHOW POPULATED ROLES AS COMMANDS"))
+            .containsExactly("CREATE ROLE admin", "CREATE ROLE reader", "CREATE ROLE curator")
+        assertThat(admin.run("CYPHER 25 SHOW ROLES WITH USERS AS COMMANDS"))
+            .containsExactly(
+                mapOf("command" to "GRANT ROLE admin TO USER neo4j", "member" to "neo4j"),
+                mapOf("command" to "GRANT ROLE reader TO USER alice", "member" to "alice"),
+                mapOf("command" to "GRANT ROLE curator TO USER alice", "member" to "alice"),
+                mapOf(
+                    "command" to "GRANT ROLE curator TO USER `dana.smith`",
+                    "member" to "dana.smith",
+                ),
+            )
+        assertThat(commands("SHOW POPULATED ROLES WITH USERS AS COMMANDS"))
+            .isEqualTo(commands("SHOW ROLES WITH USERS AS COMMANDS"))
+        assertThat(admin.run("CYPHER 25 SHOW ROLES AS COMMANDS YIELD * WHERE role = 'locked'"))
+            .containsExactly(
+                mapOf(
+                    "command" to "CREATE IMMUTABLE ROLE locked",
+                    "role" to "locked",
+                    "immutable" to true,
+                )
+            )
+        assertThat(alice.refused("CYPHER 25 SHOW ROLES AS COMMANDS"))
+            .hasMessageStartingWith("Permission has not been granted for SHOW ROLE.")
+        // Cypher 25 only, as in Neo4j Enterprise.
+        assertThat(admin.refused("CYPHER 5 SHOW ROLES AS COMMANDS"))
+            .hasMessageStartingWith("Invalid input 'COMMANDS'")
+    }
+
+    @Test
     fun `copies the privileges of roles, but not their users`() {
         admin.run("GRANT ROLE reader TO bob")
 
