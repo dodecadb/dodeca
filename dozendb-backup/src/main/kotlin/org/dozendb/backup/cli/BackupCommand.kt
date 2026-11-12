@@ -165,6 +165,22 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     }
 
     @Option(
+        names = ["--skip-empty-diffs"],
+        arity = "0..1",
+        paramLabel = "true|false",
+        fallbackValue = "true",
+        showDefaultValue = ALWAYS,
+        description =
+            [
+                "Write no differential backup that would hold no transactions, as when the " +
+                    "database had no writes since the latest backup. Only with " +
+                    "--include-metadata=none: an empty differential backup still keeps the " +
+                    "users, roles and privileges of the time."
+            ],
+    )
+    private var skipEmptyDiffs = false
+
+    @Option(
         names = ["--compress"],
         arity = "0..1",
         paramLabel = "true|false",
@@ -217,6 +233,12 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     private class Discontinued(message: String) : Exception(message)
 
     override fun execute() {
+        if (skipEmptyDiffs && includeMetadata.include != MetadataScript.Include.NONE) {
+            throw CommandFailedException(
+                "--skip-empty-diffs needs --include-metadata=none: an empty differential backup " +
+                    "still keeps the users, roles and privileges"
+            )
+        }
         if (tempPath?.let(ctx.fs()::isDirectory) == false) {
             throw CommandFailedException("--temp-path $tempPath is not an existing directory")
         }
@@ -440,6 +462,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                                 "re-created or replaced"
                         )
                     }
+                    if (header.empty && skipEmptyDiffs) return@differential null
                     val artifact = header.copy(compressed = compress, metadataScript = script)
                     val file =
                         Artifacts.writeNew(toPath, header.databaseName, header.time, fs) {
@@ -462,6 +485,14 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                 }
                 throw e
             }
+        if (written == null) {
+            ctx.out()
+                .println(
+                    "Did not back up database '$name' from $server: no transactions since " +
+                        "$latest, and --skip-empty-diffs writes no empty differential backup."
+                )
+            return
+        }
         val (file, header) = written
         val what =
             if (header.empty) "an empty differential backup: no transactions since $latest"

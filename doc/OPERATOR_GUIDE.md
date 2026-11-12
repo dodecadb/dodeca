@@ -1388,6 +1388,9 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   `DIFF` and `AUTO` take a full backup instead when the server no longer holds
   the transactions after the latest backup, or when the latest backup is of
   another database of that name. `FULL` always takes a full backup.
+- A differential backup without new transactions is empty: it still marks the
+  time and keeps the metadata. `--skip-empty-diffs` writes none, and needs
+  `--include-metadata=none`.
 - Files are named `<database>-<yyyy-MM-ddTHH-mm-ss>.backup`, the time in UTC.
   A file appears only once the backup is complete and synced to disk.
 - `--to-path` may be a folder in cloud storage, such as

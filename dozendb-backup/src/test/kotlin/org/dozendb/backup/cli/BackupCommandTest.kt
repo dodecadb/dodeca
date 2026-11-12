@@ -265,6 +265,34 @@ class BackupCommandTest {
     }
 
     @Test
+    fun `writes no empty differential backup with --skip-empty-diffs and --include-metadata=none`() {
+        val source = source().apply { start() }
+        assertThat(backup(source, "--type=FULL").exitCode).isZero
+
+        val refused = backup(source, "--skip-empty-diffs")
+        assertThat(refused.exitCode).isNotZero
+        assertThat(refused.err)
+            .contains(
+                "--skip-empty-diffs needs --include-metadata=none: an empty differential " +
+                    "backup still keeps the users, roles and privileges"
+            )
+        val skipped = backup(source, "--skip-empty-diffs", "--include-metadata=none")
+        assertThat(skipped.exitCode).describedAs("$skipped").isZero
+        assertThat(skipped.out)
+            .contains("Did not back up database 'neo4j'", "no transactions since", ".backup")
+        assertThat(artifacts()).hasSize(1)
+
+        source.rows("CREATE (:Batch)")
+        val taken = backup(source, "--skip-empty-diffs=true", "--include-metadata=none")
+        assertThat(taken.exitCode).describedAs("$taken").isZero
+        assertThat(artifacts()).hasSize(2)
+        // Without it, an empty one is written, as before.
+        assertThat(backup(source, "--include-metadata=none").out)
+            .contains("an empty differential backup")
+        assertThat(artifacts()).hasSize(3)
+    }
+
+    @Test
     fun `a differential backup needs a backup to continue`() {
         val source = source().apply { start() }
 
