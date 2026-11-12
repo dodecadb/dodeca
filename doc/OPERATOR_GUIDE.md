@@ -1636,6 +1636,8 @@ neo4j-admin database import incremental --force --stage=all films \
 
 The database name goes before `--nodes` and `--relationships`, which take
 several files each. Take a backup before, as Neo4j Enterprise advises.
+`--dry-run` checks the files and prints estimates of what they hold, writing
+nothing; it needs no `--force`.
 
 - **Keys.** The ID column of each node file names the label and the property
   that identify its nodes, as `uuid:ID{label:Person}`, and that label and
@@ -1719,6 +1721,21 @@ and other options are refused, naming what differs. An import that stopped
 earlier starts over with `--overwrite-destination`. The import keeps its
 progress in `.dozendb-import.properties` in the database's directory, and the
 report of bad entries of the run that stopped.
+
+### Importing into a backup
+
+`--target-format=backup --target-location=/backups` writes what `import full`
+or `import incremental` imports as a full backup of the database in that
+folder, local or in cloud storage, instead of into the DBMS. It is
+uncompressed unless `--compress` is given, and split with
+`--split-archive-part-size` as `neo4j-admin database backup` splits backups.
+Seed or restore a database from it.
+
+- The import is made in `.dozendb-import-<database>` in `--temp-path`, by
+  default `--target-location`, which must be local then: it needs room for
+  the database. A full import that stops keeps it there and resumes from it.
+- An incremental import imports into a copy of the stopped database, with
+  `--stage=all` only, and leaves the database as it is.
 
 ### Copying a database
 

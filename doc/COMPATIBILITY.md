@@ -1267,11 +1267,29 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
   the database's Raft group, which the others' stores do not match: the
   database fails there, with a message naming `dbms.recreateDatabase`
   seeded from that server.
+- **`--dry-run`** checks the input and prints Neo4j's estimates of it, as a
+  full import's dry run does, and needs no `--force`. With `--stage=merge`,
+  which reads no input, it is refused.
 - **Not supported**: updating and deleting existing nodes and relationships,
-  which Enterprise's incremental import does since 2025.03; `--dry-run`
-  (Enterprise 2026.02) and `--schema`, which are refused. `import full`
-  lacks `--target-format` (2026.04), with which Enterprise writes a backup
-  instead of a database.
+  which Enterprise's incremental import does since 2025.03, and `--schema`,
+  which is refused.
+
+### Imports into backups
+
+`import full` and `import incremental` take `--target-format=backup` with
+`--target-location`, `--compress` and `--split-archive-part-size`, as
+Enterprise's do since 2025.12, and write the imported database as a full
+backup, uncompressed unless `--compress` is given. Where Enterprise's pages
+are silent, DozenDB is strict:
+
+- The database is imported into `.dozendb-import-<database>` in `--temp-path`,
+  by default the local `--target-location`, and is not in the DBMS. A full
+  import that stops keeps it there and resumes as one into a database does.
+- An incremental import leaves the database as it is: a copy of the stopped
+  database gets the import, with `--stage=all` only, since the stages would
+  each need the copy.
+- `--compress` and `--split-archive-part-size` without
+  `--target-format=backup` are refused.
 
 ### Resuming a full import
 

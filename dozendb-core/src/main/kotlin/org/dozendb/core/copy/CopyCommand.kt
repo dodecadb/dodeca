@@ -3,10 +3,9 @@ package org.dozendb.core.copy
 import java.io.IOException
 import java.nio.file.Path
 import java.util.Optional
-import org.dozendb.core.store.BackupArtifacts
+import org.dozendb.core.store.BackupTargetOptions
 import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
-import org.neo4j.cli.CommandOptionDescriptions.SplitArchiveOption
 import org.neo4j.cli.CommandProvider
 import org.neo4j.cli.CommandType
 import org.neo4j.cli.Converters.ByteUnitConverter
@@ -17,7 +16,6 @@ import org.neo4j.commandline.Util
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
-import org.neo4j.dbms.archive.Dumper.SplitFileOutput
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
 import org.neo4j.kernel.database.NormalizedDatabaseName
@@ -25,6 +23,7 @@ import org.neo4j.logging.Level
 import org.neo4j.logging.log4j.Log4jLogProvider
 import picocli.CommandLine.Command
 import picocli.CommandLine.Help.Visibility.ALWAYS
+import picocli.CommandLine.Mixin
 import picocli.CommandLine.Option
 import picocli.CommandLine.Parameters
 
@@ -150,49 +149,7 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
     )
     private var sourceLocation: String? = null
 
-    @Option(
-        names = ["--target-format"],
-        paramLabel = "<format>",
-        defaultValue = "database",
-        showDefaultValue = ALWAYS,
-        description =
-            [
-                "Target format: database, a new database, or backup, a full backup of <toDatabase> in --target-location."
-            ],
-    )
-    private var targetFormat = "database"
-
-    @Option(
-        names = ["--target-location"],
-        paramLabel = "<path>",
-        description =
-            [
-                "Folder to write the backup to with --target-format=backup: a local one, which must exist, or one in cloud storage, as s3://<bucket>/<folder>/, which needs --temp-path."
-            ],
-    )
-    private var targetLocation: String? = null
-
-    @Option(
-        names = ["--compress"],
-        arity = "0..1",
-        paramLabel = "true|false",
-        fallbackValue = "true",
-        showDefaultValue = ALWAYS,
-        description = ["Request backup artifact to be compressed, with --target-format=backup."],
-    )
-    private var compress = false
-
-    @Option(
-        names = [SplitArchiveOption.OPTION_NAME],
-        paramLabel = "<splitsize>",
-        converter = [ByteUnitConverter::class],
-        description =
-            [
-                SplitArchiveOption.BACKUP_DESCRIPTION +
-                    " Only with --target-format=backup, for which server.split_archive.part_size gives the default."
-            ],
-    )
-    private var splitArchivePartSize = 0L
+    @Mixin private var target = BackupTargetOptions()
 
     @Option(
         names = ["--from-path-data"],
@@ -349,29 +306,11 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             )
         }
         val fromBackup = format("--source-format", sourceFormat)
-        val toBackup = format("--target-format", targetFormat)
+        val toBackup = target.backup()
         checkFormats(fromBackup, toBackup)
         val config = createPrefilledConfigBuilder().build()
-        val partSize =
-            if (!toBackup) 0L
-            else
-                try {
-                    SplitFileOutput.determineSplitArtifactSize(config, splitArchivePartSize)
-                } catch (e: IllegalArgumentException) {
-                    throw CommandFailedException(
-                        "Invalid split archive part size, as --split-archive-part-size or " +
-                            "server.split_archive.part_size give it: ${e.message}",
-                        e,
-                    )
-                }
-        val artifacts =
-            if (!fromBackup && !toBackup) null
-            else
-                BackupArtifacts.load()
-                    ?: throw CommandFailedException(
-                        "--source-format=backup and --target-format=backup need DozenDB's backup " +
-                            "module, which is not on the classpath."
-                    )
+        val partSize = if (toBackup) target.partSize(config) else 0L
+        val artifacts = if (fromBackup || toBackup) target.artifacts() else null
         val from = fromDatabase.name()
         val to = layout(config, toPathData, toPathTxn, toDatabase.name())
         val staging =
@@ -399,21 +338,21 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                             ctx.out().println("Restored database '$from' $how, to copy it.")
                             restored
                         }
-                    val target =
+                    val copied =
                         if (toBackup)
                             Neo4jLayout.ofFlat(staging!!.resolve("target"))
                                 .databaseLayout(toDatabase.name())
                         else to
-                    copy(config, filters, source, target)
+                    copy(config, filters, source, copied)
                     if (artifacts != null && toBackup) {
                         val written =
                             artifacts.write(
-                                target,
+                                copied,
                                 toDatabase.name(),
                                 "a copy of database '$from'",
-                                targetLocation!!,
+                                target.location!!,
                                 "--target-location",
-                                compress,
+                                target.compress,
                                 partSize,
                                 config,
                                 ctx.fs(),
@@ -486,18 +425,11 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     "--from-path-txn: the source is the backup --source-location names."
             )
         }
-        if (toBackup != (targetLocation != null)) {
-            usage("--target-location and --target-format=backup go together.")
-        }
         if (toBackup && (toPathData != null || toPathTxn != null)) {
             usage(
                 "--target-format=backup cannot be combined with --to-path-data and " +
                     "--to-path-txn: the target is the folder --target-location names."
             )
-        }
-        if (!toBackup && compress) usage("--compress goes with --target-format=backup.")
-        if (!toBackup && splitArchivePartSize != 0L) {
-            usage("${SplitArchiveOption.OPTION_NAME} goes with --target-format=backup.")
         }
     }
 
@@ -506,32 +438,13 @@ class CopyCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
      * backup target its local --target-location, else next to the target database [to]; null when
      * neither is a backup.
      */
-    private fun staging(toBackup: Boolean, to: DatabaseLayout): Path? {
-        if (sourceLocation == null && !toBackup) return null
-        tempPath?.let {
-            if (!ctx.fs().isDirectory(it)) {
-                throw CommandFailedException("--temp-path $it is not an existing directory.")
-            }
-            return it
+    private fun staging(toBackup: Boolean, to: DatabaseLayout): Path? =
+        when {
+            toBackup -> target.staging(tempPath, ctx.fs())
+            sourceLocation == null -> null
+            tempPath != null -> target.staging(tempPath, ctx.fs())
+            else -> to.neo4jLayout.databasesDirectory().also { ctx.fs().mkdirs(it) }
         }
-        if (!toBackup) {
-            return to.neo4jLayout.databasesDirectory().also { ctx.fs().mkdirs(it) }
-        }
-        val location = targetLocation!!
-        if (location.contains("://")) {
-            throw CommandFailedException(
-                "--target-location $location is in cloud storage: give --temp-path, a local " +
-                    "directory for the copy before it is uploaded."
-            )
-        }
-        val local = Path.of(location)
-        if (!ctx.fs().isDirectory(local)) {
-            throw CommandFailedException(
-                "--target-location $location is not an existing directory."
-            )
-        }
-        return local
-    }
 
     private fun filters(): CopyFilters {
         fun exclusive(vararg options: Pair<String, Any?>) {

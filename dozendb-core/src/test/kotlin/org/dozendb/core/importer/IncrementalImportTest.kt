@@ -20,6 +20,7 @@ import org.neo4j.batchimport.api.Configuration
 import org.neo4j.batchimport.api.input.Collector
 import org.neo4j.cli.AdminTool
 import org.neo4j.cli.ExecutionContext
+import org.neo4j.cli.ExitCode
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.consistency.ConsistencyCheckService
@@ -234,6 +235,39 @@ class IncrementalImportTest {
 
         assertThat(result.exitCode).isNotZero
         assertThat(result.err).contains("use --id-type=string or --id-type=integer")
+    }
+
+    @Test
+    fun `a dry run checks and estimates the input, needs no --force, and writes nothing`() {
+        persons()
+        val files =
+            arrayOf(
+                "--nodes=" + csv("persons.csv", "uuid:ID{label:Person},name", "c,Carla", "d,Dan"),
+                "--relationships=" + csv("knows.csv", ":START_ID,:END_ID,:TYPE", "c,a,KNOWS"),
+            )
+
+        val dryRun = admin("database", "import", "incremental", "--dry-run", "films", *files)
+
+        assertThat(dryRun.exitCode).describedAs("$dryRun").isZero
+        assertThat(dryRun.out)
+            .contains(
+                "Checking the contents of the following files:",
+                "Estimated entity counts:",
+                "  Nodes: ",
+                "  Relationships: ",
+            )
+        assertThat(increment.directory).doesNotExist()
+        server.administer("START DATABASE films WAIT")
+        assertThat(server.rows("MATCH (n) RETURN count(n) AS c", "films").single()["c"])
+            .isEqualTo(2L)
+
+        val merge =
+            admin("database", "import", "incremental", "--dry-run", "--stage=merge", "films")
+        assertThat(merge.exitCode).isEqualTo(ExitCode.USAGE)
+        assertThat(merge.err).contains("--dry-run checks the input of an incremental import")
+        val unforced = admin("database", "import", "incremental", "films", *files)
+        assertThat(unforced.exitCode).isEqualTo(ExitCode.USAGE)
+        assertThat(unforced.err).contains("Missing required option: '--force'")
     }
 
     @Test

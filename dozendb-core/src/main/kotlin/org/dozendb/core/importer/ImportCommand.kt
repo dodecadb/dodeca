@@ -11,6 +11,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.Locale
 import java.util.function.Supplier
+import org.dozendb.core.store.BackupArtifacts
+import org.dozendb.core.store.BackupTargetOptions
 import org.neo4j.batchimport.api.Configuration
 import org.neo4j.batchimport.api.Monitor
 import org.neo4j.batchimport.api.ResumableStateAccessor
@@ -23,7 +25,10 @@ import org.neo4j.cli.CommandType
 import org.neo4j.cli.ExecutionContext
 import org.neo4j.cli.ExitCode
 import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
+import org.neo4j.commandline.dbms.LockChecker
 import org.neo4j.configuration.Config
+import org.neo4j.configuration.GraphDatabaseInternalSettings
+import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.importer.FileImporter
 import org.neo4j.importer.ImportCommand
 import org.neo4j.importer.ImportCommand.ShardingArguments
@@ -32,19 +37,23 @@ import org.neo4j.importer.PrintingImportLogicMonitor
 import org.neo4j.importer.SchemaCommandReader
 import org.neo4j.importer.SchemaCommandSource.DeferredSchemaCommands
 import org.neo4j.internal.batchimport.DefaultAdditionalIds
+import org.neo4j.internal.batchimport.ParallelBatchImporter
 import org.neo4j.internal.batchimport.staging.ExecutionMonitors
 import org.neo4j.internal.batchimport.staging.SpectrumExecutionMonitor
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.fs.FileSystemAbstraction.PatternStyle
 import org.neo4j.io.layout.DatabaseLayout
 import org.neo4j.io.layout.Neo4jLayout
+import org.neo4j.io.locker.FileLockException
 import org.neo4j.io.pagecache.context.CursorContextFactory
 import org.neo4j.io.pagecache.tracing.PageCacheTracer
 import org.neo4j.kernel.api.index.IndexProvidersAccess
 import org.neo4j.kernel.database.NormalizedDatabaseName
 import org.neo4j.kernel.impl.index.schema.IndexImporterFactoryImpl
 import org.neo4j.logging.InternalLogProvider
+import org.neo4j.logging.Level
 import org.neo4j.logging.internal.LogService
+import org.neo4j.logging.log4j.Log4jLogProvider
 import org.neo4j.memory.MemoryTracker
 import org.neo4j.scheduler.JobScheduler
 import org.neo4j.storageengine.api.StorageEngineFactory
@@ -53,6 +62,7 @@ import org.neo4j.wal.files.LogTailMetadataFactoryImpl
 import org.neo4j.wal.files.TransactionLogInitializer
 import picocli.CommandLine
 import picocli.CommandLine.Command
+import picocli.CommandLine.Mixin
 import picocli.CommandLine.Model.CommandSpec
 import picocli.CommandLine.Option
 import picocli.CommandLine.Spec
@@ -104,8 +114,24 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
     /** Called at the points an import may stop at, for tests. */
     internal var interruption: (ResumableBatchImporter.Point) -> Unit = {}
 
+    @Mixin private var target = BackupTargetOptions()
+
+    /**
+     * With --target-format=backup, where the database is imported before it is written as a backup:
+     * kept if the import stops, so that it resumes.
+     */
+    private var staging: Path? = null
+
+    override fun createPrefilledConfigBuilder(storageTempPath: Path?): Config.Builder =
+        super.createPrefilledConfigBuilder(storageTempPath).also { builder ->
+            staging?.let { staged(builder, it) }
+        }
+
     override fun execute() {
         val name = spec.positionalParameters().first().getValue<NormalizedDatabaseName>().name()
+        val backup =
+            BackupTarget.of(target, spec, ctx, createPrefilledConfigBuilder().build(), name)
+        staging = backup?.staging
         val progress =
             ImportProgress(
                 Neo4jLayout.of(createPrefilledConfigBuilder().build()).databaseLayout(name)
@@ -121,6 +147,7 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
         }
         try {
             super.execute()
+            backup?.write(Neo4jLayout.of(createPrefilledConfigBuilder().build()), "an import")
         } catch (e: CommandFailedException) {
             val refused =
                 generateSequence<Throwable>(e) { it.cause }.any { it is ImportResumeException }
@@ -287,6 +314,8 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
                 "--profile",
                 "--profile-results-path",
                 "--resumable-import-checkpoint-interval",
+                "--compress",
+                "--split-archive-part-size",
             )
 
         const val RESUME =
@@ -306,7 +335,9 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
  * names: ported from Neo4j 5.26 Community's subcommand, which Neo4j 2026 removed. It fails with the
  * reason DozenDB's importer gives, or the input's error, and without Neo4j's warning that a failed
  * import leaves the store "likely in an unusable state": no stage leaves it so. The merge stage
- * needs no `--nodes`. It takes no `--schema`, and runs no `--dry-run`.
+ * needs no `--nodes`. It takes no `--schema`. `--dry-run` checks and estimates the input, as for a
+ * full import, and needs no `--force`. With `--target-format=backup` a copy of the stopped database
+ * gets the import, in one go, and is written as a full backup; the database is left as it is.
  */
 @Command(name = "incremental", description = ["Incremental import into an existing database."])
 class IncrementalImportCommand(context: ExecutionContext) :
@@ -329,10 +360,26 @@ class IncrementalImportCommand(context: ExecutionContext) :
 
     @Option(
         names = ["--force"],
-        required = true,
-        description = ["Confirm incremental import by setting this flag."],
+        description =
+            [
+                "Confirm incremental import by setting this flag. Required unless --dry-run is " +
+                    "given."
+            ],
     )
     private var forced = false
+
+    @Mixin private var target = BackupTargetOptions()
+
+    /**
+     * With --target-format=backup, where a copy of the database gets the import before it is
+     * written as a backup; the database is left as it is.
+     */
+    private var staging: Path? = null
+
+    override fun createPrefilledConfigBuilder(storageTempPath: Path?): Config.Builder =
+        super.createPrefilledConfigBuilder(storageTempPath).also { builder ->
+            staging?.let { staged(builder, it) }
+        }
 
     /** The stages of an incremental import. */
     enum class Stage {
@@ -359,7 +406,22 @@ class IncrementalImportCommand(context: ExecutionContext) :
 
     override fun execute() {
         val name = spec.positionalParameters().first().getValue<NormalizedDatabaseName>().name()
-        val layout = Neo4jLayout.of(createPrefilledConfigBuilder().build()).databaseLayout(name)
+        val dryRun = spec.findOption("--dry-run").getValue<Boolean>()
+        if (!forced && !dryRun) {
+            throw CommandLine.ParameterException(
+                spec.commandLine(),
+                "Missing required option: '--force'",
+            )
+        }
+        if (dryRun && stage == Stage.MERGE) {
+            throw CommandFailedException(
+                "--dry-run checks the input of an incremental import, which --stage=merge reads " +
+                    "none of: check it with --stage=all, prepare or build.",
+                ExitCode.USAGE,
+            )
+        }
+        val config = createPrefilledConfigBuilder().build()
+        val layout = Neo4jLayout.of(config).databaseLayout(name)
         if (StorageEngineFactory.selectStorageEngine(ctx.fs(), layout).isEmpty) {
             throw CommandFailedException(
                 "Database '$name' does not exist: an incremental import adds to an existing " +
@@ -387,11 +449,51 @@ class IncrementalImportCommand(context: ExecutionContext) :
                 .takeIf { it.getValue<Any?>() == null }
                 ?.setValue(FileImporter.FileInputType.CSV)
         }
+        val backup = BackupTarget.of(target, spec, ctx, config, name)
+        if (backup != null) {
+            if (stage != Stage.ALL) {
+                throw CommandFailedException(
+                    "--target-format=backup imports with --stage=all only, into a copy of the " +
+                        "database that it writes as a backup.",
+                    ExitCode.USAGE,
+                )
+            }
+            stage(layout, backup)
+        }
         try {
             super.execute()
+            backup?.write(Neo4jLayout.of(createPrefilledConfigBuilder().build()), "an import")
         } catch (e: CommandFailedException) {
             throw explained(e)
+        } finally {
+            staging?.let(ctx.fs()::deleteRecursively)
         }
+    }
+
+    /** Copies the stopped database in [layout] to where [backup] imports into it. */
+    private fun stage(layout: DatabaseLayout, backup: BackupTarget) {
+        val fs = ctx.fs()
+        fs.deleteRecursively(backup.staging)
+        val staged =
+            Neo4jLayout.of(staged(super.createPrefilledConfigBuilder(null), backup.staging).build())
+                .databaseLayout(layout.databaseName)
+        try {
+            LockChecker.checkDatabaseLock(layout).use {
+                fs.copyRecursively(layout.databaseDirectory(), staged.databaseDirectory())
+                fs.copyRecursively(layout.transactionLogsDirectory, staged.transactionLogsDirectory)
+            }
+        } catch (e: FileLockException) {
+            fs.deleteRecursively(backup.staging)
+            throw CommandFailedException(
+                "Database '${layout.databaseName}' is in use: stop it, so that the import gets " +
+                    "a consistent copy of it.",
+                e,
+            )
+        } catch (e: IOException) {
+            fs.deleteRecursively(backup.staging)
+            throw e
+        }
+        staging = backup.staging
     }
 
     override fun importType() = "Incremental import"
@@ -430,8 +532,14 @@ class IncrementalImportCommand(context: ExecutionContext) :
         verbose: Boolean,
         shardingArguments: ShardingArguments?,
         monitor: Monitor,
-    ): Unit =
-        throw CommandFailedException("An incremental import runs no --dry-run.", ExitCode.USAGE)
+    ) {
+        // Validates the input and estimates it, as Neo4j's full import does: writes nothing.
+        ParallelBatchImporter.outputEstimates(
+            input,
+            importConfig.maxNumberOfWorkerThreads(),
+            stdOut,
+        )
+    }
 
     override fun doImport(
         fileSystem: FileSystemAbstraction,
@@ -596,3 +704,88 @@ class DozenDbImportCommandProvider : CommandProvider {
     // Lower than Neo4j Community's, so that it takes precedence.
     override fun getPriority() = Int.MAX_VALUE - 1
 }
+
+/**
+ * An import with `--target-format=backup`: it is made in [staging], under `--temp-path` or the
+ * local `--target-location`, and then written as a full backup of [database] in
+ * `--target-location`.
+ */
+internal class BackupTarget
+private constructor(
+    private val options: BackupTargetOptions,
+    private val ctx: ExecutionContext,
+    private val config: Config,
+    private val database: String,
+    private val partSize: Long,
+    private val artifacts: BackupArtifacts,
+    val staging: Path,
+) {
+    /**
+     * Writes the database imported into [layout] as a full backup, which [source] says came from,
+     * and deletes [staging].
+     */
+    fun write(layout: Neo4jLayout, source: String) {
+        try {
+            Log4jLogProvider(ctx.out(), Level.WARN).use { logProvider ->
+                val written =
+                    artifacts.write(
+                        layout.databaseLayout(database),
+                        database,
+                        source,
+                        checkNotNull(options.location),
+                        "--target-location",
+                        options.compress,
+                        partSize,
+                        config,
+                        ctx.fs(),
+                        logProvider,
+                    )
+                ctx.out()
+                    .println(
+                        "Wrote the imported database '$database' as a full backup to " +
+                            "${written.file}, up to transaction ${written.lastTransaction}."
+                    )
+            }
+        } catch (e: IOException) {
+            throw CommandFailedException(e.message, e)
+        } catch (e: IllegalArgumentException) {
+            throw CommandFailedException(e.message, e)
+        } finally {
+            ctx.fs().deleteRecursively(staging)
+        }
+    }
+
+    companion object {
+        /**
+         * The backup target that [options] give the import of [database]; null for a database, and
+         * for a dry run, which writes nothing.
+         */
+        fun of(
+            options: BackupTargetOptions,
+            spec: CommandSpec,
+            ctx: ExecutionContext,
+            config: Config,
+            database: String,
+        ): BackupTarget? {
+            if (!options.backup()) return null
+            val partSize = options.partSize(config)
+            if (spec.findOption("--dry-run").getValue<Boolean>()) return null
+            val root = options.staging(spec.findOption("--temp-path").getValue<Path?>(), ctx.fs())
+            return BackupTarget(
+                options,
+                ctx,
+                config,
+                database,
+                partSize,
+                options.artifacts(),
+                root.toAbsolutePath().resolve(".dozendb-import-$database"),
+            )
+        }
+    }
+}
+
+/** [builder] with the databases and their transaction logs in [staging]. */
+private fun staged(builder: Config.Builder, staging: Path): Config.Builder =
+    builder
+        .set(GraphDatabaseInternalSettings.databases_root_path, staging.resolve("databases"))
+        .set(GraphDatabaseSettings.transaction_logs_root_path, staging.resolve("transactions"))

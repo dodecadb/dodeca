@@ -254,6 +254,42 @@ internal class ResumableImportTest {
         assertThat(graph("films")).isEqualTo(expected)
     }
 
+    @Test
+    fun `an import into a backup that stopped resumes where it stopped, beside the backup`() {
+        val backups = Files.createDirectories(root.resolve("backups"))
+        val target = arrayOf("--target-format=backup", "--target-location=$backups")
+        val staging = backups.resolve(".dozendb-import-films")
+
+        val stopped = stoppedAt(Point.LINKED, *arguments("films"), *target)
+        assertThat(stopped.exitCode).describedAs(stopped.toString()).isNotZero
+        assertThat(staging).isDirectory()
+        val resumed = full(*arguments("films"), *target)
+
+        assertThat(resumed.exitCode).describedAs(resumed.toString()).isZero
+        assertThat(resumed.out)
+            .contains("Resuming the import into database 'films' from post-processing.")
+            .contains("Wrote the imported database 'films' as a full backup to ")
+        assertThat(staging).doesNotExist()
+        assertThat(layout("films").databaseDirectory()).doesNotExist()
+        val written = CopyingBackupArtifacts.layout(backups, "films")
+        assertThat(
+                ConsistencyCheckService(written)
+                    .with(
+                        Config.newBuilder()
+                            .set(
+                                GraphDatabaseSettings.neo4j_home,
+                                written.neo4jLayout.homeDirectory(),
+                            )
+                            .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
+                            .build()
+                    )
+                    .runFullConsistencyCheck()
+                    .isSuccessful
+            )
+            .describedAs("the backup's store is consistent")
+            .isTrue
+    }
+
     @ParameterizedTest
     @EnumSource(Point::class, mode = EnumSource.Mode.EXCLUDE, names = ["NODES_IMPORTED"])
     fun `an import that crashed from relationship linking on resumes to the store of one that did not`(
