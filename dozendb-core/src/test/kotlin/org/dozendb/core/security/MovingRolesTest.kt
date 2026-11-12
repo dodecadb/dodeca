@@ -2,6 +2,7 @@ package org.dozendb.core.security
 
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
+import org.dozendb.core.DozenDbSettings
 import org.dozendb.core.StandaloneServer
 import org.dozendb.core.StandaloneServer.Companion.SYSTEM
 import org.junit.jupiter.api.AfterEach
@@ -14,10 +15,11 @@ import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.SessionConfig
+import org.neo4j.graphdb.config.Setting
 
 /**
- * Users, roles and privileges moved to another DBMS as the operator guide's "Moving roles from or
- * to Neo4j Enterprise" says: with the commands that `SHOW ... AS COMMANDS` gives.
+ * Users, roles, auth rules and privileges moved to another DBMS as the operator guide's "Moving
+ * roles from or to Neo4j Enterprise" says: with the commands that `SHOW ... AS COMMANDS` gives.
  */
 class MovingRolesTest {
     // Kept when a test fails, for the servers' logs.
@@ -34,7 +36,11 @@ class MovingRolesTest {
     private fun server(name: String): StandaloneServer =
         StandaloneServer(
                 root.resolve(name),
-                mapOf(GraphDatabaseSettings.auth_enabled to true, BoltConnector.enabled to true),
+                mapOf<Setting<*>, Any>(
+                    GraphDatabaseSettings.auth_enabled to true,
+                    BoltConnector.enabled to true,
+                    DozenDbSettings.abacAuthorizationProviders to listOf("native"),
+                ),
             )
             .also {
                 servers += it
@@ -53,11 +59,14 @@ class MovingRolesTest {
                     )
                     .toSet(),
             "roles" to rows("SHOW ROLES WITH USERS YIELD *", SYSTEM).toSet(),
+            "auth rules" to rows("CYPHER 25 SHOW AUTH RULES YIELD *", SYSTEM).toSet(),
+            "roles of auth rules" to
+                rows("CYPHER 25 SHOW ROLES WITH AUTH RULES YIELD *", SYSTEM).toSet(),
             "privileges" to commands("SHOW PRIVILEGES AS COMMANDS").toSet(),
         )
 
     @Test
-    fun `moves users with their passwords and tags, roles and privileges to another DBMS`() {
+    fun `moves users with their passwords and tags, roles, auth rules and privileges to another DBMS`() {
         val from = server("from")
         from.administer("CREATE ROLE curator")
         from.administer("GRANT MATCH {title} ON GRAPH neo4j NODES Movie TO curator")
@@ -70,11 +79,23 @@ class MovingRolesTest {
         from.administer("CREATE USER bob SET PASSWORD 'bob-secret-1' SET STATUS SUSPENDED")
         from.administer("GRANT ROLE curator, reader TO alice")
         from.administer("GRANT ROLE editor TO bob")
+        from.administer("CREATE ROLE auditing")
+        from.administer("GRANT READ {*} ON GRAPH neo4j TO auditing")
+        from.administer(
+            "CYPHER 25 CREATE AUTH RULE auditors SET CONDITION " +
+                "'auditor' IN abac.native.user_tags()"
+        )
+        from.administer(
+            "CYPHER 25 CREATE AUTH RULE `night shift` SET CONDITION false SET ENABLED false"
+        )
+        from.administer("CYPHER 25 GRANT ROLE auditing, editor TO AUTH RULE auditors")
         val script =
             listOf(
                     "SHOW ROLES AS COMMANDS",
                     "SHOW USERS AS COMMANDS",
                     "SHOW ROLES WITH USERS AS COMMANDS",
+                    "SHOW AUTH RULES AS COMMANDS",
+                    "SHOW ROLES WITH AUTH RULES AS COMMANDS",
                     "SHOW PRIVILEGES AS COMMANDS",
                 )
                 .flatMap { from.commands(it) }
@@ -88,6 +109,9 @@ class MovingRolesTest {
         }
 
         assertThat(to.security()).isEqualTo(from.security())
+        assertThat(to.rows("CYPHER 25 SHOW AUTH RULES YIELD name", SYSTEM))
+            .extracting<Any?> { it["name"] }
+            .containsExactly("auditors", "night shift")
         val alice =
             GraphDatabase.driver(
                     "bolt://${to.boltAddress()}",
@@ -100,5 +124,14 @@ class MovingRolesTest {
                 }
             )
             .isEqualTo(mapOf("user" to "alice", "roles" to listOf("curator", "reader", "PUBLIC")))
+        // With the roles of the auth rule that holds for her tags.
+        assertThat(
+                alice.session(SessionConfig.forDatabase(SYSTEM)).use {
+                    it.run("CALL dbms.showCurrentUser() YIELD roles RETURN roles")
+                        .single()["roles"]
+                        .asList()
+                }
+            )
+            .containsExactlyInAnyOrder("curator", "reader", "PUBLIC", "auditing", "editor")
     }
 }
