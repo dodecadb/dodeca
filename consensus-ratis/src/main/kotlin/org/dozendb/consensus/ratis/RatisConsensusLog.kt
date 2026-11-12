@@ -887,8 +887,10 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     /**
      * Sends a configuration change to the group of [database] through a client, which finds the
-     * leader among [members]. The leader answers once the change is committed, which may take as
-     * long as bringing a new member up to date, so the client waits up to [timeout] for the answer.
+     * leader among [members]: this member only where the group runs here, as one that does not run
+     * it fails the change instead of passing it on. The leader answers once the change is
+     * committed, which may take as long as bringing a new member up to date, so the client waits up
+     * to [timeout] for the answer.
      */
     private suspend fun changeConfiguration(
         database: DatabaseRef,
@@ -896,7 +898,10 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         arguments: SetConfigurationRequest.Arguments,
         timeout: java.time.Duration,
     ) {
-        val group = RaftGroup.valueOf(RaftGroupId.valueOf(database.id), members.map(::toPeer))
+        val groupId = RaftGroupId.valueOf(database.id)
+        val runsHere = server?.let { groupId in it.groupIds } == true
+        val through = if (runsHere) members else members.filter { it.id != self.id }
+        val group = RaftGroup.valueOf(groupId, through.ifEmpty { members }.map(::toPeer))
         val clientProperties =
             RaftProperties(properties).also {
                 RaftClientConfigKeys.Rpc.setRequestTimeout(it, timeDuration(timeout))

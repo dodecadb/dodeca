@@ -635,6 +635,29 @@ class RatisConsensusLogTest {
             }
         }
 
+    // As a member whose copy joins its group again as a new member: it deletes its state first.
+    @Test
+    fun `a member that deleted its group removes itself through the others, listed first or not`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val leaving = cluster.nodes.first { it != leader }
+            val voters = leaving.consensus.membership(cluster.database).members
+            leaving.consensus.removeGroup(cluster.database)
+
+            // The client asks the first member first, which does not run the group.
+            leaving.consensus.removeMember(
+                cluster.database,
+                leaving.id,
+                CHANGE_TIMEOUT,
+                voters.sortedBy { if (it.id == leaving.id) 0 else 1 },
+            )
+
+            assertThat(cluster.awaitLeader().consensus.members(cluster.database).map { it.id })
+                .hasSize(2)
+                .doesNotContain(leaving.id)
+        }
+
     @Test
     fun `a removed follower stops running the group and knows it was removed`() =
         runBlocking<Unit> {
