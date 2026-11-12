@@ -284,11 +284,42 @@ class ImportAndCopyIT {
             }
         write(members, "films2", "CREATE (:Person {id: 'after'})")
         awaitCount(members, "films2", "(:Person)", PERSONS + 1L)
+
+        // A copy as a backup in the server's seeds directory, which seeds a database on every
+        // server.
+        seeder.execInContainer(
+            "sh",
+            "-c",
+            "mkdir -p $SEEDS && chown neo4j:neo4j $SEEDS",
+        )
+        val backup =
+            admin(
+                seeder,
+                "database",
+                "copy",
+                "films",
+                "films3",
+                "--copy-schema",
+                "--target-format=backup",
+                "--target-location=$SEEDS",
+            )
+        assertThat(backup)
+            .contains(
+                "Wrote the copy of database 'films' as a full backup of 'films3' to $SEEDS/films3-"
+            )
+        administer(
+            members,
+            "CREATE DATABASE films3 TOPOLOGY 3 PRIMARIES OPTIONS {seedURI: 'server://$id/'} WAIT",
+        )
+        awaitCount(members, "films3", "(:Person)", PERSONS.toLong())
+        awaitCount(members, "films3", "(:Temp)", 10)
         administer(members, "START DATABASE films WAIT")
         awaitCount(members, "films", "(:Temp)", 10)
     }
 
     private companion object {
+        /** `server.directories.seeds`, by default, in DozenDB's image. */
+        const val SEEDS = "/var/lib/neo4j/seeds"
         const val PERSONS = 1000
         const val NEW = 500
     }
