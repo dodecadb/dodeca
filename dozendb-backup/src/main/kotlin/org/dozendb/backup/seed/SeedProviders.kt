@@ -5,6 +5,7 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
+import org.dozendb.backup.SplitArchives
 import org.dozendb.core.edition.ServerSeedUri
 import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
 import org.neo4j.cloud.storage.StorageSystemProviderFactory
@@ -47,7 +48,10 @@ internal sealed class SeedProvider(val name: String) {
         }
     }
 
-    /** Seeds that Java's URL connections read: `http:`, `https:` and `ftp:` URIs. */
+    /**
+     * Seeds that Java's URL connections read: `http:`, `https:` and `ftp:` URIs. The parts of a
+     * split one are at the URI with `.1`, `.2` and so on appended, as Neo4j reads them.
+     */
     data object UrlConnection : SeedProvider("URLConnectionSeedProvider") {
         override fun reads(scheme: String) = scheme in setOf("http", "https", "ftp")
 
@@ -59,13 +63,23 @@ internal sealed class SeedProvider(val name: String) {
             block: (Path) -> T,
         ): T {
             val download = Files.createTempFile(directory, "seed-", ".download")
+            val parts = mutableListOf<Path>()
             try {
-                uri.toURL().openStream().use {
-                    Files.copy(it, download, StandardCopyOption.REPLACE_EXISTING)
+                copy(uri, download)
+                for ((index, part) in SplitArchives.parts(fs, download).withIndex()) {
+                    parts.add(part)
+                    copy(URI("$uri.${index + 1}"), part)
                 }
                 return block(download)
             } finally {
+                parts.forEach(Files::deleteIfExists)
                 Files.deleteIfExists(download)
+            }
+        }
+
+        private fun copy(uri: URI, file: Path) {
+            uri.toURL().openStream().use {
+                Files.copy(it, file, StandardCopyOption.REPLACE_EXISTING)
             }
         }
     }

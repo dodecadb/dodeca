@@ -11,6 +11,8 @@ import org.dozendb.backup.ArtifactHeader
 import org.dozendb.backup.Artifacts
 import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
+import org.neo4j.cli.CommandOptionDescriptions.SplitArchiveOption
+import org.neo4j.cli.Converters.ByteUnitConverter
 import org.neo4j.cli.Converters.DatabaseNamePatternConverter
 import org.neo4j.cli.ExecutionContext
 import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
@@ -114,8 +116,24 @@ abstract class AggregateCommand(context: ExecutionContext) : AbstractAdminComman
     )
     private var parallelRecovery = false
 
+    @Option(
+        names = [SplitArchiveOption.OPTION_NAME],
+        paramLabel = "<splitsize>",
+        converter = [ByteUnitConverter::class],
+        description =
+            [
+                SplitArchiveOption.BACKUP_DESCRIPTION +
+                    " The default is server.split_archive.part_size, 0 unless set."
+            ],
+    )
+    private var splitArchivePartSize = 0L
+
+    /** The size of each part of the aggregated backups; 0 for unsplit backups. */
+    private var partSize = 0L
+
     override fun execute() {
         val config = createPrefilledConfigBuilder().build()
+        partSize = partSize(config, splitArchivePartSize)
         commandLogProvider(ctx.out(), verbose).use { logProvider ->
             SchemeFileSystemAbstraction(ctx.fs(), config, logProvider).use { fs ->
                 this.fs = fs
@@ -223,14 +241,15 @@ abstract class AggregateCommand(context: ExecutionContext) : AbstractAdminComman
                 )
             // In place under a new name before the chain goes, so that a crash loses neither.
             var aggregate =
-                Artifacts.writeNew(directory, name, header.time, fs) {
+                Artifacts.writeNew(directory, name, header.time, fs, partSize) {
                     Artifacts.writeFull(it, header, staged, fs)
                 }
             if (!keepOld) {
-                chain.artifacts.forEach { fs.deleteFile(it.path) }
-                // The name the chain's last backup most likely had.
+                chain.artifacts.forEach { Artifacts.delete(it.path, fs) }
+                // The name the chain's last backup most likely had; a split backup keeps its
+                // own, as its parts are named after it.
                 val first = directory.resolve(Artifacts.fileName(name, header.time))
-                if (!fs.fileExists(first)) {
+                if (partSize == 0L && !fs.fileExists(first)) {
                     fs.renameFile(aggregate, first, StandardCopyOption.ATOMIC_MOVE)
                     aggregate = first
                 }

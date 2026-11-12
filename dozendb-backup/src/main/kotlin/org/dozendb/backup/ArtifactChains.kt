@@ -82,7 +82,7 @@ object ArtifactChains {
 
     private fun read(path: Path, fs: FileSystemAbstraction): Artifact =
         try {
-            Artifact(path, fs.openAsInputStream(path).use(Artifacts::readHeader))
+            Artifact(path, Artifacts.open(path, fs).use(Artifacts::readHeader))
         } catch (e: IOException) {
             throw IOException("$path: ${e.message}", e)
         }

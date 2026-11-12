@@ -21,6 +21,8 @@ import org.dozendb.consensus.HostPort
 import org.dozendb.core.security.MetadataScript
 import org.neo4j.cli.AbstractAdminCommand
 import org.neo4j.cli.CommandFailedException
+import org.neo4j.cli.CommandOptionDescriptions.SplitArchiveOption
+import org.neo4j.cli.Converters.ByteUnitConverter
 import org.neo4j.cli.Converters.DatabaseNamePatternConverter
 import org.neo4j.cli.ExecutionContext
 import org.neo4j.cloud.storage.SchemeFileSystemAbstraction
@@ -115,6 +117,21 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             ],
     )
     private var parallelDownload = false
+
+    @Option(
+        names = [SplitArchiveOption.OPTION_NAME],
+        paramLabel = "<splitsize>",
+        converter = [ByteUnitConverter::class],
+        description =
+            [
+                SplitArchiveOption.BACKUP_DESCRIPTION +
+                    " The default is server.split_archive.part_size, 0 unless set."
+            ],
+    )
+    private var splitArchivePartSize = 0L
+
+    /** The size of each part of the backups written; 0 for unsplit backups. */
+    private var partSize = 0L
 
     // Required unless --inspect-path is given.
     @Option(
@@ -344,6 +361,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
             }
         if (servers.isEmpty()) throw CommandFailedException("--from names no server")
         val config = config()
+        partSize = partSize(config, splitArchivePartSize)
         var serversFailed = false
         val failed = mutableListOf<String>()
         commandLogProvider(ctx.out(), verbose).use { logProvider ->
@@ -623,7 +641,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     if (header.empty && skipEmptyDiffs) return@differential null
                     val artifact = header.copy(compressed = compress, metadataScript = script)
                     val file =
-                        Artifacts.writeNew(toPath, header.databaseName, header.time, fs) {
+                        Artifacts.writeNew(toPath, header.databaseName, header.time, fs, partSize) {
                             Artifacts.writeDifferential(
                                 it,
                                 artifact,
@@ -722,7 +740,7 @@ class BackupCommand(context: ExecutionContext) : AbstractAdminCommand(context) {
                     recovered = !skipRecovery,
                 )
             val file =
-                Artifacts.writeNew(toPath, header.databaseName, header.time, fs) {
+                Artifacts.writeNew(toPath, header.databaseName, header.time, fs, partSize) {
                     Artifacts.writeFull(it, header, layout, fs)
                 }
             succeeded = true

@@ -14,8 +14,10 @@ import org.awaitility.kotlin.withPollInterval
 import org.dozendb.backup.Admin
 import org.dozendb.backup.Artifact
 import org.dozendb.backup.ArtifactChains
+import org.dozendb.backup.Artifacts
 import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.CommunityServer
+import org.dozendb.backup.SplitArchives
 import org.dozendb.consensus.testing.TestAuthority
 import org.dozendb.consensus.testing.TestPorts
 import org.dozendb.core.DozenDbSettings
@@ -25,12 +27,14 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.ConnectorPortRegister
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.configuration.ssl.SslPolicyConfig
 import org.neo4j.configuration.ssl.SslPolicyScope
+import org.neo4j.consistency.CheckCommand
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
@@ -520,6 +524,79 @@ class BackupCommandTest {
             .contains("Could not back up database 'nope': no server resolved its servers")
             .contains("Backup failed for databases: 'neo4j', 'nope'")
         assertThat(artifacts()).isEmpty()
+    }
+
+    /** Writes [lines] to the client's neo4j.conf. */
+    private fun clientConfig(vararg lines: String) {
+        Files.createDirectories(clientHome.resolve("conf"))
+        Files.writeString(
+            clientHome.resolve("conf/neo4j.conf"),
+            lines.joinToString("\n", postfix = "\n"),
+        )
+    }
+
+    private fun files(): List<String> =
+        Files.list(backups).use { it.map { path -> path.fileName.toString() }.sorted().toList() }
+
+    @Test
+    fun `splits backups into parts with --split-archive-part-size, which every command reads`() {
+        // Neo4j's minimum, 1 GiB, is lifted for tests.
+        clientConfig("${GraphDatabaseInternalSettings.allow_small_split_archive_size.name()}=true")
+        val source = source().apply { start() }
+        source.rows("UNWIND range(1, 5000) AS i CREATE (:Person {id: i, name: 'person ' + i})")
+        val full = backup(source, "--split-archive-part-size=8KiB")
+        assertThat(full.exitCode).describedAs(full.toString()).isZero
+        source.rows("UNWIND range(1, 5000) AS i CREATE (:Later {id: i, name: 'later ' + i})")
+        val differential = backup(source, "--split-archive-part-size=8KiB")
+        assertThat(differential.exitCode).describedAs(differential.toString()).isZero
+
+        val chain = artifacts()
+        assertThat(chain.map { it.header.full }).containsExactly(true, false)
+        val parts = chain.map { SplitArchives.parts(fs, it.path) }
+        assertThat(parts[0]).hasSizeGreaterThan(1)
+        assertThat(parts[1]).isNotEmpty
+        assertThat(parts.flatten()).allSatisfy {
+            assertThat(Files.size(it)).isLessThanOrEqualTo(8192)
+        }
+        assertThat(files())
+            .containsExactlyInAnyOrderElementsOf(
+                (chain.map { it.path } + parts.flatten()).map { it.fileName.toString() }
+            )
+        val inspected = Admin.run(clientHome, ::InspectBackupCommand, "$backups")
+        assertThat(inspected.exitCode).describedAs("$inspected").isZero
+        assertThat(inspected.out)
+            .contains(chain[0].path.fileName.toString(), chain[1].path.fileName.toString())
+        val check =
+            Admin.run(root.resolve("checker"), ::CheckCommand, "--from-path=$backups", "neo4j")
+        assertThat(check.exitCode).describedAs("$check").isZero
+        val restored = restored(chain[1])
+        assertThat(count(restored, "Person")).isEqualTo(5000)
+        assertThat(count(restored, "Later")).isEqualTo(5000)
+
+        // Aggregating removes the split backups whole.
+        val aggregated =
+            Admin.run(clientHome, ::AggregateBackupCommand, "--from-path=$backups", "neo4j")
+        assertThat(aggregated.exitCode).describedAs("$aggregated").isZero
+        assertThat(files()).containsExactly(Artifacts.fileName("neo4j", chain[1].header.time))
+    }
+
+    @Test
+    fun `the part size setting splits backups by default, in parts of 1 GiB at least`() {
+        val source = source().apply { start() }
+        source.rows("UNWIND range(1, 5000) AS i CREATE (:Person {id: i, name: 'person ' + i})")
+
+        val small = backup(source, "--split-archive-part-size=8KiB")
+        assertThat(small.exitCode).isEqualTo(1)
+        assertThat(small.err)
+            .contains(
+                "invalid split archive part size, as --split-archive-part-size or server.split_archive.part_size give it"
+            )
+        clientConfig("${GraphDatabaseSettings.split_archive_part_size.name()}=1GiB")
+        val split = backup(source)
+
+        assertThat(split.exitCode).describedAs(split.toString()).isZero
+        assertThat(SplitArchives.parts(fs, artifacts().single().path)).hasSize(1)
+        assertThat(count(restored(artifacts().single()), "Person")).isEqualTo(5000)
     }
 
     @Test

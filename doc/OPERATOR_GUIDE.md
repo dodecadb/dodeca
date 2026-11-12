@@ -1423,6 +1423,16 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
   database.
   `--keep-failed=true` keeps the copy of a failed full backup there.
 - `--compress` (default `true`) compresses the artifacts.
+- `--split-archive-part-size=4GiB` writes each backup in parts of at most that
+  size, for file systems and object stores that limit the size of a file:
+  `<name>.backup` then names the parts, `<name>.backup.1`, `<name>.backup.2`
+  and so on, which hold the backup; it appears last, once they are complete.
+  Every command that reads backups, and seeds, take the backup by
+  `<name>.backup`, and need its parts beside it: keep and move them together.
+  `server.split_archive.part_size` in the configuration of `neo4j-admin`
+  gives the default. The minimum is 1 GiB; 0, the default, does not split.
+  Neo4j Community's `neo4j-admin database load` reads split full backups as
+  it does split dumps.
 - `--include-metadata=all` (the default) keeps with each backup the Cypher that
   gives a DBMS back the users, roles and privileges of the database: `roles`
   the roles with privileges on it, on every database or on the home database,
@@ -1441,23 +1451,26 @@ neo4j-admin database backup --from=core1:6362,core2:6362 --to-path=/backups "*"
 - `neo4j-admin backup inspect /backups` lists the backups there.
   `--show-metadata` adds each one's database and its id, time, whether it is
   full and compressed, the range of transactions it holds (by append index),
-  and whether its store is recovered. `--latest-backup` and `--latest-chain` narrow the list, `--database`
-  picks a database, `--format=JSON` prints JSON, and `--empty` includes
-  backups that hold no transactions.
+  and whether its store is recovered. `--latest-backup` and `--latest-chain`
+  narrow the list, `--database` picks a database, `--format=JSON` prints
+  JSON, and `--empty` includes backups that hold no transactions.
 - `neo4j-admin database check --from-path=/backups neo4j` restores the latest
   chain of `neo4j` in a temporary directory and checks its consistency.
 - `neo4j-admin backup aggregate --from-path=/backups neo4j` turns the latest
   chain into one full backup; the backups after the chain still continue it.
-  `--keep-old-backup=true` keeps the chain's files. `neo4j-admin database
-  aggregate-backup`, its name before Neo4j 2025.01, still works, deprecated. For a folder in cloud
-  storage, `--temp-path` must name a local directory with room for the
-  database.
+  `--keep-old-backup=true` keeps the chain's files. `--split-archive-part-size`
+  splits the aggregated backup as `backup` does; it then keeps the name it was
+  written under, which ends in `-2` when the chain's last backup had the same
+  time. `neo4j-admin database aggregate-backup`, its name before Neo4j
+  2025.01, still works, deprecated. For a folder in cloud storage,
+  `--temp-path` must name a local directory with room for the database.
 
 Each of these takes folders in cloud storage too, as `s3://backups/films/`;
 `check` then needs a local `--temp-path`, as Neo4j's check of dumps does.
 
 Each differential backup needs every backup of its chain. To keep backups for
-a while, delete whole chains, oldest first, or aggregate them first.
+a while, delete whole chains, oldest first, with the parts of split backups,
+or aggregate them first.
 
 ### Restoring a database
 
@@ -1519,6 +1532,10 @@ it in its folder, or a folder of backups, whose latest chain it restores:
 CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 'file:///backups/films-2026-10-21T13-52-10.backup'}
 CREATE DATABASE films OPTIONS {existingData: 'use', seedURI: 's3://backups/films/'}
 ```
+
+A split backup or dump is named by its first file, as `films.backup`; its
+parts, `films.backup.1` and so on, are read beside it, and over `http:` or
+`https:` at the URI with `.1` and so on appended.
 
 A folder of backups of several databases seeds the database of the same name,
 or, in Cypher 25, the database that `seedSourceDatabase` names, whose backups

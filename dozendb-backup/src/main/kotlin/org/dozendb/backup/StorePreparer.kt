@@ -187,7 +187,7 @@ class StorePreparer(
                                 "with checksum ${last.checksum()}"
                         )
                     }
-                    fs.openAsInputStream(differential.path).use { input ->
+                    Artifacts.open(differential.path, fs).use { input ->
                         Artifacts.readDifferential(input, engine.commandReaderFactory()) {
                             _,
                             transactions ->
@@ -283,7 +283,7 @@ class StorePreparer(
      */
     private fun unpack(archive: Path, target: DatabaseLayout): Boolean {
         val description =
-            fs.openAsInputStream(archive).use { input ->
+            Artifacts.open(archive, fs).use { input ->
                 val magic = input.readNBytes(ArchiveFormat.MAGIC_PREFIX_LENGTH)
                 BackupFormatSelector.selectReadFormat(magic)?.readMetadata(input)
             }
@@ -305,6 +305,9 @@ class StorePreparer(
                 )
         } catch (e: IncorrectFormat) {
             throw IOException("$archive is not a dump or a backup", e)
+        } catch (e: IllegalArgumentException) {
+            // Neo4j's reader of split archives, for a part of another archive.
+            throw IOException("$archive: ${e.message}", e)
         }
         return description?.isRecovered ?: true
     }

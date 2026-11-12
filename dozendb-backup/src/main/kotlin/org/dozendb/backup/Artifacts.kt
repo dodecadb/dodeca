@@ -34,11 +34,14 @@ object Artifacts {
         return if (n == 1) "$name$EXTENSION" else "$name-$n$EXTENSION"
     }
 
-    /** A file in [directory] for a new backup of [database] taken at [time]. */
+    /**
+     * A file in [directory] for a new backup of [database] taken at [time], which no file has, nor
+     * the first part of a split archive.
+     */
     fun newFile(directory: Path, database: String, time: Instant, fs: FileSystemAbstraction): Path =
         generateSequence(1) { it + 1 }
             .map { directory.resolve(fileName(database, time, it)) }
-            .first { !fs.fileExists(it) }
+            .first { !fs.fileExists(it) && !fs.fileExists(SplitArchives.part(it, 1)) }
 
     /**
      * Writes a new backup of [database] taken at [time] into [directory], local or in cloud
@@ -46,28 +49,55 @@ object Artifacts {
      * until it is complete and synced, then under its own ([newFile]), which it returns. What was
      * written is deleted if [write] fails. In cloud storage, the new name is a copy within the
      * cloud.
+     *
+     * With a [partSize], the backup is split into parts of at most that many bytes, which are
+     * written under their own names (`<file>.1`, `<file>.2` and so on) and synced first; its own
+     * file, which names them, comes last as above.
      */
     fun writeNew(
         directory: Path,
         database: String,
         time: Instant,
         fs: FileSystemAbstraction,
+        partSize: Long = 0,
         write: (OutputStream) -> Unit,
     ): Path {
         val partial = directory.resolve(".$database-${UUID.randomUUID()}$EXTENSION.partial")
+        val parts = mutableListOf<Path>()
         try {
-            write(fs.openAsOutputStream(partial, false))
-            // An object in cloud storage is stored once its stream closes; opening it again would
-            // replace it.
-            if (partial !is StoragePath) fs.write(partial).use { it.force(true) }
+            if (partSize == 0L) {
+                write(fs.openAsOutputStream(partial, false))
+                sync(partial, fs)
+                val file = newFile(directory, database, time, fs)
+                fs.renameFile(partial, file, StandardCopyOption.ATOMIC_MOVE)
+                return file
+            }
             val file = newFile(directory, database, time, fs)
+            val (id, count) = SplitArchives.writeParts(fs, file, partSize, parts::add, write)
+            parts.forEach { sync(it, fs) }
+            SplitArchives.writeManifest(fs.openAsOutputStream(partial, false), id, count)
+            sync(partial, fs)
+            if (fs.fileExists(file)) throw IOException("$file exists")
             fs.renameFile(partial, file, StandardCopyOption.ATOMIC_MOVE)
             return file
         } catch (e: Throwable) {
             fs.deleteFile(partial)
+            parts.forEach(fs::deleteFile)
             throw e
         }
     }
+
+    private fun sync(file: Path, fs: FileSystemAbstraction) {
+        // An object in cloud storage is stored once its stream closes; opening it again would
+        // replace it.
+        if (file !is StoragePath) fs.write(file).use { it.force(true) }
+    }
+
+    /** Deletes the backup in [file], with its parts if it is split. */
+    fun delete(file: Path, fs: FileSystemAbstraction) = SplitArchives.delete(fs, file)
+
+    /** The backup in [file], a split one's parts joined, as one stream. */
+    fun open(file: Path, fs: FileSystemAbstraction): InputStream = SplitArchives.open(fs, file)
 
     /**
      * Writes a full backup of the store in [layout], which must be stopped and recovered, to [out]

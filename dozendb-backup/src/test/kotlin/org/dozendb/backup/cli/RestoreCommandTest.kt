@@ -8,6 +8,7 @@ import org.dozendb.backup.Admin
 import org.dozendb.backup.Artifacts
 import org.dozendb.backup.CommunityServer
 import org.dozendb.backup.PhasedSource
+import org.dozendb.backup.SplitCopies
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -61,6 +62,31 @@ class RestoreCommandTest {
                     "the system database.",
             )
         assertThat(restored(home)).isEqualTo(source.states[2])
+    }
+
+    @Test
+    fun `restores a split backup, and tells which part is missing or of another backup`() {
+        val split = Files.createDirectories(root.resolve("split"))
+        val full = split.resolve(source.full.fileName)
+        val parts = SplitCopies.split(source.full, full)
+        assertThat(parts).hasSizeGreaterThan(2)
+        val other = split.resolve("other${Artifacts.EXTENSION}")
+        val others = SplitCopies.split(source.full, other)
+
+        val whole = restore(root.resolve("split-whole"), "--from-path=$full")
+        assertThat(whole.exitCode).describedAs("$whole").isZero
+        assertThat(restored(root.resolve("split-whole"))).isEqualTo(source.states[0])
+
+        Files.move(parts[1], root.resolve("moved"))
+        Files.copy(others[1], parts[1])
+        val mixed = restore(root.resolve("split-mixed"), "--from-path=$full")
+        assertThat(mixed.exitCode).isEqualTo(1)
+        assertThat(mixed.err).contains("Mismatching archive id in split archive part: 2")
+
+        Files.delete(parts[1])
+        val missing = restore(root.resolve("split-missing"), "--from-path=$full")
+        assertThat(missing.exitCode).isEqualTo(1)
+        assertThat(missing.err).contains("${parts[1]}")
     }
 
     @Test

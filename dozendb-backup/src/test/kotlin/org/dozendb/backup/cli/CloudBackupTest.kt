@@ -13,6 +13,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.configuration.connectors.ConnectorPortRegister
 import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.helpers.SocketAddress
@@ -115,6 +116,43 @@ class CloudBackupTest {
         assertThat(temp).isEmptyDirectory()
         val file = keys("backups").single()
         assertThat(batches(restored("--from-path=memory://backups/$file"))).isEqualTo(1)
+    }
+
+    @Test
+    fun `split backups go to cloud storage in parts, and are restored and aggregated whole`() {
+        val source = source()
+        CommunityServer.populate(source.database())
+        // Neo4j's minimum, 1 GiB, is lifted for tests.
+        Files.createDirectories(client.resolve("conf"))
+        Files.writeString(
+            client.resolve("conf/neo4j.conf"),
+            "${GraphDatabaseInternalSettings.allow_small_split_archive_size.name()}=true\n",
+        )
+        val split = arrayOf("--split-archive-part-size=8KiB", "--temp-path=$temp")
+        val full = backup(source, "--to-path=memory://backups/films/", *split)
+        assertThat(full.exitCode).describedAs(full.toString()).isZero
+        source.database().executeTransactionally("CREATE (:Batch {n: 1})")
+        val differential = backup(source, "--to-path=memory://backups/films/", *split)
+        assertThat(differential.exitCode).describedAs(differential.toString()).isZero
+
+        val backups = keys("backups").filter { it.endsWith(".backup") }
+        assertThat(backups).hasSize(2)
+        assertThat(keys("backups") - backups.toSet()).isNotEmpty.allMatch { key ->
+            backups.any { key.startsWith("$it.") }
+        }
+        assertThat(batches(restored("--from-path=memory://backups/films/"))).isEqualTo(1)
+
+        val aggregated =
+            Admin.run(
+                client,
+                ::AggregateBackupCommand,
+                "--from-path=memory://backups/films/",
+                "--temp-path=$temp",
+                "neo4j",
+            )
+        assertThat(aggregated.exitCode).describedAs(aggregated.toString()).isZero
+        assertThat(keys("backups")).hasSize(1)
+        assertThat(batches(restored("--from-path=memory://backups/films/"))).isEqualTo(1)
     }
 
     @Test

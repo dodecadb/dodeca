@@ -4,13 +4,17 @@ import java.nio.file.Files
 import java.nio.file.Path
 import org.assertj.core.api.Assertions.assertThat
 import org.dozendb.backup.Admin
+import org.dozendb.backup.ArtifactChains
 import org.dozendb.backup.Artifacts
 import org.dozendb.backup.CommunityServer
 import org.dozendb.backup.PhasedSource
+import org.dozendb.backup.SplitArchives
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.GraphDatabaseInternalSettings
 import org.neo4j.consistency.CheckCommand
+import org.neo4j.io.fs.DefaultFileSystemAbstraction
 
 class AggregateBackupCommandTest {
     // Kept when a test fails, for the servers' logs.
@@ -95,6 +99,39 @@ class AggregateBackupCommandTest {
             .doesNotContain("Deprecated")
         assertThat(Admin.tool(root, "database", "aggregate-backup", "--help").out)
             .contains("Deprecated: use neo4j-admin backup aggregate.")
+    }
+
+    @Test
+    fun `splits the aggregated backup into parts with --split-archive-part-size`() {
+        val source = PhasedSource.write(root)
+        // Neo4j's minimum, 1 GiB, is lifted for tests.
+        Files.createDirectories(root.resolve("conf"))
+        Files.writeString(
+            root.resolve("conf/neo4j.conf"),
+            "${GraphDatabaseInternalSettings.allow_small_split_archive_size.name()}=true\n",
+        )
+
+        val result =
+            Admin.run(
+                root,
+                ::AggregateBackupCommand,
+                "--from-path=${source.second}",
+                "--split-archive-part-size=8KiB",
+            )
+
+        assertThat(result.exitCode).describedAs("$result").isZero
+        val fs = DefaultFileSystemAbstraction()
+        val artifacts = ArtifactChains.find(listOf(source.backups), fs).artifacts
+        val aggregate = artifacts.single { it.header.full }
+        val parts = SplitArchives.parts(fs, aggregate.path)
+        assertThat(parts).hasSizeGreaterThan(1)
+        assertThat(files(source.backups))
+            .containsExactlyInAnyOrderElementsOf(
+                (parts + artifacts.map { it.path } + listOf(source.dump)).map {
+                    it.fileName.toString()
+                }
+            )
+        assertThat(restored(source.backups, "restored")).isEqualTo(source.states[2])
     }
 
     @Test

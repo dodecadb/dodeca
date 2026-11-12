@@ -54,6 +54,29 @@ class CommunityLoadTest {
     }
 
     @Test
+    fun `Community loads a split full backup`() {
+        val source = CommunityServer(root.resolve("source")).start()
+        CommunityServer.populate(source)
+        val expected = CommunityServer.summary(source)
+        val header = source.fullHeader(compressed = true)
+        source.stop()
+        val whole = root.resolve("whole${Artifacts.EXTENSION}")
+        Artifacts.writeFull(Files.newOutputStream(whole), header, source.layout, fs)
+        val artifact = artifact()
+        assertThat(SplitCopies.split(whole, artifact)).hasSizeGreaterThan(1)
+        assertThat(Artifacts.open(artifact, fs).use { Artifacts.readHeader(it) }).isEqualTo(header)
+        val target = CommunityServer(root.resolve("target"))
+
+        val loaded = load(target.home, "--from-path=${artifact.parent}", "neo4j")
+        assertThat(loaded.exitCode).describedAs(loaded.err).isZero
+
+        target.start()
+        assertThat(CommunityServer.summary(target)).isEqualTo(expected)
+        target.stop()
+        assertThat(target.consistent()).describedAs("consistent").isTrue
+    }
+
+    @Test
     fun `Community describes a differential backup and refuses to load it`() {
         val source = CommunityServer(root.resolve("source")).start()
         val after = source.lastCommitted().appendIndex()

@@ -1,7 +1,9 @@
 package org.dozendb.backup.cli
 
 import java.io.OutputStream
+import org.dozendb.backup.SplitArchives
 import org.dozendb.backup.StorePreparer
+import org.neo4j.cli.CommandFailedException
 import org.neo4j.commandline.Util
 import org.neo4j.configuration.Config
 import org.neo4j.io.fs.FileSystemAbstraction
@@ -61,3 +63,14 @@ internal class AdminResources(
  */
 internal fun commandLogProvider(out: OutputStream, verbose: Boolean): Log4jLogProvider =
     if (verbose) Util.configuredLogProvider(out, true) else Log4jLogProvider(out, Level.WARN)
+
+/**
+ * The size of each part of the backups a command writes, as `--split-archive-part-size`, [option],
+ * or else `server.split_archive.part_size` in [config] gives it; 0 for unsplit backups.
+ */
+internal fun partSize(config: Config, option: Long): Long =
+    try {
+        SplitArchives.partSize(config, option)
+    } catch (e: IllegalArgumentException) {
+        throw CommandFailedException(e.message, e)
+    }

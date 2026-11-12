@@ -13,6 +13,7 @@ import org.dozendb.backup.Admin
 import org.dozendb.backup.Artifacts
 import org.dozendb.backup.BackupSettings
 import org.dozendb.backup.CommunityServer
+import org.dozendb.backup.SplitCopies
 import org.dozendb.backup.cli.RestoreCommand
 import org.dozendb.cloud.internal.MemoryCloud
 import org.dozendb.core.StandaloneServer
@@ -377,6 +378,50 @@ class SeedingTest {
 
             assertThat(waited["success"]).describedAs("$waited").isEqualTo(true)
             assertThat(CommunityServer.summary(server.database("films"))).isEqualTo(expected)
+        } finally {
+            http.stop(0)
+        }
+    }
+
+    @Test
+    fun `creates databases from split backups and dumps, on file systems and over http`() {
+        val split = Files.createDirectories(root.resolve("split"))
+        val splitBackup = split.resolve("films${Artifacts.EXTENSION}")
+        val splitDump = split.resolve("neo4j.dump")
+        assertThat(SplitCopies.split(backup, splitBackup)).hasSizeGreaterThan(1)
+        assertThat(SplitCopies.split(dump, splitDump)).hasSizeGreaterThan(1)
+        val http = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        http.createContext("/") { exchange ->
+            val file = split.resolve(exchange.requestURI.path.removePrefix("/"))
+            if (Files.isRegularFile(file)) {
+                exchange.sendResponseHeaders(200, Files.size(file))
+                exchange.responseBody.use { Files.copy(file, it) }
+            } else {
+                exchange.sendResponseHeaders(404, -1)
+                exchange.close()
+            }
+        }
+        http.start()
+        try {
+            val server =
+                start(
+                    BackupSettings.seedProviders to
+                        listOf("FileSeedProvider", "URLConnectionSeedProvider")
+                )
+            val url = "http://127.0.0.1:${http.address.port}"
+            val seeds =
+                listOf(
+                    "films" to splitBackup.toUri().toString(),
+                    "books" to splitDump.toUri().toString(),
+                    "series" to "$url/films${Artifacts.EXTENSION}",
+                    "shows" to "$url/neo4j.dump",
+                )
+
+            for ((name, seed) in seeds) {
+                val waited = server.waited("CREATE DATABASE $name OPTIONS {seedURI: '$seed'} WAIT")
+                assertThat(waited["success"]).describedAs("$name: $waited").isEqualTo(true)
+                assertThat(CommunityServer.summary(server.database(name))).isEqualTo(expected)
+            }
         } finally {
             http.stop(0)
         }
