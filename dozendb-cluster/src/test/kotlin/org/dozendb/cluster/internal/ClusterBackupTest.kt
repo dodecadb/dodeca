@@ -99,6 +99,9 @@ class ClusterBackupTest {
         assertThat(restore.exitCode).describedAs(restore.toString()).isZero
         val dbms =
             DatabaseManagementServiceBuilder(home)
+                // Neo4j preallocates every transaction log, 256 MB, on Linux: the tests' RAM disk
+                // would fill.
+                .setConfig(GraphDatabaseSettings.preallocate_logical_logs, false)
                 .setConfig(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
                 .setConfig(BoltConnector.enabled, false)
                 .build()

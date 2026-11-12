@@ -122,6 +122,9 @@ class StandaloneServer(
                 .set(GraphDatabaseSettings.neo4j_home, home)
                 .set(GraphDatabaseSettings.auth_enabled, false)
                 .set(GraphDatabaseSettings.pagecache_memory, ByteUnit.mebiBytes(16))
+                // Neo4j preallocates every transaction log, 256 MB, on Linux: the tests' RAM disk
+                // would fill.
+                .set(GraphDatabaseSettings.preallocate_logical_logs, false)
                 .set(BoltConnector.enabled, false)
                 .set(BoltConnector.listen_address, SocketAddress("localhost", 0))
                 .set(GraphDatabaseSettings.routing_listen_address, SocketAddress("localhost", 0))

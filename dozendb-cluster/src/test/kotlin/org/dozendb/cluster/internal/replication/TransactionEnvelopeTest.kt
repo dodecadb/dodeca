@@ -33,6 +33,9 @@ class TransactionEnvelopeTest {
     fun start() {
         dbms =
             DatabaseManagementServiceBuilder(home)
+                // Neo4j preallocates every transaction log, 256 MB, on Linux: the tests' RAM disk
+                // would fill.
+                .setConfig(GraphDatabaseSettings.preallocate_logical_logs, false)
                 .setConfig(BoltConnector.enabled, false)
                 .setConfig(HttpConnector.enabled, false)
                 .setConfig(GraphDatabaseSettings.pagecache_memory, 8L shl 20)
