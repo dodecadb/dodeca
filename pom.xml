@@ -4,12 +4,12 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <!-- Parent of every DozenDB module. Versions recorded in doc/COMPATIBILITY.md. -->
-  <groupId>org.dozendb</groupId>
-  <artifactId>dozendb-parent</artifactId>
+  <!-- Parent of every Dodeca module. Versions recorded in doc/COMPATIBILITY.md. -->
+  <groupId>dev.dodeca</groupId>
+  <artifactId>dodeca-parent</artifactId>
   <version>0.1.0-SNAPSHOT</version>
   <packaging>pom</packaging>
-  <name>DozenDB</name>
+  <name>Dodeca</name>
 
   <licenses>
     <license>
@@ -21,12 +21,12 @@
   <modules>
     <module>consensus-api</module>
     <module>consensus-ratis</module>
-    <module>dozendb-core</module>
-    <module>dozendb-cloud</module>
-    <module>dozendb-backup</module>
-    <module>dozendb-cluster</module>
-    <module>dozendb-plugin</module>
-    <module>dozendb-it</module>
+    <module>dodeca-core</module>
+    <module>dodeca-cloud</module>
+    <module>dodeca-backup</module>
+    <module>dodeca-cluster</module>
+    <module>dodeca-plugin</module>
+    <module>dodeca-it</module>
   </modules>
 
   <properties>
@@ -77,56 +77,56 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>org.dozendb</groupId>
+        <groupId>dev.dodeca</groupId>
         <artifactId>consensus-api</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.dozendb</groupId>
+        <groupId>dev.dodeca</groupId>
         <artifactId>consensus-api</artifactId>
         <version>${project.version}</version>
         <type>test-jar</type>
       </dependency>
       <dependency>
-        <groupId>org.dozendb</groupId>
+        <groupId>dev.dodeca</groupId>
         <artifactId>consensus-ratis</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>dozendb-core</artifactId>
+        <groupId>dev.dodeca</groupId>
+        <artifactId>dodeca-core</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>dozendb-core</artifactId>
-        <version>${project.version}</version>
-        <type>test-jar</type>
-      </dependency>
-      <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>dozendb-cloud</artifactId>
-        <version>${project.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>dozendb-cloud</artifactId>
+        <groupId>dev.dodeca</groupId>
+        <artifactId>dodeca-core</artifactId>
         <version>${project.version}</version>
         <type>test-jar</type>
       </dependency>
       <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>dozendb-backup</artifactId>
+        <groupId>dev.dodeca</groupId>
+        <artifactId>dodeca-cloud</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>dozendb-cluster</artifactId>
+        <groupId>dev.dodeca</groupId>
+        <artifactId>dodeca-cloud</artifactId>
+        <version>${project.version}</version>
+        <type>test-jar</type>
+      </dependency>
+      <dependency>
+        <groupId>dev.dodeca</groupId>
+        <artifactId>dodeca-backup</artifactId>
         <version>${project.version}</version>
       </dependency>
       <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>dozendb-plugin</artifactId>
+        <groupId>dev.dodeca</groupId>
+        <artifactId>dodeca-cluster</artifactId>
+        <version>${project.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>dev.dodeca</groupId>
+        <artifactId>dodeca-plugin</artifactId>
         <version>${project.version}</version>
       </dependency>
 
@@ -396,7 +396,7 @@
                TestPorts' range; in systemPropertyVariables, Maven 3.9 leaves it empty. -->
           <!-- The JDK modules that Neo4j's neo4j.conf opens to it (server.jvm.additional), as
                its off-heap memory needs them. -->
-          <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddozendb.test.fork=${surefire.forkNumber} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker -da:org.neo4j.internal.recordstorage.LogCommandSerializationV4_2 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_0 -da:org.neo4j.kernel.impl.store.record.PropertyRecord -da:org.neo4j.kernel.impl.store.record.PropertyBlock</argLine>
+          <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddodeca.test.fork=${surefire.forkNumber} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker -da:org.neo4j.internal.recordstorage.LogCommandSerializationV4_2 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_0 -da:org.neo4j.kernel.impl.store.record.PropertyRecord -da:org.neo4j.kernel.impl.store.record.PropertyBlock</argLine>
           <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
           <properties>
             <configurationParameters>
@@ -444,11 +444,11 @@
       <id>test-ramdisk</id>
       <activation>
         <file>
-          <exists>/Volumes/DozenDbTests</exists>
+          <exists>/Volumes/DodecaTests</exists>
         </file>
       </activation>
       <properties>
-        <test.tmpdir>/Volumes/DozenDbTests</test.tmpdir>
+        <test.tmpdir>/Volumes/DodecaTests</test.tmpdir>
       </properties>
     </profile>
   </profiles>

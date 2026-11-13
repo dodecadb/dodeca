@@ -1,32 +1,32 @@
 # Compatibility
 
-DozenDB is a jar for the `lib/` of Neo4j Community Edition that adds much of
+Dodeca is a jar for the `lib/` of Neo4j Community Edition that adds much of
 what Neo4j otherwise keeps for its Enterprise Edition. It is an independent
 project, not affiliated with or endorsed by Neo4j, Inc. (see
 [Trademarks](../README.md#trademarks)). This document
-compares DozenDB with Neo4j Enterprise 2026.10, area by area: what works as in
-Enterprise, where DozenDB differs, what it decided where Enterprise's
-documentation says nothing, and what it does not support. DozenDB is built from
+compares Dodeca with Neo4j Enterprise 2026.10, area by area: what works as in
+Enterprise, where Dodeca differs, what it decided where Enterprise's
+documentation says nothing, and what it does not support. Dodeca is built from
 that documentation alone, Enterprise's operations manual and Cypher manual, so
 "as in Enterprise" means as the documentation describes. "Neo4j Community"
-means Neo4j Community Edition of the pinned version without DozenDB.
+means Neo4j Community Edition of the pinned version without Dodeca.
 
 Neo4j 2026 runs queries in Cypher 5 or Cypher 25, as a `CYPHER 5` or `CYPHER 25`
 prefix chooses, or else the database's default version (see
 [Databases](#databases)). Where Enterprise answers
-differently in the two, the sections below say what DozenDB does.
+differently in the two, the sections below say what Dodeca does.
 
 ## Pinned versions
 
-Each DozenDB build is pinned to exactly one Neo4j version. A member refuses to
+Each Dodeca build is pinned to exactly one Neo4j version. A member refuses to
 form, join or rejoin a cluster whose members run a different Neo4j version.
 
 | Component | Version | Notes |
 |---|---|---|
-| Neo4j | 2026.10.2 (Community) | Unmodified; the DozenDB jar goes into its `lib/`. |
-| Test image | `neo4j:2026.10.2-community` | Neo4j's official image: test baseline and installation target. `StandaloneIT` compares DozenDB, with clustering disabled, against it. |
+| Neo4j | 2026.10.2 (Community) | Unmodified; the Dodeca jar goes into its `lib/`. |
+| Test image | `neo4j:2026.10.2-community` | Neo4j's official image: test baseline and installation target. `StandaloneIT` compares Dodeca, with clustering disabled, against it. |
 | Apache Ratis | 3.3.1 | Uses the already shaded `ratis-thirdparty` 1.1.0 for gRPC, Netty and protobuf. |
-| Kotlin | 2.4.21, kotlinx-coroutines 1.11.0 | Bundled and relocated to `org.dozendb.shaded`. |
+| Kotlin | 2.4.21, kotlinx-coroutines 1.11.0 | Bundled and relocated to `dev.dodeca.shaded`. |
 | Dropwizard Metrics | 4.2.40 | `metrics-core` and `metrics-jmx`, for the metrics and their exporters. Bundled and relocated. |
 | AWS SDK for Java | 2.58.0 | S3, with Apache HttpClient 5. Bundled and relocated, as every cloud SDK and the libraries they use. |
 | Google Cloud Storage | 2.78.0 (`libraries-bom` 26.93.0) | Over HTTP: without its gRPC transport. |
@@ -35,12 +35,12 @@ form, join or rejoin a cluster whose members run a different Neo4j version.
 
 ## At a glance
 
-*Same* means as Enterprise documents it, with DozenDB's answers where the
+*Same* means as Enterprise documents it, with Dodeca's answers where the
 documentation is silent. *Same, with differences* means that the section
-linked lists the differences. *Own design* means that DozenDB reaches the same
+linked lists the differences. *Own design* means that Dodeca reaches the same
 end its own way.
 
-| Enterprise feature | DozenDB | Section |
+| Enterprise feature | Dodeca | Section |
 |---|---|---|
 | Many databases: `CREATE`, `DROP`, `START` and `STOP DATABASE`, `WAIT` | Same, with differences | [Databases](#databases) |
 | Creating a database from a seed | Same, with differences | [Databases](#databases) |
@@ -87,19 +87,19 @@ end its own way.
 
 ## Edition
 
-DozenDB reports the Enterprise edition, in `CALL dbms.components()` for
-example, so that tools offer what DozenDB adds to Neo4j Community, such as many
-databases. [Not supported](#not-supported) says how DozenDB answers the
+Dodeca reports the Enterprise edition, in `CALL dbms.components()` for
+example, so that tools offer what Dodeca adds to Neo4j Community, such as many
+databases. [Not supported](#not-supported) says how Dodeca answers the
 Enterprise features it lacks.
 
 Neo4j's anonymous usage data (`dbms.usage_report.enabled`), which Neo4j sends
-to udc.neo4j.com unless told not to, is off in DozenDB unless the operator
+to udc.neo4j.com unless told not to, is off in Dodeca unless the operator
 turns it on. Turned on, it reports the server as Neo4j Enterprise, as
 `dbms.components()` does.
 
 Neo4j 2026's fleet discovery (`server.fleet_discovery.enabled`), which
 announces each server on the local network every 30 seconds, with its version
-and edition, is off in DozenDB for the same reason unless the operator turns it
+and edition, is off in Dodeca for the same reason unless the operator turns it
 on. Neo4j's Fleet Manager (`dbms.fleet_manager.enabled`) sends nothing until an
 operator registers a token with `fleetManagement.registerToken`; once it does,
 it reports the server as Neo4j Enterprise too.
@@ -174,8 +174,8 @@ places the database on servers (see [Servers](#servers)), and
   `server://<server id or name>/` from the latest chain there of the database
   of the same name, or of `seedSourceDatabase`, as in Enterprise 2026.04; the
   server named reads it and creates the database, which the others copy, in
-  `CREATE DATABASE` and `dbms.recreateDatabase`. DozenDB keeps the URI with
-  the server's id, so that `RENAME SERVER` does not change the seed. As a DozenDB
+  `CREATE DATABASE` and `dbms.recreateDatabase`. Dodeca keeps the URI with
+  the server's id, so that `RENAME SERVER` does not change the seed. As a Dodeca
   extension, a seed read by `FileSeedProvider` or `CloudSeedProvider` may also
   be a differential backup, restored with the backups it continues in its
   folder, or a folder of backups, whose latest chain is restored, as Enterprise
@@ -201,7 +201,7 @@ places the database on servers (see [Servers](#servers)), and
   uses the database that `neo4j-admin database restore` prepared on it.
   `existingDataSeedServer` must name a member, and `existingData: 'use'` needs
   it or a `seedURI`. Neo4j keeps the seeding server in the
-  `seeding_servers` property of the `Database` node, as DozenDB does;
+  `seeding_servers` property of the `Database` node, as Dodeca does;
   `designated_seeder` is deprecated.
 - **The default database** is the one `initial.dbms.default_database` names
   at the first start, as in Enterprise: changing the setting later changes
@@ -210,7 +210,7 @@ places the database on servers (see [Servers](#servers)), and
   another database the default once the default database is stopped, as in
   Enterprise; sessions that name no database, and users without a home
   database, then use it, and the old one is a database like any other,
-  which may be started again or dropped. DozenDB refuses an alias, which
+  which may be started again or dropped. Dodeca refuses an alias, which
   Enterprise takes as the default database since 2025.04, and, where
   Enterprise's documentation is silent, `system`; naming the default
   database changes nothing. The default database cannot be dropped or
@@ -223,7 +223,7 @@ places the database on servers (see [Servers](#servers)), and
   the transaction changes, so a command that fails changes no database. A
   database that failed to start is started again by `START DATABASE` once
   what failed it is gone, as Enterprise documents for retrying a start; other
-  commands leave it as it is. DozenDB starts it as a new database object, as
+  commands leave it as it is. Dodeca starts it as a new database object, as
   Neo4j 2026 cannot start one again whose start failed. In a cluster, a member
   whose copy failed to start hands the leadership of the database's group
   over, so that the others keep taking writes. On shutdown, `system` stops
@@ -288,7 +288,7 @@ or roles.
 
 ## Roles and privileges
 
-DozenDB implements roles and privileges as Enterprise's operations manual
+Dodeca implements roles and privileges as Enterprise's operations manual
 describes them: the built-in roles (`PUBLIC`, `reader`, `editor`, `publisher`,
 `architect`, `admin`), role commands, `GRANT`, `DENY` and `REVOKE` of DBMS,
 database and graph privileges, label, relationship type and property
@@ -306,19 +306,19 @@ or code gives them.
   `neo4j`, else the only user. With none of them the server refuses to start
   with Neo4j's message. This applies to every store without roles, such as
   Neo4j Community's; the log names the user that got `admin`. A cluster formed
-  by an earlier DozenDB build gets its roles from its system leader, once;
+  by an earlier Dodeca build gets its roles from its system leader, once;
   meanwhile logins are refused with "this server does not have the roles of
   the cluster yet".
-- **Stores of Enterprise with roles** are refused: DozenDB keeps roles and
+- **Stores of Enterprise with roles** are refused: Dodeca keeps roles and
   privileges in its own nodes of the system graph and cannot read
   Enterprise's. See [From Neo4j Enterprise](#from-neo4j-enterprise).
 - **Auth disabled** allows everything, `IMMUTABLE` commands included, as in
   Neo4j; this is also how a locked-out admin recovers.
-- **Where the documentation is silent**, DozenDB takes the stricter answer: a
+- **Where the documentation is silent**, Dodeca takes the stricter answer: a
   node without labels is found, created and deleted only through privileges
   on all labels (`NODES *`); creating or deleting a node, and setting its
   properties, needs the privilege on all labels or on each of the node's
-  labels; a privilege DozenDB cannot read applies to nothing when granted and
+  labels; a privilege Dodeca cannot read applies to nothing when granted and
   to everything in its scope when denied, and is logged; `SHOW SETTINGS`
   lists nothing without `SHOW SETTING`; any applying `DENY LOAD` blocks
   `LOAD CSV`; `GRANT` and `DENY` on a database that does not exist, or with a
@@ -349,7 +349,7 @@ or code gives them.
 - **`SHOW PRIVILEGES`** names the home database graph `HOME`, a `LOAD`
   privilege's segment `ALL DATA` or `CIDR('range')`, and keeps `IMMUTABLE` in
   `AS COMMANDS`. `SHOW SUPPORTED PRIVILEGES` gives the documented rows
-  verbatim and describes the others in DozenDB's words. It lists `show user
+  verbatim and describes the others in Dodeca's words. It lists `show user
   credentials`, which the docs' example of 2026.10 lacks, as it lists every
   privilege `GRANT` takes. `DROP ROLE` removes the role from its users.
 - **`ALTER DATABASE`, `SET DATABASE ACCESS` and `SET DATABASE DEFAULT
@@ -409,9 +409,9 @@ abac.native.user_tags() TO regularUsers`.
 - **`dbms.security.abac.authorization_providers=native`** turns it on, as in
   Enterprise, where the setting is empty by default. Without it, auth rules
   give no roles, and property rules with tags are left out, which `debug.log`
-  says once. DozenDB takes no other provider, as it has no OIDC; Enterprise's
+  says once. Dodeca takes no other provider, as it has no OIDC; Enterprise's
   `dbms.security.authorization_providers`, which must name `native` too, does
-  not exist in DozenDB, whose only provider is native.
+  not exist in Dodeca, whose only provider is native.
 - **Each transaction** starts with the roles granted to the user, and those
   of the enabled rules whose conditions hold for the user's tags at that
   moment; `time.transaction()` and the like give that moment. So changes to
@@ -435,7 +435,7 @@ abac.native.user_tags() TO regularUsers`.
 
 ## Database aliases
 
-DozenDB implements local and remote database aliases as Enterprise's
+Dodeca implements local and remote database aliases as Enterprise's
 operations manual describes them: `CREATE`, `ALTER`, `DROP` and
 `SHOW ALIASES` with `IF NOT EXISTS`, `IF EXISTS`, `OR REPLACE`, `PROPERTIES`
 and parameters, the alias privileges (`CREATE`, `DROP`, `ALTER` and
@@ -453,7 +453,7 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
   alias targets a standard database, never `system` or another alias.
 - **`SHOW ALIASES`** in Cypher 25 has Enterprise's `credentials` column:
   `STORED NATIVE CREDENTIALS` for a remote alias and null for a local one.
-  DozenDB creates no aliases with `OIDC CREDENTIAL FORWARDING`, which fails
+  Dodeca creates no aliases with `OIDC CREDENTIAL FORWARDING`, which fails
   (see [Not supported](#not-supported)); it shows that value only for such an
   alias in a store from Enterprise.
 - **`DEFAULT LANGUAGE`** of `CREATE ALIAS ... AT` and `ALTER ALIAS ... SET
@@ -484,7 +484,7 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
   database. A remote alias has privileges of its own, kept by its name:
   `ALTER ALIAS` keeps them and `DROP ALIAS` removes them. Only `ACCESS`
   applies to a remote alias; other privileges on one are refused, since the
-  other DBMS checks them for the user the alias names. These are DozenDB's
+  other DBMS checks them for the user the alias names. These are Dodeca's
   answers where the documentation is silent.
 - **Remote aliases** run their transactions on the DBMS at their URL, in the
   database they target, logged in as the user they name, on whichever server
@@ -529,26 +529,26 @@ home databases, `SHOW DATABASES` and `SHOW DATABASE <alias>`.
 
 ## Clustering
 
-DozenDB's clustering is its own design, on Apache Ratis, built to what
+Dodeca's clustering is its own design, on Apache Ratis, built to what
 Enterprise documents that clients and operators see. Every database is
 replicated, `system` included, each in its own Raft group of its primaries; its
 secondaries pull its transactions instead. Clients see what an Enterprise
 cluster shows them: routing tables with the leader as writer, failover,
 bookmarks, server-side routing, and `SHOW DATABASES` with a row per member.
-Members talk to each other in protocols of DozenDB's own
+Members talk to each other in protocols of Dodeca's own
 ([`FORMATS.md`](FORMATS.md)), on their Raft port
-(`server.dozendb.cluster.listen_address`, 7700) and their routing connector
-(7688), where Enterprise uses ports 5000, 6000 and 7000, so DozenDB and
+(`server.dodeca.cluster.listen_address`, 7700) and their routing connector
+(7688), where Enterprise uses ports 5000, 6000 and 7000, so Dodeca and
 Enterprise servers cannot form a cluster together. A cluster forms from
-`dbms.dozendb.cluster.initial_members`, and grows with
-`dozendb.cluster.addMember`, instead of through Enterprise's discovery service;
+`dbms.dodeca.cluster.initial_members`, and grows with
+`dodeca.cluster.addMember`, instead of through Enterprise's discovery service;
 see [`OPERATOR_GUIDE.md`, "Cluster members"](OPERATOR_GUIDE.md#cluster-members).
 Enterprise's settings for its discovery, Raft and catch-up internals
 (`dbms.cluster.discovery.*`, `dbms.cluster.raft.*` and `db.cluster.raft.*` other
 than the leadership settings, `dbms.cluster.network.*`,
 `server.cluster.listen_address` and the other addresses,
 `server.directories.cluster_state`, `dbms.kubernetes.*`) are not declared;
-DozenDB's own are named `*.dozendb.cluster.*`.
+Dodeca's own are named `*.dodeca.cluster.*`.
 
 ### What clients see
 
@@ -563,7 +563,7 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   `dbms.routing.default_router=SERVER`, and HTTP clients. This needs mutual TLS
   between members and their routing connector (`server.routing.listen_address`,
   port 7688) reachable from the others. A `bolt://` write is forwarded only with
-  `dbms.dozendb.routing.forward_bolt_writes=true`, which Enterprise does not
+  `dbms.dodeca.routing.forward_bolt_writes=true`, which Enterprise does not
   have. Otherwise the follower rejects the write with
   `Neo.ClientError.Cluster.NotALeader`, naming the leader's Bolt address. A
   database that does not run on the member asked, such as a stopped one, is
@@ -594,17 +594,17 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   JSON, without the deprecated `raftCommandsPerSecond`. On a secondary,
   `lastAppliedRaftIndex` is the Raft index of the last transaction it pulled.
   Enterprise's documentation names the health field of `/dbms/cluster/status`
-  both `healthy` and `isHealthy`: DozenDB gives both. As in Enterprise, the
+  both `healthy` and `isHealthy`: Dodeca gives both. As in Enterprise, the
   endpoints need a login unless `dbms.security.cluster_status_auth_enabled` is
   `false`, and `server.http_enabled_modules` turns them off without
   `ENTERPRISE_MANAGEMENT_ENDPOINTS`. A server with clustering disabled has none,
   as in Neo4j Community: they answer 404. Enterprise has no such mode, as a
-  single Enterprise server is a cluster of one; a DozenDB server answers them as
+  single Enterprise server is a cluster of one; a Dodeca server answers them as
   a cluster of one too. See [`OPERATOR_GUIDE.md`, "Cluster status
   endpoints"](OPERATOR_GUIDE.md#cluster-status-endpoints).
-- **Linearizable reads**, DozenDB's own, are requested per transaction with
-  the metadata key `dozendb.consistency` set to `linearizable`, or for every
-  transaction with `dbms.dozendb.reads.default_consistency`. They apply to
+- **Linearizable reads**, Dodeca's own, are requested per transaction with
+  the metadata key `dodeca.consistency` set to `linearizable`, or for every
+  transaction with `dbms.dodeca.reads.default_consistency`. They apply to
   Bolt clients (drivers, Cypher Shell). The transaction waits on the member
   that runs it: the leader for a write that a follower forwards there. On a
   secondary, it asks a primary for the last transaction acknowledged before
@@ -644,18 +644,18 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   stopped database gets it once it is started again. If the creating server
   fails before it created the store, the others wait until it returns, and
   its copies cannot move elsewhere meanwhile.
-- **Members.** Members are added with `dozendb.cluster.addMember`, and dropped
+- **Members.** Members are added with `dodeca.cluster.addMember`, and dropped
   with `DEALLOCATE DATABASES FROM SERVER` and `DROP SERVER`, one at a time; the
   Raft group of each database follows the servers it is placed on. See
   [`OPERATOR_GUIDE.md`, "Cluster members"](OPERATOR_GUIDE.md#cluster-members). A
   dropped member cannot rejoin with its data: its data directory must be deleted
   first. A copy of a database that is offline is made once it is started again.
-- **Upgrades.** DozenDB is upgraded one member at a time, mixing at most two
+- **Upgrades.** Dodeca is upgraded one member at a time, mixing at most two
   versions; formats that the previous version cannot read are used only once an
-  administrator calls `dozendb.cluster.finishUpgrade()`, after which no member
+  administrator calls `dodeca.cluster.finishUpgrade()`, after which no member
   can return to it. Neo4j is upgraded with every member shut down. See
   [`OPERATOR_GUIDE.md`, "Upgrading
-  DozenDB"](OPERATOR_GUIDE.md#upgrading-dozendb).
+  Dodeca"](OPERATOR_GUIDE.md#upgrading-dodeca).
 - **Traffic between members.** A clustered member does not start until
   `dbms.ssl.policy.cluster.enabled` is set: `true` for mutual TLS, configured
   with Neo4j's SSL policy settings of the `cluster` scope as in Enterprise, or
@@ -689,7 +689,7 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   set `ciphers` in their policies to restrict them.
 - **Checking connectivity.** `dbms.cluster.checkConnectivity` checks, as in
   Enterprise, whether the member it runs on reaches each other member at its
-  ports. DozenDB carries the traffic of Enterprise's cluster and Raft ports on
+  ports. Dodeca carries the traffic of Enterprise's cluster and Raft ports on
   one port, the member's Raft address, so its `CLUSTER` and `RAFT` rows share
   one check: whether the member there answers as itself. `INTRA_BOLT` is the
   routing connector, which takes forwarded writes, so only members with TLS
@@ -717,7 +717,7 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   to `false` unless it is configured explicitly. The setting applies to every
   database, so damage to log bytes that were already forced (a failing disk)
   is truncated and logged instead of stopping the start. Set
-  `server.dozendb.cluster.single_fsync=false` to force both logs at every
+  `server.dodeca.cluster.single_fsync=false` to force both logs at every
   commit, as Neo4j does on its own.
 - **Raft log retention and catch-up.** Raft snapshots follow Neo4j
   checkpoints (`db.checkpoint.interval.*`): each member keeps its Raft log from
@@ -730,7 +730,7 @@ DozenDB's own are named `*.dozendb.cluster.*`.
   tests). This holds for `system` too: logins and administration commands on
   that member see the old users and databases until the copy is in place, and
   may fail with `Neo.TransientError.General.DatabaseUnavailable` while it is
-  moved there. `dozendb.cluster.status()` reports each group's latest snapshot
+  moved there. `dodeca.cluster.status()` reports each group's latest snapshot
   as `snapshotIndex`.
 - **Slow links.** A member whose links to the others are slower than the
   cluster writes falls further and further behind. Once the others discard the
@@ -762,7 +762,7 @@ DozenDB's own are named `*.dozendb.cluster.*`.
 
 ## Routing policies
 
-Neo4j Community has no routing policies. DozenDB has Enterprise's
+Neo4j Community has no routing policies. Dodeca has Enterprise's
 `server_policies` load balancing plugin, its policies
 (`dbms.routing.load_balancing.config.server_policies.<name>`, in the rules of
 `server.cluster.catchup.user_defined_upstream_strategy`) and
@@ -808,7 +808,7 @@ Where Enterprise's documentation says nothing:
 
 ## Servers
 
-DozenDB shows and changes servers, and places databases on them, as Enterprise
+Dodeca shows and changes servers, and places databases on them, as Enterprise
 documents: `SHOW SERVERS` with Enterprise's columns, `ENABLE SERVER`, `ALTER
 SERVER`, `RENAME SERVER`, `[DRYRUN] DEALLOCATE DATABASES FROM SERVER[S]`,
 `[DRYRUN] REALLOCATE DATABASES` and `DROP SERVER`; the states `Free`, `Enabled`,
@@ -835,7 +835,7 @@ from upstreams; the settings `initial.server.tags`,
 `OPERATOR_GUIDE.md`, "[Servers](OPERATOR_GUIDE.md#servers)", "[Placing
 databases](OPERATOR_GUIDE.md#placing-databases)",
 "[Secondaries](OPERATOR_GUIDE.md#secondaries)" and "[Unbinding a
-server](OPERATOR_GUIDE.md#unbinding-a-server)". Where DozenDB differs, or
+server](OPERATOR_GUIDE.md#unbinding-a-server)". Where Dodeca differs, or
 decides what Enterprise does not document:
 
 - `ALTER DATABASE ... SET TOPOLOGY` without `SECONDARIES` keeps the number of
@@ -859,7 +859,7 @@ decides what Enterprise does not document:
   and changes its mode in place, both ways, primary to secondary once its
   replacement votes. A server changes how it hosts `system` when restarted
   with the other `server.cluster.system_database_mode` and added again with
-  `dozendb.cluster.addMember`; until then it keeps its mode and logs why.
+  `dodeca.cluster.addMember`; until then it keeps its mode and logs why.
   Enterprise documents mode changes of `system` only through restarts and
   disaster recovery.
 - Secondaries move as primaries do, the new copy first.
@@ -881,13 +881,13 @@ decides what Enterprise does not document:
   `existingDataSeedServer` of `CREATE DATABASE`: the seed server creates the
   database, which only a primary does.
 - `dbms.cluster.minimum_initial_system_primaries_count` is not supported: a
-  cluster forms from `dbms.dozendb.cluster.initial_members`, which must not
+  cluster forms from `dbms.dodeca.cluster.initial_members`, which must not
   name a server with `server.cluster.system_database_mode=SECONDARY`.
 - Enterprise refuses to take a database with more than one primary down to
   one, and to deallocate a server that hosts a database's only primary.
-  DozenDB does both, as every move makes the new copy before it removes the
+  Dodeca does both, as every move makes the new copy before it removes the
   old one.
-- Enterprise does not document where it places copies; DozenDB's placement is
+- Enterprise does not document where it places copies; Dodeca's placement is
   deterministic (see [`OPERATOR_GUIDE.md`, "Where copies
   go"](OPERATOR_GUIDE.md#where-copies-go)). `dbms.showTopologyGraphConfig` shows
   `allocator` as null.
@@ -903,7 +903,7 @@ decides what Enterprise does not document:
   replaced otherwise, Neo4j Community's `neo4j-admin server unbind` included,
   refuses to start until `neo4j-admin server unbind` is run, as under a new id
   it would delete its databases.
-- A server joins with `dozendb.cluster.addMember`, after which it is `Free`;
+- A server joins with `dodeca.cluster.addMember`, after which it is `Free`;
   a `Free` server votes in the Raft group of `system`, as every server does
   that hosts `system` as a primary. A server that hosts `system` as a
   secondary is added on the leader of `system`.
@@ -914,17 +914,17 @@ decides what Enterprise does not document:
 
 ## Leadership balancing
 
-DozenDB balances the leaderships of databases over the members as Enterprise
+Dodeca balances the leaderships of databases over the members as Enterprise
 documents, with its setting
 `dbms.cluster.raft.leader_transfer.balancing_strategy`: `EQUAL_BALANCING`, the
 default, moves leaders so that every member leads as many databases as the
-others, and `NO_BALANCING` leaves them where elections put them. DozenDB makes
+others, and `NO_BALANCING` leaves them where elections put them. Dodeca makes
 the setting dynamic. As in Enterprise, a member hands over the leadership of a
 database that is read-only on it (`server.databases.read_only` and the like).
 See [`OPERATOR_GUIDE.md`, "Where databases are
 led"](OPERATOR_GUIDE.md#where-databases-are-led).
 
-Where Enterprise's documentation says nothing, DozenDB's choices:
+Where Enterprise's documentation says nothing, Dodeca's choices:
 
 - Balancing waits until the leaders have stayed put on every member for 10
   seconds, and moves one leadership at a time, from the member leading the
@@ -944,7 +944,7 @@ A database's priority tag, a server tag that
 `db.cluster.raft.leader_transfer.priority_tag` or
 `db.cluster.raft.leader_transfer.priority_tag.<database>` names, takes its
 leadership to a member with the tag, as in Enterprise, and excludes it from
-balancing. Where Enterprise's documentation says nothing, DozenDB moves the
+balancing. Where Enterprise's documentation says nothing, Dodeca moves the
 leadership to the member with the tag that leads the fewest databases, counts
 a database with a priority tag when it balances the others, and leaves the
 leadership where it is while no member with the tag can take it over. A
@@ -964,7 +964,7 @@ and `inspect`, `neo4j-admin database check --from-path`,
 `server.backup.advertised_address` and `dbms.ssl.policy.backup.*`. They work
 alike on standalone servers and cluster members; see [`OPERATOR_GUIDE.md`,
 "Backup and restore"](OPERATOR_GUIDE.md#backup-and-restore). A backup artifact
-is a file of DozenDB's own format, which Neo4j Community's `neo4j-admin
+is a file of Dodeca's own format, which Neo4j Community's `neo4j-admin
 database load` also loads as a dump when it is a full backup. Exchanging
 backups with Enterprise is not promised. The differences:
 
@@ -988,7 +988,7 @@ backups with Enterprise is not promised. The differences:
   `--parallel-recovery`, experimental in Enterprise, is accepted and changes
   nothing: the aggregated backup is recovered as always.
 - The script that `--include-metadata` keeps, and `restore` writes to
-  `data/scripts/<database>/restore_metadata.cypher`, is DozenDB's own. It
+  `data/scripts/<database>/restore_metadata.cypher`, is Dodeca's own. It
   leaves out `ALTER DATABASE`, `SET DATABASE ACCESS` and `SET DATABASE
   DEFAULT LANGUAGE` on the DBMS, as other privileges on the DBMS, and starts
   those on the database, which only Cypher 25 grants, with `CYPHER 25`.
@@ -1026,7 +1026,7 @@ CSV`, with each SDK's own credentials and the settings
 `dbms.integrations.cloud_storage.azb.blob_endpoint_suffix` and
 `dbms.integrations.cloud_storage.azb.authority_endpoint`; see
 [`OPERATOR_GUIDE.md`, "Cloud storage"](OPERATOR_GUIDE.md#cloud-storage). The
-SDKs come in DozenDB's jar, relocated, so that they never meet other copies on
+SDKs come in Dodeca's jar, relocated, so that they never meet other copies on
 Neo4j's classpath. The differences:
 
 - `S3SeedProvider` is a name for `CloudSeedProvider` on `s3:` URIs; its
@@ -1038,7 +1038,7 @@ Neo4j's classpath. The differences:
   `dbms.integrations.cloud_storage.gs.project_id` (Enterprise 2025.03) are not
   supported.
 
-Where Enterprise's documentation says nothing, DozenDB's choices:
+Where Enterprise's documentation says nothing, Dodeca's choices:
 
 - With an S3 endpoint set (`AWS_ENDPOINT_URL_S3` and the like), as for an
   S3-compatible store, buckets are named in the path, and checksums are sent
@@ -1069,8 +1069,8 @@ disaster recovery guide shows, with the same commands; see
 - **`neo4j-admin dbms unbind-system-db`**, with `--archive-cluster-state` and
   `--archive-path`, removes a stopped server's Raft state of `system` only and
   prints its last committed transaction. The servers left, unbound, re-form
-  `system` from `dbms.dozendb.cluster.initial_members`, where Enterprise uses
-  its discovery settings: DozenDB picks the copy with the latest transaction,
+  `system` from `dbms.dodeca.cluster.initial_members`, where Enterprise uses
+  its discovery settings: Dodeca picks the copy with the latest transaction,
   so dumping and loading `system` is not needed, and there is no
   `dbms.cluster.minimum_initial_system_primaries_count`. The re-formed group
   has a new id, kept in each server's membership record. The lost servers stay
@@ -1078,7 +1078,7 @@ disaster recovery guide shows, with the same commands; see
   with its old state is refused once it reaches the recovered cluster; one
   that reaches only other lost servers cannot tell, so they must be kept from
   starting. A lost server rejoins as the same server once unbound from
-  `system` and added with `dozendb.cluster.addMember`.
+  `system` and added with `dodeca.cluster.addMember`.
 - **`dbms.recreateDatabase`** (Enterprise 2025.04) takes Enterprise's options
   `seedURI`, `seedingServers`, `clearData`, `storeFormat`, `primaries` and
   `secondaries`, and gives its status messages; a `server:` seed (2026.04)
@@ -1108,21 +1108,21 @@ disaster recovery guide shows, with the same commands; see
   is copied only if the group's log no longer holds what follows it.
   `dbms.quarantineDatabase` exists under
   Cypher 5 only, deprecated, as in Enterprise, whose Cypher 25 has no way to
-  put a copy in quarantine. Quarantines are kept in `data/quarantine`, a file of DozenDB's own
+  put a copy in quarantine. Quarantines are kept in `data/quarantine`, a file of Dodeca's own
   ([`FORMATS.md`](FORMATS.md)); that of `system` lasts until the server
   restarts.
-- **`dbms.cluster.protocols`** lists DozenDB's protocols
+- **`dbms.cluster.protocols`** lists Dodeca's protocols
   ([`FORMATS.md`](FORMATS.md)), not Enterprise's: `raft`, `probe` and `bulk`
   with the bulk transfers it carried. A leader lists its outbound Raft
   connections to the members it replicates to that answered lately.
 
 ## Metrics and logs
 
-DozenDB reports metrics and writes the query log and the security log as
+Dodeca reports metrics and writes the query log and the security log as
 Enterprise's operations manual describes them; Neo4j Community declares the
 query log settings and ships the log files' configuration, but writes neither
 log. [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#monitoring) describes how to use
-them. DozenDB logs its own messages in Neo4j's `debug.log`, which Neo4j writes
+them. Dodeca logs its own messages in Neo4j's `debug.log`, which Neo4j writes
 as JSON lines since 2025.01.
 
 - **Exporters:** CSV files, Graphite, Prometheus and JMX (domain
@@ -1135,7 +1135,7 @@ as JSON lines since 2025.01.
   metrics. `server.metrics.deny_filter` (2025.10) leaves out metrics that the
   filter reports.
 - **CSV files are on by default**, as in Enterprise: a server moving from
-  Neo4j Community or from an earlier DozenDB starts writing a file per metric
+  Neo4j Community or from an earlier Dodeca starts writing a file per metric
   in `server.directories.metrics` (`metrics` under the home directory),
   growing by a line every `server.metrics.csv.interval` (30 s). Where
   Enterprise's documentation says nothing: the header is `t` and then `count`
@@ -1148,7 +1148,7 @@ as JSON lines since 2025.01.
   shifting up to `rotation.keep_number`; a ZIP archive holds one entry named
   `<name>.csv`. A directory that cannot be written is logged once, until
   writing succeeds again. Neo4j's Docker entrypoint uses a `/metrics` mount
-  only for Enterprise: set `server.directories.metrics=/metrics` with DozenDB.
+  only for Enterprise: set `server.directories.metrics=/metrics` with Dodeca.
 - **Graphite** gets Graphite's plaintext protocol over a new TCP connection
   every `server.metrics.graphite.interval`: counters and gauges under their
   names, histograms as `<name>.count`, `.max`, `.mean`, `.min`, `.stddev`,
@@ -1159,9 +1159,9 @@ as JSON lines since 2025.01.
 - **Names** are Enterprise's, `<prefix>.dbms.<name>` and
   `<prefix>.database.<database>.<name>`, with `store.size.full`, as
   Enterprise renamed `store.size.total` in 2025.01.
-  Metrics Enterprise does not have are named under a `dozendb` segment, such
-  as `dozendb.cluster.raft.follower_lag_max`. Enterprise's exact Prometheus
-  output is not documented; DozenDB's replaces characters other than letters,
+  Metrics Enterprise does not have are named under a `dodeca` segment, such
+  as `dodeca.cluster.raft.follower_lag_max`. Enterprise's exact Prometheus
+  output is not documented; Dodeca's replaces characters other than letters,
   digits and `_` with `_`, adds `_total` to counters, reports histograms as
   summaries (quantiles 0.5 to 0.999, `_sum`, `_count`), and starts each
   family's `# HELP` with the dotted name. Database names that differ only in
@@ -1170,17 +1170,17 @@ as JSON lines since 2025.01.
   `promtool check metrics` reads the output and flags only gauges whose
   Enterprise names end like summaries: `vm.file.descriptors.count` and
   `vm.memory.buffer.<pool>.count`.
-- **Metrics without a source in Neo4j Community or DozenDB** are not
+- **Metrics without a source in Neo4j Community or Dodeca** are not
   reported: `server.threads.jetty.*`, `cluster.discovery.*` and
   `cluster.internal.discovery.*`, Enterprise's Raft internals
   (`cluster.raft.tx_retries`, `in_flight_cache.*`,
   `raft_log_entry_prefetch_buffer.*`, `message_processing_*`),
   `cluster.catchup.*` and `cluster.store_copy.*` of Enterprise's catch-up
-  protocol (DozenDB's copies are counted under `dozendb.cluster.store_copy`),
+  protocol (Dodeca's copies are counted under `dodeca.cluster.store_copy`),
   the pipelined and parallel runtimes' metrics, Cypher's `compiled` counts and
   `bolt.accumulated_queue_time`. Followers are reported together on the
-  leader (`dozendb.cluster.raft.followers`, `follower_lag_max`), not one
-  series each. Nor does DozenDB report the metrics Enterprise added since
+  leader (`dodeca.cluster.raft.followers`, `follower_lag_max`), not one
+  series each. Nor does Dodeca report the metrics Enterprise added since
   2025.01: `vm.cpu_load.system` and `vm.cpu_load.process`,
   `vm.threads.virtual`, `transaction.lowest_available_committed_tx_id`,
   `transaction.rollbacks_deadlocked`, `page_cache.pages_snapshot_loaded` and
@@ -1194,7 +1194,7 @@ as JSON lines since 2025.01.
   ([`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#query-log)). Set `INFO` with a
   `db.logs.query.threshold`, or `OFF`, to log less.
 - **Query log lines** follow the documented fields, their order and the JSON
-  field names. Neo4j does not document the rest, which DozenDB defines:
+  field names. Neo4j does not document the rest, which Dodeca defines:
   - `Query started: ` before start lines; `id:<n> - ` only with `VERBOSE`;
     then `transaction id:<n> - <ms> ms: (planning: <ms>[, cpu: <ms>],
     waiting: <ms>) - <bytes> B - <hits> page hits, <faults> page faults -
@@ -1250,7 +1250,7 @@ as JSON lines since 2025.01.
 Neo4j Community accepts Enterprise's checkpoint settings, but runs the
 `CONTINUOUS` and `VOLUMETRIC` policies as `PERIODIC`, with a warning, and
 ignores `db.checkpoint.iops.limit` and `db.checkpoint.throughput.limit`.
-DozenDB has both policies and both limits.
+Dodeca has both policies and both limits.
 [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#checkpoints) describes how to use them.
 
 - **`CONTINUOUS`** checks every 100 milliseconds and checkpoints whenever
@@ -1290,12 +1290,12 @@ DozenDB has both policies and both limits.
 ## Page cache warmup
 
 Neo4j Community declares `db.memory.pagecache.warmup.*` and does nothing with
-them. DozenDB profiles and warms up the page cache as Enterprise does, on by
+them. Dodeca profiles and warms up the page cache as Enterprise does, on by
 default, and preloads whole files with `db.memory.pagecache.warmup.preload`.
 [`OPERATOR_GUIDE.md`, "Page cache warmup"](OPERATOR_GUIDE.md#page-cache-warmup),
 describes how to use it. Where Enterprise's documentation says nothing:
 
-- **Profiles** are DozenDB's own files, `profiles/<file>.cacheprof` in the
+- **Profiles** are Dodeca's own files, `profiles/<file>.cacheprof` in the
   database's directory, `<file>` the profiled file's path in it (see
   [`FORMATS.md`](FORMATS.md)). They are taken every interval once the warmup
   ended, so that a profile of a page cache still warming up never replaces a
@@ -1310,7 +1310,7 @@ describes how to use it. Where Enterprise's documentation says nothing:
 - **Copies.** Store copies to other members, online backups, restores and
   seeds carry the profiles, as Enterprise says of its store copies and backups;
   `neo4j-admin database copy`, which writes a new store, does not.
-- **Metrics** are DozenDB's own: `page_cache.warmup.pages_loaded` and
+- **Metrics** are Dodeca's own: `page_cache.warmup.pages_loaded` and
   `page_cache.warmup.duration` of each database.
 - **`internal.db.memory.pagecache.warmup.blocking_enabled`**, an internal
   setting Neo4j Community declares, has no effect: the warmup never holds up
@@ -1321,17 +1321,17 @@ describes how to use it. Where Enterprise's documentation says nothing:
   `ALPHABETIC` by the path of the profiled file in the database's directory;
   `PRIORITY` the ID files first, then the indexes (`schema/index/`), then the
   rest, each alphabetically. Enterprise's `PRIORITY` puts the `block`
-  format's x1 store first, which DozenDB does not have. As the setting's
+  format's x1 store first, which Dodeca does not have. As the setting's
   description says, it orders the warmup from profiles: the preload, which
   takes no profiles, loads its files in the order the page cache has them.
 
 ## Import and copy
 
 `neo4j-admin` in Neo4j Community lacks `database import incremental` and
-`database copy`, and runs `import full` in one go. DozenDB adds both commands
+`database copy`, and runs `import full` in one go. Dodeca adds both commands
 with Enterprise's options, and resumes a stopped full import.
 [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#importing-and-copying-databases)
-describes how to use them. They work on the formats DozenDB has, `aligned` and
+describes how to use them. They work on the formats Dodeca has, `aligned` and
 `standard`.
 
 ### Incremental import
@@ -1383,9 +1383,9 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
 `--target-location`, `--compress` and `--split-archive-part-size`, as
 Enterprise's do since 2025.12, and write the imported database as a full
 backup, uncompressed unless `--compress` is given. Where Enterprise's pages
-are silent, DozenDB is strict:
+are silent, Dodeca is strict:
 
-- The database is imported into `.dozendb-import-<database>` in `--temp-path`,
+- The database is imported into `.dodeca-import-<database>` in `--temp-path`,
   by default the local `--target-location`, and is not in the DBMS. A full
   import that stops keeps it there and resumes as one into a database does.
 - An incremental import leaves the database as it is: a copy of the stopped
@@ -1410,7 +1410,7 @@ are silent, DozenDB is strict:
   and the same options, but for those that do not change what the import
   writes, such as `--threads`, `--max-off-heap-memory` and `--report-file`.
   Other input is refused, naming what differs.
-- **Its progress** is kept in `.dozendb-import.properties` in the database
+- **Its progress** is kept in `.dodeca-import.properties` in the database
   directory. The report of bad entries the stopped import wrote is kept: the
   stages it resumes from find none.
 
@@ -1421,8 +1421,8 @@ are silent, DozenDB is strict:
   Neo4j version is refused until it is migrated.
 - **Backups**: `--source-format=backup` with `--source-location`, and
   `--target-format=backup` with `--target-location`, `--compress` and
-  `--split-archive-part-size`, copy from and to DozenDB's backups. Where
-  Enterprise's pages are silent, DozenDB is strict: `--source-location` names
+  `--split-archive-part-size`, copy from and to Dodeca's backups. Where
+  Enterprise's pages are silent, Dodeca is strict: `--source-location` names
   a backup file, not a folder, which must be a backup of `<fromDatabase>`;
   `--compress` and `--split-archive-part-size` without `--target-format=backup`
   are refused, as are `--to-path-data` and `--to-path-txn` with it. The backup
@@ -1466,7 +1466,7 @@ are silent, DozenDB is strict:
 
 ## Not supported
 
-DozenDB does not support these Enterprise features, checked against the
+Dodeca does not support these Enterprise features, checked against the
 Enterprise-only features, procedures, `neo4j-admin` commands and settings of
 Enterprise's 5.26 documentation and the changes its documentation lists up to
 2026.10. The sections above list smaller gaps, such as options of commands.
@@ -1485,7 +1485,7 @@ error, and their procedures do not exist.
 - **Sharded property databases** (Infinigraph), and `neo4j-admin backup
   validate`, which checks their backups.
 - **Graph types**, Cypher 25's `ALTER CURRENT GRAPH TYPE` and the commands
-  around it. DozenDB adds nothing to Neo4j Community there.
+  around it. Dodeca adds nothing to Neo4j Community there.
 - **LDAP, single sign-on and Kerberos.** Users log in with native users and
   passwords only: `dbms.security.authentication_providers`,
   `authorization_providers`, `dbms.security.ldap.*`, `dbms.security.oidc.*`,
@@ -1493,7 +1493,7 @@ error, and their procedures do not exist.
   with `OIDC CREDENTIAL FORWARDING` fail.
 - **Reloading procedures while running**: `dbms.reloadProcedures()`.
 - **Change data capture**: `txLogEnrichment`, `db.cdc.*` and `cdc.*`.
-- **The `block` and `high_limit` store formats.** As Neo4j Community, DozenDB
+- **The `block` and `high_limit` store formats.** As Neo4j Community, Dodeca
   reads and creates only the `aligned` and `standard` formats.
 - **The pipelined and parallel runtimes.** A query that asks for one runs on
   Neo4j Community's slotted runtime with a notification, as in Neo4j
@@ -1501,9 +1501,9 @@ error, and their procedures do not exist.
   declares `server.cypher.parallel.worker_limit`, which has no effect.
 - **Shared query caches**:
   `server.memory.query_cache.shared_cache_num_entries`. Neo4j Community
-  declares `server.memory.query_cache.sharing_enabled`; DozenDB adds nothing
+  declares `server.memory.query_cache.sharing_enabled`; Dodeca adds nothing
   to it.
-- **Settings of features DozenDB has in its own way**:
+- **Settings of features Dodeca has in its own way**:
   `server.backup.exec_connector.*` and
   `server.backup.store_copy_max_retry_time_per_request`.
 - **Neo4j Browser's Enterprise settings**: `browser.allow_outgoing_connections`,
@@ -1512,13 +1512,13 @@ error, and their procedures do not exist.
 - **FIPS 140 compliance.**
 - **Neo4j's separately licensed products**, such as Graph Data Science
   Enterprise Edition and Neo4j Operations Manager, are not tested with
-  DozenDB.
+  Dodeca.
 
-## Moving to DozenDB
+## Moving to Dodeca
 
 ### From Neo4j Community
 
-Neo4j Community of the pinned version, with the DozenDB jar in its `lib/`,
+Neo4j Community of the pinned version, with the Dodeca jar in its `lib/`,
 starts on Neo4j Community's data directory as it is. Its first start creates
 the built-in roles and gives `admin` to one user (see
 [Roles and privileges](#roles-and-privileges)). Other changes the server
@@ -1532,28 +1532,28 @@ changes with `dbms.setDefaultDatabase`, no longer with
 
 ### From Neo4j Enterprise
 
-- **Databases** move as dumps (`neo4j-admin database dump`), created on DozenDB
+- **Databases** move as dumps (`neo4j-admin database dump`), created on Dodeca
   from those ([`OPERATOR_GUIDE.md`, "Creating a database from a backup or a
   dump"](OPERATOR_GUIDE.md#creating-a-database-from-a-backup-or-a-dump)).
   Migrate a database in another store format than `aligned` or `standard` first,
   with `neo4j-admin database migrate --to-format=aligned`.
-- **Roles and privileges** move as commands: DozenDB refuses to start on a
+- **Roles and privileges** move as commands: Dodeca refuses to start on a
   `system` database that holds Enterprise's roles. [`OPERATOR_GUIDE.md`, "Moving
   roles from or to Neo4j
   Enterprise"](OPERATOR_GUIDE.md#moving-roles-from-or-to-neo4j-enterprise), has
   the steps, both ways.
 - **Backups** are not promised to be exchangeable.
-- **Settings** of the features DozenDB does not support, Enterprise's cluster
+- **Settings** of the features Dodeca does not support, Enterprise's cluster
   discovery settings among them, stop the server at startup: remove them.
-- **Clusters** are formed anew: DozenDB and Enterprise servers cannot form a
+- **Clusters** are formed anew: Dodeca and Enterprise servers cannot form a
   cluster together.
 
 ### From DozerDB
 
-DozenDB began as an add-on to [DozerDB](https://dozerdb.org) and contains a port
+Dodeca began as an add-on to [DozerDB](https://dozerdb.org) and contains a port
 of the DozerDB code it built on
 ([`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md)). Neo4j Community
-2026.10.2 with the DozenDB jar starts on the data directory of DozerDB
+2026.10.2 with the Dodeca jar starts on the data directory of DozerDB
 5.26.27.0, which runs on Neo4j 5.26.27, as it is: databases, users, data and
 constraints carry over, writes work, and the first start gives `admin` to one
 user as it does on Neo4j Community's. The other
@@ -1572,7 +1572,7 @@ the `graphstack/dozerdb:5.26.27.0` image:
   `DatabaseManagementService` methods, names with a dot, and
   `CREATE OR REPLACE DATABASE` of a database that does not exist yet work,
   where DozerDB fails on them.
-- `WAIT` works, and composite databases, `DUMP DATA` and options DozenDB does
+- `WAIT` works, and composite databases, `DUMP DATA` and options Dodeca does
   not support fail with an error, where DozerDB ignores them or fails with an
   internal error.
 - `dbms.max_databases` counts every database, where DozerDB allows one fewer.
@@ -1586,6 +1586,6 @@ the `graphstack/dozerdb:5.26.27.0` image:
   failed while running as `online`.
 - Label existence and relationship endpoint label constraints are refused,
   where DozerDB creates them and does not enforce them.
-- DozenDB writes the query log and metrics to CSV files (see [Metrics and
+- Dodeca writes the query log and metrics to CSV files (see [Metrics and
   logs](#metrics-and-logs)), and logs its version at startup instead of
   DozerDB's banner.

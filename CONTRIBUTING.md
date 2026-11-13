@@ -1,8 +1,8 @@
-# Contributing to DozenDB
+# Contributing to Dodeca
 
 ## Clean room
 
-DozenDB reimplements what Neo4j keeps for its Enterprise Edition from Neo4j's
+Dodeca reimplements what Neo4j keeps for its Enterprise Edition from Neo4j's
 public documentation alone: the operations manual and the Cypher manual of
 Neo4j Enterprise 2026. Never read, copy or decompile Neo4j Enterprise's code,
 binaries or anything derived from them, not even to compare behaviour, and do
@@ -10,7 +10,7 @@ not contribute what you wrote after reading it. Neo4j Community's code is
 GPL-licensed and may be read, and built on as
 [`doc/UPSTREAM_TOUCHPOINTS.md`](doc/UPSTREAM_TOUCHPOINTS.md) records.
 
-Where Enterprise's documentation says nothing, DozenDB decides, and
+Where Enterprise's documentation says nothing, Dodeca decides, and
 [`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) says what it decided.
 
 ## Building and testing
@@ -42,13 +42,13 @@ Update the documents a change affects in the same change:
 | Document | When |
 |---|---|
 | [`doc/OPERATOR_GUIDE.md`](doc/OPERATOR_GUIDE.md) | Operators do something new or differently: a command, a setting, a log line to look for. |
-| [`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) | DozenDB supports another Enterprise feature, behaves differently from Enterprise's documentation, or decides what it leaves open. |
+| [`doc/COMPATIBILITY.md`](doc/COMPATIBILITY.md) | Dodeca supports another Enterprise feature, behaves differently from Enterprise's documentation, or decides what it leaves open. |
 | [`doc/FORMATS.md`](doc/FORMATS.md) | What members send each other or keep changes. Follow its rules for changing a format, so that rolling upgrades keep working. |
 | [`doc/UPSTREAM_TOUCHPOINTS.md`](doc/UPSTREAM_TOUCHPOINTS.md) | The code builds on another Neo4j or Apache Ratis class, or relies on more of their behaviour. |
 | [`doc/RELEASING.md`](doc/RELEASING.md) | How releases are numbered, made or published changes, as in the workflows under `.github/`. |
 
 Code that ports or copies Neo4j Community, DozerDB or Apache Ratis code keeps
-their copyright notices and says what DozenDB changed and when.
+their copyright notices and says what Dodeca changed and when.
 
 ## Commits
 
@@ -59,6 +59,6 @@ in the diff.
 
 ## License
 
-DozenDB is licensed under the GNU General Public License, version 3 or later
+Dodeca is licensed under the GNU General Public License, version 3 or later
 (`LICENSE`). By contributing, you agree that your contribution is licensed the
 same way.

@@ -1,0 +1,332 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.dodeca</groupId>
+    <artifactId>dodeca-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>dodeca-plugin</artifactId>
+  <name>Dodeca plugin</name>
+  <description>
+    Dodeca's entry point, which starts it with or without clustering, and the single jar installed
+    into Neo4j's lib/: the Dodeca modules, Apache Ratis, and Kotlin, Dropwizard Metrics and the
+    cloud storage SDKs relocated under dev.dodeca.shaded.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>dev.dodeca</groupId>
+      <artifactId>dodeca-cluster</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>dev.dodeca</groupId>
+      <artifactId>dodeca-backup</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>dev.dodeca</groupId>
+      <artifactId>dodeca-cloud</artifactId>
+    </dependency>
+    <!--
+      On the Neo4j classpath at runtime. Its copies of libraries that the cloud SDKs also use are
+      left out here, so that the jar bundles the SDKs' versions, relocated, rather than relying on
+      Neo4j's.
+    -->
+    <dependency>
+      <groupId>org.neo4j</groupId>
+      <artifactId>neo4j</artifactId>
+      <scope>provided</scope>
+      <exclusions>
+        <exclusion>
+          <groupId>com.fasterxml.jackson.core</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>commons-codec</groupId>
+          <artifactId>commons-codec</artifactId>
+        </exclusion>
+        <exclusion>
+          <groupId>io.projectreactor</groupId>
+          <artifactId>reactor-core</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+  </dependencies>
+
+  <properties>
+    <!--
+      The installable jar, named after the Neo4j version it runs on. Written next to the module jar
+      instead of replacing it: when shade replaces the module jar, the next build shades the
+      previous output again and stale classes win.
+    -->
+    <dodeca.plugin.jar>${project.build.directory}/dodeca-${project.version}-${neo4j.version}.jar</dodeca.plugin.jar>
+  </properties>
+
+  <build>
+    <resources>
+      <resource>
+        <directory>src/main/resources</directory>
+      </resource>
+      <!-- Merged into the jar's META-INF/NOTICE ahead of the bundled libraries'. -->
+      <resource>
+        <directory>${project.basedir}/..</directory>
+        <targetPath>META-INF</targetPath>
+        <includes>
+          <include>NOTICE</include>
+        </includes>
+      </resource>
+    </resources>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <outputFile>${dodeca.plugin.jar}</outputFile>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <!--
+                Everything the plugin runs on (the Neo4j artifacts are provided and left out),
+                but what Neo4j already ships in lib/ (slf4j, Reactive Streams, JNA, whose native
+                libraries keep their names) and libraries of annotations only. Google's SDK
+                comes without its gRPC transport, which Dodeca does not use (it reads and writes
+                over HTTP), nor what only that transport needs: Conscrypt, xDS, the load
+                balancers, and its metrics export to Cloud Monitoring.
+              -->
+              <artifactSet>
+                <excludes>
+                  <exclude>org.slf4j:*</exclude>
+                  <exclude>org.reactivestreams:*</exclude>
+                  <exclude>net.java.dev.jna:jna</exclude>
+                  <exclude>org.jetbrains:annotations</exclude>
+                  <exclude>org.jetbrains.kotlinx:kotlinx-coroutines-core</exclude>
+                  <exclude>com.google.code.findbugs:jsr305</exclude>
+                  <exclude>com.google.android:annotations</exclude>
+                  <exclude>org.checkerframework:checker-qual</exclude>
+                  <exclude>org.jspecify:jspecify</exclude>
+                  <exclude>org.codehaus.mojo:animal-sniffer-annotations</exclude>
+                  <exclude>org.conscrypt:*</exclude>
+                  <exclude>dev.cel:*</exclude>
+                  <exclude>io.grpc:grpc-netty-shaded</exclude>
+                  <exclude>io.grpc:grpc-xds</exclude>
+                  <exclude>io.grpc:grpc-alts</exclude>
+                  <exclude>io.grpc:grpc-rls</exclude>
+                  <exclude>io.grpc:grpc-grpclb</exclude>
+                  <exclude>io.grpc:grpc-googleapis</exclude>
+                  <exclude>io.grpc:grpc-services</exclude>
+                  <exclude>com.google.cloud:google-cloud-monitoring</exclude>
+                  <exclude>com.google.api.grpc:proto-google-cloud-monitoring-v3</exclude>
+                  <exclude>com.google.cloud.opentelemetry:*</exclude>
+                  <exclude>io.opentelemetry.contrib:opentelemetry-gcp-resources</exclude>
+                </excludes>
+              </artifactSet>
+              <relocations>
+                <relocation>
+                  <pattern>kotlin</pattern>
+                  <shadedPattern>dev.dodeca.shaded.kotlin</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>kotlinx</pattern>
+                  <shadedPattern>dev.dodeca.shaded.kotlinx</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.codahale.metrics</pattern>
+                  <shadedPattern>dev.dodeca.shaded.com.codahale.metrics</shadedPattern>
+                </relocation>
+                <!-- The cloud SDKs and every library they bring. -->
+                <relocation>
+                  <pattern>software.amazon</pattern>
+                  <shadedPattern>dev.dodeca.shaded.software.amazon</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.azure</pattern>
+                  <shadedPattern>dev.dodeca.shaded.com.azure</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.microsoft</pattern>
+                  <shadedPattern>dev.dodeca.shaded.com.microsoft</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.google</pattern>
+                  <shadedPattern>dev.dodeca.shaded.com.google</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.fasterxml</pattern>
+                  <shadedPattern>dev.dodeca.shaded.com.fasterxml</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.ctc.wstx</pattern>
+                  <shadedPattern>dev.dodeca.shaded.com.ctc.wstx</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.codehaus.stax2</pattern>
+                  <shadedPattern>dev.dodeca.shaded.org.codehaus.stax2</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>reactor</pattern>
+                  <shadedPattern>dev.dodeca.shaded.reactor</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.commons.codec</pattern>
+                  <shadedPattern>dev.dodeca.shaded.org.apache.commons.codec</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.hc</pattern>
+                  <shadedPattern>dev.dodeca.shaded.org.apache.hc</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.apache.http</pattern>
+                  <shadedPattern>dev.dodeca.shaded.org.apache.http</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.grpc</pattern>
+                  <shadedPattern>dev.dodeca.shaded.io.grpc</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.opencensus</pattern>
+                  <shadedPattern>dev.dodeca.shaded.io.opencensus</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.opentelemetry</pattern>
+                  <shadedPattern>dev.dodeca.shaded.io.opentelemetry</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>io.perfmark</pattern>
+                  <shadedPattern>dev.dodeca.shaded.io.perfmark</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>org.threeten</pattern>
+                  <shadedPattern>dev.dodeca.shaded.org.threeten</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>com.sun.jna.platform</pattern>
+                  <shadedPattern>dev.dodeca.shaded.com.sun.jna.platform</shadedPattern>
+                </relocation>
+                <!-- Annotations of Google Cloud Storage's libraries, which Ratis Thirdparty bundles too. -->
+                <relocation>
+                  <pattern>org.jspecify</pattern>
+                  <shadedPattern>dev.dodeca.shaded.org.jspecify</shadedPattern>
+                </relocation>
+                <relocation>
+                  <pattern>android.annotation</pattern>
+                  <shadedPattern>dev.dodeca.shaded.android.annotation</shadedPattern>
+                </relocation>
+              </relocations>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>module-info.class</exclude>
+                    <!-- The jar is not a multi-release one: Java never loads these. -->
+                    <exclude>META-INF/versions/**</exclude>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                    <exclude>META-INF/*.kotlin_module</exclude>
+                    <exclude>META-INF/com.android.tools/**</exclude>
+                    <exclude>META-INF/proguard/**</exclude>
+                    <exclude>META-INF/maven/**</exclude>
+                    <exclude>META-INF/DEPENDENCIES</exclude>
+                    <!-- A jar index would hide the classes it does not list. -->
+                    <exclude>META-INF/INDEX.LIST</exclude>
+                    <exclude>META-INF/native-image/**</exclude>
+                    <!-- Protocol Buffers' sources, also in Ratis's. -->
+                    <exclude>**/*.proto</exclude>
+                    <!-- Rebuilt by the ManifestResourceTransformer below. -->
+                    <exclude>META-INF/MANIFEST.MF</exclude>
+                  </excludes>
+                </filter>
+                <!-- Every Ratis module ships ratis-version.properties; Ratis reads ratis-common's. -->
+                <filter>
+                  <artifact>org.apache.ratis:ratis-client</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-grpc</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-proto</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-server*</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+                <filter>
+                  <artifact>org.apache.ratis:ratis-metrics-*</artifact>
+                  <excludes><exclude>ratis-version.properties</exclude></excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheLicenseResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
+                  <addHeader>false</addHeader>
+                </transformer>
+                <!-- The license transformer drops the bundled libraries' licenses: ship ours and theirs. -->
+                <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/LICENSE</resource>
+                  <file>${project.basedir}/../LICENSE</file>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/license/LICENSE.apache-2.0.txt</resource>
+                  <file>${project.basedir}/licenses/LICENSE.apache-2.0.txt</file>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/license/LICENSE.mit.txt</resource>
+                  <file>${project.basedir}/licenses/LICENSE.mit.txt</file>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/license/LICENSE.bsd-3-clause.txt</resource>
+                  <file>${project.basedir}/licenses/LICENSE.bsd-3-clause.txt</file>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                  <resource>META-INF/license/LICENSE.bsd-2-clause.txt</resource>
+                  <file>${project.basedir}/licenses/LICENSE.bsd-2-clause.txt</file>
+                </transformer>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <manifestEntries>
+                    <Implementation-Title>Dodeca</Implementation-Title>
+                    <Implementation-Version>${project.version}</Implementation-Version>
+                    <Dodeca-Neo4j-Version>${neo4j.version}</Dodeca-Neo4j-Version>
+                  </manifestEntries>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <!-- Checks the shaded jar, so it runs after package. -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-failsafe-plugin</artifactId>
+        <configuration>
+          <systemPropertyVariables>
+            <dodeca.plugin.jar>${dodeca.plugin.jar}</dodeca.plugin.jar>
+            <expected.neo4j.version>${neo4j.version}</expected.neo4j.version>
+          </systemPropertyVariables>
+          <classpathDependencyExcludes>
+            <classpathDependencyExclude>dev.dodeca:dodeca-cluster</classpathDependencyExclude>
+            <classpathDependencyExclude>dev.dodeca:dodeca-core</classpathDependencyExclude>
+          </classpathDependencyExcludes>
+        </configuration>
+        <executions>
+          <execution>
+            <goals>
+              <goal>integration-test</goal>
+              <goal>verify</goal>
+            </goals>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

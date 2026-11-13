@@ -1,4 +1,4 @@
-# Weekly pull requests for what DozenDB depends on, each tested by CI (doc/RELEASING.md). Security
+# Weekly pull requests for what Dodeca depends on, each tested by CI (doc/RELEASING.md). Security
 # updates come at once, in pull requests of their own.
 version: 2
 updates:
@@ -22,14 +22,14 @@ updates:
       default-days: 7
       exclude: ["org.neo4j:*"]
     groups:
-      # A new Neo4j release: what a DozenDB release follows, so on its own.
+      # A new Neo4j release: what a Dodeca release follows, so on its own.
       neo4j:
         patterns: ["org.neo4j:*"]
       dependencies:
         patterns: ["*"]
         exclude-patterns: ["org.neo4j:*"]
     ignore:
-      # The versions Neo4j ships in lib/, which DozenDB runs on: they change with Neo4j, by hand.
+      # The versions Neo4j ships in lib/, which Dodeca runs on: they change with Neo4j, by hand.
       - dependency-name: "org.slf4j:*"
       - dependency-name: "jakarta.ws.rs:jakarta.ws.rs-api"
       - dependency-name: "net.java.dev.jna:*"

@@ -1,0 +1,142 @@
+package dev.dodeca.core.servers
+
+import java.util.UUID
+import org.neo4j.graphdb.Transaction
+
+/**
+ * The copies of a database, on the servers it is placed on with the mode of each, and the numbers
+ * of primaries and secondaries it requests.
+ */
+data class Placement(val copies: Map<UUID, CopyMode>, val primaries: Int, val secondaries: Int)
+
+/**
+ * Where the copies of databases go, as CREATE DATABASE and ALTER DATABASE ask, in their system
+ * transaction: in a cluster, on servers the [Allocator] chooses; without one, on this server alone.
+ */
+interface DatabasePlacement {
+    /**
+     * Places the new database [name] on [primaries] and [secondaries] servers, or the default
+     * numbers of them, [seedServer] among the primaries if given.
+     *
+     * @throws AllocationException if the servers cannot host them.
+     */
+    fun place(
+        tx: Transaction,
+        name: String,
+        primaries: Int?,
+        secondaries: Int?,
+        seedServer: UUID?,
+    ): Placement
+
+    /**
+     * Changes the numbers of primaries and secondaries of the database [name] to [primaries] and
+     * [secondaries].
+     *
+     * @throws AllocationException if the servers cannot host them.
+     */
+    fun resize(tx: Transaction, name: String, primaries: Int, secondaries: Int): Placement
+
+    /**
+     * Moves the copies that their servers may no longer host, as after ALTER SERVER changed their
+     * options, to servers that may; returns the moves.
+     *
+     * @throws AllocationException if a copy has nowhere to go; then nothing moves.
+     */
+    fun conform(tx: Transaction): List<Move>
+
+    /**
+     * Moves the copies on the servers [from] to other servers: of every database they host, of
+     * [database] only, or of [limit] of their databases, by name. Records the moves unless
+     * [dryRun]; returns them.
+     *
+     * @throws AllocationException if a copy cannot move; then nothing moves.
+     */
+    fun deallocate(
+        tx: Transaction,
+        from: Set<UUID>,
+        database: String? = null,
+        limit: Int? = null,
+        dryRun: Boolean = false,
+    ): List<Move>
+
+    /**
+     * Moves copies to even out how many each server hosts, first those their servers may no longer
+     * host: of [database] only if given, at most [limit] moves if given. Records the moves unless
+     * [dryRun]; returns them.
+     *
+     * @throws AllocationException if a copy cannot move; then nothing moves.
+     */
+    fun reallocate(
+        tx: Transaction,
+        database: String? = null,
+        limit: Int? = null,
+        dryRun: Boolean = false,
+    ): List<Move>
+}
+
+/**
+ * A server without clustering hosts every database alone: one primary each and no secondary, on no
+ * record.
+ */
+object SingleServerPlacement : DatabasePlacement {
+    override fun place(
+        tx: Transaction,
+        name: String,
+        primaries: Int?,
+        secondaries: Int?,
+        seedServer: UUID?,
+    ) = resize(tx, name, primaries ?: 1, secondaries ?: 0)
+
+    override fun resize(
+        tx: Transaction,
+        name: String,
+        primaries: Int,
+        secondaries: Int,
+    ): Placement {
+        if (primaries != 1) {
+            throw AllocationException(
+                "'$name' needs $primaries servers that can host it as a primary, and this server " +
+                    "runs without clustering"
+            )
+        }
+        if (secondaries != 0) {
+            throw AllocationException(
+                "'$name' needs $secondaries ${if (secondaries == 1) "server" else "servers"} " +
+                    "that can host it as a secondary, and this server runs without clustering"
+            )
+        }
+        return Placement(emptyMap(), 1, 0)
+    }
+
+    /** Moves nothing: refuses options that would leave a database without this server. */
+    override fun conform(tx: Transaction): List<Move> =
+        ServerRecords.records(tx).values.singleOrNull()?.let { alone(tx, it).conform() }.orEmpty()
+
+    /** Moves nothing: refuses to move a database off this server, as no other can host it. */
+    override fun deallocate(
+        tx: Transaction,
+        from: Set<UUID>,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+    ): List<Move> {
+        val id = from.singleOrNull() ?: return emptyList()
+        val record = ServerRecords.records(tx)[id] ?: ServerRecord(id)
+        return alone(tx, record).deallocate(from, database, limit)
+    }
+
+    /** Moves nothing: no other server can host a copy. */
+    override fun reallocate(
+        tx: Transaction,
+        database: String?,
+        limit: Int?,
+        dryRun: Boolean,
+    ): List<Move> = emptyList()
+
+    /** An allocator with the server of [record] alone, which hosts every database. */
+    private fun alone(tx: Transaction, record: ServerRecord): Allocator {
+        val databases =
+            Placements.placed(tx).map { it.copy(copies = mapOf(record.id to CopyMode.PRIMARY)) }
+        return Allocator(listOf(Host(record)), databases)
+    }
+}

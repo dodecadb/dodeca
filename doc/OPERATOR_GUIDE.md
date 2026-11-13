@@ -1,10 +1,10 @@
-# DozenDB operator guide
+# Dodeca operator guide
 
-How to install and run DozenDB, alone or as a cluster.
+How to install and run Dodeca, alone or as a cluster.
 [`COMPATIBILITY.md`](COMPATIBILITY.md) says where it differs from Neo4j
 Enterprise.
 
-- [Installing DozenDB](#installing-dozendb)
+- [Installing Dodeca](#installing-dodeca)
 - [Cluster members](#cluster-members)
 - [Servers](#servers)
 - [Placing databases](#placing-databases)
@@ -16,7 +16,7 @@ Enterprise.
 - [Where databases are led](#where-databases-are-led)
 - [Changing the default database](#changing-the-default-database)
 - [Moving databases to Cypher 25](#moving-databases-to-cypher-25)
-- [Upgrading DozenDB](#upgrading-dozendb)
+- [Upgrading Dodeca](#upgrading-dodeca)
 - [Backup and restore](#backup-and-restore)
 - [Importing and copying databases](#importing-and-copying-databases)
 - [Cloud storage](#cloud-storage)
@@ -26,41 +26,41 @@ Enterprise.
 - [Checkpoints](#checkpoints)
 - [Page cache warmup](#page-cache-warmup)
 - [Monitoring](#monitoring)
-- [DozenDB's settings](#dozendbs-settings)
+- [Dodeca's settings](#dodecas-settings)
 
-## Installing DozenDB
+## Installing Dodeca
 
-DozenDB is one jar added to Neo4j Community's `lib/`. It runs only on the Neo4j
+Dodeca is one jar added to Neo4j Community's `lib/`. It runs only on the Neo4j
 version it was built for, 2026.10.2, as it builds on Neo4j's internal classes
 ([`COMPATIBILITY.md`, "Pinned versions"](COMPATIBILITY.md#pinned-versions)), on
 Java 21 or 25.
 
 ### The jar
 
-Each [release](https://github.com/dozendb/dozendb/releases) has the jar,
-`dozendb-<version>-2026.10.2.jar`, about 70 MB: it bundles what DozenDB
+Each [release](https://github.com/dodecadb/dodeca/releases) has the jar,
+`dodeca-<version>-2026.10.2.jar`, about 70 MB: it bundles what Dodeca
 needs, and its name says which Neo4j version it runs on. To check that the
 release workflow built it, from the tagged commit:
 
 ```sh
-gh attestation verify dozendb-<version>-2026.10.2.jar --repo dozendb/dozendb
+gh attestation verify dodeca-<version>-2026.10.2.jar --repo dodecadb/dodeca
 ```
 
 Built from source as the README says, the jar is
-`dozendb-plugin/target/dozendb-<version>-2026.10.2.jar`; the small
-`dozendb-plugin-<version>.jar` next to it is not the one.
+`dodeca-plugin/target/dodeca-<version>-2026.10.2.jar`; the small
+`dodeca-plugin-<version>.jar` next to it is not the one.
 
 Copy it into the `lib/` directory of Neo4j Community 2026.10.2, not into
-`plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds DozenDB's commands
+`plugins/`: it replaces how Neo4j starts. `neo4j-admin` finds Dodeca's commands
 there too, such as `neo4j-admin database backup`. Without further settings, the
-server runs alone, as Neo4j Community does, with what DozenDB adds; it starts on
+server runs alone, as Neo4j Community does, with what Dodeca adds; it starts on
 a Neo4j Community data directory as it is (see [`COMPATIBILITY.md`, "From Neo4j
 Community"](COMPATIBILITY.md#from-neo4j-community)). `neo4j.log` names the
-version at each start: `DozenDB 0.1.0-SNAPSHOT: clustering is disabled`.
+version at each start: `Dodeca 0.1.0-SNAPSHOT: clustering is disabled`.
 
 ### Docker
 
-Each release publishes an image, `ghcr.io/dozendb/dozendb`, for `linux/amd64`
+Each release publishes an image, `ghcr.io/dodecadb/dodeca`, for `linux/amd64`
 and `linux/arm64`: Neo4j's official Community image with the jar in its
 `lib/`, which runs as Neo4j's image does. Its tags are the release's version,
 such as `0.2.0`, the version with Neo4j's, `0.2.0-2026.10.2`, the minor
@@ -71,15 +71,15 @@ With a jar built from source, build such an image:
 
 ```dockerfile
 FROM neo4j:2026.10.2-community
-COPY dozendb-0.1.0-SNAPSHOT-2026.10.2.jar /var/lib/neo4j/lib/
+COPY dodeca-0.1.0-SNAPSHOT-2026.10.2.jar /var/lib/neo4j/lib/
 ```
 
 Mounting the jar into the container read-only does not work: Neo4j's
 entrypoint changes the owner of the files under `/var/lib/neo4j`, and the
 container stops when it cannot. Settings are environment variables, as in
 Neo4j's image: `NEO4J_` and the setting's name, with `_` for `.` and `__` for
-`_`, such as `NEO4J_dbms_dozendb_cluster_initial__members` for
-`dbms.dozendb.cluster.initial_members`.
+`_`, such as `NEO4J_dbms_dodeca_cluster_initial__members` for
+`dbms.dodeca.cluster.initial_members`.
 
 ### Forming a cluster
 
@@ -89,8 +89,8 @@ loss of one, five for two. Give each initial member, in `neo4j.conf`:
 ```properties
 server.default_listen_address=0.0.0.0
 server.default_advertised_address=core1.example.com
-dbms.dozendb.cluster.enabled=true
-dbms.dozendb.cluster.initial_members=core1.example.com:7700,core2.example.com:7700,core3.example.com:7700
+dbms.dodeca.cluster.enabled=true
+dbms.dodeca.cluster.initial_members=core1.example.com:7700,core2.example.com:7700,core3.example.com:7700
 dbms.ssl.policy.cluster.enabled=true
 dbms.ssl.policy.cluster.verify_hostname=true
 initial.dbms.default_primaries_count=3
@@ -102,10 +102,10 @@ initial.dbms.default_primaries_count=3
 - `server.default_advertised_address`: the host name or address of this
   member that the others and clients reach, its own on each member. It gives
   the member's addresses their host: Bolt on port 7687, Raft on 7700
-  (`server.dozendb.cluster.advertised_address`) and the routing connector on
+  (`server.dodeca.cluster.advertised_address`) and the routing connector on
   7688 (`server.routing.advertised_address`). Neo4j's default, `localhost`,
   does not work between servers.
-- `dbms.dozendb.cluster.initial_members`: the Raft addresses of every initial
+- `dbms.dodeca.cluster.initial_members`: the Raft addresses of every initial
   member, this one included, the same list on each. Members read it only at
   their first start, when they have no Raft state yet.
 - `dbms.ssl.policy.cluster.enabled`: a member does not start until it is set.
@@ -119,7 +119,7 @@ initial.dbms.default_primaries_count=3
   (see [Raising the default](#raising-the-default)). It is read at the
   cluster's first start.
 
-[DozenDB's settings](#dozendbs-settings) lists the others of DozenDB's own.
+[Dodeca's settings](#dodecas-settings) lists the others of Dodeca's own.
 
 Set the same initial password on every member, as with `neo4j-admin dbms
 set-initial-password` or Docker's `NEO4J_AUTH`: one of them creates the
@@ -150,12 +150,12 @@ initial members, with its data directory, and give the others empty ones (see
 To check the cluster, as an administrator on any member:
 
 ```cypher
-CALL dozendb.cluster.members()
+CALL dodeca.cluster.members()
 SHOW SERVERS
 SHOW DATABASES
 ```
 
-`dozendb.cluster.members()` lists the three members, one of them `LEADER` of
+`dodeca.cluster.members()` lists the three members, one of them `LEADER` of
 `system`; `SHOW SERVERS` lists them `Enabled` and `Available`; and
 `SHOW DATABASES` lists `system` and the default database `online` on each.
 Drivers connect with `neo4j://` to any member, which routes them (see
@@ -169,11 +169,11 @@ jar built from source, add `build: .` under `image:`, next to the
 
 ```yaml
 x-member: &member
-  image: ghcr.io/dozendb/dozendb
+  image: ghcr.io/dodecadb/dodeca
   environment: &config
     NEO4J_AUTH: neo4j/change-this-password
-    NEO4J_dbms_dozendb_cluster_enabled: "true"
-    NEO4J_dbms_dozendb_cluster_initial__members: core1:7700,core2:7700,core3:7700
+    NEO4J_dbms_dodeca_cluster_enabled: "true"
+    NEO4J_dbms_dodeca_cluster_initial__members: core1:7700,core2:7700,core3:7700
     NEO4J_initial_dbms_default__primaries__count: "3"
     NEO4J_dbms_ssl_policy_cluster_enabled: "false"
     # Small, for one machine.
@@ -204,7 +204,7 @@ services:
 ```sh
 docker compose up -d
 docker compose exec core1 cypher-shell -u neo4j -p change-this-password \
-  "CALL dozendb.cluster.members()"
+  "CALL dodeca.cluster.members()"
 ```
 
 ### Ports
@@ -214,7 +214,7 @@ docker compose exec core1 cypher-shell -u neo4j -p change-this-password \
 | 7687 | `server.bolt.listen_address` | Clients: drivers, Cypher Shell, and remote aliases of other DBMSs. |
 | 7474 | `server.http.listen_address` | HTTP clients, Neo4j Browser, and load balancers asking the [cluster status endpoints](#cluster-status-endpoints). |
 | 7473 | `server.https.listen_address` | The same, over HTTPS, when `server.https.enabled` is set. |
-| 7700 | `server.dozendb.cluster.listen_address` | The other members: Raft, membership, probes, database copies, and secondaries' pulls. |
+| 7700 | `server.dodeca.cluster.listen_address` | The other members: Raft, membership, probes, database copies, and secondaries' pulls. |
 | 7688 | `server.routing.listen_address` | The other members, with TLS between them: writes they forward (see [Writes on any member](#writes-on-any-member)). |
 | 6362 | `server.backup.listen_address` | `neo4j-admin database backup`, at `server.backup.advertised_address` with `--remote-address-resolution`; only from the server's own host by default (see [Serving backups](#serving-backups)). |
 | 2004 | `server.metrics.prometheus.endpoint` | Prometheus, when enabled; only from the server's own host by default (see [Metrics](#metrics)). |
@@ -225,7 +225,7 @@ storage, and to the DBMSs of remote aliases.
 ### Stopping and starting a cluster
 
 Members can be shut down and started in any order, one at a time or all
-together, as for a Neo4j upgrade (see [Upgrading DozenDB](#upgrading-dozendb)).
+together, as for a Neo4j upgrade (see [Upgrading Dodeca](#upgrading-dodeca)).
 A member keeps its Raft state and its databases, and starts from them
 (`Rejoining the cluster from local Raft state`). It catches up with what the
 others wrote meanwhile, from their Raft logs or with a copy (see
@@ -259,12 +259,12 @@ to each database's group and removes them from it until they match.
 
 Two procedures show the members, on any member:
 
-- `CALL dozendb.cluster.members()` lists the cluster's members with their Raft
+- `CALL dodeca.cluster.members()` lists the cluster's members with their Raft
   and Bolt addresses, where each takes writes that other members forward
   (`routingAddress`, see [Writes on any member](#writes-on-any-member)), which
   one leads `system`, which host it as secondaries (`SECONDARY`), and in
   `databases` the databases whose groups each member votes in.
-- `CALL dozendb.cluster.status()` lists, for every database running on the
+- `CALL dodeca.cluster.status()` lists, for every database running on the
   member asked, the member's role, the leader, Raft indexes, and in `members`
   the ids of the members that vote in the database's group.
 
@@ -276,18 +276,18 @@ dropped, and with two both must be up to drop one.
 ### Adding a member
 
 1. Configure the new server like the others (see
-   [Forming a cluster](#forming-a-cluster)): the same Neo4j and DozenDB
-   versions, `dbms.dozendb.cluster.enabled=true`, the same TLS settings with a
+   [Forming a cluster](#forming-a-cluster)): the same Neo4j and Dodeca
+   versions, `dbms.dodeca.cluster.enabled=true`, the same TLS settings with a
    certificate of its own (see [TLS between members](#tls-between-members)),
-   its own `server.dozendb.cluster.advertised_address`, and
-   `dbms.dozendb.cluster.initial_members` listing the Raft address of at least
+   its own `server.dodeca.cluster.advertised_address`, and
+   `dbms.dodeca.cluster.initial_members` listing the Raft address of at least
    one current member. Its data directory must be empty.
 2. Start it. It copies `system` from a member, starts it without taking part
    in the cluster yet, and logs:
 
    ```
    This member is not part of the cluster yet. To add it, run
-   CALL dozendb.cluster.addMember('<its Raft address>') on a member of the cluster.
+   CALL dodeca.cluster.addMember('<its Raft address>') on a member of the cluster.
    ```
 
 3. Run that call on any member. It returns once the new member votes in the
@@ -300,7 +300,7 @@ dropped, and with two both must be up to drop one.
    on it: new databases, topologies that grow and `REALLOCATE DATABASES` do
    (see [Placing databases](#placing-databases)). For each database placed on
    it, it copies the database and joins the database's group; the database's
-   leader brings it up to date before it votes. `dozendb.cluster.members()`
+   leader brings it up to date before it votes. `dodeca.cluster.members()`
    shows each database it joined, and routing tables list it for a database
    once it votes there. Reads and writes go on throughout. With servers
    enabled as they join, this step is not needed.
@@ -387,7 +387,7 @@ while the server runs, and prints the server's old id. Then:
 
 1. Start the server. It starts under a new id, copies `system` and waits to be
    added, as a new member does (see [Adding a member](#adding-a-member)):
-   `CALL dozendb.cluster.addMember('<its Raft address>')` on a member, then
+   `CALL dodeca.cluster.addMember('<its Raft address>')` on a member, then
    `ENABLE SERVER '<its new id>'`.
 2. Drop the old server: `DEALLOCATE DATABASES FROM SERVER '<old id>'`, then,
    once `SHOW SERVERS` shows it `Deallocated`, `DROP SERVER '<old id>'`. Its
@@ -835,21 +835,21 @@ requests, and takes administration commands, which it sends to the leader of
 
 To add one, configure it as for [Adding a member](#adding-a-member), with
 `server.cluster.system_database_mode=SECONDARY`. Its own address must not be
-in `dbms.dozendb.cluster.initial_members`: only primaries of `system` form a
+in `dbms.dodeca.cluster.initial_members`: only primaries of `system` form a
 cluster, and the server refuses to start otherwise. Once the cluster has
 formed, the server copies `system`, pulls it, and logs:
 
 ```
 This server hosts the system database as a secondary and is not part of the
-cluster yet. To add it, run CALL dozendb.cluster.addMember('<its Raft address>')
+cluster yet. To add it, run CALL dodeca.cluster.addMember('<its Raft address>')
 on the leader of the system database.
 ```
 
-Run that call on the leader of `system`, which `dozendb.cluster.members()`
+Run that call on the leader of `system`, which `dodeca.cluster.members()`
 shows: a `neo4j://` connection in write mode, as Cypher Shell opens by
 default, reaches it with `-d system`. The leader records the server, which
 learns it when it next pulls and is then a Free server, listed by
-`dozendb.cluster.members()` with the role `SECONDARY`. `DROP SERVER` drops it
+`dodeca.cluster.members()` with the role `SECONDARY`. `DROP SERVER` drops it
 as any other server: it learns it from the system graph it pulls, and stops
 its databases.
 
@@ -999,7 +999,7 @@ extended key usages, it needs both `serverAuth` and `clientAuth`.
 
 - `verify_hostname=true` makes a member check that the certificate of the
   member it connects to names the address it dials: the host of that member's
-  `server.dozendb.cluster.advertised_address`, as a DNS name or IP address
+  `server.dodeca.cluster.advertised_address`, as a DNS name or IP address
   among the certificate's subject alternative names. It is Neo4j's default;
   `false` only checks that a trusted authority issued the certificate.
 - `client_auth` keeps its default, `REQUIRE`, for members to refuse
@@ -1021,7 +1021,7 @@ others reach as `core1`:
 
 ```
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-  -days 3650 -subj "/CN=DozenDB cluster CA" -keyout ca.key -out ca.crt
+  -days 3650 -subj "/CN=Dodeca cluster CA" -keyout ca.key -out ca.crt
 openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
   -subj "/CN=core1" -keyout private.key -out core1.csr
 printf "subjectAltName=DNS:core1\nextendedKeyUsage=serverAuth,clientAuth\n" \
@@ -1078,7 +1078,7 @@ route it, as with Neo4j Enterprise's server-side routing:
 - HTTP clients, on the Query API and the transactional endpoint;
 - Bolt clients connected to one member (`bolt://`, also Cypher Shell with
   `-a bolt://...`), only while that member sets
-  `dbms.dozendb.routing.forward_bolt_writes=true`. The setting is off by
+  `dbms.dodeca.routing.forward_bolt_writes=true`. The setting is off by
   default, as in Neo4j Enterprise, and dynamic. Without it, such a write fails
   with `Neo.ClientError.Cluster.NotALeader`, and the error names the leader's
   Bolt address.
@@ -1088,7 +1088,7 @@ administration commands included: they run on the leader of `system`. On the
 leader, the transaction runs as its user, with the same privileges,
 impersonation, metadata and timeout; the results, notifications, errors and
 bookmarks the client gets are the leader's. The leader's query log and
-security log record it, with `dozendb-forwarding/<version>` as the client's
+security log record it, with `dodeca-forwarding/<version>` as the client's
 user agent, and `SHOW TRANSACTIONS` and `TERMINATE TRANSACTION` on the leader
 see it. Read transactions run on the member they reach if it hosts the
 database (see [Clients](#clients) otherwise), and linearizable reads
@@ -1114,7 +1114,7 @@ use. On every member:
   (default: the host of `server.default_advertised_address` and port 7688).
   Clients need not reach it.
 
-`dozendb.cluster.members()` shows each member's `routingAddress`, or null for
+`dodeca.cluster.members()` shows each member's `routingAddress`, or null for
 a member that takes no forwarded writes. Such a member logs why when it
 starts. A member that forwards no writes says why in the error that a write
 on it gets.
@@ -1122,7 +1122,7 @@ on it gets.
 ### Failures
 
 - **No leader.** The member waits for one up to
-  `dbms.dozendb.cluster.election_timeout_max`, then fails the transaction with
+  `dbms.dodeca.cluster.election_timeout_max`, then fails the transaction with
   `Neo.ClientError.Cluster.NotALeader`. Drivers retry managed transactions
   (`executeWrite`) on that error.
 - **The leader changes, or cannot be reached.** Open transactions fail with
@@ -1156,16 +1156,16 @@ A read sees the writes that its transaction's bookmarks name, as in Neo4j
 Enterprise, so a driver session reads its own writes on any server. A write
 it holds no bookmark of, such as another client's, may not be visible yet on a
 server other than the leader, although it was acknowledged: the other servers
-apply what the leader commits a moment later. A linearizable read, DozenDB's
+apply what the leader commits a moment later. A linearizable read, Dodeca's
 own, sees every write acknowledged anywhere in the cluster before the read
 began, wherever it runs.
 
-A transaction asks for one with the metadata key `dozendb.consistency` set to
+A transaction asks for one with the metadata key `dodeca.consistency` set to
 `linearizable`, in any case; `causal` is the usual read. In the Java driver:
 
 ```java
 var linearizable = TransactionConfig.builder()
-    .withMetadata(Map.of("dozendb.consistency", "linearizable"))
+    .withMetadata(Map.of("dodeca.consistency", "linearizable"))
     .build();
 long films = session.executeRead(
     tx -> tx.run("MATCH (f:Film) RETURN count(f) AS n").single().get("n").asLong(),
@@ -1173,9 +1173,9 @@ long films = session.executeRead(
 ```
 
 Other drivers pass transaction metadata alike, such as Python's
-`@unit_of_work(metadata={"dozendb.consistency": "linearizable"})`. Any other
+`@unit_of_work(metadata={"dodeca.consistency": "linearizable"})`. Any other
 value fails the transaction with `Neo.ClientError.Request.Invalid`.
-`dbms.dozendb.reads.default_consistency=LINEARIZABLE` (not dynamic) makes
+`dbms.dodeca.reads.default_consistency=LINEARIZABLE` (not dynamic) makes
 every transaction on a member that names no consistency linearizable, also
 those of clients that cannot set metadata, such as Cypher Shell. Linearizable
 reads apply to Bolt clients.
@@ -1261,12 +1261,12 @@ nothing of them was committed, and drivers retry managed transactions
 across the move fails the same way and needs a retry. No commit is left with
 an unknown outcome by a handover, as it can be when a leader fails.
 
-To see where databases are led: `CALL dozendb.cluster.status()` on any member
+To see where databases are led: `CALL dodeca.cluster.status()` on any member
 lists its role and the leader of every database; the metric
 `cluster.raft.is_leader` is 1 on each database's leader. Every handover is
 logged in `debug.log` with its reason, as in
 `Transferred leadership of neo4j(...) to ...: the database is read-only on this
-member`, and counted in `dozendb.cluster.raft.leadership_transfers` on the
+member`, and counted in `dodeca.cluster.raft.leadership_transfers` on the
 member that handed over.
 
 ## Changing the default database
@@ -1306,40 +1306,40 @@ DATABASE DEFAULT LANGUAGE` changes; a local alias runs in its database's.
 `GRANT SET DATABASE DEFAULT LANGUAGE ON DBMS` lets a role change databases'
 versions without other database privileges.
 
-## Upgrading DozenDB
+## Upgrading Dodeca
 
-DozenDB is upgraded one member at a time while the cluster keeps serving.
+Dodeca is upgraded one member at a time while the cluster keeps serving.
 Every member must keep running the same Neo4j version: members refuse to form
 a cluster with, add, or rejoin a member that runs another one. To upgrade
 Neo4j, shut down every member, upgrade them all, and start them again.
 
-A cluster mixes at most two DozenDB versions, the one it ran and the next.
+A cluster mixes at most two Dodeca versions, the one it ran and the next.
 Each version supports a range of format levels: the formats members send each
 other and keep, such as the entries of the Raft log. The cluster's format
 level says which formats members write. A newer version can read the formats
 of the cluster's level, so it can run next to the previous version; it writes
 newer formats only once the upgrade is finished.
 
-1. Start once `CALL dozendb.cluster.status()` shows the group of every
+1. Start once `CALL dodeca.cluster.status()` shows the group of every
    database on every member: a database created moments ago has its only copy
    on the member that created it until the others copied it. Then, on one
-   member at a time: shut it down, replace the DozenDB jar in Neo4j's `lib/`,
+   member at a time: shut it down, replace the Dodeca jar in Neo4j's `lib/`,
    and start it. Before the next member, wait until it has started
-   (Neo4j logs `Started.`), `CALL dozendb.cluster.status()` on it shows the
+   (Neo4j logs `Started.`), `CALL dodeca.cluster.status()` on it shows the
    group of every database with the role `FOLLOWER` or `LEADER`, and it has
    caught up with the writes it missed: for each database, its `appliedIndex`
-   is close to the `commitIndex` that `dozendb.cluster.status()` shows on the
+   is close to the `commitIndex` that `dodeca.cluster.status()` shows on the
    database's leader. With one member down at a time, a cluster of three or
    more members keeps a majority and goes on serving writes; a member still
    catching up counts towards that majority only once it has.
 2. Check that every member runs the new version: `CALL
-   dozendb.cluster.members()` shows each member's `dozendbVersion` and the
+   dodeca.cluster.members()` shows each member's `dodecaVersion` and the
    `formatLevels` it supports.
 3. Finish the upgrade, as an administrator, on the leader of the `system`
    database:
 
    ```
-   CALL dozendb.cluster.finishUpgrade()
+   CALL dodeca.cluster.finishUpgrade()
    ```
 
    It raises the cluster's format level to the newest level any member
@@ -1350,7 +1350,7 @@ newer formats only once the upgrade is finished.
 Until the upgrade is finished, any member can return to the previous version
 the same way. Afterwards none can: a member refuses to start with a version
 that does not support the cluster's format level, and so does a new member
-added to the cluster. `CALL dozendb.cluster.formatLevel()` shows the cluster's
+added to the cluster. `CALL dodeca.cluster.formatLevel()` shows the cluster's
 format level and the levels the member asked supports. When a new version
 supports no newer format level, `finishUpgrade` changes nothing; calling it
 after every upgrade is harmless.
@@ -1629,7 +1629,7 @@ database is online come with `system`.
 ## Importing and copying databases
 
 `neo4j-admin database import full` creates a database from CSV files, as in
-Neo4j. DozenDB adds `import incremental`, which adds CSV files to an existing
+Neo4j. Dodeca adds `import incremental`, which adds CSV files to an existing
 database, resumes a full import that stopped, and adds `neo4j-admin database
 copy`. [`COMPATIBILITY.md`, "Import and
 copy"](COMPATIBILITY.md#import-and-copy), lists where they differ from Neo4j
@@ -1740,7 +1740,7 @@ Run the same command again, with the same files and options, but without
 and `--verbose` may change. Files that changed, by size or modification time,
 and other options are refused, naming what differs. An import that stopped
 earlier starts over with `--overwrite-destination`. The import keeps its
-progress in `.dozendb-import.properties` in the database's directory, and the
+progress in `.dodeca-import.properties` in the database's directory, and the
 report of bad entries of the run that stopped.
 
 ### Importing into a backup
@@ -1752,7 +1752,7 @@ uncompressed unless `--compress` is given, and split with
 `--split-archive-part-size` as `neo4j-admin database backup` splits backups.
 Seed or restore a database from it.
 
-- The import is made in `.dozendb-import-<database>` in `--temp-path`, by
+- The import is made in `.dodeca-import-<database>` in `--temp-path`, by
   default `--target-location`, which must be local then: it needs room for
   the database. A full import that stops keeps it there and resumes from it.
 - An incremental import imports into a copy of the stopped database, with
@@ -1831,7 +1831,7 @@ which `SHOW DATABASES` names on that server.
 
 Backups, restores, dumps, loads, seeds, imports and `LOAD CSV` read and write
 Amazon S3, Google Cloud Storage and Azure Blob Storage, as in Neo4j Enterprise.
-The clouds' SDKs come in DozenDB's jar.
+The clouds' SDKs come in Dodeca's jar.
 
 ### URIs
 
@@ -1858,7 +1858,7 @@ folder named without its `/` works too where a folder is expected.
 
 ### Credentials
 
-DozenDB takes no credentials of its own: each cloud's SDK finds them where it
+Dodeca takes no credentials of its own: each cloud's SDK finds them where it
 always does, in the environment of the server and of `neo4j-admin`, or in the
 files of the user they run as. Every server and every `neo4j-admin` that reads
 or writes cloud storage needs them; in a cluster, every server that may read a
@@ -1895,7 +1895,7 @@ environment, such as systemd's `Environment=`.
 
 For a store that speaks S3's protocol, such as MinIO or Ceph, set its endpoint
 as the AWS SDK reads it: `AWS_ENDPOINT_URL_S3` (or `AWS_ENDPOINT_URL`, or
-`endpoint_url` in the profile). With an endpoint set, DozenDB names the bucket
+`endpoint_url` in the profile). With an endpoint set, Dodeca names the bucket
 in the path (`https://<endpoint>/<bucket>/<key>`) and sends checksums only
 where S3 requires them, as such stores expect.
 
@@ -1951,7 +1951,7 @@ the recovered cluster is refused (see [Lost servers](#lost-servers)).
    refuses while the server runs, and prints the server's id and the last
    transaction of its `system` store (`lastCommittedTransaction`). A run cut
    short can run again.
-3. Set `dbms.dozendb.cluster.initial_members` on each server left to the
+3. Set `dbms.dodeca.cluster.initial_members` on each server left to the
    servers left and any new servers that are to replace lost ones, and start
    them all, the new ones with empty data directories.
 
@@ -1983,8 +1983,8 @@ A lost server that comes back with its old state is refused once it reaches a
 server of the recovered cluster, with a message: its Raft group of `system` is
 stale. To bring it back as the same server, with its databases, before it is
 dropped: run `neo4j-admin dbms unbind-system-db` on it, set its
-`dbms.dozendb.cluster.initial_members` to servers of the cluster, start it, and
-add it with `CALL dozendb.cluster.addMember('<its Raft address>')` on the leader
+`dbms.dodeca.cluster.initial_members` to servers of the cluster, start it, and
+add it with `CALL dodeca.cluster.addMember('<its Raft address>')` on the leader
 of `system`. To bring it back as a new server, unbind it with `neo4j-admin
 server unbind` instead (see [Unbinding a server](#unbinding-a-server)).
 
@@ -2130,7 +2130,7 @@ that forwards them (see [Writes on any member](#writes-on-any-member)).
 
 ### The first admin
 
-The first start of a DozenDB version with roles, on a new or an existing
+The first start of a Dodeca version with roles, on a new or an existing
 store, creates the built-in roles and gives `admin` to one user: the user
 chosen with `neo4j-admin dbms set-default-admin <user>` before that start,
 else `neo4j`, else the only user. Every other user has only `PUBLIC`: give
@@ -2148,7 +2148,7 @@ again:
 1. Stop every member. Set `dbms.security.auth_enabled=false` on each, and
    make sure that only trusted clients reach Bolt meanwhile, for example with
    `server.bolt.listen_address=127.0.0.1:7687`.
-2. Start every member. On the member where `CALL dozendb.cluster.status()`
+2. Start every member. On the member where `CALL dodeca.cluster.status()`
    shows `system` with the role `LEADER`, give the role back; the other
    members refuse the command with `NotALeader`:
 
@@ -2222,7 +2222,7 @@ rules give nothing, and property rules with tags are left out, which
 
 ### Moving roles from or to Neo4j Enterprise
 
-DozenDB keeps roles and privileges in the system graph in nodes of its own,
+Dodeca keeps roles and privileges in the system graph in nodes of its own,
 and refuses to start on a system database that holds Neo4j Enterprise's.
 Move them as commands instead, in either direction:
 
@@ -2247,7 +2247,7 @@ Move them as commands instead, in either direction:
 2. Move the databases other than `system` as dumps (`neo4j-admin database
    dump`), and create them on the new servers from those ([Creating a database
    from a backup or a dump](#creating-a-database-from-a-backup-or-a-dump)).
-   Neo4j Community, and so DozenDB, reads only the `aligned` and `standard`
+   Neo4j Community, and so Dodeca, reads only the `aligned` and `standard`
    store formats: migrate a database in another format with `neo4j-admin
    database migrate --to-format=aligned` first.
 3. On the new servers, run the saved commands in the same order, each
@@ -2255,7 +2255,7 @@ Move them as commands instead, in either direction:
    servers have from the start: the `CREATE ROLE` commands of the built-in
    roles, and `CREATE USER neo4j`. Commands about databases or features the
    new servers lack fail and can be left out, such as users of single
-   sign-on on DozenDB.
+   sign-on on Dodeca.
 
 
 ## Database aliases
@@ -2277,11 +2277,11 @@ CREATE ALIAS `remote-films` FOR DATABASE films
 ```
 
 [`COMPATIBILITY.md`](COMPATIBILITY.md#database-aliases) describes what aliases
-do and where DozenDB answered what Neo4j's documentation leaves open.
+do and where Dodeca answered what Neo4j's documentation leaves open.
 
 ### Keystore for remote aliases
 
-DozenDB encrypts the passwords of remote aliases with an AES key from a
+Dodeca encrypts the passwords of remote aliases with an AES key from a
 PKCS12 keystore, under Neo4j Enterprise's settings. Make the keystore with
 the JDK's `keytool`, with the same password for the keystore and the key:
 
@@ -2438,7 +2438,7 @@ default.
 
 ## Monitoring
 
-DozenDB reports metrics, and writes the query log and the security log, as Neo4j
+Dodeca reports metrics, and writes the query log and the security log, as Neo4j
 Enterprise's operations manual describes them;
 [`COMPATIBILITY.md`](COMPATIBILITY.md#metrics-and-logs) lists the differences.
 With clustering, each member reports and logs what happens on it: monitor every
@@ -2485,12 +2485,12 @@ than letters, digits and `_` become `_`, counters end in `_total`, and
 histograms are summaries with quantiles, `_sum` and `_count`:
 `neo4j_database_neo4j_transaction_committed_total`. A database's series
 appear when it starts and go when it stops or is dropped. Metrics that only
-DozenDB has carry `dozendb` in their names.
+Dodeca has carry `dodeca` in their names.
 
 A filter replaces the default list rather than adding to it. To report more,
 repeat the default, which
 `SHOW SETTINGS YIELD name, defaultValue WHERE name = 'server.metrics.filter'`
-shows, and append globs such as `*cluster.raft.*,*dozendb.cluster.*`.
+shows, and append globs such as `*cluster.raft.*,*dodeca.cluster.*`.
 
 With clustering, each member reports for each database, under
 `neo4j.database.<database>.`:
@@ -2501,15 +2501,15 @@ With clustering, each member reports for each database, under
 | `cluster.raft.append_index`, `commit_index`, `applied_index`, `prune_index`, `term` | The member's Raft log: its last entry, the last entry known committed, the last applied to the database, and the first still kept. |
 | `cluster.raft.last_leader_message` | Milliseconds since the member last heard from the leader; 0 on the leader. |
 | `cluster.raft.replication_new`, `replication_attempt`, `replication_success`, `replication_fail`, `replication_maybe` | Transactions the member asked Raft to replicate, and their outcomes. `replication_maybe` counts transactions whose outcome the client did not learn, as when the leader changes during the commit. |
-| `dozendb.cluster.replication.latency.millis` | Milliseconds from asking Raft to replicate a transaction until it was applied. |
-| `dozendb.cluster.raft.followers`, `follower_lag_max` | On the leader only: the followers it sends to, and the most committed entries one of them does not have yet. A lag that keeps growing means a follower does not keep up. |
-| `dozendb.cluster.raft.snapshots`, `leader_changes` | Raft snapshots taken and leaders learned of since the member started. |
-| `dozendb.cluster.raft.leadership_transfers` | Leaderships the member handed over to another member on purpose since it started: when it stopped the database, when the database was read-only on it, or to balance leaders (see [Where databases are led](#where-databases-are-led)). |
-| `dozendb.cluster.store_copy.received`, `served`, `repeated`, `received.millis` | Copies of the database the member installed, to join or to catch up; copies it sent to other members; copies it needed within an hour of the previous one, a sign that it does not keep up (see ["Raft log retention and catch-up" in `COMPATIBILITY.md`](COMPATIBILITY.md#running-a-cluster)); and how long catching up took. |
+| `dodeca.cluster.replication.latency.millis` | Milliseconds from asking Raft to replicate a transaction until it was applied. |
+| `dodeca.cluster.raft.followers`, `follower_lag_max` | On the leader only: the followers it sends to, and the most committed entries one of them does not have yet. A lag that keeps growing means a follower does not keep up. |
+| `dodeca.cluster.raft.snapshots`, `leader_changes` | Raft snapshots taken and leaders learned of since the member started. |
+| `dodeca.cluster.raft.leadership_transfers` | Leaderships the member handed over to another member on purpose since it started: when it stopped the database, when the database was read-only on it, or to balance leaders (see [Where databases are led](#where-databases-are-led)). |
+| `dodeca.cluster.store_copy.received`, `served`, `repeated`, `received.millis` | Copies of the database the member installed, to join or to catch up; copies it sent to other members; copies it needed within an hour of the previous one, a sign that it does not keep up (see ["Raft log retention and catch-up" in `COMPATIBILITY.md`](COMPATIBILITY.md#running-a-cluster)); and how long catching up took. |
 | `cluster.catchup.tx_pull_requests_received` | Pulls of transactions that secondaries sent the member. |
 | `cluster.store_copy.pull_updates`, `pull_update_highest_tx_id_requested`, `pull_update_highest_tx_id_received` | On a secondary: the pulls it sent, the id of the last transaction it had when it last pulled, and the highest transaction id it pulled. Its lag shows in `SHOW DATABASES` (see [Reading from secondaries](#reading-from-secondaries)). |
 
-The server reports `neo4j.dbms.dozendb.cluster.members`, the cluster's servers
+The server reports `neo4j.dbms.dodeca.cluster.members`, the cluster's servers
 as the member knows them: the primaries of `system` and the servers that host
 it as a secondary.
 
@@ -2604,12 +2604,12 @@ health checks ask them, as they would a single Neo4j Enterprise server, runs as
 a cluster of one instead, which leads every database:
 
 ```
-dbms.dozendb.cluster.enabled=true
-dbms.dozendb.cluster.initial_members=<its own Raft address>
+dbms.dodeca.cluster.enabled=true
+dbms.dodeca.cluster.initial_members=<its own Raft address>
 dbms.ssl.policy.cluster.enabled=false
 ```
 
-Its Raft address is `server.dozendb.cluster.advertised_address`: by default
+Its Raft address is `server.dodeca.cluster.advertised_address`: by default
 `server.default_advertised_address` with port 7700, such as `solo:7700`.
 
 Members added later make it a cluster of more (see
@@ -2676,9 +2676,9 @@ runs on and another member that is open now, and for each protocol the
 connection carried: `orientation` (`inbound` or `outbound`), `remoteAddress`,
 `applicationProtocol`, `applicationProtocolVersion`, and `modifierProtocols`,
 `TLS` for an encrypted connection and empty otherwise. The protocols are
-DozenDB's own ([`FORMATS.md`](FORMATS.md)): `raft` for Raft's messages, at the
+Dodeca's own ([`FORMATS.md`](FORMATS.md)): `raft` for Raft's messages, at the
 version of the replicated transactions; `probe`; and `bulk`, with a row for each
-bulk transfer the connection carried, such as `dozendb.storeCopy`. A leader
+bulk transfer the connection carried, such as `dodeca.storeCopy`. A leader
 lists its outbound Raft connections to the members it replicates to that
 answered lately. It needs no administrator.
 
@@ -2703,7 +2703,7 @@ threshold, served 2 to 3% fewer. Small write transactions, which wait for the
 disk, lost less than 5%. Metrics cost less than the variation between runs,
 and a scrape of every metric of a server with 102 databases, about 14,000
 series, took 16 ms and 3 MB, or 180 kB compressed as Prometheus asks for it.
-`MonitoringBenchmark` in `dozendb-core` measures this.
+`MonitoringBenchmark` in `dodeca-core` measures this.
 
 For JSON lines, use Neo4j's layout in the `QueryLog` appender of
 `conf/server-logs.xml`, in place of its `PatternLayout`:
@@ -2739,7 +2739,7 @@ setting at once, until the member restarts; an empty value restores the default.
 It needs the `admin` role and changes only the member it runs on: with
 clustering, run it on each member, connecting to each directly (`bolt://`), and
 change `neo4j.conf` too so that the change outlasts a restart. A member with
-`dbms.dozendb.routing.forward_bolt_writes=true` forwards write transactions to
+`dbms.dodeca.routing.forward_bolt_writes=true` forwards write transactions to
 the leader, which the procedure would change instead: run it in a read
 transaction there, as with Cypher Shell's `--access-mode read`. `SHOW SETTINGS
 YIELD name, isDynamic WHERE isDynamic` lists the dynamic settings. `CALL
@@ -2751,32 +2751,32 @@ change: setting names, comma separated, in which `*` stands for any text, such
 as `db.logs.query.*,dbms.max_databases`. The default `*` lets every dynamic
 setting change, and an empty value none. It is read at start.
 
-## DozenDB's settings
+## Dodeca's settings
 
 Settings that Neo4j Enterprise has keep Enterprise's names and work as its
-operations manual describes them; the sections above say where DozenDB differs,
-and [`COMPATIBILITY.md`](COMPATIBILITY.md) lists them. DozenDB's own settings,
-for what Enterprise does its own way or does not have, have `dozendb` in their
+operations manual describes them; the sections above say where Dodeca differs,
+and [`COMPATIBILITY.md`](COMPATIBILITY.md) lists them. Dodeca's own settings,
+for what Enterprise does its own way or does not have, have `dodeca` in their
 names:
 
 | Setting | Default | Dynamic | |
 |---|---|---|---|
-| `dbms.dozendb.cluster.enabled` | `false` | No | Makes the server a cluster member; otherwise it runs alone. See [Forming a cluster](#forming-a-cluster). |
-| `dbms.dozendb.cluster.initial_members` | none | No | The Raft addresses of the members that form the cluster, this one included. Read at a member's first start, and when servers re-form `system` (see [Recovering the system database](#recovering-the-system-database)). |
-| `server.dozendb.cluster.listen_address` | `:7700` | No | Where the member's Raft server listens: Raft, membership, probes, copies and pulls. A port alone takes the host of `server.default_listen_address`. |
-| `server.dozendb.cluster.advertised_address` | `:7700` | No | The member's Raft address, which the others reach, and which names it in `initial_members` and `dozendb.cluster.addMember`. A port alone takes the host of `server.default_advertised_address`. See [Changing an address](#changing-an-address). |
-| `server.dozendb.cluster.raft_directory` | `raft` | No | Where the member keeps its Raft logs, one directory per database, and its membership record; relative to `server.directories.data`. Never delete it while the member keeps its id ([`COMPATIBILITY.md`, "Lost databases"](COMPATIBILITY.md#running-a-cluster)). |
-| `server.dozendb.cluster.single_fsync` | `true` | No | Commits to replicated databases force only the Raft log to disk; `false` forces Neo4j's transaction log at every commit too. See [`COMPATIBILITY.md`, "Durability (single fsync)"](COMPATIBILITY.md#running-a-cluster). |
-| `dbms.dozendb.cluster.election_timeout_min`, `election_timeout_max` | `1s`, `2s` | No | A primary that hears nothing from its database's leader for a random time between the two starts an election, so they bound how soon a failed leader is replaced. Shorter timeouts fail over sooner, and on a slow or busy network start elections that are not needed. At least 100 ms and 200 ms, the maximum above the minimum; give every member the same. |
-| `dbms.dozendb.routing.forward_bolt_writes` | `false` | Yes | Forwards write transactions of `bolt://` connections to the leader. See [Writes on any member](#writes-on-any-member). |
-| `dbms.dozendb.reads.default_consistency` | `CAUSAL` | No | `LINEARIZABLE` makes every transaction that names no consistency a linearizable read. See [Linearizable reads](#linearizable-reads). |
+| `dbms.dodeca.cluster.enabled` | `false` | No | Makes the server a cluster member; otherwise it runs alone. See [Forming a cluster](#forming-a-cluster). |
+| `dbms.dodeca.cluster.initial_members` | none | No | The Raft addresses of the members that form the cluster, this one included. Read at a member's first start, and when servers re-form `system` (see [Recovering the system database](#recovering-the-system-database)). |
+| `server.dodeca.cluster.listen_address` | `:7700` | No | Where the member's Raft server listens: Raft, membership, probes, copies and pulls. A port alone takes the host of `server.default_listen_address`. |
+| `server.dodeca.cluster.advertised_address` | `:7700` | No | The member's Raft address, which the others reach, and which names it in `initial_members` and `dodeca.cluster.addMember`. A port alone takes the host of `server.default_advertised_address`. See [Changing an address](#changing-an-address). |
+| `server.dodeca.cluster.raft_directory` | `raft` | No | Where the member keeps its Raft logs, one directory per database, and its membership record; relative to `server.directories.data`. Never delete it while the member keeps its id ([`COMPATIBILITY.md`, "Lost databases"](COMPATIBILITY.md#running-a-cluster)). |
+| `server.dodeca.cluster.single_fsync` | `true` | No | Commits to replicated databases force only the Raft log to disk; `false` forces Neo4j's transaction log at every commit too. See [`COMPATIBILITY.md`, "Durability (single fsync)"](COMPATIBILITY.md#running-a-cluster). |
+| `dbms.dodeca.cluster.election_timeout_min`, `election_timeout_max` | `1s`, `2s` | No | A primary that hears nothing from its database's leader for a random time between the two starts an election, so they bound how soon a failed leader is replaced. Shorter timeouts fail over sooner, and on a slow or busy network start elections that are not needed. At least 100 ms and 200 ms, the maximum above the minimum; give every member the same. |
+| `dbms.dodeca.routing.forward_bolt_writes` | `false` | Yes | Forwards write transactions of `bolt://` connections to the leader. See [Writes on any member](#writes-on-any-member). |
+| `dbms.dodeca.reads.default_consistency` | `CAUSAL` | No | `LINEARIZABLE` makes every transaction that names no consistency a linearizable read. See [Linearizable reads](#linearizable-reads). |
 
-DozenDB's settings under `internal.`, such as
-`internal.dbms.dozendb.cluster.raft_log_segment_size`, are for tests, and may
+Dodeca's settings under `internal.`, such as
+`internal.dbms.dodeca.cluster.raft_log_segment_size`, are for tests, and may
 change or go in any version. On a running server,
 
 ```cypher
-SHOW SETTINGS YIELD name, value, isDynamic, description WHERE name CONTAINS 'dozendb'
+SHOW SETTINGS YIELD name, value, isDynamic, description WHERE name CONTAINS 'dodeca'
 ```
 
-shows DozenDB's settings with their values.
+shows Dodeca's settings with their values.

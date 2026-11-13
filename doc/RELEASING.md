@@ -1,4 +1,4 @@
-# Releasing DozenDB
+# Releasing Dodeca
 
 A release starts with a version tag pushed to GitHub. The release workflow
 (`.github/workflows/release.yml`) then tests, builds and publishes it; nothing
@@ -14,11 +14,11 @@ is published from a laptop.
 
 ## Versions
 
-DozenDB's version is its own, in [Semantic Versioning](https://semver.org):
+Dodeca's version is its own, in [Semantic Versioning](https://semver.org):
 `0.2.0`, or `0.3.0-rc.1` for a pre-release. Each release is built for exactly
 one Neo4j version, which the names of its jar and image carry, as in
-`dozendb-0.2.0-2026.10.2.jar` and
-`ghcr.io/dozendb/dozendb:0.2.0-2026.10.2`.
+`dodeca-0.2.0-2026.10.2.jar` and
+`ghcr.io/dodecadb/dodeca:0.2.0-2026.10.2`.
 
 What a number says to operators:
 
@@ -26,11 +26,11 @@ What a number says to operators:
   newer Neo4j release.
 - A minor release (`0.3.0`) adds features. It may raise the format level
   ([`FORMATS.md`](FORMATS.md)), which
-  [`finishUpgrade`](OPERATOR_GUIDE.md#upgrading-dozendb) then switches to.
+  [`finishUpgrade`](OPERATOR_GUIDE.md#upgrading-dodeca) then switches to.
 - A major release, from `1.0.0` on, asks operators for more than replacing
   the jar: a setting or procedure removed, or an upgrade from the previous
   release that is not a rolling one.
-- Until `1.0.0`, while DozenDB is not ready for production, a minor release
+- Until `1.0.0`, while Dodeca is not ready for production, a minor release
   can do what a major one does. Its notes say so.
 
 Each release runs next to the one before it, as [`FORMATS.md`, "Changing a
@@ -38,7 +38,7 @@ format"](FORMATS.md#changing-a-format) requires, so that upgrading from the
 previous release is a rolling upgrade, one member at a time, unless the
 release moves to another Neo4j version: every member must run the same Neo4j
 version, and such a release is installed by shutting down every member, as
-for a Neo4j upgrade ([Upgrading DozenDB](OPERATOR_GUIDE.md#upgrading-dozendb)).
+for a Neo4j upgrade ([Upgrading Dodeca](OPERATOR_GUIDE.md#upgrading-dodeca)).
 The release notes say which, and from which earlier releases a rolling upgrade
 works.
 
@@ -46,25 +46,25 @@ works.
 
 Neo4j publishes a release every month, named by its date (`2026.11.0`), and
 patch releases of it (`2026.10.2`). It fixes bugs, security fixes included, in
-its newest release only. DozenDB follows every Neo4j release, best effort: each
-DozenDB release is built for one Neo4j release, the newest that DozenDB has
+its newest release only. Dodeca follows every Neo4j release, best effort: each
+Dodeca release is built for one Neo4j release, the newest that Dodeca has
 been ported to.
-DozenDB builds on Neo4j's internal classes, so a Neo4j release that changes them
-takes a port, which can take a while; until it is done, DozenDB stays on the
-Neo4j release before. DozenDB keeps no line of its own for Neo4j's long-term
+Dodeca builds on Neo4j's internal classes, so a Neo4j release that changes them
+takes a port, which can take a while; until it is done, Dodeca stays on the
+Neo4j release before. Dodeca keeps no line of its own for Neo4j's long-term
 support releases, such as 5.26.
 
 When Neo4j publishes a release, Dependabot opens a pull request that raises
 `neo4j.version` (the `neo4j` group in `.github/dependabot.yml`), and CI runs
 every test on it. Before merging it:
 
-1. Read Neo4j's changelogs since the version DozenDB runs on, and recheck the
+1. Read Neo4j's changelogs since the version Dodeca runs on, and recheck the
    Neo4j classes in [`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md) for
-   changes between the two versions. Port DozenDB on the pull request's
+   changes between the two versions. Port Dodeca on the pull request's
    branch where they changed.
 2. Write the new version wherever the documents name the old one: `git grep
    -n 2026.10.2 -- '*.md'`.
-3. Raise the versions of what DozenDB takes from Neo4j's `lib/` to those the
+3. Raise the versions of what Dodeca takes from Neo4j's `lib/` to those the
    new Neo4j ships, if they changed: slf4j, JNA, Jackson and the JAX-RS API,
    which Dependabot leaves alone.
 4. Read what the operations and Cypher manuals of Neo4j Enterprise say is new
@@ -91,7 +91,7 @@ bundles a new library or a library's license changed.
 1. Pick the version (see [Versions](#versions)), and check that CI passed on
    the commit of `main` to release.
 2. Write the release notes in a file, in Markdown. The first line is the
-   title, `DozenDB 0.2.0`; after a blank line:
+   title, `Dodeca 0.2.0`; after a blank line:
 
    ```markdown
    ## Highlights
@@ -140,8 +140,8 @@ pre-release, and its image gets only its own tags.
 
 | What | Where | Names |
 |---|---|---|
-| The jar | The GitHub Release | `dozendb-<version>-<neo4j version>.jar`, with `SHA256SUMS` |
-| The image | `ghcr.io/dozendb/dozendb`, for `linux/amd64` and `linux/arm64` | `<version>`, `<version>-<neo4j version>`, `<major>.<minor>`, and `latest` for the highest release; a pre-release only the first two |
+| The jar | The GitHub Release | `dodeca-<version>-<neo4j version>.jar`, with `SHA256SUMS` |
+| The image | `ghcr.io/dodecadb/dodeca`, for `linux/amd64` and `linux/arm64` | `<version>`, `<version>-<neo4j version>`, `<major>.<minor>`, and `latest` for the highest release; a pre-release only the first two |
 | Attestations | GitHub's attestations, and the image's registry | One for the jar, one for the image |
 
 The image is Neo4j's official Community image of that Neo4j version, with the
@@ -152,8 +152,8 @@ The attestations prove that the release workflow built the jar and the image
 from the tagged commit. The release notes give the commands that check them:
 
 ```sh
-gh attestation verify dozendb-0.2.0-2026.10.2.jar --repo dozendb/dozendb
-gh attestation verify oci://ghcr.io/dozendb/dozendb:0.2.0 --repo dozendb/dozendb
+gh attestation verify dodeca-0.2.0-2026.10.2.jar --repo dodecadb/dodeca
+gh attestation verify oci://ghcr.io/dodecadb/dodeca:0.2.0 --repo dodecadb/dodeca
 ```
 
 ## When a release fails
@@ -175,7 +175,7 @@ the next patch release.
 
 ## Setting up the repository
 
-Once, in the settings of `dozendb/dozendb`:
+Once, in the settings of `dodecadb/dodeca`:
 
 - Rules: on `main`, require the status check `CI`, which passes only when
   every CI job did, and block force pushes and deletion. On tags `v*`, allow
@@ -188,4 +188,4 @@ Once, in the settings of `dozendb/dozendb`:
   [`SECURITY.md`](../SECURITY.md) relies on, and Dependabot alerts and
   security updates.
 - Packages: after the first release, check that the package
-  `ghcr.io/dozendb/dozendb` is public and linked to the repository.
+  `ghcr.io/dodecadb/dodeca` is public and linked to the repository.

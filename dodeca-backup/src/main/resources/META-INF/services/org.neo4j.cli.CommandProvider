@@ -1,0 +1,5 @@
+dev.dodeca.backup.cli.BackupCommandProvider
+dev.dodeca.backup.cli.RestoreCommandProvider
+dev.dodeca.backup.cli.InspectBackupCommandProvider
+dev.dodeca.backup.cli.AggregateBackupCommandProvider
+dev.dodeca.backup.cli.BackupAggregateCommandProvider

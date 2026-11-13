@@ -1,40 +1,40 @@
-DozenDB
-Copyright (c) DozenDB
+Dodeca
+Copyright (c) Dodeca
 
-DozenDB is free software: you can redistribute it and/or modify it under the
+Dodeca is free software: you can redistribute it and/or modify it under the
 terms of the GNU General Public License as published by the Free Software
 Foundation, either version 3 of the License, or (at your option) any later
 version. See LICENSE.
 
-DozenDB contains code derived from:
+Dodeca contains code derived from:
 
 - Neo4j Community Edition, Copyright (c) "Neo4j", Neo4j Sweden AB
   (https://neo4j.com), under the GNU General Public License version 3 or
   later.
 - DozerDB, Copyright (c) DozerDB (https://dozerdb.org,
   https://github.com/dozerdb/dozerdb-core), under the GNU General Public
-  License version 3 or later. It was ported to Kotlin into DozenDB on
+  License version 3 or later. It was ported to Kotlin into Dodeca on
   2026-10-19, see doc/UPSTREAM_TOUCHPOINTS.md.
 - Apache Ratis, Copyright The Apache Software Foundation
   (https://ratis.apache.org), under the Apache License 2.0:
   PatchedGrpcLogAppender in consensus-ratis is a changed copy of its
   GrpcLogAppender, see doc/UPSTREAM_TOUCHPOINTS.md.
 
-Files derived from them keep their copyright notices and state what DozenDB
+Files derived from them keep their copyright notices and state what Dodeca
 changed and when.
 
-The DozenDB jar bundles, under the Apache License 2.0 (META-INF/license/
+The Dodeca jar bundles, under the Apache License 2.0 (META-INF/license/
 LICENSE.apache-2.0.txt in the jar):
 
 - Apache Ratis and Apache Ratis Thirdparty, whose notices are also in the
   jar's META-INF/NOTICE.
 - The Kotlin standard library and kotlinx.coroutines, relocated under
-  org.dozendb.shaded.
+  dev.dodeca.shaded.
 - Dropwizard Metrics (metrics-core and metrics-jmx), Copyright (c) 2010-2013
   Coda Hale, Yammer.com, 2014-2021 Dropwizard Team, relocated under
-  org.dozendb.shaded.
+  dev.dodeca.shaded.
 
-The DozenDB jar also bundles, relocated under org.dozendb.shaded, the SDKs of
+The Dodeca jar also bundles, relocated under dev.dodeca.shaded, the SDKs of
 cloud storage and the libraries they use, whose notices are also in the jar's
 META-INF/NOTICE:
 
@@ -69,5 +69,5 @@ META-INF/NOTICE:
   notice.
 
 Neo4j is a trademark or registered trademark of Neo4j, Inc. or its
-subsidiaries in the United States and/or other countries. DozenDB is an
+subsidiaries in the United States and/or other countries. Dodeca is an
 independent project, not affiliated with or endorsed by Neo4j, Inc.

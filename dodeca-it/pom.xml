@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>dev.dodeca</groupId>
+    <artifactId>dodeca-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>dodeca-it</artifactId>
+  <name>Dodeca integration tests</name>
+  <description>Multi-node, fault, crash and benchmark tests against the plugin jar in Neo4j's official Community image. Run with -Pit.</description>
+
+  <properties>
+    <!-- Its promtool checks the metrics the plugin reports. -->
+    <prometheus.image>prom/prometheus:v3.16.0</prometheus.image>
+    <!-- Graphite's carbon and graphite-web receive and render the metrics the plugin sends. -->
+    <graphite.image>graphiteapp/graphite-statsd:1.1.10-5</graphite.image>
+    <!-- Tests only: no jar to install (see maven-jar-plugin below). -->
+    <maven.install.skip>true</maven.install.skip>
+    <!-- Test classes run in this many JVMs at once, each with a cluster that takes up to 4 GB of
+         Docker's memory: three members of 512 MB heap and 64 MB page cache, about 1.3 GB each.
+         With less than 12 GB free, Docker's VM kills containers; pass -Dit.forks=1. -->
+    <it.forks>3</it.forks>
+    <!-- The jar under test: the one this build makes, or another, as CI's of the jar it releases. -->
+    <it.plugin.jar>${project.basedir}/../dodeca-plugin/target/dodeca-${project.version}-${neo4j.version}.jar</it.plugin.jar>
+  </properties>
+
+  <dependencies>
+    <!-- Only for build order: the tests install the plugin jar into a Docker image. -->
+    <dependency>
+      <groupId>dev.dodeca</groupId>
+      <artifactId>dodeca-plugin</artifactId>
+      <scope>test</scope>
+    </dependency>
+
+    <!-- Test utilities, such as ports for test servers. -->
+    <dependency>
+      <groupId>dev.dodeca</groupId>
+      <artifactId>consensus-api</artifactId>
+      <type>test-jar</type>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!--
+      Versioned here rather than managed by the parent: managing it would also replace the driver
+      that Neo4j itself depends on wherever Neo4j runs in a test JVM.
+    -->
+    <dependency>
+      <groupId>org.neo4j.driver</groupId>
+      <artifactId>neo4j-java-driver</artifactId>
+      <version>${neo4j-java-driver.version}</version>
+      <scope>test</scope>
+    </dependency>
+    <!-- Reads JSON answers of the HTTP server; the version Neo4j ships in lib/. -->
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.22.3</version>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.awaitility</groupId>
+      <artifactId>awaitility-kotlin</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- TestCertificates in the consensus-api test-jar uses it. -->
+    <dependency>
+      <groupId>org.bouncycastle</groupId>
+      <artifactId>bcpkix-jdk18on</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.slf4j</groupId>
+      <artifactId>slf4j-simple</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <configuration>
+          <!-- Tests only: there is nothing to package. -->
+          <skipIfEmpty>true</skipIfEmpty>
+        </configuration>
+      </plugin>
+    </plugins>
+  </build>
+
+  <profiles>
+    <profile>
+      <id>it</id>
+      <build>
+        <plugins>
+          <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-failsafe-plugin</artifactId>
+            <configuration>
+              <forkCount>${it.forks}</forkCount>
+              <reuseForks>true</reuseForks>
+              <!-- For TestPorts, as in the parent; Maven 3.9 leaves it empty elsewhere. -->
+              <argLine>-Ddodeca.test.fork=${surefire.forkNumber}</argLine>
+              <systemPropertyVariables>
+                <dodeca.plugin.jar>${it.plugin.jar}</dodeca.plugin.jar>
+                <neo4j.image>${neo4j.image}</neo4j.image>
+                <prometheus.image>${prometheus.image}</prometheus.image>
+                <graphite.image>${graphite.image}</graphite.image>
+                <s3mock.image>${s3mock.image}</s3mock.image>
+                <fake-gcs.image>${fake-gcs.image}</fake-gcs.image>
+                <azurite.image>${azurite.image}</azurite.image>
+                <it.logs>${project.build.directory}/it-logs</it.logs>
+              </systemPropertyVariables>
+              <classpathDependencyExcludes>
+                <classpathDependencyExclude>dev.dodeca:dodeca-plugin</classpathDependencyExclude>
+              </classpathDependencyExcludes>
+              <properties>
+                <configurationParameters>
+                  junit.platform.discovery.issue.severity.critical=WARNING
+                </configurationParameters>
+              </properties>
+              <trimStackTrace>false</trimStackTrace>
+            </configuration>
+            <executions>
+              <execution>
+                <goals>
+                  <goal>integration-test</goal>
+                  <goal>verify</goal>
+                </goals>
+              </execution>
+            </executions>
+          </plugin>
+        </plugins>
+      </build>
+    </profile>
+  </profiles>
+</project>

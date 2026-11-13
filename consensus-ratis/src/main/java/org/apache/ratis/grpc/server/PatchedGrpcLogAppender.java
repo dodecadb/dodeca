@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 /*
- * DozenDB: a copy of GrpcLogAppender from Apache Ratis 3.3.1, changed on 2026-10-25 where a comment
- * starts with "DozenDB". It is formatted as upstream, so that it diffs against the upstream file.
+ * Dodeca: a copy of GrpcLogAppender from Apache Ratis 3.3.1, changed on 2026-10-25 where a comment
+ * starts with "Dodeca". It is formatted as upstream, so that it diffs against the upstream file.
  */
 package org.apache.ratis.grpc.server;
 
@@ -72,7 +72,7 @@ import static org.apache.ratis.server.raftlog.LogProtoUtils.toLogEntryTermIndexS
 /**
  * A new log appender implementation using grpc bi-directional stream API.
  *
- * DozenDB: when a request to the follower fails, Ratis gives up on the two streams it sends
+ * Dodeca: when a request to the follower fails, Ratis gives up on the two streams it sends
  * requests in, the log entries' and the heartbeats', and opens two new ones. It did not end the old
  * ones: the stream the follower failed was over, but the other stayed open on both members until
  * their connection closed, one more for each failed request, a few a second for a follower that
@@ -80,7 +80,7 @@ import static org.apache.ratis.server.raftlog.LogProtoUtils.toLogEntryTermIndexS
  * and their failure or end no longer resets the streams in use.
  */
 public class PatchedGrpcLogAppender extends LogAppenderBase {
-  // DozenDB: logs as the class it replaces.
+  // Dodeca: logs as the class it replaces.
   public static final Logger LOG = LoggerFactory.getLogger(GrpcLogAppender.class);
 
   private enum BatchLogKey implements BatchLogger.Key {
@@ -219,7 +219,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
     resetClient(request, event, null);
   }
 
-  /** DozenDB: from a handler, unless its streams were given up on already. */
+  /** Dodeca: from a handler, unless its streams were given up on already. */
   private void resetClient(AppendEntriesRequest request, Event event, AppendLogResponseHandler handler) {
     try (AutoCloseableLock writeLock = lock.writeLock(caller, LOG::trace)) {
       if (handler != null && handler.givenUp) {
@@ -228,7 +228,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
       getClient().resetConnectBackoff();
       if (appendLogRequestObserver != null) {
         appendLogRequestObserver.stop();
-        // DozenDB: ends the streams, as the follower would otherwise keep the one that did not fail.
+        // Dodeca: ends the streams, as the follower would otherwise keep the one that did not fail.
         appendLogRequestObserver.handler.givenUp = true;
         appendLogRequestObserver.onCompleted();
         appendLogRequestObserver = null;
@@ -368,7 +368,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
     private final CallStreamObserver<AppendEntriesRequestProto> heartbeat;
     private final TimeDuration waitForReady;
     private volatile boolean running = true;
-    // DozenDB: what the streams report goes to the handler; once completed, they send nothing more.
+    // Dodeca: what the streams report goes to the handler; once completed, they send nothing more.
     private final AppendLogResponseHandler handler;
     private boolean completed = false;
 
@@ -393,7 +393,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
       while (!stream.isReady() && running) {
         sleep(waitForReady, isHeartBeat);
       }
-      // DozenDB: a stream takes one call at a time; another thread may complete it meanwhile.
+      // Dodeca: a stream takes one call at a time; another thread may complete it meanwhile.
       synchronized (this) {
         if (!completed) {
           stream.onNext(proto);
@@ -405,7 +405,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
       running = false;
     }
 
-    // DozenDB: may be called more than once.
+    // Dodeca: may be called more than once.
     synchronized void onCompleted() {
       if (completed) {
         return;
@@ -511,7 +511,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
    */
   private class AppendLogResponseHandler implements StreamObserver<AppendEntriesReplyProto> {
     private final String name = getFollower().getName() + "-" + JavaUtils.getClassSimpleName(getClass());
-    // DozenDB: whether resetClient gave up on the streams this handles.
+    // Dodeca: whether resetClient gave up on the streams this handles.
     private volatile boolean givenUp = false;
 
     /**
@@ -588,7 +588,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
         LOG.info("{} is already stopped", PatchedGrpcLogAppender.this);
         return;
       }
-      // DozenDB: a stream given up on fails once its connection closes; that is no news.
+      // Dodeca: a stream given up on fails once its connection closes; that is no news.
       if (givenUp) {
         return;
       }
@@ -602,7 +602,7 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
 
     @Override
     public void onCompleted() {
-      // DozenDB: the follower completes the streams given up on once they are completed here.
+      // Dodeca: the follower completes the streams given up on once they are completed here.
       if (givenUp) {
         return;
       }

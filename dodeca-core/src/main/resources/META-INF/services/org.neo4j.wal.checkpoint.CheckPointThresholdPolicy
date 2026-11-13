@@ -1,0 +1,2 @@
+dev.dodeca.core.checkpoint.ContinuousThresholdPolicy
+dev.dodeca.core.checkpoint.VolumetricThresholdPolicy

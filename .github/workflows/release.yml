@@ -1,4 +1,4 @@
-# Releases DozenDB when a version tag such as v0.2.0 is pushed (doc/RELEASING.md). CI packages that
+# Releases Dodeca when a version tag such as v0.2.0 is pushed (doc/RELEASING.md). CI packages that
 # version from the tagged commit and runs every test against the jar; the jar then goes into an
 # image on GHCR and onto a GitHub Release, each with an attestation of the workflow that built it.
 name: Release
@@ -87,17 +87,17 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dozendb-jar
+          name: dodeca-jar
           path: ${{ runner.temp }}/image
       - id: jar
         name: Read the jar's versions
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
-          jar=$(cd "$RUNNER_TEMP/image" && ls dozendb-[0-9]*.jar)
+          jar=$(cd "$RUNNER_TEMP/image" && ls dodeca-[0-9]*.jar)
           manifest=$(unzip -p "$RUNNER_TEMP/image/$jar" META-INF/MANIFEST.MF | tr -d '\r')
           built=$(sed -n 's/^Implementation-Version: //p' <<< "$manifest")
-          neo4j=$(sed -n 's/^DozenDB-Neo4j-Version: //p' <<< "$manifest")
+          neo4j=$(sed -n 's/^Dodeca-Neo4j-Version: //p' <<< "$manifest")
           if [ "$built" != "$VERSION" ] || [ -z "$neo4j" ]; then
             echo "::error::$jar is version $built for Neo4j $neo4j, not version $VERSION"
             exit 1
@@ -105,7 +105,7 @@ jobs:
           {
             echo "file=$jar"
             echo "neo4j=$neo4j"
-            echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dozendb"
+            echo "image=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dodeca"
           } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
@@ -126,12 +126,12 @@ jobs:
             type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.version }}
             type=raw,value=latest,enable=${{ needs.version.outputs.latest == 'true' }}
           labels: |
-            org.opencontainers.image.title=DozenDB
-            org.opencontainers.image.description=Neo4j Community ${{ steps.jar.outputs.neo4j }} with DozenDB
+            org.opencontainers.image.title=Dodeca
+            org.opencontainers.image.description=Neo4j Community ${{ steps.jar.outputs.neo4j }} with Dodeca
             org.opencontainers.image.licenses=GPL-3.0-or-later
           annotations: |
-            org.opencontainers.image.title=DozenDB
-            org.opencontainers.image.description=Neo4j Community ${{ steps.jar.outputs.neo4j }} with DozenDB
+            org.opencontainers.image.title=Dodeca
+            org.opencontainers.image.description=Neo4j Community ${{ steps.jar.outputs.neo4j }} with Dodeca
             org.opencontainers.image.licenses=GPL-3.0-or-later
       # Only a COPY onto Neo4j's multi-platform image: both platforms build without emulation.
       - id: push
@@ -142,7 +142,7 @@ jobs:
           platforms: linux/amd64,linux/arm64
           build-args: |
             NEO4J_VERSION=${{ steps.jar.outputs.neo4j }}
-            DOZENDB_JAR=${{ steps.jar.outputs.file }}
+            DODECA_JAR=${{ steps.jar.outputs.file }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -169,14 +169,14 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: dozendb-jar
+          name: dodeca-jar
           path: ${{ runner.temp }}/dist
       - name: Write the checksums
         working-directory: ${{ runner.temp }}/dist
-        run: sha256sum dozendb-*.jar > SHA256SUMS
+        run: sha256sum dodeca-*.jar > SHA256SUMS
       - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: ${{ runner.temp }}/dist/dozendb-*.jar
+          subject-path: ${{ runner.temp }}/dist/dodeca-*.jar
       # The notes from the tag, how to install and check this release, then GitHub's list of the
       # pull requests since the previous one.
       - name: Publish the release
@@ -191,7 +191,7 @@ jobs:
           NEO4J: ${{ needs.image.outputs.neo4j }}
         run: |
           git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
-          jar=$(cd "$RUNNER_TEMP/dist" && ls dozendb-[0-9]*.jar)
+          jar=$(cd "$RUNNER_TEMP/dist" && ls dodeca-[0-9]*.jar)
           {
             git for-each-ref --format='%(contents:body)' "refs/tags/$TAG"
             echo "## Installing"
@@ -210,7 +210,7 @@ jobs:
             echo '```'
             echo
           } > "$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" --verify-tag --title "DozenDB $VERSION" \
+          gh release create "$TAG" --verify-tag --title "Dodeca $VERSION" \
             --notes-file "$RUNNER_TEMP/notes.md" --generate-notes \
             --prerelease="$PRERELEASE" --latest="$LATEST" \
             "$RUNNER_TEMP/dist/$jar" "$RUNNER_TEMP/dist/SHA256SUMS"

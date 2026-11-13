@@ -1,0 +1,3 @@
+dev.dodeca.cloud.S3StorageFactory
+dev.dodeca.cloud.GcsStorageFactory
+dev.dodeca.cloud.AzureStorageFactory

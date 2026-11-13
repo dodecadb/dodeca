@@ -1,0 +1,117 @@
+package dev.dodeca.backup.client
+
+import dev.dodeca.backup.ArtifactHeader
+import dev.dodeca.backup.Artifacts
+import dev.dodeca.backup.BackupProtocol
+import dev.dodeca.backup.BackupProtocol.Request
+import dev.dodeca.consensus.HostPort
+import dev.dodeca.consensus.ratis.BulkServer
+import dev.dodeca.consensus.ratis.ReloadableTls
+import dev.dodeca.consensus.ratis.TlsConfig
+import dev.dodeca.core.security.MetadataScript
+import dev.dodeca.core.store.CommittedTransaction
+import dev.dodeca.core.store.StoreArchive
+import java.io.InputStream
+import java.util.logging.Level
+import java.util.logging.Logger
+import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.io.layout.DatabaseLayout
+import org.neo4j.kernel.database.DatabaseId
+import org.neo4j.kernel.database.DatabaseIdFactory
+import org.neo4j.storageengine.api.CommandReaderFactory
+
+/**
+ * Takes backups from the servers that serve them, over TLS with [tls] or in plaintext if it is
+ * null.
+ *
+ * Every request throws [BackupProtocol.Refused] if the server refuses it, and an
+ * [java.io.IOException] if it cannot be reached or fails.
+ */
+internal class BackupClient(private val fs: FileSystemAbstraction, tls: TlsConfig?) {
+    private val tls = tls?.let(::ReloadableTls)
+
+    /** The databases of [server] that match the glob [pattern]. */
+    fun list(server: HostPort, pattern: String): List<String> =
+        fetch(server, Request.List(pattern), BackupProtocol::readNames)
+
+    /**
+     * A copy of a running database as a server sent it, which recovery completes up to [last].
+     *
+     * @property database its name.
+     */
+    class FullCopy(
+        val database: String,
+        val databaseId: DatabaseId,
+        val metadata: BackupProtocol.FullMetadata,
+        val last: BackupProtocol.Last,
+    )
+
+    /** Copies [database] from [server] into [target], whose directories must hold nothing. */
+    fun full(server: HostPort, database: String, target: DatabaseLayout): FullCopy =
+        fetch(server, Request.Full(database)) { input ->
+            fs.mkdirs(target.databaseDirectory())
+            fs.mkdirs(target.transactionLogsDirectory)
+            val summary =
+                StoreArchive.read(
+                    input,
+                    fs,
+                    target.databaseDirectory(),
+                    target.transactionLogsDirectory,
+                )
+            FullCopy(
+                summary.database,
+                DatabaseIdFactory.from(summary.databaseId),
+                BackupProtocol.decodeFullMetadata(summary.metadata),
+                BackupProtocol.decodeLast(summary.trailer),
+            )
+        }
+
+    /**
+     * Passes [block] the header and transactions of a differential backup of [database] from
+     * [server], after the transaction at append index [after] with [checksum]. The transactions are
+     * read and checked as [block] takes them.
+     */
+    fun <T> differential(
+        server: HostPort,
+        database: String,
+        after: Long,
+        checksum: Int,
+        readers: CommandReaderFactory,
+        block: (ArtifactHeader, Sequence<CommittedTransaction>) -> T,
+    ): T =
+        fetch(server, Request.Differential(database, after, checksum)) { input ->
+            Artifacts.readDifferential(input, readers, block)
+        }
+
+    /**
+     * The backup addresses of the servers that serve backups of [database], in the order to try
+     * them, as [server] knows them.
+     */
+    fun sources(server: HostPort, database: String): List<HostPort> =
+        fetch(server, Request.Sources(database), BackupProtocol::readNames).map(HostPort::parse)
+
+    /**
+     * What [include] asks for of the users, roles and privileges of [database] on [server]; of the
+     * users, only [users] if given.
+     */
+    fun metadata(
+        server: HostPort,
+        database: String,
+        include: MetadataScript.Include,
+        users: List<String>? = null,
+    ): String? =
+        fetch(server, Request.Metadata(database, include, users), BackupProtocol::readScript)
+
+    private companion object {
+        // gRPC logs to java.util.logging, which a command prints; its INFO lines are noise there.
+        // Held, as java.util.logging keeps loggers weakly.
+        val GRPC_LOG: Logger =
+            Logger.getLogger("org.apache.ratis.thirdparty.io.grpc").apply { level = Level.WARNING }
+    }
+
+    private fun <T> fetch(server: HostPort, request: Request, consume: (InputStream) -> T): T =
+        BulkServer.fetch(server, tls, BackupProtocol.NAME, BackupProtocol.encode(request)) {
+            BackupProtocol.readStatus(it)
+            consume(it)
+        }
+}
