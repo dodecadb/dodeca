@@ -25,7 +25,7 @@
          With less than 12 GB free, Docker's VM kills containers; pass -Dit.forks=1. -->
     <it.forks>3</it.forks>
     <!-- The jar under test: the one this build makes, or another, as CI's of the jar it releases. -->
-    <it.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}-neo4j-${neo4j.version}.jar</it.plugin.jar>
+    <it.plugin.jar>${project.basedir}/../dozendb-plugin/target/dozendb-${project.version}-${neo4j.version}.jar</it.plugin.jar>
   </properties>
 
   <dependencies>

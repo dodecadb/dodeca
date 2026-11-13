@@ -17,8 +17,8 @@ is published from a laptop.
 DozenDB's version is its own, in [Semantic Versioning](https://semver.org):
 `0.2.0`, or `0.3.0-rc.1` for a pre-release. Each release is built for exactly
 one Neo4j version, which the names of its jar and image carry, as in
-`dozendb-0.2.0-neo4j-2026.10.2.jar` and
-`ghcr.io/dozendb/dozendb:0.2.0-neo4j-2026.10.2`.
+`dozendb-0.2.0-2026.10.2.jar` and
+`ghcr.io/dozendb/dozendb:0.2.0-2026.10.2`.
 
 What a number says to operators:
 
@@ -140,8 +140,8 @@ pre-release, and its image gets only its own tags.
 
 | What | Where | Names |
 |---|---|---|
-| The jar | The GitHub Release | `dozendb-<version>-neo4j-<neo4j version>.jar`, with `SHA256SUMS` |
-| The image | `ghcr.io/dozendb/dozendb`, for `linux/amd64` and `linux/arm64` | `<version>`, `<version>-neo4j-<neo4j version>`, `<major>.<minor>`, and `latest` for the highest release; a pre-release only the first two |
+| The jar | The GitHub Release | `dozendb-<version>-<neo4j version>.jar`, with `SHA256SUMS` |
+| The image | `ghcr.io/dozendb/dozendb`, for `linux/amd64` and `linux/arm64` | `<version>`, `<version>-<neo4j version>`, `<major>.<minor>`, and `latest` for the highest release; a pre-release only the first two |
 | Attestations | GitHub's attestations, and the image's registry | One for the jar, one for the image |
 
 The image is Neo4j's official Community image of that Neo4j version, with the
@@ -152,7 +152,7 @@ The attestations prove that the release workflow built the jar and the image
 from the tagged commit. The release notes give the commands that check them:
 
 ```sh
-gh attestation verify dozendb-0.2.0-neo4j-2026.10.2.jar --repo dozendb/dozendb
+gh attestation verify dozendb-0.2.0-2026.10.2.jar --repo dozendb/dozendb
 gh attestation verify oci://ghcr.io/dozendb/dozendb:0.2.0 --repo dozendb/dozendb
 ```
 

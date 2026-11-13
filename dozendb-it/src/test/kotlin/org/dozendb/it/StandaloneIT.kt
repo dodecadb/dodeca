@@ -23,9 +23,10 @@ import org.testcontainers.lifecycle.Startables
 import org.testcontainers.utility.DockerImageName
 
 /**
- * With clustering disabled, DozenDB is Neo4j Community with many databases and property existence
- * constraints. Most tests run the same statements on DozenDB and on the official Community image
- * and compare rows or errors; the tests at the end show what DozenDB adds, which Community refuses.
+ * With clustering disabled, DozenDB runs as Neo4j Community does, with many databases and property
+ * existence constraints. Most tests run the same statements on DozenDB and on the official
+ * Community image and compare rows or errors; the tests at the end show what DozenDB adds, which
+ * Community refuses.
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)

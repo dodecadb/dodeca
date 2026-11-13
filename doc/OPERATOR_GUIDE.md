@@ -38,16 +38,16 @@ Java 21 or 25.
 ### The jar
 
 Each [release](https://github.com/dozendb/dozendb/releases) has the jar,
-`dozendb-<version>-neo4j-2026.10.2.jar`, about 70 MB: it bundles what DozenDB
+`dozendb-<version>-2026.10.2.jar`, about 70 MB: it bundles what DozenDB
 needs, and its name says which Neo4j version it runs on. To check that the
 release workflow built it, from the tagged commit:
 
 ```sh
-gh attestation verify dozendb-<version>-neo4j-2026.10.2.jar --repo dozendb/dozendb
+gh attestation verify dozendb-<version>-2026.10.2.jar --repo dozendb/dozendb
 ```
 
 Built from source as the README says, the jar is
-`dozendb-plugin/target/dozendb-<version>-neo4j-2026.10.2.jar`; the small
+`dozendb-plugin/target/dozendb-<version>-2026.10.2.jar`; the small
 `dozendb-plugin-<version>.jar` next to it is not the one.
 
 Copy it into the `lib/` directory of Neo4j Community 2026.10.2, not into
@@ -63,7 +63,7 @@ version at each start: `DozenDB 0.1.0-SNAPSHOT: clustering is disabled`.
 Each release publishes an image, `ghcr.io/dozendb/dozendb`, for `linux/amd64`
 and `linux/arm64`: Neo4j's official Community image with the jar in its
 `lib/`, which runs as Neo4j's image does. Its tags are the release's version,
-such as `0.2.0`, the version with Neo4j's, `0.2.0-neo4j-2026.10.2`, the minor
+such as `0.2.0`, the version with Neo4j's, `0.2.0-2026.10.2`, the minor
 version, `0.2`, and `latest` (see [`RELEASING.md`, "What a release
 publishes"](RELEASING.md#what-a-release-publishes)).
 
@@ -71,7 +71,7 @@ With a jar built from source, build such an image:
 
 ```dockerfile
 FROM neo4j:2026.10.2-community
-COPY dozendb-0.1.0-SNAPSHOT-neo4j-2026.10.2.jar /var/lib/neo4j/lib/
+COPY dozendb-0.1.0-SNAPSHOT-2026.10.2.jar /var/lib/neo4j/lib/
 ```
 
 Mounting the jar into the container read-only does not work: Neo4j's

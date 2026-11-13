@@ -57,7 +57,7 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dozendb-jar
-          path: dozendb-plugin/target/dozendb-*-neo4j-*.jar
+          path: dozendb-plugin/target/dozendb-[0-9]*.jar
           if-no-files-found: error
           retention-days: 30
 
@@ -153,7 +153,7 @@ jobs:
           ./mvnw verify -Pit -Dspotless.check.skip=true
           -Dtest=NONE -Dsurefire.failIfNoSpecifiedTests=false
           -Dit.test="$CLASSES" -Dfailsafe.failIfNoSpecifiedTests=false -Dit.forks=1
-          -Dit.plugin.jar="$(ls "$RUNNER_TEMP"/dist/dozendb-*-neo4j-*.jar)"
+          -Dit.plugin.jar="$(ls "$RUNNER_TEMP"/dist/dozendb-[0-9]*.jar)"
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

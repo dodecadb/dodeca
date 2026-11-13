@@ -237,6 +237,7 @@ class PluginJarIT {
                 "AWS SDK for Java",
                 "Azure SDK for Java",
                 "google-cloud-storage",
+                "not affiliated with or endorsed by Neo4j, Inc.",
             )
     }
 

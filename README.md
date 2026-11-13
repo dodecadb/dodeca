@@ -1,6 +1,6 @@
 # DozenDB
 
-DozenDB adds to Neo4j Community Edition much of what Neo4j keeps for its
+DozenDB adds to Neo4j® Community Edition much of what Neo4j keeps for its
 Enterprise Edition, as one jar in Community's `lib/`:
 
 - many databases (`CREATE`, `DROP`, `START` and `STOP DATABASE`), local and
@@ -52,7 +52,7 @@ Under development. Not ready for production use.
 ## Installing
 
 Each [release](https://github.com/dozendb/dozendb/releases) has the jar,
-`dozendb-<version>-neo4j-2026.10.2.jar`, and an image. Copy the jar into the
+`dozendb-<version>-2026.10.2.jar`, and an image. Copy the jar into the
 `lib/` directory of Neo4j Community 2026.10.2, the version its name gives, and
 start Neo4j. The image is Neo4j's official Community image with the jar in
 its `lib/`, and runs as Neo4j's does:
@@ -110,7 +110,7 @@ mise exec -- ./mvnw verify -Pit       # also run the Testcontainers suites
 ```
 
 The jar to install is
-`dozendb-plugin/target/dozendb-<version>-neo4j-<neo4j version>.jar`, about
+`dozendb-plugin/target/dozendb-<version>-<neo4j version>.jar`, about
 70 MB, named after the Neo4j version it runs on; the small
 `dozendb-plugin-<version>.jar` next to it is not the one.
 
@@ -128,6 +128,14 @@ restarts; run the script again after a restart. On Linux, pass
 `-Dtest.tmpdir=/dev/shm`, or another RAM disk, as long as it allows running
 programs: the tests' JVMs unpack native libraries there. Containers mount
 `/dev/shm` with `noexec`; mount a `tmpfs` without it instead.
+
+## Trademarks
+
+Neo4j is a trademark or registered trademark of Neo4j, Inc. or its subsidiaries
+in the United States and/or other countries. DozenDB is an independent project,
+not affiliated with, endorsed by or sponsored by Neo4j, Inc. It runs on Neo4j
+Community Edition, unmodified, and names Neo4j's products only to say what it
+runs on and how it compares with them.
 
 ## License
 

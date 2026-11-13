@@ -1,7 +1,9 @@
 # Compatibility
 
-DozenDB is Neo4j Community Edition with one jar added to its `lib/`, and adds
-much of what Neo4j otherwise keeps for its Enterprise Edition. This document
+DozenDB is a jar for the `lib/` of Neo4j Community Edition that adds much of
+what Neo4j otherwise keeps for its Enterprise Edition. It is an independent
+project, not affiliated with or endorsed by Neo4j, Inc. (see
+[Trademarks](../README.md#trademarks)). This document
 compares DozenDB with Neo4j Enterprise 2026.10, area by area: what works as in
 Enterprise, where DozenDB differs, what it decided where Enterprise's
 documentation says nothing, and what it does not support. DozenDB is built from

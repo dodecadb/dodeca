@@ -67,3 +67,7 @@ META-INF/NOTICE:
   HttpClient 4 and 5 ship it in mozilla/public-suffix-list.txt and
   org/publicsuffix/list/effective_tld_names.dat, each with the license's
   notice.
+
+Neo4j is a trademark or registered trademark of Neo4j, Inc. or its
+subsidiaries in the United States and/or other countries. DozenDB is an
+independent project, not affiliated with or endorsed by Neo4j, Inc.

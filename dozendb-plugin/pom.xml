@@ -62,7 +62,7 @@
       instead of replacing it: when shade replaces the module jar, the next build shades the
       previous output again and stale classes win.
     -->
-    <dozendb.plugin.jar>${project.build.directory}/dozendb-${project.version}-neo4j-${neo4j.version}.jar</dozendb.plugin.jar>
+    <dozendb.plugin.jar>${project.build.directory}/dozendb-${project.version}-${neo4j.version}.jar</dozendb.plugin.jar>
   </properties>
 
   <build>
