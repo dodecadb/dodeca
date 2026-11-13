@@ -39,8 +39,8 @@
     </dependency>
     <!-- Neo4j's web server, in lib/ at runtime, for the cluster status endpoints. -->
     <dependency>
-      <groupId>org.dozendb</groupId>
-      <artifactId>neo4j-server-stubs</artifactId>
+      <groupId>org.neo4j.app</groupId>
+      <artifactId>neo4j-server</artifactId>
       <scope>provided</scope>
     </dependency>
     <dependency>

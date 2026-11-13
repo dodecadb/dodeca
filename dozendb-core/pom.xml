@@ -18,6 +18,12 @@
       <artifactId>neo4j</artifactId>
       <scope>provided</scope>
     </dependency>
+    <!-- Neo4j's web server, in lib/ at runtime, whose HTTPS DozenDB reloads in place. -->
+    <dependency>
+      <groupId>org.neo4j.app</groupId>
+      <artifactId>neo4j-server</artifactId>
+      <scope>provided</scope>
+    </dependency>
     <!-- Metrics and their JMX beans; slf4j-api comes with Neo4j. -->
     <dependency>
       <groupId>io.dropwizard.metrics</groupId>

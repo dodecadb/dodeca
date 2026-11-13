@@ -87,7 +87,6 @@ guide, which ends with a Docker Compose file for three members.
 |---|---|
 | `consensus-api/` | The `ConsensusLog` and `ReplicatedStateMachine` interfaces and member, role and result types. No Neo4j or Ratis dependencies. |
 | `consensus-ratis/` | The Apache Ratis implementation of `ConsensusLog`. The only module that depends on Ratis. |
-| `neo4j-server-stubs/` | The signatures of the Neo4j web server classes that `dozendb-cluster` extends, to compile against: Neo4j does not publish the `neo4j-server` jar to Maven Central. Never packaged; Neo4j's own classes run. |
 | `dozendb-core/` | What DozenDB adds to Neo4j Community on every server, clustered or not: the edition module, database management, administration commands, roles and privileges, aliases, constraints, metrics and logs, checkpoints, page cache warmup, imports, `database copy` and settings. |
 | `dozendb-cloud/` | Cloud storage: Neo4j's storage interface for `s3://`, `gs://` and `azb://` URIs, over each cloud's SDK. |
 | `dozendb-backup/` | Online backup and restore, clustered or not: `neo4j-admin database backup`, `database restore`, `backup aggregate` and `backup inspect`, with Neo4j's `.backup` artifacts, full and differential, and seeds of `CREATE DATABASE`. |

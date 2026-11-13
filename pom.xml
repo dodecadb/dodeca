@@ -21,7 +21,6 @@
   <modules>
     <module>consensus-api</module>
     <module>consensus-ratis</module>
-    <module>neo4j-server-stubs</module>
     <module>dozendb-core</module>
     <module>dozendb-cloud</module>
     <module>dozendb-backup</module>
@@ -136,10 +135,11 @@
         <artifactId>neo4j</artifactId>
         <version>${neo4j.version}</version>
       </dependency>
+      <!-- Neo4j Community's web server, in lib/ at runtime. -->
       <dependency>
-        <groupId>org.dozendb</groupId>
-        <artifactId>neo4j-server-stubs</artifactId>
-        <version>${project.version}</version>
+        <groupId>org.neo4j.app</groupId>
+        <artifactId>neo4j-server</artifactId>
+        <version>${neo4j.version}</version>
       </dependency>
       <!-- The JAX-RS API of the Jersey that Neo4j ships in lib/. -->
       <dependency>
