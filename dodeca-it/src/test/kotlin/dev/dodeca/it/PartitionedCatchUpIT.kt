@@ -245,7 +245,6 @@ class PartitionedCatchUpIT {
             {
                 assertThat(userCount(behind)).isEqualTo(userCount(leader))
             }
-        val usersBefore = checkNotNull(userCount(behind))
         val partition = faultsOf(behind)
         partition.cutRaft()
         val cutAt = status(leader, "system")?.get("commitIndex") as Long
@@ -301,6 +300,7 @@ class PartitionedCatchUpIT {
                     )
                     .isEqualTo(Outcome.Rows(listOf(mapOf("currentStatus" to "online"))))
             }
+        val usersAfter = checkNotNull(userCount(leader))
         val loginsAfterHealing = logins().filter { it.at > healedAt }
         val readsAfterHealing = administration().filter { it.at > healedAt }
 
@@ -310,7 +310,10 @@ class PartitionedCatchUpIT {
         assertThat(copied.toEpochMilli() - copyStarted.toEpochMilli())
             .describedAs("copy time, long enough to tell copying from being stopped")
             .isGreaterThan(3_000)
-        assertThat(readsAfterHealing.count { it.count == usersBefore })
+        // Stale reads have fewer users than the leader, though not necessarily as few as before
+        // the cut: appends the leader sent while the link was cut, which TCP kept, still arrive
+        // once it heals, and the member applies them before it finds it needs a copy.
+        assertThat(readsAfterHealing.count { it.count != null && it.count < usersAfter })
             .describedAs(
                 "stale administration reads while copying; read %s",
                 changes(readsAfterHealing, healedAt),
