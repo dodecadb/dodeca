@@ -126,6 +126,7 @@ internal class IncrementBuilder(
                     val group = node.idGroup
                     val keyed = keyed(group)
                     val key = key(id, keyed.keyType, group)
+                    checkSingleId(node, id, key, keyed, group)
                     if (keyed.label !in labels) labels += keyed.label
                     val mapped = mapperKey(key)
                     setter.put(mapped, existing + ordinal, group)
@@ -141,6 +142,27 @@ internal class IncrementBuilder(
             }
         }
         return ordinal
+    }
+
+    /**
+     * Fails unless [node]'s ID, whose [key] it is, is its key property, as with one ID column:
+     * Neo4j joins several into an ID that is no property, and finding nodes by the first would
+     * match others than the input means.
+     */
+    private fun checkSingleId(
+        node: InputEntity,
+        id: Any,
+        key: Any,
+        keyed: KeyedGroup,
+        group: Group,
+    ) {
+        val property = node.properties.firstOrNull { it.keyName() == keyed.key }?.value()
+        if (property != null && key(property, keyed.keyType, group) == key) return
+        throw IncrementalImportException(
+            "${describe(group.name())} has a node whose ID, ${shown(id)}, is not its " +
+                "${keyed.key} property: $ONE_ID_COLUMN",
+            ExitCode.DATAERR,
+        )
     }
 
     /** Writes the places of the new nodes that are duplicates; returns how many there are. */
@@ -255,11 +277,20 @@ internal class IncrementBuilder(
                     (id as Number).toLong()
                 else ->
                     throw IncrementalImportException(
-                        "${describe(group.name())} has an ID, $id, that is not a single " +
+                        "${describe(group.name())} has an ID, ${shown(id)}, that is not a single " +
                             (if (keyType == KeyType.TEXT) "text" else "integer") +
-                            " value: incremental import takes one ID column per node file.",
+                            " value: $ONE_ID_COLUMN",
                         ExitCode.DATAERR,
                     )
             }
+
+        /** Why IDs of several columns are refused, as Enterprise imports them in full only. */
+        private const val ONE_ID_COLUMN =
+            "incremental import takes one ID column per node file, which names the label and " +
+                "property key of the nodes' keys, such as uuid:ID{label:Person}. Several ID " +
+                "columns work in full imports only."
+
+        /** [id] as the input has it: Neo4j joins the values of several ID columns with BEL. */
+        private fun shown(id: Any): String = id.toString().replace('\u0007', ',')
     }
 }

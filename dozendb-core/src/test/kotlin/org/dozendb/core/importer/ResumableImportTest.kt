@@ -426,4 +426,34 @@ internal class ResumableImportTest {
         assertThat(ImportProgress(layout("films")).file).doesNotExist()
         assertConsistent("films")
     }
+
+    @Test
+    fun `a full import takes nodes with several ID columns, which incremental import refuses`() {
+        csv("people.csv", listOf(":ID,:ID,name", "aa,11,Ann", "aa,22,Bob", "bb,11,Carla"))
+        csv(
+            "works.csv",
+            listOf(":START_ID,:START_ID,:TYPE,:END_ID,:END_ID", "aa,11,WORKS_WITH,bb,11"),
+        )
+
+        val result =
+            full(
+                "people",
+                "--report-file=$report",
+                "--nodes=Person=${root.resolve("people.csv")}",
+                "--relationships=${root.resolve("works.csv")}",
+            )
+
+        assertThat(result.exitCode).describedAs(result.toString()).isZero
+        assertConsistent("people")
+        server.administer("CREATE DATABASE people WAIT")
+        assertThat(
+                server.rows(
+                    "MATCH (a:Person)-[:WORKS_WITH]->(b:Person) RETURN a.name AS a, b.name AS b",
+                    "people",
+                )
+            )
+            .containsExactly(mapOf("a" to "Ann", "b" to "Carla"))
+        assertThat(server.rows("MATCH (n:Person) RETURN count(n) AS c", "people").single()["c"])
+            .isEqualTo(3L)
+    }
 }

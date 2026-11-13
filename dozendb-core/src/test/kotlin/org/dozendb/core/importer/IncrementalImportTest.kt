@@ -222,6 +222,43 @@ class IncrementalImportTest {
             .contains("such as uuid:ID{label:Person}: No label was specified for the node index")
     }
 
+    @ParameterizedTest
+    @CsvSource(
+        delimiter = '|',
+        value =
+            [
+                "uuid:ID{label:Person},code:ID,name|c,1,Carla|--id-type=string",
+                "uuid:ID{label:Person},code:ID{label:Person},name|a,1,Ann|--id-type=string",
+                "uuid:ID{label:Person},code:ID,name|3,1,Carla|--id-type=integer",
+            ],
+    )
+    fun `incremental import refuses nodes with several ID columns, as Enterprise imports them in full only`(
+        header: String,
+        line: String,
+        idType: String,
+    ) {
+        persons()
+        val nodes = "--nodes=" + csv("persons.csv", header, line)
+
+        // Prepare reads the headers only; the nodes show their IDs.
+        val prepared = incremental("prepare", idType, "films", nodes)
+        assertThat(prepared.exitCode).describedAs(prepared.toString()).isZero
+        for (stage in listOf("build", "all")) {
+            val result = incremental(stage, idType, "films", nodes)
+
+            assertThat(result.exitCode).describedAs(result.toString()).isNotZero
+            assertThat(result.err)
+                .contains(
+                    "incremental import takes one ID column per node file, which names the " +
+                        "label and property key of the nodes' keys, such as " +
+                        "uuid:ID{label:Person}. Several ID columns work in full imports only."
+                )
+        }
+        server.administer("START DATABASE films WAIT")
+        assertThat(server.rows("MATCH (p:Person) RETURN p.uuid AS uuid ORDER BY uuid", "films"))
+            .containsExactly(mapOf("uuid" to "a"), mapOf("uuid" to "b"))
+    }
+
     @Test
     fun `prepare refuses IDs that are node ids`() {
         server.administer("STOP DATABASE films WAIT")
