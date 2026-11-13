@@ -83,6 +83,21 @@ class PoliciesAndWarmupIT {
                 .also { containers += it }
         }
         Startables.deepStart(members).join()
+        // The cluster creates neo4j once the servers started. A routing table from before every
+        // server hosts it names fewer readers, and a driver keeps it for its time to live.
+        await withPollInterval
+            Duration.ofSeconds(1) atMost
+            Duration.ofMinutes(2) untilAsserted
+            {
+                val copies =
+                    members
+                        .first()
+                        .rows("SHOW DATABASE neo4j YIELD currentStatus, writer", "system")
+                assertThat(copies.map { it["currentStatus"] })
+                    .describedAs("copies of neo4j")
+                    .containsExactly("online", "online", "online")
+                assertThat(copies.count { it["writer"] == true }).describedAs("writers").isOne()
+            }
         val address = aliases.indices.associate { aliases[it] to "127.0.0.1:${ports[it]}" }
         val plain = driver(ports)
         await withPollInterval
