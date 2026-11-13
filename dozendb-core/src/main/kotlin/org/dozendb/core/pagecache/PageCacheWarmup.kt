@@ -127,7 +127,7 @@ internal constructor(
                             )
                         )
                     } else {
-                        warmer.warmUp()
+                        warmer.warmUp(config.get(GraphDatabaseSettings.pagecache_warmup_order))
                     }
             } catch (e: Exception) {
                 log.warn("Page cache $what failed", e)

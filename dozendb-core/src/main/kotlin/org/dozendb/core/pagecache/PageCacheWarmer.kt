@@ -3,6 +3,8 @@ package org.dozendb.core.pagecache
 import java.io.IOException
 import java.nio.file.Path
 import java.util.BitSet
+import kotlin.io.path.invariantSeparatorsPathString
+import org.neo4j.configuration.GraphDatabaseSettings.WarmupOrder
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.PageCursor
 import org.neo4j.io.pagecache.PagedFile
@@ -51,13 +53,13 @@ internal class PageCacheWarmer(
 
     /**
      * Loads the pages that the profiles name of the files mapped now, up to the pages a file has
-     * now. Returns how many it loaded, those held already counted too.
+     * now, file by file in [order]. Returns how many it loaded, those held already counted too.
      */
-    fun warmUp(): Long {
+    fun warmUp(order: WarmupOrder = WarmupOrder.NONE): Long {
         var loaded = 0L
         // Not getExistingMapping, which Neo4j's page cache counts as a mapping to close.
         val files = mapped().associateBy { it.path() }
-        for (path in profiles.list()) {
+        for (path in ordered(profiles.list(), order)) {
             if (stopping()) break
             val file = files[profiles.fileOf(path)] ?: continue
             val profile =
@@ -86,6 +88,29 @@ internal class PageCacheWarmer(
             loaded += touch(file, all, pages)
         }
         return loaded
+    }
+
+    /**
+     * [listed] profiles in [order] of the paths of their files in the database directory: as listed
+     * with NONE; by path with ALPHABETIC; with PRIORITY the ID files first, then the indexes, then
+     * the rest, each by path. Neo4j's PRIORITY puts the block format's x1 store before them, which
+     * DozenDB, without that format, does not have.
+     */
+    private fun ordered(listed: List<Path>, order: WarmupOrder): List<Path> {
+        if (order == WarmupOrder.NONE) return listed
+        val paths = listed.associateWith {
+            databaseDirectory.relativize(profiles.fileOf(it)).invariantSeparatorsPathString
+        }
+        fun rank(path: String) =
+            when {
+                order != WarmupOrder.PRIORITY -> 0
+                path.endsWith(".id") -> 0
+                path.startsWith("schema/index/") -> 1
+                else -> 2
+            }
+        return listed.sortedWith(
+            compareBy<Path> { rank(paths.getValue(it)) }.thenBy { paths.getValue(it) }
+        )
     }
 
     /** The database's mapped files. */

@@ -10,6 +10,7 @@ import org.eclipse.collections.api.factory.Sets
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.configuration.GraphDatabaseSettings.WarmupOrder
 import org.neo4j.io.async.AsyncBlockAccessor
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.pagecache.PageCache
@@ -266,6 +267,32 @@ class PageCacheWarmerTest {
         assertThat(warmer(stopping = { true }).warmUp()).isZero()
         assertThat(warmer(stopping = { true }).preload(Regex(".*"))).isZero()
         assertThat(held(nodes)).isEmpty()
+    }
+
+    @Test
+    fun `profiles warm up in the order of db_memory_pagecache_warmup_order`() {
+        val ids = database.resolve("neostore.nodestore.db.id")
+        val files = listOf(nodes, index, ids)
+        files.forEach { create(it, 4) }
+        restart(files)
+        files.forEach { read(it, 0L..3L) }
+        warmer().profile()
+
+        assertThat(warmedUp(WarmupOrder.PRIORITY, files)).containsExactly(ids, index, nodes)
+        assertThat(warmedUp(WarmupOrder.ALPHABETIC, files)).containsExactly(nodes, ids, index)
+        assertThat(warmedUp(WarmupOrder.NONE, files)).containsExactlyInAnyOrder(ids, index, nodes)
+    }
+
+    /** The [files] a warmup in [order] loads, in the order it loads them. */
+    private fun warmedUp(order: WarmupOrder, files: List<Path>): List<Path> {
+        restart(files)
+        val loaded = mutableListOf<Path>()
+        // The warmup asks whether it is stopping before each profile.
+        fun look() =
+            files.filter { it !in loaded && held(it).isNotEmpty() }.forEach { loaded.add(it) }
+        warmer(stopping = { look().let { false } }).warmUp(order)
+        look()
+        return loaded
     }
 
     private companion object {
