@@ -16,11 +16,16 @@ import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.GraphDatabaseSettings.CheckpointPolicy
+import org.neo4j.io.ByteUnit
+import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.tracing.FileFlushEvent
 import org.neo4j.time.Clocks
 import org.neo4j.time.FakeClock
 
-/** Neo4j Enterprise's `db.checkpoint.iops.limit`, which Neo4j Community ignores. */
+/**
+ * Neo4j Enterprise's `db.checkpoint.iops.limit` and `db.checkpoint.throughput.limit`, which Neo4j
+ * Community ignores.
+ */
 class CheckpointIoControllerTest {
     @TempDir lateinit var root: Path
 
@@ -49,6 +54,69 @@ class CheckpointIoControllerTest {
 
     private fun config(limit: Int) =
         Config.defaults(GraphDatabaseSettings.check_point_iops_limit, limit)
+
+    /** A configuration with [iops] and a throughput limit of [bytes] a second. */
+    private fun config(iops: Int, bytes: Long) =
+        Config.newBuilder()
+            .set(GraphDatabaseSettings.check_point_iops_limit, iops)
+            .set(GraphDatabaseSettings.check_point_throughput_limit, bytes)
+            .build()
+
+    @Test
+    fun `a throughput limit counts the bytes of the pages flushed, in place of the IOPS limit`() {
+        // 100 pages a second, with an IOPS limit that alone would let all of these go at once.
+        val controller = controller(600, config(600, 100L * PageCache.PAGE_SIZE))
+        val flush = Flush()
+
+        // A tenth of a second's bytes go at once: 10 pages, in one I/O.
+        controller.maybeLimitIO(1, 10, flush)
+        assertThat(parks).isEmpty()
+
+        controller.maybeLimitIO(1, 10, flush)
+        assertThat(parks).containsExactly(TimeUnit.MILLISECONDS.toNanos(100))
+        assertThat(flush.pauses).hasSize(1)
+        // Neo4j's checkpoint log line shows a limit that is not in IOPS as pages a second.
+        assertThat(controller.isIopsBasedLimit).isFalse()
+        assertThat(controller.configuredLimit()).isEqualTo(100)
+    }
+
+    @Test
+    fun `a throughput limit applies without an IOPS limit`() {
+        val controller = controller(-1, config(-1, ByteUnit.kibiBytes(80)))
+
+        repeat(2) { controller.maybeLimitIO(1, 1, Flush()) }
+        repeat(2) { controller.maybeLimitIO(1, 1, Flush()) }
+
+        // 10 pages a second: the first one goes at once, the next three wait 100 ms each.
+        assertThat(parks).hasSize(3)
+        assertThat(controller.isEnabled).isTrue()
+        assertThat(controller.configuredLimit()).isEqualTo(10)
+    }
+
+    @Test
+    fun `the throughput limit follows the dynamic setting, and without it the IOPS limit applies`() {
+        val config = config(600)
+        val controller = controller(600, config)
+        assertThat(controller.isIopsBasedLimit).isTrue()
+
+        config.setDynamic(
+            GraphDatabaseSettings.check_point_throughput_limit,
+            ByteUnit.kibiBytes(8),
+            "test",
+        )
+        assertThat(controller.isIopsBasedLimit).isFalse()
+        assertThat(controller.configuredLimit()).isEqualTo(1)
+        // A page a second: the first waits all but the tenth of a second that goes at once.
+        repeat(2) { controller.maybeLimitIO(1, 1, Flush()) }
+        assertThat(parks)
+            .containsExactly(TimeUnit.MILLISECONDS.toNanos(900), TimeUnit.SECONDS.toNanos(1))
+
+        config.setDynamic(GraphDatabaseSettings.check_point_throughput_limit, null, "test")
+        assertThat(controller.isIopsBasedLimit).isTrue()
+        assertThat(controller.configuredLimit()).isEqualTo(600)
+        repeat(60) { controller.maybeLimitIO(1, 100, Flush()) }
+        assertThat(parks).hasSize(2)
+    }
 
     @Test
     fun `a tenth of a second's I-Os go at once, and the next waits for its turn`() {
@@ -234,7 +302,7 @@ class CheckpointIoControllerTest {
     }
 
     @Test
-    fun `background checkpoints keep to the limit, which changes while the server runs`() {
+    fun `background checkpoints keep to the limits, which change while the server runs`() {
         StandaloneServer(
                 root,
                 mapOf(
@@ -261,6 +329,30 @@ class CheckpointIoControllerTest {
                         assertThat(checkpoints(server, "Scheduled checkpoint")).anyMatch {
                             "IO limit: 20 IOPS," in it
                         }
+                    }
+
+                server.administer(
+                    "CALL dbms.setConfigValue('db.checkpoint.throughput.limit', '80KiB')"
+                )
+                server.rows("CREATE (:Film)")
+                await atMost
+                    Duration.ofSeconds(60) untilAsserted
+                    {
+                        assertThat(checkpoints(server, "Scheduled checkpoint")).anyMatch {
+                            "IO limit: 80.00KiB/s," in it
+                        }
+                    }
+
+                // Checkpoints show the throughput limit until it is unset: count from here.
+                fun iops() =
+                    checkpoints(server, "Scheduled checkpoint").count { "IO limit: 20 IOPS," in it }
+                val before = iops()
+                server.administer("CALL dbms.setConfigValue('db.checkpoint.throughput.limit', '')")
+                server.rows("CREATE (:Film)")
+                await atMost
+                    Duration.ofSeconds(60) untilAsserted
+                    {
+                        assertThat(iops()).isGreaterThan(before)
                     }
             }
     }

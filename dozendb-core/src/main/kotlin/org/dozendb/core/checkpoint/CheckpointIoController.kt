@@ -7,6 +7,7 @@ import java.util.concurrent.locks.LockSupport
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.io.pagecache.IOController
+import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.tracing.FileFlushEvent
 import org.neo4j.kernel.impl.pagecache.IOControllerService
 import org.neo4j.scheduler.Group
@@ -15,16 +16,19 @@ import org.neo4j.scheduler.SchedulerThreadFactory
 import org.neo4j.time.SystemNanoClock
 
 /**
- * Neo4j Enterprise's `db.checkpoint.iops.limit` for one database: the background checkpoints, those
- * on the threads [background] tells, flush at most that many I/Os a second, an I/O being a write
- * Neo4j's page cache counts as one. Up to a tenth of a second's worth goes at once; beyond that the
- * flushing thread waits until the I/Os are within the limit. -1 or 0 means no limit. Checkpoints
- * that someone waits for run on that someone's thread, such as recovery's, a new database's and a
- * stopping database's, and are not limited; nor are reads and evictions.
+ * Neo4j Enterprise's `db.checkpoint.iops.limit` and `db.checkpoint.throughput.limit` for one
+ * database: the background checkpoints, those on the threads [background] tells, flush at most that
+ * many I/Os a second, an I/O being a write Neo4j's page cache counts as one, or with a throughput
+ * limit, which replaces the IOPS limit while set, at most that many bytes of pages a second. Up to
+ * a tenth of a second's worth goes at once; beyond that the flushing thread waits until the flushes
+ * are within the limit. An IOPS limit of -1 or 0 means none. Checkpoints that someone waits for run
+ * on that someone's thread, such as recovery's, a new database's and a stopping database's, and are
+ * not limited; nor are reads and evictions.
  *
- * The limit follows the dynamic setting of [config], the database's. [lift] lifts it while someone
- * waits for a background checkpoint under way, as Enterprise's `db.checkpoint()` does. Neo4j's
- * checkpoint log line and the `check_point.io_limit` metric say whether a checkpoint was limited.
+ * The limits follow the dynamic settings of [config], the database's. [lift] lifts them while
+ * someone waits for a background checkpoint under way, as Enterprise's `db.checkpoint()` does.
+ * Neo4j's checkpoint log line and the `check_point.io_limit` metric say whether a checkpoint was
+ * limited.
  */
 class CheckpointIoController
 internal constructor(
@@ -36,6 +40,10 @@ internal constructor(
     private val park: (Long) -> Unit = LockSupport::parkNanos,
 ) : IOController {
     @Volatile private var limit: Int = config.get(GraphDatabaseSettings.check_point_iops_limit)
+
+    /** The bytes a second, which replace [limit] while set. */
+    @Volatile
+    private var throughput: Long? = config.get(GraphDatabaseSettings.check_point_throughput_limit)
     @Volatile private var lifts = 0
 
     /** Changes when the limit does, or a lift starts or ends: waiting threads then go on. */
@@ -50,6 +58,9 @@ internal constructor(
         config.addListener(GraphDatabaseSettings.check_point_iops_limit) { _, value ->
             changed { limit = value }
         }
+        config.addListener(GraphDatabaseSettings.check_point_throughput_limit) { _, value ->
+            changed { throughput = value }
+        }
     }
 
     override fun maybeLimitIO(
@@ -57,13 +68,20 @@ internal constructor(
         affectedPages: Int,
         flushEvent: FileFlushEvent,
     ) {
-        // Read once: the setting may change to none meanwhile.
+        // Read once: the settings may change to none meanwhile.
         val limit = limit
-        if (!limited(limit)) return
+        val throughput = throughput
+        if (!limited(limit, throughput)) return
         val start = clock.nanos()
+        val cost =
+            if (throughput != null) {
+                (affectedPages.toDouble() * PageCache.PAGE_SIZE * NANOS_PER_SECOND / throughput)
+                    .toLong()
+            } else {
+                recentlyCompletedIOs * (NANOS_PER_SECOND / limit)
+            }
         val (until, generation) =
             synchronized(this) {
-                val cost = recentlyCompletedIOs * (NANOS_PER_SECOND / limit)
                 paidUntil = maxOf(paidUntil, start - BURST_NANOS) + cost
                 paidUntil to generation
             }
@@ -85,15 +103,28 @@ internal constructor(
 
     override fun reportIO(completedIOs: Int, affectedPages: Int) {}
 
-    override fun configuredLimit(): Long = limit.let { if (limited(it)) it.toLong() else -1 }
+    /**
+     * The limit in IOPS, or with a throughput limit in pages a second, as Neo4j's checkpoint log
+     * line reads it; -1 for none.
+     */
+    override fun configuredLimit(): Long {
+        val limit = limit
+        val throughput = throughput
+        return when {
+            !limited(limit, throughput) -> -1
+            throughput != null -> throughput / PageCache.PAGE_SIZE
+            else -> limit.toLong()
+        }
+    }
 
     /** Whether the calling thread's flushes are limited now. */
-    override fun isEnabled() = limited(limit)
+    override fun isEnabled() = limited(limit, throughput)
 
-    /** The limit counts I/Os, not bytes: Neo4j's checkpoint log line says it in IOPS. */
-    override fun isIopsBasedLimit() = true
+    /** Whether the limit counts I/Os, not bytes: Neo4j's checkpoint log line then says IOPS. */
+    override fun isIopsBasedLimit() = throughput == null
 
-    private fun limited(limit: Int) = limit > 0 && lifts == 0 && background()
+    private fun limited(limit: Int, throughput: Long?) =
+        (throughput != null || limit > 0) && lifts == 0 && background()
 
     /**
      * Lifts the limit until the returned lift is closed: while someone waits for a checkpoint. A
