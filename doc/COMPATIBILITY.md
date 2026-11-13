@@ -67,7 +67,7 @@ end its own way.
 | Online backup and restore | Same, with differences | [Backup and restore](#backup-and-restore) |
 | Cloud storage: Amazon S3, Google Cloud Storage, Azure Blob Storage | Same, with differences | [Cloud storage](#cloud-storage) |
 | Metrics: CSV files, Graphite, Prometheus, JMX | Same, with differences | [Metrics and logs](#metrics-and-logs) |
-| Checkpoint policies and the checkpoint I/O limit | Same, with differences | [Checkpoints](#checkpoints) |
+| Checkpoint policies and the checkpoint I/O limits | Same, with differences | [Checkpoints](#checkpoints) |
 | Page cache warmup | Same, with differences | [Page cache warmup](#page-cache-warmup) |
 | Query log and security log | Same | [Metrics and logs](#metrics-and-logs) |
 | Monitoring procedures: locks, memory pools, job scheduler, checkpoints | Same | [Metrics and logs](#metrics-and-logs) |
@@ -1247,7 +1247,8 @@ as JSON lines since 2025.01.
 
 Neo4j Community accepts Enterprise's checkpoint settings, but runs the
 `CONTINUOUS` and `VOLUMETRIC` policies as `PERIODIC`, with a warning, and
-ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
+ignores `db.checkpoint.iops.limit` and `db.checkpoint.throughput.limit`.
+DozenDB has both policies and both limits.
 [`OPERATOR_GUIDE.md`](OPERATOR_GUIDE.md#checkpoints) describes how to use them.
 
 - **`CONTINUOUS`** checks every 100 milliseconds and checkpoints whenever
@@ -1257,11 +1258,11 @@ ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
   let `db.tx_log.rotation.retention_policy` delete transaction logs. With a
   retention policy that keeps every log (`keep_all`), it never checkpoints on
   its own: only backups, `db.checkpoint()` and stopping the database do.
-- **The I/O limit is per database**: databases that checkpoint at once may
-  together write their limits added up. It counts I/Os as Neo4j's page cache
-  counts them for the checkpoint log line, lets a tenth of a second's worth go
-  at once, and is followed to best effort, as Enterprise says. Reads and
-  evictions are not counted.
+- **The I/O limits are per database**: databases that checkpoint at once may
+  together write their limits added up. The IOPS limit counts I/Os as Neo4j's
+  page cache counts them for the checkpoint log line. Both limits let a tenth
+  of a second's worth go at once, and are followed to best effort, as
+  Enterprise says. Reads and evictions are not counted.
 - **Only background checkpoints are limited**, those the policy triggers.
   Checkpoints that someone waits for are not: recovery's, a new database's
   first, a stopping database's last, those of backups and store copies, and
@@ -1277,8 +1278,12 @@ ignores `db.checkpoint.iops.limit`. DozenDB has both policies and the limit.
   that database alone. Neo4j Community counts those of databases that
   checkpoint at the same time together.
 - **`db.checkpoint.throughput.limit`**, Enterprise's limit of the bytes
-  checkpoints write a second since 2025.07, which Neo4j Community declares,
-  has no effect: DozenDB limits I/Os only, with `db.checkpoint.iops.limit`.
+  checkpoints write a second since 2025.07, replaces the IOPS limit while it
+  is set, as Neo4j documents, and goes back to it when unset. It counts
+  the bytes of the pages flushed, 8 KiB each. Where Enterprise's
+  documentation says nothing: the checkpoint log line gives it in bytes a
+  second, and the `check_point.io_limit` metric in pages a second, both
+  rounded down to whole pages.
 
 ## Page cache warmup
 
@@ -1309,8 +1314,14 @@ describes how to use it. Where Enterprise's documentation says nothing:
   setting Neo4j Community declares, has no effect: the warmup never holds up
   a database's start.
 - **`db.memory.pagecache.warmup.order`**, with which Enterprise orders the
-  files it warms up since 2026.03, and which Neo4j Community declares, has no
-  effect.
+  files it warms up since 2026.03, orders the profiles the warmup loads:
+  `NONE`, the default, in the order the file system lists them;
+  `ALPHABETIC` by the path of the profiled file in the database's directory;
+  `PRIORITY` the ID files first, then the indexes (`schema/index/`), then the
+  rest, each alphabetically. Enterprise's `PRIORITY` puts the `block`
+  format's x1 store first, which DozenDB does not have. As the setting's
+  description says, it orders the warmup from profiles: the preload, which
+  takes no profiles, loads its files in the order the page cache has them.
 
 ## Import and copy
 
@@ -1341,8 +1352,10 @@ describes how to use them. They work on the formats DozenDB has, `aligned` and
   compared as the group's `id-type` says. A node whose key the database has is
   a duplicate, failing the import or skipped with `--skip-duplicate-nodes`:
   existing nodes are not changed. A new node gets the label of its ID space if
-  it lacks it, so that the constraint covers it. `--id-type=actual` and
-  composite IDs are refused.
+  it lacks it, so that the constraint covers it. `--id-type=actual` is
+  refused, and so are node files with several ID columns, which Enterprise
+  imports in full imports only: `build` refuses them when it reads the nodes,
+  before the merge writes anything. Full imports take them.
 - **Memory and disk**: the merge reads and writes through a page cache of
   `--max-off-heap-memory`, which defaults to 90% of the free memory and is
   printed. It writes the store's transaction log, about 250 bytes per entity,

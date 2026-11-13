@@ -1660,7 +1660,9 @@ nothing; it needs no `--force`.
 
 - **Keys.** The ID column of each node file names the label and the property
   that identify its nodes, as `uuid:ID{label:Person}`, and that label and
-  property need a uniqueness or node key constraint. Keys are compared as
+  property need a uniqueness or node key constraint. A node file has one ID
+  column: several, which a full import joins into one ID, work in full imports
+  only, as in Neo4j Enterprise. Keys are compared as
   strings, or as integers with `--id-type=integer` or an `id-type` in the
   braces, as `"id:ID{label:Movie,id-type:long}"`, quoted for its comma.
   Relationship files refer to nodes by these keys, new ones and those the
@@ -2369,11 +2371,24 @@ at once and waits for it. The limit is dynamic:
 CALL dbms.setConfigValue('db.checkpoint.iops.limit', '1200')
 ```
 
+To limit bytes instead of I/Os, set `db.checkpoint.throughput.limit`, such as
+`20MiB` for 20 MiB a second. It replaces the IOPS limit while it is set, limits
+the same checkpoints, and is dynamic too; an empty value, its default, goes back
+to the IOPS limit:
+
+```cypher
+CALL dbms.setConfigValue('db.checkpoint.throughput.limit', '20MiB')
+CALL dbms.setConfigValue('db.checkpoint.throughput.limit', '')
+```
+
 Each checkpoint logs its numbers in `debug.log`:
 
 ```
 Checkpoint triggered by "Scheduled checkpoint for every 15 minutes threshold" @ txId: 4567, append index: 4567 checkpoint completed in 4s 312ms. Checkpoint flushed 2614 pages (0% of total available pages), in 2101 IOs. Checkpoint performed with IO limit: 600, paused in total 38 times( 3604 millis).
 ```
+
+With a throughput limit the line says `IO limit: 20.00MiB/s`, and the
+`check_point.io_limit` metric gives the limit in 8 KiB pages a second.
 
 The metrics `check_point.duration`, `check_point.io_performed`,
 `check_point.limit_times` and `check_point.limit_millis` give the same for the
@@ -2396,6 +2411,7 @@ default.
 | `db.memory.pagecache.warmup.profile.interval` | `1m` | How often profiles are taken. |
 | `db.memory.pagecache.warmup.preload` | `false` | Loads every page of the database's files instead, and takes no profiles: for a page cache larger than the store. |
 | `db.memory.pagecache.warmup.preload.allowlist` | `.*` | The files the preload loads: a regular expression that matches the whole file name, such as `neostore\..*` for the store files without their indexes. |
+| `db.memory.pagecache.warmup.order` | `NONE` | The order in which the warmup loads the files of the profiles: `NONE` as the file system lists the profiles, `ALPHABETIC` by file path, `PRIORITY` the ID files first, then the indexes, then the rest, so that the files every query needs are in memory first. A restart to change. |
 
 - **Profiles** cover the store files and the indexes the page cache holds. They
   are taken every interval once the warmup ended, and when the database
