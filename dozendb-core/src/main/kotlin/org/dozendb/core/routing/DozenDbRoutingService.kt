@@ -21,6 +21,7 @@ import org.neo4j.dbms.routing.RoutingException
 import org.neo4j.dbms.routing.RoutingResult
 import org.neo4j.dbms.routing.RoutingService
 import org.neo4j.dbms.routing.RoutingTableServiceHelpers
+import org.neo4j.dbms.systemgraph.SystemDatabaseProvider.SystemDatabaseUnavailableException
 import org.neo4j.kernel.database.DatabaseReferenceImpl
 import org.neo4j.kernel.database.DatabaseReferenceRepository
 import org.neo4j.kernel.database.DefaultDatabaseResolver
@@ -37,6 +38,10 @@ import org.neo4j.values.virtual.MapValue
  * routes itself, else [singleAddress]'s. A driver routes itself unless this server is [alone], with
  * `dbms.routing.default_router` set to `CLIENT`, or set to `SERVER` and the address the driver
  * connected to is in one of `dbms.routing.client_side.enforce_for_domains` ([domains]).
+ *
+ * While `system` is unavailable, as while this server stops, a name that [references] has not
+ * looked up yet cannot be told: the request gets the transient error Neo4j Community gives for a
+ * database that is unavailable, so that the driver asks another server.
  */
 class DozenDbRoutingService(
     private val references: DatabaseReferenceRepository,
@@ -55,9 +60,12 @@ class DozenDbRoutingService(
     ): RoutingResult {
         val name = databaseName?.takeIf { it.isNotBlank() } ?: defaultDatabase.defaultDatabase(user)
         val reference =
-            references.getByAlias(name).orElseThrow {
-                RoutingTableServiceHelpers.databaseNotFoundException(name)
-            }
+            try {
+                    references.getByAlias(name)
+                } catch (_: SystemDatabaseUnavailableException) {
+                    throw RoutingException.routingTableForUnavailableDb(name)
+                }
+                .orElseThrow { RoutingTableServiceHelpers.databaseNotFoundException(name) }
         val alias = reference.alias().name()
         if (!config.get(BoltConnector.enabled)) throw RoutingException.boltNotEnabled(alias)
         val result =

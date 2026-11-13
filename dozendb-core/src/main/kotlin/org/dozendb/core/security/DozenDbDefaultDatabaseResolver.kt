@@ -18,7 +18,9 @@ import org.dozendb.core.edition.DefaultDatabase
 import org.neo4j.configuration.Config
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
+import org.neo4j.dbms.systemgraph.SystemDatabaseProvider.SystemDatabaseUnavailableException
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
+import org.neo4j.graphdb.DatabaseShutdownException
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.event.TransactionData
 import org.neo4j.graphdb.event.TransactionEventListenerAdapter
@@ -31,6 +33,9 @@ import org.neo4j.kernel.database.DefaultDatabaseResolver
  * exist is still resolved, as Neo4j Enterprise does: the user's queries then fail until it exists.
  *
  * Listens to the transactions of `system`, after each of which it reads the system graph anew.
+ * While `system` is unavailable, as while the server stops, a default database it has to read fails
+ * with the transient error of an unavailable database, which drivers retry elsewhere, where Neo4j's
+ * own error has no status: Bolt would log it as unexpected and not send it back.
  */
 class DozenDbDefaultDatabaseResolver(
     private val config: Config,
@@ -40,7 +45,14 @@ class DozenDbDefaultDatabaseResolver(
     private val cached = AtomicReference<String?>()
 
     override fun defaultDatabase(username: String?): String =
-        username?.takeIf { it.isNotEmpty() }?.let(security::homeDatabase) ?: dbmsDefault()
+        try {
+            username?.takeIf { it.isNotEmpty() }?.let(security::homeDatabase) ?: dbmsDefault()
+        } catch (e: SystemDatabaseUnavailableException) {
+            throw DatabaseShutdownException.databaseUnavailable(
+                GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
+                e,
+            )
+        }
 
     private fun dbmsDefault(): String =
         cached.get()
