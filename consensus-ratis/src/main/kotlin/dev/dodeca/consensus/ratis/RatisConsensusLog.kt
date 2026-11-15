@@ -44,6 +44,7 @@ import org.apache.ratis.conf.Parameters
 import org.apache.ratis.conf.RaftProperties
 import org.apache.ratis.grpc.GrpcConfigKeys
 import org.apache.ratis.grpc.server.GrpcServices
+import org.apache.ratis.grpc.server.PatchedGrpcServerProtocolClient
 import org.apache.ratis.proto.RaftProtos.RaftPeerRole
 import org.apache.ratis.proto.RaftProtos.RoleInfoProto
 import org.apache.ratis.protocol.ClientId
@@ -191,8 +192,29 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                                 ProbeService.definition(::describeSelf, ::publishAnnouncement)
                             )
                             .addService(BulkService.definition(bulkSources::get, bulkExecutor))
-                            // Bulk clients send keep-alive pings to detect dead peers.
-                            .permitKeepAliveTime(BulkService.KEEP_ALIVE_SECONDS, TimeUnit.SECONDS)
+                            // Other members ping their connections to this one, also while no
+                            // call is under way, to notice when it stops answering, and so do
+                            // bulk clients, less often. A server takes no more than one ping
+                            // per permitted time, and closes a connection that sends more: half
+                            // the members' time leaves room for pings that arrive closer
+                            // together than they were sent.
+                            .permitKeepAliveTime(
+                                PatchedGrpcServerProtocolClient.KEEP_ALIVE_SECONDS / 2,
+                                TimeUnit.SECONDS,
+                            )
+                            .permitKeepAliveWithoutCalls(true)
+                            // And pings those that sent nothing for as long: one that another
+                            // member closed while the network between them was down, which
+                            // left this end open, closes once that member answers the ping
+                            // with a reset, rather than after TCP's two hours.
+                            .keepAliveTime(
+                                PatchedGrpcServerProtocolClient.KEEP_ALIVE_SECONDS,
+                                TimeUnit.SECONDS,
+                            )
+                            .keepAliveTimeout(
+                                PatchedGrpcServerProtocolClient.KEEP_ALIVE_TIMEOUT_SECONDS,
+                                TimeUnit.SECONDS,
+                            )
                     } else {
                         builder
                     }

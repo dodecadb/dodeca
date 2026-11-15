@@ -17,8 +17,10 @@ Dodeca contains code derived from:
   2026-10-19, see doc/UPSTREAM_TOUCHPOINTS.md.
 - Apache Ratis, Copyright The Apache Software Foundation
   (https://ratis.apache.org), under the Apache License 2.0:
-  PatchedGrpcLogAppender in consensus-ratis is a changed copy of its
-  GrpcLogAppender, see doc/UPSTREAM_TOUCHPOINTS.md.
+  PatchedGrpcLogAppender, PatchedGrpcServicesImpl and
+  PatchedGrpcServerProtocolClient in consensus-ratis are changed copies of
+  its GrpcLogAppender, GrpcServicesImpl and GrpcServerProtocolClient, see
+  doc/UPSTREAM_TOUCHPOINTS.md.
 
 Files derived from them keep their copyright notices and state what Dodeca
 changed and when.

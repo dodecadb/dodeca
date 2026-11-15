@@ -86,7 +86,7 @@
 
   <build>
     <plugins>
-      <!-- PatchedGrpcLogAppender, a copy of a Ratis class, is Java. -->
+      <!-- The copies of Ratis classes, and PatchedGrpcFactory beside them, are Java. -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>

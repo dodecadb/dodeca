@@ -1,0 +1,509 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/*
+ * Dodeca: a copy of GrpcServicesImpl from Apache Ratis 3.3.1, changed on 2026-11-15 where a comment
+ * starts with "Dodeca". It is formatted as upstream, so that it diffs against the upstream file.
+ */
+package org.apache.ratis.grpc.server;
+
+import org.apache.ratis.conf.RaftProperties;
+import org.apache.ratis.grpc.GrpcConfigKeys;
+import org.apache.ratis.grpc.metrics.MessageMetrics;
+import org.apache.ratis.grpc.metrics.intercept.server.MetricServerInterceptor;
+import org.apache.ratis.util.NettyUtils;
+import org.apache.ratis.protocol.AdminAsynchronousProtocol;
+import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.rpc.SupportedRpcType;
+import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.RaftServerRpcWithProxy;
+import org.apache.ratis.server.protocol.RaftServerAsynchronousProtocol;
+import org.apache.ratis.thirdparty.io.grpc.Server;
+import org.apache.ratis.thirdparty.io.grpc.ServerCredentials;
+import org.apache.ratis.thirdparty.io.grpc.ServerInterceptor;
+import org.apache.ratis.thirdparty.io.grpc.ServerInterceptors;
+import org.apache.ratis.thirdparty.io.grpc.netty.NettyServerBuilder;
+import org.apache.ratis.thirdparty.io.grpc.stub.StreamObserver;
+import org.apache.ratis.thirdparty.io.netty.channel.ChannelOption;
+import org.apache.ratis.thirdparty.io.netty.channel.EventLoopGroup;
+import org.apache.ratis.thirdparty.io.netty.handler.ssl.SslContext;
+
+import org.apache.ratis.proto.RaftProtos.*;
+import org.apache.ratis.util.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.function.Supplier;
+
+/**
+ * A grpc implementation of {@link org.apache.ratis.server.RaftServerRpc}.
+ *
+ * Dodeca: its connections to the other members are {@link PatchedGrpcServerProtocolClient}'s, which
+ * close a connection that stopped answering, so that a member reaches another again within seconds
+ * once the network between them heals.
+ */
+public final class PatchedGrpcServicesImpl
+    extends RaftServerRpcWithProxy<PatchedGrpcServerProtocolClient, PeerProxyMap<PatchedGrpcServerProtocolClient>>
+    implements GrpcServices {
+  // Dodeca: logs as the class it replaces, and keeps its name for code injected in tests.
+  static final Logger LOG = LoggerFactory.getLogger(GrpcServicesImpl.class);
+  public static final String GRPC_SEND_SERVER_REQUEST =
+      JavaUtils.getClassSimpleName(GrpcServicesImpl.class) + ".sendRequest";
+
+  class AsyncService implements RaftServerAsynchronousProtocol {
+
+    @Override
+    public CompletableFuture<AppendEntriesReplyProto> appendEntriesAsync(AppendEntriesRequestProto request) {
+      throw new UnsupportedOperationException("This method is not supported");
+    }
+
+    @Override
+    public CompletableFuture<ReadIndexReplyProto> readIndexAsync(ReadIndexRequestProto request) throws IOException {
+      CodeInjectionForTesting.execute(GRPC_SEND_SERVER_REQUEST, getId(), null, request);
+
+      final CompletableFuture<ReadIndexReplyProto> f = new CompletableFuture<>();
+      final StreamObserver<ReadIndexReplyProto> s = new StreamObserver<ReadIndexReplyProto>() {
+        @Override
+        public void onNext(ReadIndexReplyProto reply) {
+          f.complete(reply);
+        }
+
+        @Override
+        public void onError(Throwable throwable) {
+          f.completeExceptionally(throwable);
+        }
+
+        @Override
+        public void onCompleted() {
+        }
+      };
+
+      final RaftPeerId target = RaftPeerId.valueOf(request.getServerRequest().getReplyId());
+      getProxies().getProxy(target).readIndex(request, s);
+      return f;
+    }
+  }
+
+  public static final class Builder {
+    private RaftServer server;
+    private Customizer customizer;
+    private ServerCredentials serverCredentials;
+
+    private String adminHost;
+    private int adminPort;
+    private SslContext adminSslContext;
+    private String clientHost;
+    private int clientPort;
+    private SslContext clientSslContext;
+    private String serverHost;
+    private int serverPort;
+    private SslContext serverSslContextForServer;
+    private SslContext serverSslContextForClient;
+    private int serverStubPoolSize;
+
+    private SizeInBytes messageSizeMax;
+    private SizeInBytes flowControlWindow;
+    private TimeDuration requestTimeoutDuration;
+    private boolean separateHeartbeatChannel;
+
+    private EventLoopGroup serverBosses;
+    private EventLoopGroup serverWorkers;
+    private EventLoopGroup clientWorkers;
+
+    private Builder() {}
+
+    public Builder setServer(RaftServer raftServer) {
+      this.server = raftServer;
+
+      final RaftProperties properties = server.getProperties();
+      this.adminHost = GrpcConfigKeys.Admin.host(properties);
+      this.adminPort = GrpcConfigKeys.Admin.port(properties);
+      this.clientHost = GrpcConfigKeys.Client.host(properties);
+      this.clientPort = GrpcConfigKeys.Client.port(properties);
+      this.serverHost = GrpcConfigKeys.Server.host(properties);
+      this.serverPort = GrpcConfigKeys.Server.port(properties);
+      this.messageSizeMax = GrpcConfigKeys.messageSizeMax(properties, LOG::info);
+      this.flowControlWindow = GrpcConfigKeys.flowControlWindow(properties, LOG::info);
+      this.requestTimeoutDuration = RaftServerConfigKeys.Rpc.requestTimeout(properties);
+      this.separateHeartbeatChannel = GrpcConfigKeys.Server.heartbeatChannel(properties);
+      this.serverStubPoolSize = GrpcConfigKeys.Server.stubPoolSize(properties);
+
+      final SizeInBytes appenderBufferSize = RaftServerConfigKeys.Log.Appender.bufferByteLimit(properties);
+      final SizeInBytes gap = SizeInBytes.ONE_MB;
+      final long diff = messageSizeMax.getSize() - appenderBufferSize.getSize();
+      if (diff < gap.getSize()) {
+        throw new IllegalArgumentException("Illegal configuration: "
+            + GrpcConfigKeys.MESSAGE_SIZE_MAX_KEY + "(= " + messageSizeMax
+            + ") must be " + gap + " larger than "
+            + RaftServerConfigKeys.Log.Appender.BUFFER_BYTE_LIMIT_KEY + "(= " + appenderBufferSize + ").");
+      }
+
+      return this;
+    }
+
+    public Builder setCustomizer(Customizer customizer) {
+      this.customizer = customizer != null? customizer : Customizer.getDefaultInstance();
+      return this;
+    }
+
+    public Builder setServerCredentials(ServerCredentials credentials) {
+      this.serverCredentials = credentials;
+      return this;
+    }
+
+    private PatchedGrpcServerProtocolClient newGrpcServerProtocolClient(RaftPeer target,
+        EventLoopGroup eventLoopGroup) {
+      return new PatchedGrpcServerProtocolClient(target, serverStubPoolSize, flowControlWindow.getSizeInt(),
+          requestTimeoutDuration, serverSslContextForClient, separateHeartbeatChannel, eventLoopGroup);
+    }
+
+    private ExecutorService newExecutor() {
+      final RaftProperties properties = server.getProperties();
+      return ConcurrentUtils.newThreadPoolWithMax(
+          GrpcConfigKeys.Server.asyncRequestThreadPoolCached(properties),
+          GrpcConfigKeys.Server.asyncRequestThreadPoolSize(properties),
+          server.getId() + "-request-");
+    }
+
+    private GrpcClientProtocolService newGrpcClientProtocolService(ExecutorService executor) {
+      return new GrpcClientProtocolService(server::getId, server, executor);
+    }
+
+    private GrpcServerProtocolService newGrpcServerProtocolService() {
+      return new GrpcServerProtocolService(server::getId, server);
+    }
+
+    private MetricServerInterceptor newMetricServerInterceptor() {
+      return new MetricServerInterceptor(server::getId,
+          JavaUtils.getClassSimpleName(getClass()) + "_" + serverPort);
+    }
+
+    Server buildServer(NettyServerBuilder builder, EnumSet<GrpcServices.Type> types) {
+      return customizer.customize(builder, types).build();
+    }
+
+    private NettyServerBuilder newNettyServerBuilderForServer() {
+      return newNettyServerBuilder(serverHost, serverPort, serverSslContextForServer);
+    }
+
+    private NettyServerBuilder newNettyServerBuilderForAdmin() {
+      return newNettyServerBuilder(adminHost, adminPort, adminSslContext);
+    }
+
+    private NettyServerBuilder newNettyServerBuilderForClient() {
+      return newNettyServerBuilder(clientHost, clientPort, clientSslContext);
+    }
+
+    private NettyServerBuilder newNettyServerBuilder(String hostname, int port, SslContext sslContext) {
+      final InetSocketAddress address = hostname == null || hostname.isEmpty() ?
+          new InetSocketAddress(port) : new InetSocketAddress(hostname, port);
+      final NettyServerBuilder nettyServerBuilder;
+      if (serverCredentials != null) {
+        LOG.info("Setting server credentials for {}", address);
+        nettyServerBuilder = NettyServerBuilder.forAddress(address, serverCredentials);
+      } else {
+        nettyServerBuilder = NettyServerBuilder.forAddress(address);
+        if (sslContext != null) {
+          LOG.info("Setting sslContext for {}", address);
+          nettyServerBuilder.sslContext(sslContext);
+        }
+      }
+      nettyServerBuilder
+          .withChildOption(ChannelOption.SO_REUSEADDR, true)
+          .maxInboundMessageSize(messageSizeMax.getSizeInt())
+          .flowControlWindow(flowControlWindow.getSizeInt());
+
+      final EventLoopGroup channelGroup = serverBosses != null ? serverBosses : serverWorkers;
+      if (channelGroup != null) {
+        nettyServerBuilder.channelType(NettyUtils.getServerChannelClass(channelGroup));
+      }
+      if (serverBosses != null) {
+        nettyServerBuilder.bossEventLoopGroup(serverBosses);
+      }
+      if (serverWorkers != null) {
+        nettyServerBuilder.workerEventLoopGroup(serverWorkers);
+      }
+
+      return nettyServerBuilder;
+    }
+
+    private boolean separateAdminServer() {
+      return adminPort > 0 && adminPort != serverPort;
+    }
+
+    private boolean separateClientServer() {
+      return clientPort > 0 && clientPort != serverPort;
+    }
+
+    Server newServer(GrpcClientProtocolService client, ServerInterceptor interceptor) {
+      final EnumSet<GrpcServices.Type> types = EnumSet.of(GrpcServices.Type.SERVER);
+      final NettyServerBuilder serverBuilder = newNettyServerBuilderForServer();
+      final GrpcServerProtocolService service = newGrpcServerProtocolService();
+      serverBuilder.addService(ServerInterceptors.intercept(service, interceptor));
+
+      if (!separateAdminServer()) {
+        types.add(GrpcServices.Type.ADMIN);
+        addAdminService(serverBuilder, server, interceptor);
+      }
+      if (!separateClientServer()) {
+        types.add(GrpcServices.Type.CLIENT);
+        addClientService(serverBuilder, client, interceptor);
+      }
+      return buildServer(serverBuilder, types);
+    }
+
+    public PatchedGrpcServicesImpl build() {
+      final RaftProperties props = server.getProperties();
+      final String id = server.getId() + "";
+      final boolean useEpoll = GrpcConfigKeys.useEpoll(props);
+      try {
+        final int bossGroupSize = GrpcConfigKeys.Server.bossGroupSize(props);
+        final int serverWorkerGroupSize = GrpcConfigKeys.Server.workerGroupSize(props);
+        if (bossGroupSize > 0 || serverWorkerGroupSize > 0) {
+          serverBosses = NettyUtils.newEventLoopGroup(id + "-boss", bossGroupSize, useEpoll);
+          serverWorkers = NettyUtils.newEventLoopGroup(id + "-server-workers", serverWorkerGroupSize, useEpoll);
+        }
+
+        final int clientWorkerGroupSize = GrpcConfigKeys.Client.workerGroupSize(props);
+        if (clientWorkerGroupSize > 0) {
+          clientWorkers = NettyUtils.newEventLoopGroup(id + "-client-workers", clientWorkerGroupSize, useEpoll);
+        }
+        return new PatchedGrpcServicesImpl(this);
+      } catch (Throwable t) {
+        NettyUtils.shutdownGracefully(clientWorkers, serverWorkers, serverBosses);
+        throw t;
+      }
+    }
+
+    public Builder setAdminSslContext(SslContext adminSslContext) {
+      this.adminSslContext = adminSslContext;
+      return this;
+    }
+
+    public Builder setClientSslContext(SslContext clientSslContext) {
+      this.clientSslContext = clientSslContext;
+      return this;
+    }
+
+    public Builder setServerSslContextForServer(SslContext serverSslContextForServer) {
+      this.serverSslContextForServer = serverSslContextForServer;
+      return this;
+    }
+
+    public Builder setServerSslContextForClient(SslContext serverSslContextForClient) {
+      this.serverSslContextForClient = serverSslContextForClient;
+      return this;
+    }
+  }
+
+  public static Builder newBuilder() {
+    return new Builder();
+  }
+
+  private final Map<String, Server> servers = new HashMap<>();
+  private final Supplier<InetSocketAddress> addressSupplier;
+  private final Supplier<InetSocketAddress> clientServerAddressSupplier;
+  private final Supplier<InetSocketAddress> adminServerAddressSupplier;
+
+  private final AsyncService asyncService = new AsyncService();
+
+  private final ExecutorService executor;
+  private final GrpcClientProtocolService clientProtocolService;
+
+  private final MetricServerInterceptor serverInterceptor;
+  private final EventLoopGroup serverBosses;
+  private final EventLoopGroup serverWorkers;
+  private final EventLoopGroup clientWorkers;
+
+  private PatchedGrpcServicesImpl(Builder b) {
+    super(b.server::getId, id -> new PeerProxyMap<>(id.toString(),
+        peer -> b.newGrpcServerProtocolClient(peer, b.clientWorkers)));
+
+    this.serverBosses = b.serverBosses;
+    this.serverWorkers = b.serverWorkers;
+    this.clientWorkers = b.clientWorkers;
+
+    this.executor = b.newExecutor();
+    this.clientProtocolService = b.newGrpcClientProtocolService(executor);
+    this.serverInterceptor = b.newMetricServerInterceptor();
+    final Server server = b.newServer(clientProtocolService, serverInterceptor);
+
+    servers.put(GrpcServerProtocolService.class.getSimpleName(), server);
+    addressSupplier = newAddressSupplier(b.serverPort, server);
+
+    if (b.separateAdminServer()) {
+      final NettyServerBuilder builder = b.newNettyServerBuilderForAdmin();
+      addAdminService(builder, b.server, serverInterceptor);
+      final Server adminServer = b.buildServer(builder, EnumSet.of(GrpcServices.Type.ADMIN));
+      servers.put(GrpcAdminProtocolService.class.getName(), adminServer);
+      adminServerAddressSupplier = newAddressSupplier(b.adminPort, adminServer);
+    } else {
+      adminServerAddressSupplier = addressSupplier;
+    }
+
+    if (b.separateClientServer()) {
+      final NettyServerBuilder builder = b.newNettyServerBuilderForClient();
+      addClientService(builder, clientProtocolService, serverInterceptor);
+      final Server clientServer = b.buildServer(builder, EnumSet.of(GrpcServices.Type.CLIENT));
+      servers.put(GrpcClientProtocolService.class.getName(), clientServer);
+      clientServerAddressSupplier = newAddressSupplier(b.clientPort, clientServer);
+    } else {
+      clientServerAddressSupplier = addressSupplier;
+    }
+  }
+
+  static MemoizedSupplier<InetSocketAddress> newAddressSupplier(int port, Server server) {
+    return JavaUtils.memoize(() -> new InetSocketAddress(port != 0 ? port : server.getPort()));
+  }
+
+  static void addClientService(NettyServerBuilder builder, GrpcClientProtocolService client,
+      ServerInterceptor interceptor) {
+    builder.addService(ServerInterceptors.intercept(client, interceptor));
+  }
+
+  static void addAdminService(NettyServerBuilder builder, AdminAsynchronousProtocol admin,
+      ServerInterceptor interceptor) {
+    final GrpcAdminProtocolService service = new GrpcAdminProtocolService(admin);
+    builder.addService(ServerInterceptors.intercept(service, interceptor));
+  }
+
+  @Override
+  public SupportedRpcType getRpcType() {
+    return SupportedRpcType.GRPC;
+  }
+
+  @Override
+  public void startImpl() {
+    for (Server server : servers.values()) {
+      try {
+        server.start();
+      } catch (IOException e) {
+        ExitUtils.terminate(1, "Failed to start Grpc server", e, LOG);
+      }
+      LOG.info("{}: {} started, listening on {}",
+          getId(), JavaUtils.getClassSimpleName(getClass()), server.getPort());
+    }
+  }
+
+  @Override
+  public void closeImpl() {
+    for (Server server : servers.values()) {
+      server.shutdownNow();
+    }
+    boolean interrupted = false;
+    for (Map.Entry<String, Server> server : servers.entrySet()) {
+      try {
+        server.getValue().awaitTermination();
+        LOG.info("{}: Shutdown {} successfully", getId(), server.getKey());
+      } catch (InterruptedException e) {
+        Thread.currentThread().interrupt();
+        LOG.warn("{}: Interrupted shutdown {}", getId(), server.getKey());
+        interrupted = true;
+        break;
+      }
+    }
+
+    try {
+      serverInterceptor.close();
+    } catch (Exception e) {
+      LOG.warn("{}: Failed to unregister metrics", getId(), e);
+    }
+
+    if (interrupted) {
+      executor.shutdown();  // shutdown but not wait
+    } else {
+      ConcurrentUtils.shutdownAndWait(executor);
+    }
+
+    try {
+      super.closeImpl();
+    } catch (IOException e) {
+      LOG.warn("{}: Failed to close proxies", getId(), e);
+    }
+
+    NettyUtils.shutdownGracefully(clientWorkers, serverWorkers, serverBosses);
+  }
+
+  @Override
+  public void notifyNotLeader(RaftGroupId groupId) {
+    clientProtocolService.closeAllOrderedRequestStreamObservers(groupId);
+  }
+
+  @Override
+  public InetSocketAddress getInetSocketAddress() {
+    return addressSupplier.get();
+  }
+
+  @Override
+  public InetSocketAddress getClientServerAddress() {
+    return clientServerAddressSupplier.get();
+  }
+
+  @Override
+  public InetSocketAddress getAdminServerAddress() {
+    return adminServerAddressSupplier.get();
+  }
+
+  @Override
+  public RaftServerAsynchronousProtocol async() {
+    return asyncService;
+  }
+
+  @Override
+  public AppendEntriesReplyProto appendEntries(AppendEntriesRequestProto request) {
+    throw new UnsupportedOperationException(
+        "Blocking " + JavaUtils.getCurrentStackTraceElement().getMethodName() + " call is not supported");
+  }
+
+  @Override
+  public InstallSnapshotReplyProto installSnapshot(InstallSnapshotRequestProto request) {
+    throw new UnsupportedOperationException(
+        "Blocking " + JavaUtils.getCurrentStackTraceElement().getMethodName() + " call is not supported");
+  }
+
+  @Override
+  public RequestVoteReplyProto requestVote(RequestVoteRequestProto request)
+      throws IOException {
+    CodeInjectionForTesting.execute(GRPC_SEND_SERVER_REQUEST, getId(),
+        null, request);
+
+    final RaftPeerId target = RaftPeerId.valueOf(request.getServerRequest().getReplyId());
+    return getProxies().getProxy(target).requestVote(request);
+  }
+
+  @Override
+  public StartLeaderElectionReplyProto startLeaderElection(StartLeaderElectionRequestProto request) throws IOException {
+    CodeInjectionForTesting.execute(GRPC_SEND_SERVER_REQUEST, getId(), null, request);
+
+    final RaftPeerId target = RaftPeerId.valueOf(request.getServerRequest().getReplyId());
+    return getProxies().getProxy(target).startLeaderElection(request);
+  }
+
+  MessageMetrics getMessageMetrics() {
+    return serverInterceptor.getMetrics();
+  }
+}

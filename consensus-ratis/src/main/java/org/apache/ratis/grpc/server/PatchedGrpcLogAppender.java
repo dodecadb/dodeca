@@ -16,8 +16,8 @@
  * limitations under the License.
  */
 /*
- * Dodeca: a copy of GrpcLogAppender from Apache Ratis 3.3.1, changed on 2026-10-25 where a comment
- * starts with "Dodeca". It is formatted as upstream, so that it diffs against the upstream file.
+ * Dodeca: a copy of GrpcLogAppender from Apache Ratis 3.3.1, changed on 2026-10-25 and 2026-11-15
+ * where a comment starts with "Dodeca". It is formatted as upstream, so that it diffs against the upstream file.
  */
 package org.apache.ratis.grpc.server;
 
@@ -206,12 +206,13 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
         RaftServerConfigKeys.Log.Appender.RETRY_POLICY_KEY);
   }
 
+  // Dodeca: the services and connections of PatchedGrpcFactory.
   @Override
-  public GrpcServicesImpl getServerRpc() {
-    return (GrpcServicesImpl)super.getServerRpc();
+  public PatchedGrpcServicesImpl getServerRpc() {
+    return (PatchedGrpcServicesImpl)super.getServerRpc();
   }
 
-  private GrpcServerProtocolClient getClient() throws IOException {
+  private PatchedGrpcServerProtocolClient getClient() throws IOException {
     return getServerRpc().getProxies().getProxy(getFollowerId());
   }
 
@@ -372,8 +373,8 @@ public class PatchedGrpcLogAppender extends LogAppenderBase {
     private final AppendLogResponseHandler handler;
     private boolean completed = false;
 
-    StreamObservers(GrpcServerProtocolClient client, AppendLogResponseHandler handler, boolean separateHeartbeat,
-        TimeDuration waitTimeMin) {
+    StreamObservers(PatchedGrpcServerProtocolClient client, AppendLogResponseHandler handler,
+        boolean separateHeartbeat, TimeDuration waitTimeMin) {
       this.handler = handler;
       this.appendLog = client.appendEntries(handler, false);
       this.heartbeat = separateHeartbeat? client.appendEntries(handler, true): null;
