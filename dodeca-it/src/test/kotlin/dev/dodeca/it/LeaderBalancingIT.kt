@@ -101,6 +101,7 @@ class LeaderBalancingIT {
                 writers.execute {
                     val written =
                         acknowledged.computeIfAbsent(database) { ConcurrentHashMap.newKeySet() }
+                    var next = System.nanoTime()
                     while (!done.get()) {
                         val id = ids.incrementAndGet()
                         try {
@@ -116,6 +117,12 @@ class LeaderBalancingIT {
                             if ("outcome is unknown" in e.message.orEmpty())
                                 unknown += "$database: ${e.message}"
                         }
+                        // The next write at the rate, or at once after a slower one, without
+                        // catching up.
+                        next = maxOf(next + WRITE_INTERVAL.toNanos(), System.nanoTime())
+                        Thread.sleep(
+                            Duration.ofNanos(next - System.nanoTime()).coerceAtLeast(Duration.ZERO)
+                        )
                     }
                 }
             }
@@ -160,5 +167,14 @@ class LeaderBalancingIT {
                     }
             }
         }
+    }
+
+    private companion object {
+        /**
+         * How often each writer writes: 10 writes a second to each of the seven databases. Writers
+         * that wrote as fast as they could took a CI runner's four CPUs and its disk, and a member
+         * restarting among them took minutes to start.
+         */
+        val WRITE_INTERVAL: Duration = Duration.ofMillis(100)
     }
 }
