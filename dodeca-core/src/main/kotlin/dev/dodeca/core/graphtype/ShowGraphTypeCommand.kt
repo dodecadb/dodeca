@@ -45,19 +45,10 @@ internal class ShowGraphTypeCommand(
             } else {
                 mapOf(
                     ShowCurrentGraphTypeClause.specificationColumn() to
-                        Values.utf8Value(specification(graphType))
+                        Values.utf8Value(GraphTypePlans.specification(graphType))
                 )
             }
         return ClosingIterator.single(`Map$`.`MODULE$`.from(CollectionConverters.asScala(row)))
-    }
-
-    companion object {
-        /** [graphType] in Neo4j's canonical form, which ALTER CURRENT GRAPH TYPE SET takes. */
-        fun specification(graphType: GraphTypeModel): String =
-            `GraphType$`.`MODULE$`.graphTypeInfoForShow(
-                GraphTypePlans.entries(graphType),
-                GraphTypePlans.constraints(graphType),
-            )
     }
 }
 

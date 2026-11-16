@@ -330,7 +330,7 @@ internal class StoreCopier(
     private fun schema(request: Request, target: DatabaseLayout, statements: SchemaStatements) {
         val toName = request.to.databaseName
         if (request.copySchema) {
-            createSchema(target, statements.statements)
+            createSchema(target, statements)
         } else {
             val file = request.schemaDirectory.resolve("$toName-schema.cypher")
             Files.createDirectories(file.toAbsolutePath().parent)
@@ -370,8 +370,11 @@ internal class StoreCopier(
     private fun count(n: Long, one: String, many: String = "${one}s") =
         "$n ${if (n == 1L) one else many}"
 
-    /** Runs [statements] on the copy in [target], and waits for its indexes to be built. */
-    private fun createSchema(target: DatabaseLayout, statements: List<String>) {
+    /**
+     * Runs [schema]'s statements on the copy in [target], and waits for its indexes to be built.
+     */
+    private fun createSchema(target: DatabaseLayout, schema: SchemaStatements) {
+        val statements = schema.statements
         if (statements.isEmpty()) return
         val engine = StorageEngineFactory.selectStorageEngine(fs, target).orElseThrow()
         val tail =
@@ -397,7 +400,7 @@ internal class StoreCopier(
                 )
             }
         ScratchDbms.deleteHome(scratch)
-        out.println("Created ${statements.size} indexes and constraints on the copy.")
+        out.println("Created ${schema.created} indexes and constraints on the copy.")
     }
 
     private fun targetFormat(toFormat: String, sourceFamily: String): String {

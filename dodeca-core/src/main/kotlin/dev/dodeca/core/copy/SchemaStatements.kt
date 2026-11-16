@@ -1,6 +1,10 @@
 package dev.dodeca.core.copy
 
+import dev.dodeca.core.graphtype.CurrentGraphType
+import dev.dodeca.core.graphtype.GraphTypePlans
+import dev.dodeca.core.graphtype.Requirement
 import org.neo4j.common.EntityType
+import org.neo4j.common.TokenNameLookup
 import org.neo4j.internal.schema.ConstraintDescriptor
 import org.neo4j.internal.schema.ConstraintType
 import org.neo4j.internal.schema.IndexDescriptor
@@ -16,7 +20,9 @@ import org.neo4j.values.storable.Value
 /**
  * The Cypher statements that create, on a copy, the indexes and constraints of its source, by their
  * names, as `SHOW INDEXES` and `SHOW CONSTRAINTS` show them: one statement per index that no
- * constraint owns, and per constraint, with the index configuration of its index. Token lookup
+ * constraint owns, and per constraint, with the index configuration of its index, but the dependent
+ * constraints of graph types, which only graph types make: one statement adds the element types
+ * they are, and Neo4j's kernel gives them the names it gave them in the source. Token lookup
  * indexes are left out: the copy builds its own. So is the schema of what [filters] leave out of
  * the copy, which [leftOut] describes.
  *
@@ -29,11 +35,29 @@ internal class SchemaStatements(
     private val tokens: TokenHolders,
     private val filters: CopyFilters,
 ) {
-    /** The statements, constraints after indexes, each in the order of its names. */
+    /**
+     * The statements, constraints after indexes, each in the order of its names, then the graph
+     * type's element types.
+     */
     val statements: List<String>
+
+    /** How many indexes and constraints the statements create. */
+    val created: Int
 
     /** The schema left out of the copy, described for its output. */
     val leftOut: List<String>
+
+    /** The names of [tokens]. */
+    private val names =
+        object : TokenNameLookup {
+            override fun labelGetName(labelId: Int): String =
+                tokens.labelTokens().getTokenById(labelId).name()
+
+            override fun relationshipTypeGetName(relationshipTypeId: Int): String =
+                tokens.relationshipTypeTokens().getTokenById(relationshipTypeId).name()
+
+            override fun propertyKeyGetName(propertyKeyId: Int): String = keyName(propertyKeyId)
+        }
 
     init {
         val statements = mutableListOf<String>()
@@ -48,11 +72,13 @@ internal class SchemaStatements(
             }
         }
         val ownedById = owned.associateBy { it.id }
+        val requirements = mutableListOf<Requirement>()
         for (constraint in constraints.sortedBy { it.name }) {
+            val requirement = Requirement.of(constraint, names)
             when {
-                constraint.type() == ConstraintType.RELATIONSHIP_ENDPOINT_LABEL ->
-                    leftOut += "constraint ${constraint.name}, a graph type constraint"
-                dropped(constraint.schema()) -> leftOut += "constraint ${constraint.name}"
+                dropped(constraint.schema()) || requirement != null && dropsLabel(requirement) ->
+                    leftOut += "constraint ${constraint.name}"
+                requirement != null -> requirements += requirement
                 else -> {
                     val index =
                         if (constraint.isIndexBackedConstraint) {
@@ -64,9 +90,22 @@ internal class SchemaStatements(
                 }
             }
         }
+        this.created = statements.size + requirements.size
+        if (requirements.isNotEmpty()) {
+            val graphType = CurrentGraphType.elements(requirements, emptyList())
+            statements += "CYPHER 25 ALTER CURRENT GRAPH TYPE ADD ${GraphTypePlans.line(graphType)}"
+        }
         this.statements = statements
         this.leftOut = leftOut
     }
+
+    /** Whether [requirement] requires a label no copied node has. */
+    private fun dropsLabel(requirement: Requirement): Boolean =
+        when (requirement) {
+            is Requirement.Implied -> filters.dropsLabel(requirement.implied)
+            is Requirement.Endpoint -> filters.dropsLabel(requirement.label)
+            else -> false
+        }
 
     /** Whether no entity of the copy can have what [schema] covers. */
     private fun dropped(schema: SchemaDescriptor): Boolean {

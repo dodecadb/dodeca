@@ -1,6 +1,7 @@
 package dev.dodeca.core.graphtype
 
 import org.neo4j.common.EntityType
+import org.neo4j.common.TokenNameLookup
 import org.neo4j.cypher.internal.ast.`NoOptions$`
 import org.neo4j.cypher.internal.ast.Options
 import org.neo4j.cypher.internal.expressions.LabelName
@@ -9,6 +10,7 @@ import org.neo4j.cypher.internal.expressions.RelTypeName
 import org.neo4j.cypher.internal.logical.plans.`EmptyNodeElementTypeReference$`
 import org.neo4j.cypher.internal.logical.plans.`ExistenceConstraint$`
 import org.neo4j.cypher.internal.logical.plans.GraphElementTypeReferenceForConstraint
+import org.neo4j.cypher.internal.logical.plans.`GraphType$`
 import org.neo4j.cypher.internal.logical.plans.GraphTypeConstraintType
 import org.neo4j.cypher.internal.logical.plans.GraphTypeCreateConstraint
 import org.neo4j.cypher.internal.logical.plans.GraphTypeEntry
@@ -32,6 +34,7 @@ import org.neo4j.cypher.internal.util.symbols.AnyType
 import org.neo4j.cypher.internal.util.symbols.CypherType
 import org.neo4j.internal.kernel.api.SchemaRead
 import org.neo4j.internal.kernel.api.TokenRead
+import org.neo4j.internal.schema.ConstraintDescriptor
 import org.neo4j.internal.schema.ConstraintType
 import org.neo4j.internal.schema.EndpointType
 import org.neo4j.internal.schema.GraphTypeDependence
@@ -161,6 +164,49 @@ internal sealed interface Requirement {
     }
 
     companion object {
+        /**
+         * The requirement [constraint] is, null if it is not a dependent constraint, with the names
+         * of its tokens from [names].
+         */
+        fun of(constraint: ConstraintDescriptor, names: TokenNameLookup): Requirement? {
+            val schema = constraint.schema()
+            val entity = schema.entityType()
+            val tokenId = schema.entityTokenIds.single()
+            val token =
+                when (entity) {
+                    EntityType.NODE -> names.labelGetName(tokenId)
+                    EntityType.RELATIONSHIP -> names.relationshipTypeGetName(tokenId)
+                }
+            return when {
+                constraint.isNodeLabelExistenceConstraint ->
+                    Implied(
+                        token,
+                        names.labelGetName(
+                            constraint.asNodeLabelExistenceConstraint().requiredLabelId()
+                        ),
+                    )
+                constraint.isRelationshipEndpointLabelConstraint -> {
+                    val endpoint = constraint.asRelationshipEndpointLabelConstraint()
+                    Endpoint(
+                        token,
+                        names.labelGetName(endpoint.endpointLabelId()),
+                        endpoint.endpointType(),
+                    )
+                }
+                constraint.graphTypeDependence() != GraphTypeDependence.DEPENDENT -> null
+                constraint.type() == ConstraintType.EXISTS ->
+                    Exists(entity, token, names.propertyKeyGetName(schema.propertyIds.single()))
+                constraint.type() == ConstraintType.PROPERTY_TYPE ->
+                    Typed(
+                        entity,
+                        token,
+                        names.propertyKeyGetName(schema.propertyIds.single()),
+                        constraint.asPropertyTypeConstraint().propertyType(),
+                    )
+                else -> null
+            }
+        }
+
         fun ofProperty(
             entity: EntityType,
             token: String,
@@ -264,63 +310,43 @@ internal class CurrentGraphType(
             val names = linkedMapOf<Requirement, String>()
             val constraints = mutableListOf<GraphConstraint>()
             schema.constraintsGetAll().forEachRemaining { constraint ->
+                val requirement = Requirement.of(constraint, tokens)
+                if (requirement != null) {
+                    names[requirement] = constraint.name
+                    return@forEachRemaining
+                }
                 val descriptor = constraint.schema()
                 val entity = descriptor.entityType()
                 val tokenId = descriptor.entityTokenIds.single()
                 val token =
                     when (entity) {
-                        EntityType.NODE -> tokens.nodeLabelName(tokenId)
-                        EntityType.RELATIONSHIP -> tokens.relationshipTypeName(tokenId)
+                        EntityType.NODE -> tokens.labelGetName(tokenId)
+                        EntityType.RELATIONSHIP -> tokens.relationshipTypeGetName(tokenId)
                     }
-                val properties = descriptor.propertyIds.map { tokens.propertyKeyName(it) }
-                val dependent = constraint.graphTypeDependence() == GraphTypeDependence.DEPENDENT
-                when {
-                    constraint.isNodeLabelExistenceConstraint -> {
-                        val required = constraint.asNodeLabelExistenceConstraint().requiredLabelId()
-                        names[Requirement.Implied(token, tokens.nodeLabelName(required))] =
-                            constraint.name
+                val kind =
+                    when (constraint.type()) {
+                        ConstraintType.UNIQUE_EXISTS -> ConstraintKind.KEY
+                        ConstraintType.UNIQUE -> ConstraintKind.UNIQUE
+                        ConstraintType.EXISTS -> ConstraintKind.EXISTS
+                        else -> ConstraintKind.TYPE
                     }
-                    constraint.isRelationshipEndpointLabelConstraint -> {
-                        val endpoint = constraint.asRelationshipEndpointLabelConstraint()
-                        names[
-                            Requirement.Endpoint(
-                                token,
-                                tokens.nodeLabelName(endpoint.endpointLabelId()),
-                                endpoint.endpointType(),
-                            )] = constraint.name
+                val types =
+                    if (kind == ConstraintKind.TYPE) {
+                        constraint.asPropertyTypeConstraint().propertyType()
+                    } else {
+                        null
                     }
-                    dependent && constraint.type() == ConstraintType.EXISTS ->
-                        names[Requirement.Exists(entity, token, properties.single())] =
-                            constraint.name
-                    dependent && constraint.type() == ConstraintType.PROPERTY_TYPE ->
-                        names[
-                            Requirement.Typed(
-                                entity,
-                                token,
-                                properties.single(),
-                                constraint.asPropertyTypeConstraint().propertyType(),
-                            )] = constraint.name
-                    else -> {
-                        val kind =
-                            when (constraint.type()) {
-                                ConstraintType.UNIQUE_EXISTS -> ConstraintKind.KEY
-                                ConstraintType.UNIQUE -> ConstraintKind.UNIQUE
-                                ConstraintType.EXISTS -> ConstraintKind.EXISTS
-                                else -> ConstraintKind.TYPE
-                            }
-                        val types =
-                            if (kind == ConstraintKind.TYPE) {
-                                constraint.asPropertyTypeConstraint().propertyType()
-                            } else {
-                                null
-                            }
-                        constraints +=
-                            GraphConstraint(
-                                constraint.name,
-                                ConstraintSpec(entity, token, properties, kind, types),
-                            )
-                    }
-                }
+                constraints +=
+                    GraphConstraint(
+                        constraint.name,
+                        ConstraintSpec(
+                            entity,
+                            token,
+                            descriptor.propertyIds.map { tokens.propertyKeyGetName(it) },
+                            kind,
+                            types,
+                        ),
+                    )
             }
             return CurrentGraphType(elements(names.keys, constraints), names)
         }
@@ -486,6 +512,17 @@ internal object GraphTypePlans {
         }
 
     // To plans.
+
+    /** [graphType] in Neo4j's canonical form, which ALTER CURRENT GRAPH TYPE SET takes. */
+    fun specification(graphType: GraphTypeModel): String =
+        `GraphType$`.`MODULE$`.graphTypeInfoForShow(entries(graphType), constraints(graphType))
+
+    /**
+     * [graphType] as Neo4j's plans describe it, which ALTER CURRENT GRAPH TYPE takes too: the
+     * canonical form on one line, with names in backticks only where they need them.
+     */
+    fun line(graphType: GraphTypeModel): String =
+        `GraphType$`.`MODULE$`.graphTypeInfoForPlan(entries(graphType), constraints(graphType))
 
     fun entries(graphType: GraphTypeModel): scala.collection.immutable.Set<GraphTypeEntry> =
         set(

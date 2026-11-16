@@ -336,13 +336,20 @@ class StoreCopyTest {
             "CREATE CONSTRAINT role_type FOR ()-[r:ACTED_IN]-() REQUIRE r.role IS :: STRING",
             "CREATE CONSTRAINT acted_id FOR ()-[r:ACTED_IN]-() REQUIRE r.id IS UNIQUE",
             "CREATE CONSTRAINT acted_key FOR ()-[r:ACTED_IN]-() REQUIRE r.key IS RELATIONSHIP KEY",
+            // Six dependent constraints, only graph types make.
+            "CYPHER 25 ALTER CURRENT GRAPH TYPE ADD { (:Movie => :Work {title :: STRING NOT NULL}), " +
+                "(:Person)-[:DIRECTED => {year :: INTEGER}]->(:Movie =>) }",
         )
+
+    /** The indexes and constraints the statements of [schema] create. */
+    private val created = schema.size - 1 + 6
 
     private fun createSchema() {
         for (statement in schema) server.rows(statement, "films")
         server.rows(
             "CREATE (p:Person {id: 1, name: 'Ann', born: 1970})-[:ACTED_IN {role: 'Ellie', " +
-                "id: 1, key: 1}]->(:Movie {title: 'Up', year: 2009, embedding: [0.1, 0.2, 0.3]}), " +
+                "id: 1, key: 1}]->(m:Movie:Work {title: 'Up', year: 2009, " +
+                "embedding: [0.1, 0.2, 0.3]}), (p)-[:DIRECTED {year: 2009}]->(m), " +
                 "(:Studio {place: point({x: 1, y: 2})})",
             "films",
         )
@@ -361,8 +368,9 @@ class StoreCopyTest {
             )
         val constraints =
             server.rows(
-                "SHOW CONSTRAINTS YIELD name, type, entityType, labelsOrTypes, properties, " +
-                    "ownedIndex, propertyType RETURN * ORDER BY name",
+                "CYPHER 25 SHOW CONSTRAINTS YIELD name, type, entityType, labelsOrTypes, " +
+                    "properties, enforcedLabel, classification, ownedIndex, propertyType " +
+                    "RETURN * ORDER BY name",
                 database,
             )
         return (indexes + constraints).map { row ->
@@ -398,13 +406,49 @@ class StoreCopyTest {
 
         val result = copied("films", "copy", "--copy-schema")
 
-        assertThat(result.out).contains("Created ${this.schema.size} indexes and constraints")
+        assertThat(result.out).contains("Created $created indexes and constraints")
         assertThat(root.resolve("copy-schema.cypher")).doesNotExist()
         assertThat(layout("copy").neo4jLayout.databasesDirectory().resolve(".copy.copy"))
             .doesNotExist()
         assertConsistent("copy")
         server.administer("CREATE DATABASE copy WAIT")
         assertThat(schema("copy")).isEqualTo(schema)
+    }
+
+    @Test
+    fun `the graph type of what the filters leave out is left out`() {
+        createSchema()
+        val leftOut =
+            server
+                .rows(
+                    "CYPHER 25 SHOW CONSTRAINTS YIELD name, labelsOrTypes, enforcedLabel " +
+                        "WHERE labelsOrTypes = ['DIRECTED'] OR enforcedLabel = 'Work' " +
+                        "RETURN name ORDER BY name",
+                    "films",
+                )
+                .map { "Left out the constraint ${it["name"]}, on what the filters left out." }
+        server.administer("STOP DATABASE films WAIT")
+
+        val result =
+            copied(
+                "films",
+                "copy",
+                "--skip-labels=Work",
+                "--ignore-relationships-with-types=DIRECTED",
+                "--copy-schema",
+            )
+
+        assertThat(leftOut).hasSize(4)
+        assertThat(result.out.lines().filter { it.startsWith("Left out the constraint") })
+            .containsExactlyElementsOf(leftOut)
+        server.administer("CREATE DATABASE copy WAIT")
+        assertThat(
+                server.rows("CYPHER 25 SHOW CURRENT GRAPH TYPE", "copy").single()["specification"]
+                    as String
+            )
+            .contains("(:`Movie` => {`title` :: STRING NOT NULL}),")
+            .doesNotContain("Work")
+            .doesNotContain("DIRECTED")
     }
 
     @Test
