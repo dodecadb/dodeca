@@ -29,29 +29,36 @@ import org.neo4j.internal.kernel.api.NodeCursor
 import org.neo4j.internal.kernel.api.NodeLabelIndexCursor
 import org.neo4j.internal.kernel.api.PropertyCursor
 import org.neo4j.internal.kernel.api.Read
+import org.neo4j.internal.kernel.api.RelationshipCursor
 import org.neo4j.internal.kernel.api.RelationshipScanCursor
 import org.neo4j.internal.kernel.api.RelationshipTypeIndexCursor
 import org.neo4j.internal.kernel.api.exceptions.schema.ConstraintValidationException
 import org.neo4j.internal.kernel.api.exceptions.schema.CreateConstraintFailureException
 import org.neo4j.internal.schema.ConstraintDescriptor
+import org.neo4j.internal.schema.EndpointType
 import org.neo4j.internal.schema.LabelSchemaDescriptor
 import org.neo4j.internal.schema.RelationTypeSchemaDescriptor
 import org.neo4j.internal.schema.SchemaDescriptor
 import org.neo4j.internal.schema.constraints.ConstraintDescriptorFactory
 import org.neo4j.internal.schema.constraints.KeyConstraintDescriptor
+import org.neo4j.internal.schema.constraints.NodeLabelExistenceConstraintDescriptor
+import org.neo4j.internal.schema.constraints.RelationshipEndpointLabelConstraintDescriptor
 import org.neo4j.internal.schema.constraints.TypeConstraintDescriptor
 import org.neo4j.internal.schema.constraints.TypeRepresentation
 import org.neo4j.internal.schema.constraints.UniquenessConstraintDescriptor
 import org.neo4j.io.IOUtils
 import org.neo4j.io.pagecache.context.CursorContext
+import org.neo4j.kernel.api.exceptions.schema.NodeLabelExistenceMissingLabelException
 import org.neo4j.kernel.api.exceptions.schema.NodePropertyExistenceException
 import org.neo4j.kernel.api.exceptions.schema.PropertyTypeException
+import org.neo4j.kernel.api.exceptions.schema.RelationshipEndpointLabelMissingLabelException
 import org.neo4j.kernel.api.exceptions.schema.RelationshipPropertyExistenceException
 import org.neo4j.kernel.impl.constraints.StandardConstraintSemantics
 import org.neo4j.kernel.impl.newapi.FilteringNodeCursorWrapper
 import org.neo4j.kernel.impl.newapi.FilteringRelationshipScanCursorWrapper
 import org.neo4j.memory.MemoryTracker
 import org.neo4j.storageengine.api.PropertySelection
+import org.neo4j.storageengine.api.RelationshipSelection
 import org.neo4j.storageengine.api.RelationshipVisitorWithProperties
 import org.neo4j.storageengine.api.StandardConstraintRuleAccessor
 import org.neo4j.storageengine.api.StorageProperty
@@ -62,17 +69,21 @@ import org.neo4j.storageengine.api.txstate.TxStateVisitor
 import org.neo4j.values.storable.Value
 
 /**
- * Constraint semantics that enforce property existence, key and property type constraints at
- * commit, which Neo4j Community leaves to Enterprise:
- * - Stores holding existence, key, type and other Enterprise constraints can be read; Community
- *   rejects them, which fails the database.
+ * Constraint semantics that enforce property existence, key, property type, node label existence
+ * and relationship endpoint label constraints at commit, which Neo4j Community leaves to
+ * Enterprise:
+ * - Stores holding these and other Enterprise constraints can be read; Community rejects them,
+ *   which fails the database.
  * - A node or relationship that lacks a property an existence or key constraint requires, or holds
  *   one of a type a property type constraint disallows, fails its transaction with
  *   `Neo.ClientError.Schema.ConstraintValidationFailed`, whether it is created or its labels or
- *   properties change.
- * - Creating an existence, key or property type constraint fails if existing data violates it.
- * - Label existence and relationship endpoint label constraints, which Cypher 5 cannot create, are
- *   refused as in Community rather than created and not enforced.
+ *   properties change. So does a node with a label whose label existence constraint requires
+ *   another it lacks, and a relationship whose type's endpoint label constraint requires a label
+ *   its start or end node lacks, whether the relationship is created or the label removed.
+ * - Creating any of these constraints fails if existing data violates it.
+ *
+ * Label existence and endpoint label constraints are what graph types make of implied labels and of
+ * the source and target of relationship element types.
  *
  * Every database gets an instance from [DodecaDatabaseContextFactory]; crash recovery picks the
  * registered service with the highest priority, which this is.
@@ -108,7 +119,55 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         tokenNameLookup: TokenNameLookup,
     ): ConstraintDescriptor = rules.createPropertyTypeConstraint(descriptor, tokenNameLookup)
 
+    override fun createNodeLabelExistenceConstraint(
+        descriptor: NodeLabelExistenceConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ): ConstraintDescriptor = rules.createNodeLabelExistenceConstraint(descriptor, tokenNameLookup)
+
+    override fun createRelationshipEndpointLabelConstraint(
+        descriptor: RelationshipEndpointLabelConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ): ConstraintDescriptor =
+        rules.createRelationshipEndpointLabelConstraint(descriptor, tokenNameLookup)
+
     // Checks of existing data when a constraint is created.
+
+    override fun validateNodeLabelExistenceConstraint(
+        allNodes: NodeLabelIndexCursor,
+        nodeCursor: NodeCursor,
+        descriptor: NodeLabelExistenceConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        forEachNode(allNodes, nodeCursor) { checkLabel(descriptor, nodeCursor, tokenNameLookup) }
+    }
+
+    override fun validateNodeLabelExistenceConstraint(
+        nodeCursor: NodeCursor,
+        descriptor: NodeLabelExistenceConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        while (nodeCursor.next()) checkLabel(descriptor, nodeCursor, tokenNameLookup)
+    }
+
+    override fun validateRelationshipEndpointLabelConstraint(
+        relCursor: RelationshipScanCursor,
+        nodeCursor: NodeCursor,
+        descriptor: RelationshipEndpointLabelConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        while (relCursor.next()) checkEndpoint(descriptor, relCursor, nodeCursor, tokenNameLookup)
+    }
+
+    override fun validateRelationshipEndpointLabelConstraint(
+        relCursor: RelationshipTypeIndexCursor,
+        nodeCursor: NodeCursor,
+        descriptor: RelationshipEndpointLabelConstraintDescriptor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        forEachRelationship(relCursor) {
+            checkEndpoint(descriptor, relCursor, nodeCursor, tokenNameLookup)
+        }
+    }
 
     override fun validateNodePropertyExistenceConstraint(
         nodeCursor: FilteringNodeCursorWrapper,
@@ -395,6 +454,67 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         }
     }
 
+    /** Fails creating [descriptor] if the node at [node] lacks the label it requires. */
+    private fun checkLabel(
+        descriptor: NodeLabelExistenceConstraintDescriptor,
+        node: NodeCursor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        if (node.hasLabel(descriptor.requiredLabelId())) return
+        val violation =
+            NodeLabelExistenceMissingLabelException.tokenPresenceVerificationFailed(
+                descriptor,
+                ConstraintValidationException.Phase.VERIFICATION,
+                node.nodeReference(),
+                tokenNameLookup,
+            )
+        throw CreateConstraintFailureException.constraintCreationFailed(
+            violation.constraint(),
+            tokenNameLookup,
+            violation,
+        )
+    }
+
+    /**
+     * Fails creating [descriptor] if the endpoint it constrains of the relationship at
+     * [relationship] lacks the label it requires; [nodes] is moved to that endpoint.
+     */
+    private fun checkEndpoint(
+        descriptor: RelationshipEndpointLabelConstraintDescriptor,
+        relationship: RelationshipCursor,
+        nodes: NodeCursor,
+        tokenNameLookup: TokenNameLookup,
+    ) {
+        when (descriptor.endpointType()) {
+            EndpointType.START -> relationship.source(nodes)
+            EndpointType.END -> relationship.target(nodes)
+        }
+        if (nodes.next() && nodes.hasLabel(descriptor.endpointLabelId())) return
+        val violation =
+            RelationshipEndpointLabelMissingLabelException.endpointLabelPresenceVerificationFailed(
+                descriptor,
+                ConstraintValidationException.Phase.VERIFICATION,
+                relationship.relationshipReference(),
+                endpoint(descriptor, relationship),
+                tokenNameLookup,
+            )
+        throw CreateConstraintFailureException.constraintCreationFailed(
+            violation.constraint(),
+            tokenNameLookup,
+            violation,
+        )
+    }
+
+    /** The node of [relationship] that [descriptor] constrains. */
+    private fun endpoint(
+        descriptor: RelationshipEndpointLabelConstraintDescriptor,
+        relationship: RelationshipCursor,
+    ): Long =
+        when (descriptor.endpointType()) {
+            EndpointType.START -> relationship.sourceNodeReference()
+            EndpointType.END -> relationship.targetNodeReference()
+        }
+
     // Enforcement at commit.
 
     override fun decorateTxStateVisitor(
@@ -425,19 +545,27 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
     }
 
     /**
-     * The properties that existence and key constraints require, and the property type constraints,
-     * by label and by relationship type. Cached with the schema, so it holds no transaction's
-     * state.
+     * The properties that existence and key constraints require, the property type constraints and
+     * the label existence constraints by label, and the same but label existence by relationship
+     * type, with the endpoint label constraints by relationship type and by the label they require.
+     * Cached with the schema, so it holds no transaction's state.
      */
     private class EnforcedConstraints(
         val nodeSchemas: List<LabelSchemaDescriptor>,
         val relationshipSchemas: List<RelationTypeSchemaDescriptor>,
         types: List<TypeConstraintDescriptor>,
+        labels: List<NodeLabelExistenceConstraintDescriptor>,
+        endpoints: List<RelationshipEndpointLabelConstraintDescriptor>,
     ) {
         val requiredByLabel = IntObjectHashMap<IntArray>()
         val requiredByType = IntObjectHashMap<IntArray>()
         val typesByLabel = IntObjectHashMap<List<TypeConstraintDescriptor>>()
         val typesByType = IntObjectHashMap<List<TypeConstraintDescriptor>>()
+        val labelsByLabel = IntObjectHashMap<List<NodeLabelExistenceConstraintDescriptor>>()
+        val endpointsByType =
+            IntObjectHashMap<List<RelationshipEndpointLabelConstraintDescriptor>>()
+        val endpointsByLabel =
+            IntObjectHashMap<List<RelationshipEndpointLabelConstraintDescriptor>>()
 
         init {
             for (schema in nodeSchemas) merge(requiredByLabel, schema.labelId, schema.propertyIds)
@@ -453,28 +581,33 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                     add(typesByType, token, type)
                 }
             }
+            for (label in labels) add(labelsByLabel, label.schemaLabelId(), label)
+            for (endpoint in endpoints) {
+                add(endpointsByType, endpoint.schema().relTypeId, endpoint)
+                add(endpointsByLabel, endpoint.endpointLabelId(), endpoint)
+            }
         }
 
         val isEmpty: Boolean
             get() = nodesEmpty && relationshipsEmpty
 
         val nodesEmpty: Boolean
-            get() = requiredByLabel.isEmpty && typesByLabel.isEmpty
+            get() =
+                requiredByLabel.isEmpty &&
+                    typesByLabel.isEmpty &&
+                    labelsByLabel.isEmpty &&
+                    endpointsByLabel.isEmpty
 
         val relationshipsEmpty: Boolean
-            get() = requiredByType.isEmpty && typesByType.isEmpty
+            get() = requiredByType.isEmpty && typesByType.isEmpty && endpointsByType.isEmpty
 
         private fun merge(map: IntObjectHashMap<IntArray>, token: Int, keys: IntArray) {
             val current = map.get(token) ?: IntArray(0)
             map.put(token, (current + keys).distinct().sorted().toIntArray())
         }
 
-        private fun add(
-            map: IntObjectHashMap<List<TypeConstraintDescriptor>>,
-            token: Int,
-            type: TypeConstraintDescriptor,
-        ) {
-            map.put(token, (map.get(token) ?: emptyList()) + type)
+        private fun <T> add(map: IntObjectHashMap<List<T>>, token: Int, constraint: T) {
+            map.put(token, (map.get(token) ?: emptyList()) + constraint)
         }
     }
 
@@ -489,8 +622,15 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
         next: TxStateVisitor,
     ) : TxStateVisitor.Delegator(next) {
         private val nodes = cursorFactory.allocateFullAccessNodeCursor(cursorContext, memoryTracker)
+        private val endpoints =
+            cursorFactory.allocateFullAccessNodeCursor(cursorContext, memoryTracker)
         private val relationships =
             cursorFactory.allocateFullAccessRelationshipScanCursor(cursorContext, memoryTracker)
+        private val traversal =
+            cursorFactory.allocateFullAccessRelationshipTraversalCursor(
+                cursorContext,
+                memoryTracker,
+            )
         private val properties =
             cursorFactory.allocateFullAccessPropertyCursor(cursorContext, memoryTracker)
         private val present = IntObjectHashMap<Value>()
@@ -506,17 +646,36 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
 
         override fun visitNodeLabelChanges(id: Long, added: IntSet, removed: IntSet) {
             checkNode(id)
+            if (!enforced.endpointsByLabel.isEmpty) {
+                removed.forEach { label -> checkRelationshipsOf(id, label) }
+            }
             super.visitNodeLabelChanges(id, added, removed)
         }
 
         override fun visitRelationshipModifications(modifications: RelationshipModifications) {
             if (!enforced.relationshipsEmpty) {
-                val check =
-                    RelationshipVisitorWithProperties<RuntimeException> { id, type, _, _, _, _ ->
-                        checkRelationship(id, type)
-                    }
-                modifications.creations().forEach(check)
-                modifications.updates().forEach(check)
+                modifications
+                    .creations()
+                    .forEach(
+                        RelationshipVisitorWithProperties<RuntimeException> {
+                            id,
+                            type,
+                            start,
+                            end,
+                            _,
+                            _ ->
+                            checkRelationship(id, type)
+                            checkEndpoints(id, type, start, end)
+                        }
+                    )
+                modifications
+                    .updates()
+                    .forEach(
+                        RelationshipVisitorWithProperties<RuntimeException> { id, type, _, _, _, _
+                            ->
+                            checkRelationship(id, type)
+                        }
+                    )
             }
             super.visitRelationshipModifications(modifications)
         }
@@ -530,6 +689,17 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
             var loaded = false
             for (i in 0 until labels.numberOfTokens()) {
                 val label = labels.token(i)
+                enforced.labelsByLabel.get(label)?.forEach {
+                    if (!labels.contains(it.requiredLabelId())) {
+                        throw NodeLabelExistenceMissingLabelException
+                            .tokenPresenceVerificationFailed(
+                                it,
+                                ConstraintValidationException.Phase.VALIDATION,
+                                id,
+                                storageReader.tokenNameLookup(),
+                            )
+                    }
+                }
                 val keys = enforced.requiredByLabel.get(label)
                 val types = enforced.typesByLabel.get(label)
                 if (keys == null && types == null) continue
@@ -541,6 +711,59 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                 types?.forEach { checkType(it, id) }
             }
         }
+
+        /**
+         * Fails if the relationship [id] of [type], created in this transaction, has an endpoint
+         * that lacks the label an endpoint label constraint of [type] requires.
+         */
+        private fun checkEndpoints(id: Long, type: Int, start: Long, end: Long) {
+            enforced.endpointsByType.get(type)?.forEach {
+                val node =
+                    when (it.endpointType()) {
+                        EndpointType.START -> start
+                        EndpointType.END -> end
+                    }
+                read.singleNode(node, endpoints)
+                if (!endpoints.next() || !endpoints.hasLabel(it.endpointLabelId())) {
+                    throw endpointViolation(it, id, node)
+                }
+            }
+        }
+
+        /**
+         * Fails if the node [id], which lost [label] in this transaction, is still the endpoint of
+         * a relationship whose endpoint label constraint requires it.
+         */
+        private fun checkRelationshipsOf(id: Long, label: Int) {
+            val constraints = enforced.endpointsByLabel.get(label) ?: return
+            read.singleNode(id, nodes)
+            // Deleted in this transaction, and its relationships with it.
+            if (!nodes.next() || nodes.hasLabel(label)) return
+            for (constraint in constraints) {
+                val selection =
+                    RelationshipSelection.selection(
+                        constraint.schema().relTypeId,
+                        constraint.endpointType().direction,
+                    )
+                nodes.relationships(traversal, selection)
+                if (traversal.next()) {
+                    throw endpointViolation(constraint, traversal.relationshipReference(), id)
+                }
+            }
+        }
+
+        private fun endpointViolation(
+            constraint: RelationshipEndpointLabelConstraintDescriptor,
+            relationship: Long,
+            node: Long,
+        ): ConstraintValidationException =
+            RelationshipEndpointLabelMissingLabelException.endpointLabelPresenceVerificationFailed(
+                constraint,
+                ConstraintValidationException.Phase.VALIDATION,
+                relationship,
+                node,
+                storageReader.tokenNameLookup(),
+            )
 
         private fun checkRelationship(id: Long, type: Int) {
             val keys = enforced.requiredByType.get(type)
@@ -620,7 +843,7 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
             try {
                 super.close()
             } finally {
-                IOUtils.closeAllUnchecked(nodes, relationships, properties)
+                IOUtils.closeAllUnchecked(nodes, endpoints, relationships, traversal, properties)
             }
         }
     }
@@ -636,9 +859,17 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                 val nodes = mutableListOf<LabelSchemaDescriptor>()
                 val relationships = mutableListOf<RelationTypeSchemaDescriptor>()
                 val types = mutableListOf<TypeConstraintDescriptor>()
+                val labels = mutableListOf<NodeLabelExistenceConstraintDescriptor>()
+                val endpoints = mutableListOf<RelationshipEndpointLabelConstraintDescriptor>()
                 reader.constraintsGetAll().forEachRemaining { constraint ->
                     if (constraint.isPropertyTypeConstraint) {
                         types += constraint.asPropertyTypeConstraint()
+                    }
+                    if (constraint.isNodeLabelExistenceConstraint) {
+                        labels += constraint.asNodeLabelExistenceConstraint()
+                    }
+                    if (constraint.isRelationshipEndpointLabelConstraint) {
+                        endpoints += constraint.asRelationshipEndpointLabelConstraint()
                     }
                     if (!constraint.enforcesPropertyExistence()) return@forEachRemaining
                     val schema = constraint.schema()
@@ -647,7 +878,7 @@ class DodecaConstraintSemantics : StandardConstraintSemantics(PRIORITY) {
                         relationships += schema.asRelationshipTypeSchemaDescriptor()
                     }
                 }
-                EnforcedConstraints(nodes, relationships, types)
+                EnforcedConstraints(nodes, relationships, types, labels, endpoints)
             }
     }
 }
