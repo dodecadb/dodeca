@@ -1553,39 +1553,35 @@ changes with `dbms.setDefaultDatabase`, no longer with
 Dodeca began as an add-on to [DozerDB](https://dozerdb.org) and contains a port
 of the DozerDB code it built on
 ([`UPSTREAM_TOUCHPOINTS.md`](UPSTREAM_TOUCHPOINTS.md)). Neo4j Community
-2026.10.2 with the Dodeca jar starts on the data directory of DozerDB
-5.26.27.0, which runs on Neo4j 5.26.27, as it is: databases, users, data and
-constraints carry over, writes work, and the first start gives `admin` to one
-user as it does on Neo4j Community's. The other
-users have `PUBLIC`, which reaches the home database only, where DozerDB let
-every user do everything. Compared with DozerDB 5.26.27.0, as verified against
-the `graphstack/dozerdb:5.26.27.0` image:
+2026.10.2 with the Dodeca jar starts as it is on the data directory of DozerDB
+2026.10.2-1.2.1, which runs on the same Neo4j, and of DozerDB 5.26.27.0, which
+runs on Neo4j 5.26.27: databases, users, data and constraints carry over,
+writes work, and the first start gives `admin` to one user as it does on Neo4j
+Community's. The other users have `PUBLIC`, which reaches the home database
+only, where DozerDB lets every user do everything. Compared with DozerDB
+2026.10.2-1.2.1, as verified against the `graphstack/dozerdb:2026.10.2-1.2.1`
+image and its source:
 
-- `ALTER USER` works; DozerDB fails every `ALTER USER` with an
-  `UnsatisfiedDependencyException` for `UserSecurityGraphComponent`.
-- User status and home databases take effect; DozerDB stores both but acts
+- User status and home databases take effect; DozerDB accepts both but acts
   on neither, so a suspended user still logs in.
 - Roles and privileges work; DozerDB refuses them, and every user can do
-  everything.
+  everything, such as creating users and databases.
 - `START DATABASE` of a database that does not exist fails, where DozerDB
-  succeeds. Parameters such as `START DATABASE $name`, the embedded
-  `DatabaseManagementService` methods, names with a dot, and
-  `CREATE OR REPLACE DATABASE` of a database that does not exist yet work,
-  where DozerDB fails on them.
-- `WAIT` works, and composite databases, `DUMP DATA` and options Dodeca does
-  not support fail with an error, where DozerDB ignores them or fails with an
-  internal error.
+  succeeds, and `CREATE OR REPLACE DATABASE` of a database that does not exist
+  yet works, where DozerDB fails.
+- `WAIT` works, where DozerDB refuses it. Composite databases, `DUMP DATA` and
+  options Dodeca does not support fail with an error, where DozerDB creates a
+  standard database instead of a composite one and ignores the others.
 - `dbms.max_databases` counts every database, where DozerDB allows one fewer.
 - The default database cannot be dropped or replaced. DozerDB removes it from
-  the system graph but keeps it running, until a restart adds it back. A
-  stopped default database stays stopped when the server restarts, where
-  DozerDB leaves it running.
-- A command takes effect once it commits. DozerDB drops a database before the
-  command commits, so a command that then fails has still dropped it.
+  the system graph, so that it cannot be reached, until a restart adds it
+  back. A stopped default database stays stopped when the server restarts,
+  where DozerDB starts it again.
+- A command takes effect once it commits. DozerDB starts, stops and drops
+  databases before the command commits, so a command that then fails has still
+  taken effect.
 - Failed databases show as `offline`, where DozerDB shows a database that
   failed while running as `online`.
-- Label existence and relationship endpoint label constraints are refused,
-  where DozerDB creates them and does not enforce them.
-- Dodeca writes the query log and metrics to CSV files (see [Metrics and
-  logs](#metrics-and-logs)), and logs its version at startup instead of
-  DozerDB's banner.
+- Label existence and relationship endpoint label constraints, which only
+  Neo4j's Java API can create, are refused, where DozerDB creates and enforces
+  them.
