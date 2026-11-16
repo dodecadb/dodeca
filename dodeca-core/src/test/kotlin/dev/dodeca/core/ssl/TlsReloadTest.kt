@@ -167,7 +167,8 @@ class TlsReloadTest {
             .setDynamic(https.client_auth, ClientAuth.REQUIRE, javaClass.simpleName)
         admin.run("CALL dbms.security.reloadTLS()")
 
-        // This client has no certificate to present.
+        // A client with a certificate of the authority the policy trusts, and one without.
+        assertServed(address, authority.issue())
         assertRefused(address)
     }
 

@@ -722,6 +722,13 @@ Dodeca's own are named `*.dodeca.cluster.*`.
   `neo4j.log`. A reload whose files cannot be read fails and keeps the
   certificates in use. Without the setting, the procedure fails and says how
   to turn it on.
+- **HTTPS client certificates.** With `client_auth` `REQUIRE` or `OPTIONAL`
+  in the `https` policy, HTTPS takes the client certificates that the policy
+  trusts: those an authority in its `trusted_dir` issued and no revocation
+  list in its `revoked_dir` revokes, as Bolt does and as Enterprise documents
+  the policy's settings. Neo4j Community's HTTPS ignores both directories and
+  trusts the authorities the JDK ships, so that it refuses certificates of
+  the policy's own authorities and takes those of public ones.
 - **Cipher suites.** Members use the protocols and cipher suites of the
   policy, and with the default `tls_versions` negotiate TLS 1.3 with each
   other. Enterprise's documentation says that CBC suites are not supported
