@@ -7,6 +7,8 @@
  * roles, status and home database of the current user where Community shows null; run through
  * the fallback pipe mapper of Neo4j's interpreted runtime.
  * 2026-11-12: tags only with SHOW USER METADATA.
+ * 2026-11-15: SHOW CURRENT GRAPH TYPE and ALTER CURRENT GRAPH TYPE, which Community leaves to
+ * Enterprise.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -14,6 +16,7 @@
  */
 package dev.dodeca.core.cypher
 
+import dev.dodeca.core.graphtype.ShowGraphTypeCommand
 import dev.dodeca.core.security.BuiltInRoles
 import dev.dodeca.core.security.PrivilegeRecords
 import org.neo4j.cypher.internal.CypherRuntime
@@ -25,6 +28,7 @@ import org.neo4j.cypher.internal.ast.ShowCurrentUserClause
 import org.neo4j.cypher.internal.logical.plans.CommandDefaultColumn
 import org.neo4j.cypher.internal.logical.plans.CommandYieldColumn
 import org.neo4j.cypher.internal.logical.plans.LogicalPlan
+import org.neo4j.cypher.internal.logical.plans.ShowCurrentGraphType
 import org.neo4j.cypher.internal.logical.plans.ShowCurrentUser
 import org.neo4j.cypher.internal.options.CypherRuntimeOption
 import org.neo4j.cypher.internal.runtime.ClosingIterator
@@ -55,10 +59,15 @@ import scala.jdk.javaapi.CollectionConverters
 
 /**
  * The runtime of the queries that are not administration commands: Neo4j Community's [community],
- * but for SHOW CURRENT USER, which Neo4j 2026 runs as a query, as it does SHOW PROCEDURES, and
- * which Community answers with null roles, status and home database. Plans that show the current
- * user run in Neo4j's interpreted runtime, with [CurrentUserCommand] for its rows and Neo4j's own
- * operators for the YIELD, WHERE and RETURN around it.
+ * but for
+ * - SHOW CURRENT USER, which Neo4j 2026 runs as a query, as it does SHOW PROCEDURES, and which
+ *   Community answers with null roles, status and home database;
+ * - SHOW CURRENT GRAPH TYPE, which Community leaves to Enterprise;
+ * - ALTER CURRENT GRAPH TYPE, which [DodecaSchemaCommandRuntime] runs.
+ *
+ * Plans that show the current user or graph type run in Neo4j's interpreted runtime, with
+ * [CurrentUserCommand] or [ShowGraphTypeCommand] for their rows and Neo4j's own operators for the
+ * YIELD, WHERE and RETURN around them.
  */
 internal class DodecaQueryRuntime(private val community: CypherRuntime<RuntimeContext>) :
     CypherRuntime<RuntimeContext> {
@@ -71,33 +80,50 @@ internal class DodecaQueryRuntime(private val community: CypherRuntime<RuntimeCo
         logicalQuery: LogicalQuery,
         context: RuntimeContext,
         databaseMode: DatabaseMode,
-    ): ExecutionPlan =
-        if (showsCurrentUser(logicalQuery.logicalPlan())) {
-            CurrentUserRuntime.compileToExecutable(logicalQuery, context, databaseMode)
-        } else {
-            community.compileToExecutable(logicalQuery, context, databaseMode)
+    ): ExecutionPlan {
+        val plan = logicalQuery.logicalPlan()
+        return when {
+            DodecaSchemaCommandRuntime.handles(plan) ->
+                DodecaSchemaCommandRuntime.compileToExecutable(logicalQuery, context, databaseMode)
+            showsCurrent(plan) ->
+                ShowCurrentRuntime.compileToExecutable(logicalQuery, context, databaseMode)
+            else -> community.compileToExecutable(logicalQuery, context, databaseMode)
         }
-
-    private fun showsCurrentUser(plan: LogicalPlan): Boolean =
-        plan is ShowCurrentUser ||
-            listOf(plan.lhs(), plan.rhs()).any { it.isDefined && showsCurrentUser(it.get()) }
-
-    /** Neo4j's interpreted runtime, with Neo4j's fallback for Enterprise's operators wrapped. */
-    private object CurrentUserRuntime : InterpretedRuntime<RuntimeContext> {
-        override fun getFallbackPipeMapper(initialFallback: PipeMapper): PipeMapper =
-            CurrentUserPipes(initialFallback)
     }
 
-    /** Neo4j's [pipes], with [CurrentUserCommand] for SHOW CURRENT USER. */
-    private class CurrentUserPipes(private val pipes: PipeMapper) : PipeMapper by pipes {
+    private fun showsCurrent(plan: LogicalPlan): Boolean =
+        plan is ShowCurrentUser ||
+            plan is ShowCurrentGraphType ||
+            listOf(plan.lhs(), plan.rhs()).any { it.isDefined && showsCurrent(it.get()) }
+
+    /** Neo4j's interpreted runtime, with Neo4j's fallback for Enterprise's operators wrapped. */
+    private object ShowCurrentRuntime : InterpretedRuntime<RuntimeContext> {
+        override fun getFallbackPipeMapper(initialFallback: PipeMapper): PipeMapper =
+            ShowCurrentPipes(initialFallback)
+    }
+
+    /**
+     * Neo4j's [pipes], with [CurrentUserCommand] for SHOW CURRENT USER and [ShowGraphTypeCommand]
+     * for SHOW CURRENT GRAPH TYPE.
+     */
+    private class ShowCurrentPipes(private val pipes: PipeMapper) : PipeMapper by pipes {
         override fun onLeaf(plan: LogicalPlan): Pipe =
-            if (plan is ShowCurrentUser) {
-                CommandPipe(
-                    CurrentUserCommand(plan.defaultColumns(), plan.yieldColumns()),
-                    plan.id(),
-                )
-            } else {
-                pipes.onLeaf(plan)
+            when (plan) {
+                is ShowCurrentUser ->
+                    CommandPipe(
+                        CurrentUserCommand(plan.defaultColumns(), plan.yieldColumns()),
+                        plan.id(),
+                    )
+                is ShowCurrentGraphType ->
+                    CommandPipe(
+                        ShowGraphTypeCommand(
+                            plan.asGraph(),
+                            plan.defaultColumns(),
+                            plan.yieldColumns(),
+                        ),
+                        plan.id(),
+                    )
+                else -> pipes.onLeaf(plan)
             }
     }
 }

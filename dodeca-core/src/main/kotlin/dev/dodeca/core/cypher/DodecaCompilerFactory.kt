@@ -17,7 +17,6 @@ package dev.dodeca.core.cypher
 
 import org.neo4j.cypher.internal.CommunityRuntimeContext
 import org.neo4j.cypher.internal.CommunityRuntimeFactory
-import org.neo4j.cypher.internal.`CommunitySchemaCommandRuntime$`
 import org.neo4j.cypher.internal.Compiler
 import org.neo4j.cypher.internal.CompilerFactory
 import org.neo4j.cypher.internal.CypherCurrentCompiler
@@ -107,7 +106,10 @@ internal class DodecaCompilerFactory(
     }
 
     private companion object {
-        /** Neo4j Community's, which plans every kind of constraint the kernel may refuse. */
-        val SCHEMA_COMMANDS: SchemaCommandRuntime = `CommunitySchemaCommandRuntime$`.`MODULE$`
+        /**
+         * Neo4j Community's, which plans every kind of constraint the kernel may refuse, with graph
+         * types.
+         */
+        val SCHEMA_COMMANDS: SchemaCommandRuntime = DodecaSchemaCommandRuntime
     }
 }
