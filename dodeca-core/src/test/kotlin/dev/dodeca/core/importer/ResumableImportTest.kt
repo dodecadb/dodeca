@@ -456,4 +456,22 @@ internal class ResumableImportTest {
         assertThat(server.rows("MATCH (n:Person) RETURN count(n) AS c", "people").single()["c"])
             .isEqualTo(3L)
     }
+
+    @Test
+    fun `a schema file is refused before anything is imported`() {
+        val schema = root.resolve("schema.cypher")
+        Files.writeString(schema, "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.name IS UNIQUE;")
+
+        val result = full(*arguments("films"), "--schema=$schema")
+
+        assertThat(result.exitCode).describedAs(result.toString()).isEqualTo(ExitCode.USAGE)
+        assertThat(result.err)
+            .contains(
+                "A full import does not apply schema commands: Neo4j applies them during an " +
+                    "import only into the block format, which Dodeca does not have."
+            )
+            .doesNotContain("Import failed")
+        assertThat(result.out).doesNotContain("Starting to import")
+        assertThat(layout("films").databaseDirectory()).doesNotExist()
+    }
 }

@@ -1635,6 +1635,15 @@ copy`. [`COMPATIBILITY.md`, "Import and
 copy"](COMPATIBILITY.md#import-and-copy), lists where they differ from Neo4j
 Enterprise.
 
+Neither import takes `--schema`, which Neo4j applies only to its Enterprise
+`block` format. Create the indexes, constraints and graph type once the
+database is imported, for example with a file of statements:
+
+```
+CREATE DATABASE films WAIT
+cat films-schema.cypher | bin/cypher-shell -d films
+```
+
 ### Importing into an existing database
 
 An incremental import adds nodes and relationships to a database that exists,

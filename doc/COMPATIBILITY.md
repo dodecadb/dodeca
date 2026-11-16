@@ -1378,6 +1378,14 @@ with Enterprise's options, and resumes a stopped full import.
 describes how to use them. They work on the formats Dodeca has, `aligned` and
 `standard`.
 
+Both imports refuse `--schema` before they start. Enterprise applies a schema
+file during an import only into its `block` format, and for the other formats
+its documentation says to create the indexes and constraints after the import.
+Neo4j Community's importer of `aligned` and `standard` takes the option, but
+fails once the import has started and warns that the store files are likely
+unusable. Create the indexes, constraints and graph type on the database once
+it is imported.
+
 ### Incremental import
 
 - **The merge writes through Neo4j's transactions**, 100,000 entities at a
@@ -1418,8 +1426,7 @@ describes how to use them. They work on the formats Dodeca has, `aligned` and
   full import's dry run does, and needs no `--force`. With `--stage=merge`,
   which reads no input, it is refused.
 - **Not supported**: updating and deleting existing nodes and relationships,
-  which Enterprise's incremental import does since 2025.03, and `--schema`,
-  which is refused.
+  which Enterprise's incremental import does since 2025.03.
 
 ### Imports into backups
 

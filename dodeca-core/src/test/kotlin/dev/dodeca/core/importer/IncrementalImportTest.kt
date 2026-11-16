@@ -321,6 +321,20 @@ class IncrementalImportTest {
             .contains("Database 'series' does not exist: an incremental import adds to an existing")
     }
 
+    @Test
+    fun `incremental import refuses a schema file`() {
+        val schema = csv("schema.cypher", "CREATE INDEX FOR (p:Person) ON (p.name);")
+
+        val result = incremental("all", "films", "--schema=$schema")
+
+        assertThat(result.exitCode).isEqualTo(ExitCode.USAGE)
+        assertThat(result.err)
+            .contains(
+                "An incremental import does not apply schema commands: Neo4j applies them " +
+                    "during an import only into the block format, which Dodeca does not have."
+            )
+    }
+
     /** Films with :Person {uuid} keys 'a' and 'b', the database stopped; their node ids. */
     private fun persons(): Map<Any, Long> {
         server.rows("CREATE CONSTRAINT FOR (p:Person) REQUIRE p.uuid IS UNIQUE", "films")

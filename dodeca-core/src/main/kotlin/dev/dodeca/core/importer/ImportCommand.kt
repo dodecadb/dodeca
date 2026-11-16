@@ -100,7 +100,8 @@ class DodecaImportCommand : ImportCommand() {
  * Neo4j Community's `neo4j-admin database import full`, which resumes an import that stopped, from
  * relationship linking or from post-processing, as Neo4j Enterprise's does: run again with the same
  * input and options, without `--overwrite-destination`, which starts over (see
- * [ResumableBatchImporter]). The report of bad entries the stopped import wrote is kept.
+ * [ResumableBatchImporter]). The report of bad entries the stopped import wrote is kept. It takes
+ * no `--schema` (see [refuseSchema]).
  */
 @Command(
     name = "full",
@@ -128,6 +129,7 @@ class FullImportCommand(context: ExecutionContext) : ImportCommand.Full(context)
         }
 
     override fun execute() {
+        refuseSchema(spec, "A full import")
         val name = spec.positionalParameters().first().getValue<NormalizedDatabaseName>().name()
         val backup =
             BackupTarget.of(target, spec, ctx, createPrefilledConfigBuilder().build(), name)
@@ -405,6 +407,7 @@ class IncrementalImportCommand(context: ExecutionContext) :
     }
 
     override fun execute() {
+        refuseSchema(spec, "An incremental import")
         val name = spec.positionalParameters().first().getValue<NormalizedDatabaseName>().name()
         val dryRun = spec.findOption("--dry-run").getValue<Boolean>()
         if (!forced && !dryRun) {
@@ -428,13 +431,6 @@ class IncrementalImportCommand(context: ExecutionContext) :
                     "database. Create it with neo4j-admin database import full, or with CREATE " +
                     "DATABASE.",
                 ExitCode.FAIL,
-            )
-        }
-        if (spec.findOption("--schema").getValue<String?>() != null) {
-            throw CommandFailedException(
-                "An incremental import does not apply schema commands: create the indexes and " +
-                    "constraints on the database.",
-                ExitCode.USAGE,
             )
         }
         if (stage == Stage.MERGE) {
@@ -684,6 +680,21 @@ class IncrementalImportCommand(context: ExecutionContext) :
  * Other failures as Neo4j gives them, with the input's error, such as a duplicate key or a missing
  * node.
  */
+/**
+ * Refuses `--schema`, before anything is written. Neo4j applies a schema file during an import only
+ * into Enterprise's `block` format: its importer of the `aligned` and `standard` formats, which
+ * Dodeca has, fails on one once the import has started, leaving the store unusable.
+ */
+private fun refuseSchema(spec: CommandSpec, import: String) {
+    if (spec.findOption("--schema").getValue<String?>() == null) return
+    throw CommandFailedException(
+        "$import does not apply schema commands: Neo4j applies them during an import only into " +
+            "the block format, which Dodeca does not have. Create the indexes, constraints and " +
+            "graph type on the database once it is imported.",
+        ExitCode.USAGE,
+    )
+}
+
 private fun explained(e: CommandFailedException): CommandFailedException {
     val causes = generateSequence<Throwable>(e) { it.cause }.toList()
     causes.filterIsInstance<IncrementalImportException>().firstOrNull()?.let {
