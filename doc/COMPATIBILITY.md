@@ -49,7 +49,7 @@ end its own way.
 | Replica databases (cross-cluster database replication) | Not supported | [Not supported](#not-supported) |
 | Sharded property databases | Not supported | [Not supported](#not-supported) |
 | Property existence, key and type constraints | Same | [Constraints](#constraints) |
-| Graph types | Not supported | [Not supported](#not-supported) |
+| Graph types | Same | [Graph types](#graph-types) |
 | User status and home databases | Same | [Users](#users) |
 | Users and roles as commands (`SHOW USERS AS COMMANDS`, `SHOW ROLES AS COMMANDS`) | Same | [Users](#users) |
 | Roles and privileges, impersonation | Same, with differences | [Roles and privileges](#roles-and-privileges) |
@@ -250,7 +250,51 @@ not allow, fails its transaction with
 its labels or properties change later. Creating such a constraint fails if
 existing data violates it. Stores with these and other Enterprise constraints
 can be read. Label existence and relationship endpoint label constraints, which
-Cypher 5 cannot create, are refused as in Neo4j Community.
+graph types make, work as in Enterprise too (see [Graph types](#graph-types)).
+
+## Graph types
+
+Graph types work as in Enterprise, in Cypher 25: `ALTER CURRENT GRAPH TYPE`
+with `SET`, `ADD`, `ALTER` and `DROP`, and `SHOW CURRENT GRAPH TYPE`, also
+`AS GRAPH` and with `YIELD`, `WHERE` and `RETURN`. Neo4j Community refuses
+them all. In detail, with Dodeca's answers where Enterprise's pages are
+silent:
+
+- **A graph type is the database's constraints**, as `SHOW CONSTRAINTS` shows
+  them in Cypher 25. The implied labels of node element types are label
+  existence constraints, the sources and targets of relationship element types
+  are relationship endpoint label constraints, and the types and `NOT NULL` of
+  their properties are property type and existence constraints, all
+  `DEPENDENT`. Keys and uniqueness constraints are `UNDESIGNATED`. Existence
+  and type constraints on labels and relationship types that identify no
+  element type are `INDEPENDENT`, as are those of `CREATE CONSTRAINT`.
+- **Data** that a graph type does not allow fails its transaction with
+  `Neo.ClientError.Schema.ConstraintValidationFailed` and the GQL status of
+  the constraint, such as 22NB3 for a missing implied label or 22NB4 for an
+  endpoint without its label. A command whose graph type the existing data
+  does not conform to fails with
+  `Neo.DatabaseError.Schema.ConstraintCreationFailed`, as `CREATE CONSTRAINT`
+  does, and leaves the graph type as it was.
+- **Commands that the database's graph type refuses**, such as adding an
+  element type that exists (22NCA) or dropping a node element type that is the
+  endpoint of a relationship element type (22NCE), fail with
+  `Neo.ClientError.Statement.SyntaxError` and GQL status 42001, caused by the
+  status of Neo4j's status code documentation. Neo4j's checks of a single
+  statement, such as 22NC2 for a node element type without effect, fail the
+  same way.
+- **`SET`** keeps the constraints that the new graph type still has, with
+  their names, and drops and creates only the others. Neo4j names dependent
+  constraints after what they constrain, so a constraint dropped and set again
+  gets its old name back.
+- **Privileges** are those Enterprise documents: `CREATE CONSTRAINT` and
+  `DROP CONSTRAINT` for `SET` and `ALTER`, `CREATE CONSTRAINT` for `ADD`,
+  `DROP CONSTRAINT` for `DROP`, and `SHOW CONSTRAINT` for
+  `SHOW CURRENT GRAPH TYPE`. New labels, relationship types and property
+  names need `NAME MANAGEMENT`, as with `CREATE CONSTRAINT`.
+- **Clusters**: the commands are writes, which the database's leader runs,
+  also through server-side routing. Every member enforces and shows the
+  graph type.
+- **`database copy`** copies the graph type (see [Store copy](#store-copy)).
 
 ## Users
 
@@ -1431,11 +1475,13 @@ are silent, Dodeca is strict:
   roles. The stores in between are staged in `--temp-path`, by default the
   local `--target-location`, or else next to the target database.
 - **Schema**: one statement per index and constraint, with its index
-  configuration. Index providers are left out, so that the copy gets the
+  configuration, but the element types of the graph type, which one
+  `ALTER CURRENT GRAPH TYPE ADD` adds; Neo4j names their constraints as it
+  did in the source. Index providers are left out, so that the copy gets the
   current ones. Token lookup indexes are not in the statements: the copy
-  builds its own. Graph type constraints on relationship endpoint labels are
-  left out, and so is the schema of labels, types and properties the filters
-  leave out; the command lists what it left out.
+  builds its own. The schema of labels, types and properties the filters
+  leave out is left out, and so are implied labels and endpoint labels that
+  no copied node keeps; the command lists what it left out.
 - **`--copy-schema`** creates the indexes and constraints on the copy and
   waits until they are built, where Enterprise builds them when the database
   first starts.
@@ -1484,8 +1530,6 @@ error, and their procedures do not exist.
   fail, and `dbms.promoteReplicaDatabase` does not exist.
 - **Sharded property databases** (Infinigraph), and `neo4j-admin backup
   validate`, which checks their backups.
-- **Graph types**, Cypher 25's `ALTER CURRENT GRAPH TYPE` and the commands
-  around it. Dodeca adds nothing to Neo4j Community there.
 - **LDAP, single sign-on and Kerberos.** Users log in with native users and
   passwords only: `dbms.security.authentication_providers`,
   `authorization_providers`, `dbms.security.ldap.*`, `dbms.security.oidc.*`,
@@ -1582,6 +1626,5 @@ image and its source:
   taken effect.
 - Failed databases show as `offline`, where DozerDB shows a database that
   failed while running as `online`.
-- Label existence and relationship endpoint label constraints, which only
-  Neo4j's Java API can create, are refused, where DozerDB creates and enforces
-  them.
+- Graph types work, where DozerDB refuses them as Neo4j Community does: it
+  runs schema commands and `SHOW CURRENT GRAPH TYPE` on Community's runtimes.

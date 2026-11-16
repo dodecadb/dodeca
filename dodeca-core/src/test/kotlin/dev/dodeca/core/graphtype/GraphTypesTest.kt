@@ -319,6 +319,10 @@ class GraphTypesTest {
                 "(:Ghost =>)-[:HAUNTS =>]->()" to
                     ("22NC5" to
                         "The node element type referenced by '(:`Ghost` =>)' does not exist."),
+                // Neo4j's own check of the statement.
+                "(:Empty =>)" to
+                    ("22NC2" to
+                        "must contain one or more implied labels, or at least one property type."),
             )
         for ((element, expected) in refused) {
             val error = admin.failure("CYPHER 25 ALTER CURRENT GRAPH TYPE ADD { $element }")

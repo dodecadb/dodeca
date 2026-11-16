@@ -134,6 +134,41 @@ class ReplicationIT {
     }
 
     @Test
+    @Order(3)
+    fun `graph types are set through the leader and shown alike on every member`() {
+        val leader = awaitLeader()
+
+        leader.rows(
+            "CYPHER 25 ALTER CURRENT GRAPH TYPE ADD { " +
+                "(:City => :Place {name :: STRING NOT NULL}), (:Place)-[:NEAR =>]->(:Place) }"
+        )
+        leader.rows("CREATE (:City:Place {name: 'Gent'})-[:NEAR]->(:City:Place {name: 'Brugge'})")
+
+        assertThat(leader.run("CREATE (:City {name: 'Lille'})")).isInstanceOfSatisfying(
+            Outcome.Failed::class.java
+        ) {
+            assertThat(it.code).isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed")
+        }
+        val specification = graphType(leader)
+        assertThat(specification).contains("(:`City` => :`Place` {`name` :: STRING NOT NULL})")
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                members.forEach {
+                    assertThat(graphType(it)).describedAs(it.alias).isEqualTo(specification)
+                }
+            }
+        val follower = running.first { it != leader }
+        assertThat(follower.run("CYPHER 25 ALTER CURRENT GRAPH TYPE DROP { (:City =>) }"))
+            .isInstanceOfSatisfying(Outcome.Failed::class.java) {
+                assertThat(it.code).isEqualTo("Neo.ClientError.Cluster.NotALeader")
+            }
+    }
+
+    private fun graphType(member: DodecaContainer): String =
+        member.rows("CYPHER 25 SHOW CURRENT GRAPH TYPE").single()["specification"] as String
+
+    @Test
     @Order(4)
     fun `every acknowledged write survives killing the leader during writes`() {
         var killedAt = -1
@@ -170,6 +205,18 @@ class ReplicationIT {
 
         awaitIdentical()
         assertAcknowledgedOnEveryMember()
+    }
+
+    @Test
+    @Order(6)
+    fun `the leader after a failover enforces the graph type`() {
+        val leader = awaitLeader()
+
+        assertThat(leader.run("MATCH (g:City {name: 'Gent'}) CREATE (g)-[:NEAR]->(:Village)"))
+            .isInstanceOfSatisfying(Outcome.Failed::class.java) {
+                assertThat(it.code).isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed")
+            }
+        leader.rows("MATCH (g:City {name: 'Gent'}) CREATE (g)-[:NEAR]->(:Village:Place)")
     }
 
     private fun assertAcknowledgedOnEveryMember() {

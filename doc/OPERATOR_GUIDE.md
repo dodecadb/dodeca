@@ -1783,11 +1783,12 @@ cat films2-schema.cypher | bin/cypher-shell -d films2
   commas; a name with a comma or dot in it goes in backticks, as
   ``--skip-labels=`My,label` ``. Options that contradict each other are
   refused.
-- **Indexes and constraints.** The statements that create them on the copy go
-  to `<copy>-schema.cypher`, in `--to-path-schema` or the current directory,
-  to run once the database exists. `--copy-schema` creates them on the copy
-  instead, before the command ends, which waits until the indexes are built.
-  Those on what the filters leave out are left out, and printed.
+- **Indexes, constraints and the graph type.** The statements that create
+  them on the copy go to `<copy>-schema.cypher`, in `--to-path-schema` or the
+  current directory, to run once the database exists. `--copy-schema` creates
+  them on the copy instead, before the command ends, which waits until the
+  indexes are built. Those on what the filters leave out are left out, and
+  printed.
 - **Format.** `--to-format` gives the copy another format, `standard` or
   `aligned`; it keeps the source's by default.
 - **The same name** replaces the database with its copy, made first next to

@@ -117,6 +117,9 @@ class ServerSideRoutingIT {
 
         driver.session(SessionConfig.forDatabase("neo4j")).use { session ->
             session.executeWrite { tx -> tx.run("CREATE (:ViaBolt)").consume() }
+            session
+                .run("CYPHER 25 ALTER CURRENT GRAPH TYPE ADD { (:Routed => {n :: INTEGER}) }")
+                .consume()
         }
         driver.session(SessionConfig.forDatabase("system")).use { session ->
             session.run("CREATE DATABASE films WAIT").consume()
@@ -151,6 +154,14 @@ class ServerSideRoutingIT {
                     assertThat(count(member, "MATCH (n:Film) RETURN count(n)", "films"))
                         .describedAs(member.alias)
                         .isEqualTo(1)
+                    assertThat(
+                            member
+                                .rows("CYPHER 25 SHOW CURRENT GRAPH TYPE")
+                                .single()["specification"]
+                                as String
+                        )
+                        .describedAs(member.alias)
+                        .contains("(:`Routed` => {`n` :: INTEGER})")
                 }
         }
     }

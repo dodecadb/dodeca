@@ -466,6 +466,26 @@ class StandaloneIT {
 
     @Test
     @Order(ADDITIONS)
+    fun `runs graph types`() {
+        val set =
+            "CYPHER 25 ALTER CURRENT GRAPH TYPE SET { " +
+                "(:City => :Place {name :: STRING NOT NULL}) }"
+        val show = "CYPHER 25 SHOW CURRENT GRAPH TYPE"
+        refusedByCommunity(set)
+        refusedByCommunity(show)
+        dodeca.rows("CREATE DATABASE graphtypes", "system")
+
+        dodeca.rows(set, "graphtypes")
+
+        assertThat(dodeca.rows(show, "graphtypes").single()["specification"] as String)
+            .contains("(:`City` => :`Place` {`name` :: STRING NOT NULL})")
+        assertThat(failed("CREATE (:City {name: 'Gent'})", "graphtypes").code)
+            .isEqualTo("Neo.ClientError.Schema.ConstraintValidationFailed")
+        dodeca.rows("CREATE (:City:Place {name: 'Gent'})", "graphtypes")
+    }
+
+    @Test
+    @Order(ADDITIONS)
     fun `database commands fail with Neo4j's status codes`() {
         dodeca.rows("CREATE DATABASE messages", "system")
 
