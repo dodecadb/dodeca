@@ -17,7 +17,8 @@ import org.neo4j.router.transaction.RoutingInfo
 /**
  * Neo4j Community's query router, which runs transactions in remote aliases on the DBMS each names,
  * with [remoteAliases], and every other transaction where [internalLocations] puts it: on this
- * server, unless an edition runs some elsewhere with [internalRemoteTransactions].
+ * server, unless an edition runs some elsewhere with [internalRemoteTransactions]. A transaction
+ * that names a database while `system` is unavailable gets a transient error.
  */
 open class DodecaQueryRouterBootstrap(
     lifeSupport: LifeSupport,
@@ -33,7 +34,7 @@ open class DodecaQueryRouterBootstrap(
         dependencies,
         logService,
         databaseProvider,
-        databaseReferenceRepo,
+        TransientWhileSystemUnavailable(databaseReferenceRepo),
         securityLog,
     ) {
     /** Where the databases of this DBMS run a transaction's part: here, as in Community. */

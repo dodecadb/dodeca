@@ -20,10 +20,10 @@ import org.neo4j.kernel.availability.DatabaseAvailabilityGuard
 
 /**
  * A server whose `system` database is unavailable, as while it stops, cannot tell the default
- * database of a login, nor which database a routing request names that it has not looked up yet.
- * Both get the transient error of an unavailable database, as Neo4j Community gives a routing
- * request for a database that is unavailable, so that drivers ask another server; neither is logged
- * as an unexpected error, which Bolt could not send back.
+ * database of a login, nor which database a routing request or a transaction names that it has not
+ * looked up yet. All get the transient error of an unavailable database, as Neo4j Community gives a
+ * routing request for a database that is unavailable, so that drivers ask another server; none is
+ * logged as an unexpected error, which Bolt could not send back.
  */
 class RoutingWhileSystemUnavailableTest {
     @TempDir lateinit var root: Path
@@ -73,6 +73,22 @@ class RoutingWhileSystemUnavailableTest {
         val failure =
             driver().use { driver ->
                 // Logs in, which reads the default database, and keeps the connection.
+                driver.session(SessionConfig.forDatabase("neo4j")).use {
+                    it.run("RETURN 1").consume()
+                }
+                // A name not looked up yet.
+                failureWhileSystemUnavailable(driver, "films")
+            }
+
+        assertTransient(failure)
+    }
+
+    @Test
+    fun `a transaction on an open connection while system is unavailable gets a transient error`() {
+        val failure =
+            GraphDatabase.driver("bolt://${server.boltAddress()}", AuthTokens.none()).use { driver
+                ->
+                // Logs in and keeps the connection; a driver that does not route asks no table.
                 driver.session(SessionConfig.forDatabase("neo4j")).use {
                     it.run("RETURN 1").consume()
                 }
