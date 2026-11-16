@@ -407,12 +407,14 @@ class DodecaContainer(image: DockerImageName, val alias: String) :
     fun logFile(name: String): String =
         copyFileFromContainer("/logs/$name") { it.readAllBytes().decodeToString() }
 
-    /** Saves the console and debug logs under [directory] for diagnosis. */
+    /** Saves the console, debug and query logs under [directory] for diagnosis. */
     fun saveLogs(directory: Path) {
         val target = Files.createDirectories(directory.resolve(alias))
         Files.writeString(target.resolve("neo4j.log"), logs)
         // Docker copies files from stopped containers too; not from removed ones.
-        runCatching { debugLog() }.onSuccess { Files.writeString(target.resolve("debug.log"), it) }
+        for (name in listOf("debug.log", "query.log")) {
+            runCatching { logFile(name) }.onSuccess { Files.writeString(target.resolve(name), it) }
+        }
     }
 
     private var dataVolume: String? = null

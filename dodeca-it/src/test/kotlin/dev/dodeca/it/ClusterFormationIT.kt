@@ -46,11 +46,12 @@ class ClusterFormationIT {
     private fun status(member: DodecaContainer): Map<String, Any?> =
         member.rows("CALL dodeca.cluster.status()", "system").single { it["database"] == "system" }
 
-    private fun awaitOneLeader(running: List<DodecaContainer>): String {
+    /** The leader that every member of [running] reports, as they do within [within]. */
+    private fun awaitOneLeader(running: List<DodecaContainer>, within: Duration): String {
         var leader: String? = null
         await withPollInterval
             Duration.ofMillis(200) atMost
-            FAILOVER_TARGET untilAsserted
+            within untilAsserted
             {
                 val statuses = running.map(::status)
                 assertThat(statuses.map { it["role"] }).containsOnlyOnce("LEADER")
@@ -67,7 +68,7 @@ class ClusterFormationIT {
     @Test
     @Order(1)
     fun `every member reports the same leader of the system group`() {
-        val leader = awaitOneLeader(members)
+        val leader = awaitOneLeader(members, FORMATION)
 
         val memberIds = members.map { status(it)["memberId"] as String }
         assertThat(memberIds).doesNotHaveDuplicates().contains(leader)
@@ -116,18 +117,25 @@ class ClusterFormationIT {
     @Test
     @Order(3)
     fun `the remaining members elect a new leader when the leader dies`() {
-        val leaderId = awaitOneLeader(members)
+        val leaderId = awaitOneLeader(members, FORMATION)
         val leader = members.single { status(it)["memberId"] == leaderId }
         leader.saveLogs(DodecaContainer.logsDirectory.resolve(javaClass.simpleName))
 
         leader.kill()
 
         val survivors = members - leader
-        val newLeader = awaitOneLeader(survivors)
+        val newLeader = awaitOneLeader(survivors, FAILOVER_TARGET)
         assertThat(newLeader).isNotEqualTo(leaderId)
     }
 
     private companion object {
+        /**
+         * How long members that just started take to report one leader. Their first query also
+         * loads and compiles the code that runs it, and on a CI runner whose four CPUs serve every
+         * member, the three first queries took more than 10 seconds together.
+         */
+        val FORMATION: Duration = Duration.ofMinutes(1)
+
         /** The failover target from the design: a new leader within 10 seconds. */
         val FAILOVER_TARGET: Duration = Duration.ofSeconds(10)
     }
