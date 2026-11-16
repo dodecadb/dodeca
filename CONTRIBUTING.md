@@ -62,3 +62,7 @@ in the diff.
 Dodeca is licensed under the GNU General Public License, version 3 or later
 (`LICENSE`). By contributing, you agree that your contribution is licensed the
 same way.
+
+The Dodeca Authors, in its copyright notices, are everyone who contributed to
+Dodeca, as its git history records; each keeps the copyright of what they
+contributed.

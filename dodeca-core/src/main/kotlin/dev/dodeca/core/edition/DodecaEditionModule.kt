@@ -5,7 +5,7 @@
  * Modifications Copyright (c) DozerDB
  * https://dozerdb.org
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbEditionModule, now a subclass of Neo4j's
  * CommunityEditionModule that keeps Community's user security component as a dependency, which
  * ALTER USER needs.

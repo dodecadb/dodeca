@@ -5,7 +5,7 @@
  * Modifications Copyright (c) DozerDB
  * https://dozerdb.org
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbDatabaseContextFactory, with optional
  * hosting on Raft.
  * 2026-11-09: creates a new store in the format CREATE DATABASE asked for.

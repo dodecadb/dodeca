@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-23: Neo4j Community's AuthProcedures, with the roles of the current user.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the

@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-11-11: the default database of the system graph, ported to Kotlin from Neo4j 5.26's
  * CommunityDefaultDatabaseResolver, which Neo4j 2026 replaced with the configured default alone.
  *

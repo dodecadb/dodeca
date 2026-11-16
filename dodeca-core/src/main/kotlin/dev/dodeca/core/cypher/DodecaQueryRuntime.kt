@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-11-11: Neo4j 2026's ShowCurrentUserCommunityCommand, ported to Kotlin, which shows the
  * roles, status and home database of the current user where Community shows null; run through
  * the fallback pipe mapper of Neo4j's interpreted runtime.

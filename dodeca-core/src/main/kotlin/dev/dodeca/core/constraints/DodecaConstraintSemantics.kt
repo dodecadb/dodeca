@@ -5,7 +5,7 @@
  * Copyright (c) DozerDB
  * https://dozerdb.org
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbConstraintSemantics, ConstraintChecker and
  * ConstraintDelegator, and merged with Dodeca's fixes of their defects.
  *

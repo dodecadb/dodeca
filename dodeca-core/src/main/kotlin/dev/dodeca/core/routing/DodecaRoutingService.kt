@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-11-11: ported to Kotlin from Neo4j 5.26's DefaultRoutingService, which Neo4j 2026 replaced
  * with one that routes only the databases hosted here, found by name; without routers provided by
  * clients, and without panics.

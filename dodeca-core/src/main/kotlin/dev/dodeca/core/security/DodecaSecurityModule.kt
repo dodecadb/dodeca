@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-20: Neo4j Community's CommunitySecurityModule with a realm that refuses suspended users.
  * 2026-10-23: logins whose transactions have the privileges of their users' roles,
  * `dbms.showCurrentUser()` with their roles, and impersonation.

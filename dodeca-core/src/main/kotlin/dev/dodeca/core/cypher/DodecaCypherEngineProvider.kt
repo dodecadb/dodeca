@@ -5,7 +5,7 @@
  * Modifications Copyright (c) DozerDB
  * https://dozerdb.org
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbCypherEngineProvider, now a subclass of
  * Neo4j's CommunityCypherEngineProvider instead of a copy of it.
  *

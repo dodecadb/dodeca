@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-23: Neo4j Community's DoNothingExecutionPlanner and EnsureNodeExistsExecutionPlanner for
  * the roles of Dodeca, with the role commands that Community refuses.
  * 2026-11-12: SHOW ROLES WITH AUTH RULES; helpers shared with AuthRuleCommands in SecurityCommands.

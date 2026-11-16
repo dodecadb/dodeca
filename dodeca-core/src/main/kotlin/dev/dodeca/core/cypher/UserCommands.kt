@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-20: Neo4j Community's planners of CREATE USER, ALTER USER, SHOW USERS and SHOW CURRENT
  * USER, which keep and show the status and home database that Community refuses.
  * 2026-10-23: SHOW USERS and SHOW CURRENT USER show the roles of the users.

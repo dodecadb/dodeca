@@ -2,7 +2,7 @@
  * Copyright (c) "Neo4j"
  * Neo4j Sweden AB [http://neo4j.com]
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-11-12: Neo4j Community's CommunityNeoWebServer.createWebServer, with a JettyWebServer that
  * reloads its HTTPS certificates in place, configured as SslSocketConnectorFactory configures them.
  *

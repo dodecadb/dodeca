@@ -5,7 +5,7 @@
  * Modifications Copyright (c) DozerDB
  * https://dozerdb.org
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-19: ported to Kotlin from DozerDB's DozerDbCompilerFactory (Scala).
  * 2026-11-11: SHOW CURRENT USER through DodecaQueryRuntime.
  *

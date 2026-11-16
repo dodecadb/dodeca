@@ -5,7 +5,7 @@
  * Modifications Copyright (c) DozerDB
  * https://dozerdb.org
  *
- * Modifications Copyright (c) Dodeca
+ * Modifications Copyright (c) The Dodeca Authors
  * 2026-10-19: ported to Kotlin from DozerDB's MultiDatabaseManager and
  * MultiDatabaseLifecycleService, which extend Neo4j's DatabaseLifecycles to many databases. Stops
  * the system database last and drops databases without a checkpoint.
