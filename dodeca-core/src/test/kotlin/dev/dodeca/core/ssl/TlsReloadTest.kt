@@ -8,11 +8,6 @@ import java.math.BigInteger
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.cert.X509Certificate
-import javax.net.ssl.SSLContext
-import javax.net.ssl.SSLException
-import javax.net.ssl.SSLSocket
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowableOfType
 import org.junit.jupiter.api.AfterEach
@@ -21,8 +16,6 @@ import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.Config as Neo4jConfig
 import org.neo4j.configuration.GraphDatabaseSettings
 import org.neo4j.configuration.connectors.BoltConnector
-import org.neo4j.configuration.connectors.ConnectorPortRegister
-import org.neo4j.configuration.connectors.ConnectorType
 import org.neo4j.configuration.connectors.HttpsConnector
 import org.neo4j.configuration.helpers.SocketAddress
 import org.neo4j.configuration.ssl.ClientAuth
@@ -121,35 +114,7 @@ class TlsReloadTest {
             (it.session.peerCertificates.first() as X509Certificate).serialNumber
         }
 
-    private fun connect(address: String): SSLSocket {
-        val context = SSLContext.getInstance("TLS")
-        context.init(null, arrayOf<TrustManager>(TrustingAll), null)
-        val (host, port) = address.split(":")
-        return context.socketFactory.createSocket(host, port.toInt()) as SSLSocket
-    }
-
-    private fun httpsAddress(): String {
-        val address =
-            server
-                .database(SYSTEM)
-                .dependencyResolver
-                .resolveDependency(ConnectorPortRegister::class.java)
-                .getLocalAddress(ConnectorType.HTTPS)
-        return "${address.host}:${address.port}"
-    }
-
-    /** The status line of a `HEAD /` request on [this] kept-alive connection. */
-    private fun SSLSocket.head(): String {
-        outputStream.write("HEAD / HTTP/1.1\r\nHost: localhost\r\n\r\n".toByteArray())
-        outputStream.flush()
-        val response = StringBuilder()
-        while (!response.endsWith("\r\n\r\n")) {
-            val byte = inputStream.read()
-            check(byte >= 0) { "The connection closed after: $response" }
-            response.append(byte.toChar())
-        }
-        return response.lineSequence().first()
-    }
+    private fun httpsAddress(): String = httpsAddress(server)
 
     @Test
     fun `connections made after a reload get the new certificate, open ones keep working`() {
@@ -203,12 +168,7 @@ class TlsReloadTest {
         admin.run("CALL dbms.security.reloadTLS()")
 
         // This client has no certificate to present.
-        assertThat(
-                catchThrowableOfType(SSLException::class.java) {
-                    connect(address).use { it.head() }
-                }
-            )
-            .isNotNull
+        assertRefused(address)
     }
 
     @Test
@@ -233,13 +193,5 @@ class TlsReloadTest {
             .contains("Unable to reload TLS, the certificates in use stay:")
 
         assertThat(presented()).isEqualTo(first)
-    }
-
-    private object TrustingAll : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<X509Certificate>, authType: String) {}
-
-        override fun checkServerTrusted(chain: Array<X509Certificate>, authType: String) {}
-
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
     }
 }
