@@ -18,6 +18,9 @@ import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.graphdb.event.DatabaseEventContext
 import org.neo4j.graphdb.event.DatabaseEventListenerAdapter
+import org.neo4j.io.fs.DefaultFileSystemAbstraction
+import org.neo4j.io.fs.FileSystemAbstraction
+import org.neo4j.io.fs.StoreChannel
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.storageengine.api.TransactionIdStore
 import org.neo4j.wal.checkpoint.CheckPointer
@@ -42,8 +45,11 @@ class SystemCatchUpTest {
      * The smallest entries and segments (256 KiB, about 280 administration commands), and frequent
      * snapshots, so that logs are discarded quickly.
      */
-    private fun cluster(size: Int = 3): ClusterHarness =
-        ClusterHarness(root, size) {
+    private fun cluster(
+        size: Int = 3,
+        fileSystem: ((ClusterHarness.Member) -> FileSystemAbstraction)? = null,
+    ): ClusterHarness =
+        ClusterHarness(root, size, fileSystem) {
                 it.copy(
                     maxEntrySize = 64 shl 10,
                     logSegmentSize = 1,
@@ -180,16 +186,21 @@ class SystemCatchUpTest {
 
     @Test
     fun `a member that learns it is behind while it starts copies system while it starts`() {
-        val cluster = cluster()
+        val replacements = SlowSystemReplacement()
+        val cluster = cluster(fileSystem = { replacements })
         val leader = cluster.awaitLeader(SYSTEM)
         val behind = cluster.members.first { it != leader }
         behind.stop()
         cluster.discardSystemLogPast(checkNotNull(leader.status(SYSTEM)).commitIndex)
+        // As on a slow disk, system stays stopped while its copy replaces it for longer than Neo4j
+        // waits for system to be available.
+        replacements.slow = true
         val held = AtomicBoolean()
         // Holds the first start of the default database, which follows the start of system, until
-        // the leader's snapshot notice made system catch up, so that its copy replaces system
-        // while the DBMS starts. A Raft group hears from the leader only once its database runs,
-        // and the leader retries a member that was down only every few seconds.
+        // the leader's snapshot notice made system catch up and its copy began to replace it, so
+        // that the member's start goes on while system is stopped. A Raft group hears from the
+        // leader only once its database runs, and the leader retries a member that was down only
+        // every few seconds.
         behind.databaseEventListeners =
             listOf(
                 object : DatabaseEventListenerAdapter() {
@@ -197,11 +208,7 @@ class SystemCatchUpTest {
                         if (
                             eventContext.databaseName == DEFAULT && held.compareAndSet(false, true)
                         ) {
-                            await atMost
-                                Duration.ofMinutes(1) until
-                                {
-                                    behind.debugEntries().any { CATCH_UP_NOTICE in it.message }
-                                }
+                            await atMost Duration.ofMinutes(1) until { replacements.paused }
                         }
                     }
                 }
@@ -267,5 +274,29 @@ class SystemCatchUpTest {
         const val DEFAULT = "neo4j"
         const val CATCH_UP_NOTICE = "Database system needs Raft entries"
         val SYSTEM_GROUP: UUID = NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID.databaseId().uuid()
+    }
+}
+
+/**
+ * Neo4j's file system, pausing while [slow] is set as a copy of `system` starts to replace it, once
+ * `system` stopped: longer than Neo4j waits for `system` to be available, as on a slow disk.
+ */
+private class SlowSystemReplacement(
+    private val delegate: FileSystemAbstraction = DefaultFileSystemAbstraction()
+) : FileSystemAbstraction by delegate {
+    @Volatile var slow = false
+    @Volatile var paused = false
+
+    override fun write(fileName: Path): StoreChannel {
+        // The mark of an incomplete copy, which goes first.
+        if (slow && fileName.fileName.toString() == ".dodeca-incomplete-system") {
+            paused = true
+            Thread.sleep(PAUSE.toMillis())
+        }
+        return delegate.write(fileName)
+    }
+
+    private companion object {
+        val PAUSE: Duration = Duration.ofSeconds(3)
     }
 }

@@ -44,6 +44,8 @@ import org.neo4j.dbms.api.DatabaseManagementService
 import org.neo4j.dbms.api.DatabaseNotFoundException
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
+import org.neo4j.dbms.systemgraph.SystemDatabaseProvider.SystemDatabaseUnavailableException
+import org.neo4j.graphdb.DatabaseShutdownException
 import org.neo4j.graphdb.config.Setting
 import org.neo4j.graphdb.event.DatabaseEventListener
 import org.neo4j.graphdb.facade.DatabaseManagementServiceFactory
@@ -157,10 +159,17 @@ internal class ClusterHarness(
                 Duration.ofMillis(50) atMost
                 START_TIMEOUT untilNotNull
                 {
-                    true.takeIf {
-                        cluster.state == MemberState.REMOVED ||
-                            runsDefault() ||
-                            (!first && !placedHere())
+                    try {
+                        true.takeIf {
+                            cluster.state == MemberState.REMOVED ||
+                                runsDefault() ||
+                                (!first && !placedHere())
+                        }
+                    } catch (_: SystemDatabaseUnavailableException) {
+                        // A copy of system replaces it, on a member that fell behind its log.
+                        null
+                    } catch (_: DatabaseShutdownException) {
+                        null
                     }
                 }
         }
