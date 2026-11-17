@@ -32,13 +32,14 @@ import org.neo4j.logging.InternalLog
  * be added again with its old state, which it would then delete as a voter, forgetting its votes.
  * Until the group removed it, it is a voter that does not answer; a copy in quarantine does not
  * start, nor does its group run. If the removal fails, the copy stays in quarantine, without its
- * old state: the operation can be run again.
+ * old state: the operation can be run again. The removal is tried until [timeout] runs out, as
+ * while too few of the group's other voters run to remove it.
  *
  * A secondary votes in no group: it is copied again, or kept as it is.
  *
  * @property members the members of the cluster, which tell the group's voters where this member
  *   does not run the group.
- * @property timeout how long the group may take to remove this member.
+ * @property timeout how long this member waits for the group to remove it.
  */
 internal class CopyReplacement(
     private val consensus: ConsensusLog,
@@ -92,18 +93,45 @@ internal class CopyReplacement(
             }
         }
         if (!voting) return
-        try {
-            runBlocking { consensus.removeMember(ref, self, timeout, voters) }
-        } catch (e: ConsensusUnavailableException) {
-            throw IllegalStateException(
-                "Database '${id.name()}': its Raft group did not remove the copy here, which " +
-                    "joins it as a new member: ${e.message?.removeSuffix(".")}. The copy here is " +
-                    "deleted and stays in quarantine; run the operation again once a majority of " +
-                    "the database's primaries answers.",
-                e,
-            )
-        }
+        removeFromGroup(id, ref, voters)
         log.info("The Raft group of %s removed this member, which joins it as a new member", id)
+    }
+
+    /**
+     * Has the group [ref] of [id] remove this member, through its [voters], trying again until it
+     * did or [timeout] ran out. While no majority of the group answers, as while too few of its
+     * other voters run, no leader can remove it, and a leader that lost its majority steps down:
+     * the consensus's client then asks the voters in turn, and may give up as soon as it asks this
+     * member, which no longer runs the group. An attempt that failed so may still be committed once
+     * a majority answers, so the voters are asked again after each.
+     */
+    private fun removeFromGroup(id: NamedDatabaseId, ref: DatabaseRef, voters: List<Member>) {
+        val self = consensus.self.id
+        val deadline = System.nanoTime() + timeout.toNanos()
+        var known = voters
+        var failure: ConsensusUnavailableException? = null
+        while (true) {
+            val remaining = Duration.ofNanos(deadline - System.nanoTime())
+            if (failure != null && (remaining.isNegative || remaining.isZero)) {
+                throw IllegalStateException(
+                    "Database '${id.name()}': its Raft group did not remove the copy here, " +
+                        "which joins it as a new member, within ${timeout.toSeconds()} seconds: " +
+                        "${failure.message?.removeSuffix(".")}. The copy here is deleted and " +
+                        "stays in quarantine; run the operation again once a majority of the " +
+                        "database's primaries answers.",
+                    failure,
+                )
+            }
+            try {
+                runBlocking { consensus.removeMember(ref, self, remaining, known) }
+                return
+            } catch (e: ConsensusUnavailableException) {
+                failure = e
+            }
+            Thread.sleep(RETRY_DELAY.toMillis())
+            known = voters(ref) ?: known
+            if (known.none { it.id == self }) return
+        }
     }
 
     /**
@@ -171,5 +199,10 @@ internal class CopyReplacement(
                     .toMap()
             }
         return GroupViews.agreed(GroupViews.reportedByVoters(ref.id, reports).values)
+    }
+
+    private companion object {
+        /** How long to wait before asking the group again to remove this member. */
+        val RETRY_DELAY: Duration = Duration.ofSeconds(1)
     }
 }

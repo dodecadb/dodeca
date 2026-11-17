@@ -1192,7 +1192,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
                 groups,
                 localDatabases,
                 { cluster.members().map { it.member } },
-                QUARANTINE_LIFT_TIMEOUT,
+                COPY_REMOVAL_TIMEOUT,
                 globalModule.logService.getUserLog(CopyReplacement::class.java),
             )
         reconciler =
@@ -2030,11 +2030,14 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
         /** How long a member that is asked what it reports may take to answer. */
         val PROBE_DEADLINE: Duration = Duration.ofSeconds(2)
 
+        /** How long replacing a copy's cluster state waits for its group to remove it. */
+        val COPY_REMOVAL_TIMEOUT: Duration = Duration.ofMinutes(2)
+
         /**
-         * How long a member asked to lift a quarantine may take, and how long replacing a copy's
-         * cluster state waits for its group to remove it.
+         * How long a member asked to lift a quarantine may take: longer than replacing a copy's
+         * cluster state waits for its group to remove it, so that it tells why that failed.
          */
-        val QUARANTINE_LIFT_TIMEOUT: Duration = Duration.ofMinutes(2)
+        val QUARANTINE_LIFT_TIMEOUT: Duration = COPY_REMOVAL_TIMEOUT.plusMinutes(1)
 
         /**
          * How long routing waits for the members' answers when what they reported last cannot

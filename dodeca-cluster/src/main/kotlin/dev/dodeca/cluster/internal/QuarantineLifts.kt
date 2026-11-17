@@ -21,8 +21,8 @@ import java.util.UUID
  *
  * @property members the members of the cluster, by id, where they are reached.
  * @property local lifts quarantines on this member.
- * @property timeout how long a member may take to answer: replacing a copy's cluster state waits
- *   for its group to remove it.
+ * @property timeout how long a member may take to answer: longer than replacing a copy's cluster
+ *   state waits for its group to remove it.
  */
 internal class QuarantineLifts(
     private val transfer: BulkTransfer,

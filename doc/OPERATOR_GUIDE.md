@@ -2110,9 +2110,10 @@ once lifted, the copy is copied from the others and the group adds it again.
 `replaceStateKeepStore` does the same but keeps the store: the log entry of
 its last transaction starts the server's new state of the group, and the
 group sends it what follows; if the group's log no longer holds that entry,
-the copy is copied instead. If the removal fails, the copy stays in
-quarantine, without its old state: run the call again once a majority
-answers. A secondary is copied again, or kept as it is. A database's only
+the copy is copied instead. The call waits up to 2 minutes for the group to
+remove the server, as while too few of the group's other voters run to elect a
+leader. If the removal fails, the copy stays in quarantine, without its old
+state: run the call again once a majority answers. A secondary is copied again, or kept as it is. A database's only
 primary, and `system`, cannot join as new; a server without clustering has
 no cluster state to replace. The call fails with
 Neo4j's error 52N17, `Setting/removing the quarantine marker failed`, when
