@@ -173,6 +173,7 @@ jobs:
           ./mvnw verify ${MODULES:+-pl "$MODULES" -am} \
             -Dsurefire.excludesFile="$RUNNER_TEMP/unit-test-excludes" \
             -Dtest.tmpdir=/mnt/dodeca-tests -Dtest.forks=2 -Dtest.heap=3g
+      # With the logs of the servers of the tests that failed, which keep their directories.
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -180,6 +181,7 @@ jobs:
           path: |
             **/target/surefire-reports/
             **/target/failsafe-reports/
+            /mnt/dodeca-tests/junit-*/**/*.log
           retention-days: 14
 
   docker:
