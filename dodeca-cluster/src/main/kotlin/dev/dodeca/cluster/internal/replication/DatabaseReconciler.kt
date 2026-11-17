@@ -364,13 +364,9 @@ internal class DatabaseReconciler(
         private set
 
     /**
-     * The databases whose copies here this member deleted in quarantine, as it does to join a
-     * database's group as a new member (see `CopyReplacement`), as of the last reconciliation: they
-     * are reported in quarantine until it is lifted.
+     * The databases in the system graph that this member follows, as of the last reconciliation.
      */
-    @Volatile
-    var deletedInQuarantine: Set<NamedDatabaseId> = emptySet()
-        private set
+    @Volatile private var followed: List<NamedDatabaseId> = emptyList()
 
     // Used on the reconciler thread only.
     /** The states of the seeds reported, read once each. */
@@ -458,12 +454,23 @@ internal class DatabaseReconciler(
             again = !converge(database) || again
         }
         startRequests.keys.retainAll(desired.mapTo(HashSet()) { it.id.uuid })
-        val registered = databases.registered()
-        deletedInQuarantine =
-            desired.mapNotNullTo(HashSet()) { database ->
-                database.id.takeIf { it !in registered && deletedInQuarantine(it) }
-            }
+        followed = desired.map { it.id }
         return again
+    }
+
+    /**
+     * The databases whose copies here this member deleted in quarantine, as it does to join a
+     * database's group as a new member (see `CopyReplacement`): they are reported in quarantine
+     * until it is lifted. As of now, not of the last reconciliation: `CopyReplacement` deletes them
+     * between reconciliations, after which none may follow for a while.
+     */
+    fun deletedInQuarantine(): Set<NamedDatabaseId> {
+        val quarantined = databases.quarantined()
+        if (quarantined.isEmpty()) return emptySet()
+        val registered = databases.registered()
+        return followed.filterTo(HashSet()) {
+            it.uuid in quarantined && it !in registered && !trusted(it)
+        }
     }
 
     /**

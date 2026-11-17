@@ -258,13 +258,29 @@ class DatabaseReconcilerTest {
 
         assertThat(local.copies).isEmpty()
         assertThat(local.registered).doesNotContainKey(films)
-        assertThat(reconciler.deletedInQuarantine).describedAs("reported").containsExactly(films)
+        assertThat(reconciler.deletedInQuarantine()).describedAs("reported").containsExactly(films)
         local.quarantines.clear()
 
         reconciler.reconcile()
 
         assertThat(local.copies).containsExactly(otherAddress to films)
-        assertThat(reconciler.deletedInQuarantine).isEmpty()
+        assertThat(reconciler.deletedInQuarantine()).isEmpty()
+    }
+
+    // CopyReplacement deletes the copy on the thread of dbms.unquarantineDatabase, between
+    // reconciliations, after which none may follow for a while.
+    @Test
+    fun `a copy in quarantine deleted since the last reconciliation is reported at once`() {
+        local.add(films, started = true)
+        graph.databases = listOf(desired(films, creator = self, created = true))
+        reconciler.reconcile()
+        local.quarantine(films)
+        reconciler.reconcile()
+        assertThat(reconciler.deletedInQuarantine()).isEmpty()
+
+        local.drop(films, keepQuarantine = true)
+
+        assertThat(reconciler.deletedInQuarantine()).containsExactly(films)
     }
 
     @Test

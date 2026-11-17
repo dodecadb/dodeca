@@ -984,7 +984,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
      */
     private fun deletedInQuarantine(): List<DatabaseState> {
         if (!::reconciler.isInitialized) return emptyList()
-        return reconciler.deletedInQuarantine.mapNotNull { id ->
+        return reconciler.deletedInQuarantine().mapNotNull { id ->
             val uuid = id.databaseId().uuid()
             val quarantine = quarantines.of(uuid) ?: return@mapNotNull null
             DatabaseState(
