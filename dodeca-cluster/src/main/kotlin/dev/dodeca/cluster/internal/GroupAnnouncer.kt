@@ -1,4 +1,4 @@
-package dev.dodeca.cluster.internal.leadership
+package dev.dodeca.cluster.internal
 
 import dev.dodeca.consensus.ConsensusLog
 import dev.dodeca.consensus.ConsensusUnavailableException
@@ -16,30 +16,35 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.neo4j.logging.Log
 
 /**
- * Tells the other members at once when the groups this member leads change ([leading], with their
- * terms), so that a member that does not run a group learns its new leader before it next probes
- * this one: its routing tables then send writes there within moments of an election, also while the
- * previous leader is gone and counts as leading as it last reported, with a lower term. Each
- * announcement goes to every one of the cluster's [servers] at once, waiting for each for at most
- * [deadline]; changes meanwhile are announced together after it. A member that misses one, or runs
- * a version without announcements, learns of the change when it next probes this member.
+ * Tells the other members at once when the [news] of this member's groups change: what it answers
+ * when probed, the groups it runs with their voting members.
+ *
+ * When the groups it leads change, a member that does not run a group learns its new leader before
+ * it next probes this one: its routing tables then send writes there within moments of an election,
+ * also while the previous leader is gone and counts as leading as it last reported, with a lower
+ * term. When this member starts running a group it does not vote in yet, the `system` leader adds
+ * it to the group at once (see `MembershipReconciler`).
+ *
+ * Each announcement goes to every one of the cluster's [servers] at once, waiting for each for at
+ * most [deadline]; changes meanwhile are announced together after it. A member that misses one, or
+ * runs a version without announcements, learns of the change when it next probes this member.
  */
-internal class LeaderAnnouncer(
+internal class GroupAnnouncer(
     private val consensus: ConsensusLog,
     private val servers: () -> List<Member>,
-    private val leading: () -> Map<UUID, Long>,
+    private val news: () -> GroupNews,
     private val deadline: Duration,
     private val log: Log,
 ) {
     private val pending = AtomicBoolean()
     @Volatile private var executor: ExecutorService? = null
 
-    /** What this member announced last that it leads; read and written by [executor] only. */
-    private var announced: Map<UUID, Long> = emptyMap()
+    /** What this member announced last; read and written by [executor] only. */
+    private var announced = GroupNews()
 
     fun start() {
         executor = Executors.newSingleThreadExecutor { runnable ->
-            Thread(runnable, "dodeca-leader-announcer").apply { isDaemon = true }
+            Thread(runnable, "dodeca-group-announcer").apply { isDaemon = true }
         }
     }
 
@@ -48,7 +53,7 @@ internal class LeaderAnnouncer(
         executor = null
     }
 
-    /** Announces soon which groups this member leads, if that changed since it last did. */
+    /** Announces soon what this member answers when probed, if its [news] changed since. */
     fun request() {
         val executor = executor ?: return
         if (pending.compareAndSet(false, true)) {
@@ -66,7 +71,7 @@ internal class LeaderAnnouncer(
 
     private fun announceChange() {
         try {
-            val now = leading()
+            val now = news()
             if (now == announced) return
             announced = now
             val others = servers().filter { it.id != consensus.self.id }
@@ -92,7 +97,18 @@ internal class LeaderAnnouncer(
         } catch (_: InterruptedException) {
             // Stopped.
         } catch (e: Exception) {
-            log.warn("Announcing the groups this member leads failed: %s", e.toString())
+            log.warn("Announcing the groups of this member failed: %s", e.toString())
         }
     }
 }
+
+/**
+ * What [GroupAnnouncer] tells the other members of as it changes.
+ *
+ * @property leading the groups this member leads, with their terms.
+ * @property joining the groups this member runs without voting in them yet.
+ */
+internal data class GroupNews(
+    val leading: Map<UUID, Long> = emptyMap(),
+    val joining: Set<UUID> = emptySet(),
+)

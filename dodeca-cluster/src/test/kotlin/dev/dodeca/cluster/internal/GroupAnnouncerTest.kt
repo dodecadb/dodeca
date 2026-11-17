@@ -1,4 +1,4 @@
-package dev.dodeca.cluster.internal.leadership
+package dev.dodeca.cluster.internal
 
 import dev.dodeca.consensus.DatabaseRef
 import dev.dodeca.consensus.PeerInfo
@@ -17,21 +17,21 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
 
-class LeaderAnnouncerTest {
+class GroupAnnouncerTest {
     private val consensus = InMemoryConsensus()
     private val system = DatabaseRef("system", UUID(0, 1))
     private val films = UUID(0, 7)
     private val logs = List(3) { consensus.newMember() }
-    @Volatile private var leading = emptyMap<UUID, Long>()
-    /** How often the announcer asked what this member leads. */
+    @Volatile private var news = GroupNews()
+    /** How often the announcer asked for the news of this member's groups. */
     private val asked = AtomicInteger()
     private val announcer =
-        LeaderAnnouncer(
+        GroupAnnouncer(
             logs[0],
             { logs[0].members(system) },
             {
                 asked.incrementAndGet()
-                leading
+                news
             },
             Duration.ofSeconds(1),
             NullLog.getInstance(),
@@ -57,7 +57,7 @@ class LeaderAnnouncerTest {
 
     @Test
     fun `tells the other members when the groups this member leads change, and only then`() {
-        leading = mapOf(films to 3L)
+        news = GroupNews(leading = mapOf(films to 3L))
         announcer.request()
         await atMost
             Duration.ofSeconds(30) untilAsserted
@@ -67,7 +67,7 @@ class LeaderAnnouncerTest {
             }
         announcer.request()
         awaitAsked(2)
-        leading = mapOf(films to 4L)
+        news = GroupNews(leading = mapOf(films to 4L))
         announcer.request()
         awaitAsked(3)
         // Asked once more after the change was announced.
@@ -80,9 +80,31 @@ class LeaderAnnouncerTest {
     }
 
     @Test
+    fun `tells the other members when this member starts and stops running a group it does not vote in`() {
+        news = GroupNews(joining = setOf(films))
+        announcer.request()
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(heard[1]).hasSize(1)
+                assertThat(heard[2]).hasSize(1)
+            }
+
+        news = GroupNews()
+        announcer.request()
+
+        await atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertThat(heard[1]).hasSize(2)
+                assertThat(heard[2]).hasSize(2)
+            }
+    }
+
+    @Test
     fun `a member that cannot be reached keeps no other from hearing`() {
         consensus.crash(logs[1].self.id)
-        leading = mapOf(films to 3L)
+        news = GroupNews(leading = mapOf(films to 3L))
 
         announcer.request()
 

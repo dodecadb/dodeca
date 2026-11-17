@@ -11,9 +11,15 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.until
+import org.awaitility.kotlin.untilAsserted
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.Log
 import org.neo4j.logging.NullLog
@@ -27,6 +33,17 @@ class MembershipReconcilerTest {
     private val logs = List(3) { consensus.newMember() }
     private val initial = logs.map { it.self }
     private val leader = logs[0]
+    /** The reconcilers [started], closed after each test. */
+    private val started = mutableListOf<MembershipReconciler>()
+    /** How many looks of the reconcilers [started] read where films is placed. */
+    private val looks = AtomicInteger()
+    /** Whether films is placed on a member of the cluster, for the reconcilers [started]. */
+    @Volatile private var placed: (MemberId) -> Boolean = { true }
+
+    @AfterEach
+    fun close() {
+        started.forEach { it.close() }
+    }
 
     /**
      * The reconciler of [member], changing groups on the calling thread, with films placed on the
@@ -56,6 +73,65 @@ class MembershipReconcilerTest {
     }
 
     private fun changeCluster(change: suspend () -> Unit) = runBlocking { change() }
+
+    /**
+     * Starts a reconciler of the leader that looks again after [lookInterval] when nothing is left
+     * to do, and after an hour when work remains, and waits for its first look to read where films
+     * is placed.
+     */
+    private fun start(lookInterval: Duration) {
+        MembershipReconciler(
+                leader,
+                groups,
+                {
+                    mapOf(films to leader.members(system).map { it.id }.filter(placed).toSet())
+                        .also { looks.incrementAndGet() }
+                },
+                NullLog.getInstance(),
+                retryDelay = Duration.ofHours(1),
+                maximumRetryDelay = Duration.ofHours(1),
+                lookInterval = lookInterval,
+                changes = { it.run() },
+            )
+            .also { started += it }
+            .start()
+        await atMost AWAIT until { looks.get() > 0 }
+    }
+
+    @Test
+    fun `looks again a while after it found nothing to do, for changes it does not hear of`() {
+        formCluster()
+        start(lookInterval = Duration.ofMillis(100))
+
+        // Not a change of system's leader or members, which this member hears of.
+        placed = { it != logs[2].self.id }
+
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(leader.members(films)).containsExactly(logs[0].self, logs[1].self)
+            }
+    }
+
+    @Test
+    fun `a member that announces it runs a group it does not vote in joins it at once`() {
+        formCluster()
+        start(lookInterval = Duration.ofHours(1))
+        val rejoining = logs[2]
+        // As a member does whose copy in quarantine is replaced: it leaves the group by itself, and
+        // runs it again from a new copy, as a new member, which no change of system's tells.
+        changeCluster { leader.removeMember(films, rejoining.self.id, TIMEOUT) }
+        rejoining.removeGroup(films)
+        rejoining.startGroup(films, RecordingStateMachine(), initial - rejoining.self)
+
+        changeCluster { rejoining.announce(leader.self.raftAddress) }
+
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(leader.members(films)).containsExactlyElementsOf(initial)
+            }
+    }
 
     @Test
     fun `a member added to the cluster joins a group once it runs it`() {
@@ -273,5 +349,6 @@ class MembershipReconcilerTest {
     private companion object {
         val TIMEOUT: Duration = Duration.ofSeconds(5)
         val GRACE: Duration = Duration.ofSeconds(30)
+        val AWAIT: Duration = Duration.ofSeconds(30)
     }
 }

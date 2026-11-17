@@ -26,7 +26,6 @@ import dev.dodeca.cluster.internal.http.ClusterNeoWebServer
 import dev.dodeca.cluster.internal.http.ClusterStatuses
 import dev.dodeca.cluster.internal.http.DatabaseClusterStatus
 import dev.dodeca.cluster.internal.importer.ImportedStores
-import dev.dodeca.cluster.internal.leadership.LeaderAnnouncer
 import dev.dodeca.cluster.internal.leadership.LeaderBalancer
 import dev.dodeca.cluster.internal.reads.ConsistentBoltDatabases
 import dev.dodeca.cluster.internal.reads.ReadConsistencyException
@@ -181,7 +180,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
     private val quarantineLifts: QuarantineLifts
     private val membership: MembershipReconciler
     private val balancer: LeaderBalancer
-    private val announcer: LeaderAnnouncer
+    private val announcer: GroupAnnouncer
     private val memberId = MemberId(identityModule.serverId().uuid())
     /**
      * The Raft groups of the databases on this member, `system`'s as its membership record keeps
@@ -624,12 +623,12 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
             )
         consensus.leaderPlacement = balancer
         announcer =
-            LeaderAnnouncer(
+            GroupAnnouncer(
                 consensus,
                 clusterServers::all,
-                ::leadingHere,
+                { GroupNews(leadingHere(), joiningHere()) },
                 ANNOUNCEMENT_DEADLINE,
-                logService.getInternalLog(LeaderAnnouncer::class.java),
+                logService.getInternalLog(GroupAnnouncer::class.java),
             )
         cluster =
             ClusterService(
@@ -997,6 +996,18 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
             .toSet()
     }
 
+    /** The groups that run on this member without it voting in them yet, as a new member. */
+    private fun joiningHere(): Set<UUID> =
+        replication
+            .created()
+            .filter { ref ->
+                val membership = runCatching { consensus.membership(ref) }.getOrNull()
+                membership != null &&
+                    !membership.removed &&
+                    membership.members.none { it.id == consensus.self.id }
+            }
+            .mapTo(HashSet()) { it.id }
+
     /** The groups this member leads, with their terms. */
     private fun leadingHere(): Map<UUID, Long> =
         replication
@@ -1250,7 +1261,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
         // A copy no longer placed here is deleted once this member leaves the database's group.
         replication.afterGroupChange = {
             reconciler.request()
-            // Also when this member starts or stops leading a group.
+            // Also when this member starts or stops leading a group, or voting in one it runs.
             announcer.request()
         }
         replication.afterSystemApply = ::systemApplied

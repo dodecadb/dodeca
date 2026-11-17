@@ -54,7 +54,11 @@ import org.neo4j.logging.Log
  *
  * Work that remains is looked at again after [retryDelay], and after twice as long each time work
  * still remains, up to [maximumRetryDelay], except while a hand-over is awaited; a finished change
- * looks at once.
+ * looks at once. A member that runs a group it does not vote in yet announces it (see
+ * `GroupAnnouncer`), which has the reconciler look at once too, as a member does that joins a group
+ * again as a new member after it left it by itself (see `CopyReplacement`): no change of `system`
+ * tells of that. With no work left, it still looks again after [lookInterval], for such changes it
+ * did not hear of.
  *
  * @property databases the databases of the system graph, `system` among them or not, each with the
  *   servers it is placed on; none while it is not placed yet.
@@ -76,6 +80,7 @@ class MembershipReconciler(
     private val changeTimeout: Duration = Duration.ofMinutes(10),
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val maximumRetryDelay: Duration = Duration.ofSeconds(30),
+    private val lookInterval: Duration = Duration.ofSeconds(30),
     private val changes: Executor = newChangeExecutor(),
     private val systemRunning: () -> Boolean = { true },
     private val handOverGrace: Duration = Duration.ofSeconds(30),
@@ -96,6 +101,7 @@ class MembershipReconciler(
     /** Members announced as waiting to run a group, so that the wait is logged once. */
     private val announced: MutableSet<Pair<UUID, MemberId>> = ConcurrentHashMap.newKeySet()
     private var statusListener: AutoCloseable? = null
+    private var announcements: AutoCloseable? = null
 
     @Volatile private var started = false
 
@@ -107,12 +113,22 @@ class MembershipReconciler(
     /** Groups whose leader is removed although it did not hand the leadership over. */
     private val overdue = mutableSetOf<UUID>()
 
-    /** Reconciles now, whenever `system`'s leader or members change, and when [request]ed. */
+    /**
+     * Reconciles now, whenever `system`'s leader or members change, when a member announces that it
+     * runs a group it does not vote in, and when [request]ed.
+     */
     fun start() {
         started = true
         statusListener = consensus.addStatusListener(systemDatabase) { request() }
+        announcements = consensus.addAnnouncementListener { if (joins(it)) request() }
         request()
     }
+
+    /** Whether [peer] runs a database's group that it does not vote in, to be added to it. */
+    private fun joins(peer: PeerInfo): Boolean =
+        peer.groups.any { (group, voters) ->
+            group != systemDatabase.id && voters.none { it.id == peer.member.id }
+        }
 
     /** Asks for a reconciliation; requests made while one waits are merged. */
     fun request() {
@@ -137,18 +153,22 @@ class MembershipReconciler(
             }
         retry?.cancel(false)
         retry = null
-        if (!again) {
-            nextRetryDelay = retryDelay
-            return
-        }
-        // A hand-over takes about as long as the first delay.
-        if (handOvers.isNotEmpty()) nextRetryDelay = retryDelay
+        val delay =
+            if (again) {
+                // A hand-over takes about as long as the first delay.
+                if (handOvers.isNotEmpty()) nextRetryDelay = retryDelay
+                nextRetryDelay.also {
+                    nextRetryDelay = minOf(it.multipliedBy(2), maximumRetryDelay)
+                }
+            } else {
+                nextRetryDelay = retryDelay
+                lookInterval
+            }
         try {
-            retry = scheduler.schedule(::request, nextRetryDelay.toMillis(), TimeUnit.MILLISECONDS)
+            retry = scheduler.schedule(::request, delay.toMillis(), TimeUnit.MILLISECONDS)
         } catch (_: RejectedExecutionException) {
             // Closing.
         }
-        nextRetryDelay = minOf(nextRetryDelay.multipliedBy(2), maximumRetryDelay)
     }
 
     /**
@@ -435,6 +455,8 @@ class MembershipReconciler(
         started = false
         statusListener?.close()
         statusListener = null
+        announcements?.close()
+        announcements = null
         scheduler.shutdownNow()
         (changes as? ExecutorService)?.shutdownNow()
         scheduler.awaitTermination(30, TimeUnit.SECONDS)
