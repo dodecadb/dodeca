@@ -162,6 +162,8 @@ jobs:
       # Surefire's includes, of the classes named as tests, which -Dtest would replace; it takes
       # Surefire's default exclude, of inner classes, too.
       - name: Build and test
+        # Ends before the job does, so that the reports of tests that never end are uploaded.
+        timeout-minutes: 38
         env:
           MAVEN_OPTS: -Xmx2g
           MODULES: ${{ matrix.modules }}
@@ -225,6 +227,8 @@ jobs:
           echo "list=$mine" >> "$GITHUB_OUTPUT"
       # The tests run against the packaged jar, the one a release publishes.
       - name: Test
+        # Ends before the job does, so that the reports of tests that never end are uploaded.
+        timeout-minutes: 52
         env:
           CLASSES: ${{ steps.classes.outputs.list }}
         run: >-

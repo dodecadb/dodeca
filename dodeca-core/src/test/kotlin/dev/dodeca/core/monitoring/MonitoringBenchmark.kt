@@ -8,6 +8,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.Config
@@ -26,8 +27,9 @@ import org.neo4j.graphdb.config.Setting
  * and with metrics off, as configured by default (JMX, Neo4j's default filter) and all of them over
  * JMX and Prometheus; and how long a scrape of every metric takes with a hundred databases. Not
  * part of the suites; run it with `./mvnw -pl dodeca-core test -Dtest=MonitoringBenchmark` and read
- * what it prints.
+ * what it prints. It may run for longer than the 10 minutes a test of the suites may take.
  */
+@Timeout(value = 1, unit = TimeUnit.HOURS)
 class MonitoringBenchmark {
     // Kept when a test fails, for the servers' logs.
     @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path

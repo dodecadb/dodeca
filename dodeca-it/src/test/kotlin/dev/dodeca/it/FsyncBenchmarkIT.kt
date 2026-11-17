@@ -2,6 +2,7 @@ package dev.dodeca.it
 
 import java.nio.file.Files
 import java.time.Duration
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.concurrent.thread
 import org.awaitility.kotlin.atMost
@@ -9,6 +10,7 @@ import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty
 import org.testcontainers.containers.Network
 import org.testcontainers.lifecycle.Startables
@@ -16,9 +18,11 @@ import org.testcontainers.lifecycle.Startables
 /**
  * Write throughput of three members with single fsync (the default) and with double fsync. Run on
  * demand, with `-Ddodeca.benchmark=true`; results go to the console and to `fsync-benchmark.txt` in
- * the IT logs directory. Docker on a laptop gives indicative numbers only.
+ * the IT logs directory. Docker on a laptop gives indicative numbers only. It may run for longer
+ * than the 10 minutes a test of the suites may take.
  */
 @EnabledIfSystemProperty(named = "dodeca.benchmark", matches = "true")
+@Timeout(value = 1, unit = TimeUnit.HOURS)
 class FsyncBenchmarkIT {
     private data class Result(
         val mode: String,

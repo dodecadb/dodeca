@@ -2,8 +2,10 @@ package dev.dodeca.core.security
 
 import dev.dodeca.core.StandaloneServer
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.neo4j.configuration.GraphDatabaseSettings
@@ -17,8 +19,10 @@ import org.neo4j.kernel.api.security.AuthToken
 /**
  * What privileges cost: starting transactions, and reading a million nodes, as the admin and as
  * users whose roles deny a label or have a property rule. Not part of the suites; run it with
- * `./mvnw -pl dodeca-core test -Dtest=PrivilegesBenchmark` and read what it prints.
+ * `./mvnw -pl dodeca-core test -Dtest=PrivilegesBenchmark` and read what it prints. It may run for
+ * longer than the 10 minutes a test of the suites may take.
  */
+@Timeout(value = 1, unit = TimeUnit.HOURS)
 class PrivilegesBenchmark {
     // Kept when a test fails, for the server's logs.
     @TempDir(cleanup = CleanupMode.ON_SUCCESS) lateinit var root: Path

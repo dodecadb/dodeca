@@ -392,10 +392,15 @@
           <!-- The JDK modules that Neo4j's neo4j.conf opens to it (server.jvm.additional), as
                its off-heap memory needs them. -->
           <argLine>-Xmx${test.heap} -Djava.io.tmpdir=${test.tmpdir} -Ddodeca.test.fork=${surefire.forkNumber} --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --enable-native-access=ALL-UNNAMED -da:org.neo4j.bolt.protocol.common.connector.connection.ConnectionMemoryTracker -da:org.neo4j.internal.recordstorage.LogCommandSerializationV4_2 -da:org.neo4j.internal.recordstorage.LogCommandSerializationV5_0 -da:org.neo4j.kernel.impl.store.record.PropertyRecord -da:org.neo4j.kernel.impl.store.record.PropertyBlock</argLine>
-          <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests. -->
+          <!-- Fail instead of silently skipping tests JUnit cannot run, e.g. non-Unit Kotlin tests.
+               A test or set-up that runs for more than 10 minutes, well above the longest on CI,
+               fails with a dump of every thread, instead of holding the build until CI's job times
+               out with nothing to show. -->
           <properties>
             <configurationParameters>
               junit.platform.discovery.issue.severity.critical=WARNING
+              junit.jupiter.execution.timeout.default=10m
+              junit.jupiter.execution.timeout.threaddump.enabled=true
             </configurationParameters>
           </properties>
         </configuration>

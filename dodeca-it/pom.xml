@@ -123,9 +123,13 @@
               <classpathDependencyExcludes>
                 <classpathDependencyExclude>dev.dodeca:dodeca-plugin</classpathDependencyExclude>
               </classpathDependencyExcludes>
+              <!-- As the unit tests: a test that runs for more than 10 minutes fails with a dump
+                   of every thread. -->
               <properties>
                 <configurationParameters>
                   junit.platform.discovery.issue.severity.critical=WARNING
+                  junit.jupiter.execution.timeout.default=10m
+                  junit.jupiter.execution.timeout.threaddump.enabled=true
                 </configurationParameters>
               </properties>
               <trimStackTrace>false</trimStackTrace>
