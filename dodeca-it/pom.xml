@@ -124,12 +124,14 @@
                 <classpathDependencyExclude>dev.dodeca:dodeca-plugin</classpathDependencyExclude>
               </classpathDependencyExcludes>
               <!-- As the unit tests: a test that runs for more than 10 minutes fails with a dump
-                   of every thread. -->
+                   of every thread, also one stuck in an Awaitility condition (AwaitInTestThread,
+                   found as a service). -->
               <properties>
                 <configurationParameters>
                   junit.platform.discovery.issue.severity.critical=WARNING
                   junit.jupiter.execution.timeout.default=10m
                   junit.jupiter.execution.timeout.threaddump.enabled=true
+                  junit.jupiter.extensions.autodetection.enabled=true
                 </configurationParameters>
               </properties>
               <trimStackTrace>false</trimStackTrace>
