@@ -197,8 +197,11 @@ internal interface LocalDatabases {
     /** Stops [id] on this member only, which leaves the cluster: leadership is handed over. */
     fun leave(id: NamedDatabaseId)
 
-    /** Stops [id] and deletes its store and its Raft group. */
-    fun drop(id: NamedDatabaseId)
+    /**
+     * Stops [id] and deletes its store and its Raft group; a quarantine of it here goes with it,
+     * unless [keepQuarantine].
+     */
+    fun drop(id: NamedDatabaseId, keepQuarantine: Boolean = false)
 
     /**
      * The databases whose stores here are kept as the seeds of databases that

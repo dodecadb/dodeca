@@ -1481,12 +1481,12 @@ class DatabaseReconcilerTest {
             left += id
         }
 
-        override fun drop(id: NamedDatabaseId) {
+        override fun drop(id: NamedDatabaseId, keepQuarantine: Boolean) {
             registered.remove(id)
             stored.remove(id.name())
             groups.remove(id.databaseId().uuid())
             marks.remove(id.databaseId().uuid())
-            quarantines.remove(id.databaseId().uuid())
+            if (!keepQuarantine) quarantines.remove(id.databaseId().uuid())
             dropped += id
         }
 

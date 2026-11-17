@@ -125,9 +125,9 @@ internal class Neo4jLocalDatabases(
         manager.stopDatabase(id)
     }
 
-    override fun drop(id: NamedDatabaseId) {
+    override fun drop(id: NamedDatabaseId, keepQuarantine: Boolean) {
         replication.replica(id)?.handOverOnStop = false
-        manager.dropDatabase(id)
+        manager.dropDatabase(id, keepQuarantine)
         replication.remove(id)
         secondaries.remove(id)
     }

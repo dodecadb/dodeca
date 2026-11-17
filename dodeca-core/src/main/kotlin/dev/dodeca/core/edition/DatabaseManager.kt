@@ -247,10 +247,10 @@ class DatabaseManager(
 
     /**
      * Stops [id] without a checkpoint, unregisters it and deletes its files; a quarantine of it
-     * here goes with it.
+     * here goes with it, unless [keepQuarantine].
      */
     @Synchronized
-    fun dropDatabase(id: NamedDatabaseId) {
+    fun dropDatabase(id: NamedDatabaseId, keepQuarantine: Boolean = false) {
         val context = repository.getDatabaseContext(id)
         if (context.isEmpty) {
             log.warn("Cannot drop '%s': it does not exist.", id)
@@ -264,7 +264,7 @@ class DatabaseManager(
             log.error("Failed to drop '$id'.", e)
             throw DatabaseManagementHelper.internalError(TITLE, "Failed to drop `$id`.", e)
         }
-        quarantines.remove(id.databaseId().uuid())
+        if (!keepQuarantine) quarantines.remove(id.databaseId().uuid())
         counts.increaseDropCount()
         log.info("Dropped '%s' successfully.", id)
     }

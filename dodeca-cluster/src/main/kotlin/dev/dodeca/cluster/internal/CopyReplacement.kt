@@ -59,7 +59,8 @@ internal class CopyReplacement(
         if (state?.mode == CopyMode.SECONDARY) {
             if (!keepStore) {
                 log.info("Deleting the secondary %s here, in quarantine: it is copied again", id)
-                databases.drop(id)
+                // The quarantine goes as it is lifted, which copies it again.
+                databases.drop(id, keepQuarantine = true)
             }
             return
         }
@@ -83,7 +84,9 @@ internal class CopyReplacement(
                         "a new member, from a new copy",
                     id,
                 )
-                databases.drop(id)
+                // Kept in quarantine, so that it does not run the group until the group removed
+                // it.
+                databases.drop(id, keepQuarantine = true)
             } else if (ref.id in consensus.localGroups()) {
                 consensus.removeGroup(ref)
             }

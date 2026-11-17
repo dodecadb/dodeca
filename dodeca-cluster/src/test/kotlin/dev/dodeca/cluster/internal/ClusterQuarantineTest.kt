@@ -2,8 +2,10 @@ package dev.dodeca.cluster.internal
 
 import dev.dodeca.cluster.internal.ClusterHarness.Companion.AWAIT
 import dev.dodeca.consensus.Role
+import dev.dodeca.core.edition.Quarantines
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.CompletableFuture
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
@@ -233,6 +235,50 @@ class ClusterQuarantineTest {
         assertThat(store).describedAs("the store was replaced").doesNotExist()
         assertThat(raft).describedAs("the Raft state was replaced").doesNotExist()
     }
+
+    @Test
+    fun `replaceStateReplaceStore keeps the copy in quarantine until its group removed it`() {
+        val cluster = cluster()
+        val leader = cluster.awaitLeader("films")
+        val member = cluster.members.first { it != leader }
+        val other = cluster.members.first { it != leader && it != member }
+        val films = leader.database("films").databaseId().databaseId().uuid()
+        member.quarantine("films", true)
+        // The leader alone is no majority of the group, which cannot remove the member meanwhile.
+        other.stop()
+        val lifting = CompletableFuture.runAsync {
+            leader.unquarantine(member.serverId, "films", "replaceStateReplaceStore")
+        }
+
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(member.logged("Dropped 'DatabaseId{")).isTrue()
+            }
+        // Deleted, it stays in quarantine, so that it does not run the group with a new state as
+        // the voter it was, which forgot its votes.
+        assertThat(member.quarantines().of(films)).isNotNull()
+        assertThat(member.runs("films")).isFalse()
+
+        other.start()
+        lifting.join()
+        await atMost
+            AWAIT untilAsserted
+            {
+                assertThat(member.runs("films")).isTrue()
+                assertThat(member.count("films")).isEqualTo(1)
+                assertThat(cluster.running().any { it.logged("Adding member ${member.serverId}") })
+                    .isTrue()
+            }
+    }
+
+    /** The quarantines of copies on this member, as it keeps them on disk. */
+    private fun ClusterHarness.Member.quarantines(): Quarantines =
+        Quarantines(home.resolve("data").resolve(Quarantines.FILE_NAME))
+
+    /** Whether this member's debug log says [text], also in a line it is still writing. */
+    private fun ClusterHarness.Member.logged(text: String): Boolean =
+        text in Files.readString(home.resolve("logs/debug.log"))
 
     @Test
     fun `replaceStateKeepStore joins a primary as a new member of its group, from its store`() {
