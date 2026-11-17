@@ -24,6 +24,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.concurrent.thread
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilAsserted
 import org.awaitility.kotlin.untilNotNull
 import org.awaitility.kotlin.withPollInterval
 import org.neo4j.collection.Dependencies
@@ -53,6 +54,7 @@ import org.neo4j.graphdb.facade.GraphDatabaseDependencies
 import org.neo4j.io.ByteUnit
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.layout.Neo4jLayout
+import org.neo4j.kernel.api.exceptions.Status
 import org.neo4j.kernel.impl.factory.DbmsInfo
 import org.neo4j.kernel.internal.GraphDatabaseAPI
 
@@ -361,6 +363,26 @@ internal class ClusterHarness(
     fun running(): List<Member> = members.filter { it.running }
 
     /**
+     * Runs [query] on the leader of [name] among [among] until it commits there. A leader that
+     * stops leading meanwhile, as one may just after the cluster started on a slow machine, fails
+     * the write, committed or not, and the next leader runs it again: [query] must be repeatable,
+     * with MERGE rather than CREATE.
+     */
+    fun awaitWrite(
+        query: String,
+        name: String = DEFAULT_DATABASE,
+        parameters: Map<String, Any> = emptyMap(),
+        among: () -> List<Member> = ::running,
+    ) {
+        await.pollDelay(Duration.ZERO).ignoreExceptionsMatching(::leaderChanged) withPollInterval
+            Duration.ofMillis(100) atMost
+            AWAIT untilAsserted
+            {
+                awaitLeader(name, among).database(name).executeTransactionally(query, parameters)
+            }
+    }
+
+    /**
      * Waits until every running member of [among] agrees on a leader of [name] that can take
      * writes.
      */
@@ -399,6 +421,23 @@ internal class ClusterHarness(
         val START_TIMEOUT: Duration = Duration.ofMinutes(2)
 
         private val SEGMENT = Regex("""log_(?:inprogress_)?(\d+)(?:-\d+)?""")
+
+        /** How writes fail when their leader stops leading, whether they committed or not. */
+        private val LEADER_CHANGES =
+            setOf(
+                Status.Cluster.NotALeader,
+                Status.Cluster.ReplicationFailure,
+                Status.Transaction.LeaseExpired,
+                Status.Transaction.TransactionCommitFailed,
+            )
+
+        private fun leaderChanged(failure: Throwable): Boolean =
+            generateSequence(failure) { it.cause }
+                .mapNotNull { (it as? Status.HasStatus)?.status() }
+                .any {
+                    it in LEADER_CHANGES ||
+                        it.code().classification() == Status.Classification.TransientError
+                }
 
         /** Settings that report every metric over Prometheus, on a port of each member's own. */
         val METRICS: Map<Setting<*>, Any> =

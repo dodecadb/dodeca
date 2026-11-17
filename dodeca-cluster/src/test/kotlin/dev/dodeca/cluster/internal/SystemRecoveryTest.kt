@@ -46,7 +46,7 @@ class SystemRecoveryTest {
         val cluster = ClusterHarness(root, 5).also { harness = it }
         cluster.start()
         cluster.administer("CREATE USER alice SET PASSWORD 'alice-secret' CHANGE NOT REQUIRED")
-        cluster.awaitLeader().database().executeTransactionally("CREATE (:Film {title: 'Heat'})")
+        cluster.awaitWrite("MERGE (:Film {title: 'Heat'})")
         val lost = cluster.members.take(3)
         val left = cluster.members.drop(3)
         // Before the disaster, the servers left hold the user and the film.
@@ -200,10 +200,7 @@ class SystemRecoveryTest {
         cluster.members[2].deny(DEFAULT_DATABASE)
         cluster.start()
         cluster.administer("CREATE DATABASE $FILMS TOPOLOGY 3 PRIMARIES WAIT")
-        cluster
-            .awaitLeader(FILMS) { cluster.members.drop(2) }
-            .database(FILMS)
-            .executeTransactionally("CREATE (:Film {title: 'Heat'})")
+        cluster.awaitWrite("MERGE (:Film {title: 'Heat'})", FILMS) { cluster.members.drop(2) }
         val lost = cluster.members.take(3)
         val left = cluster.members.drop(3)
         cluster.awaitEverywhere(left, films = listOf("Heat"), database = FILMS)

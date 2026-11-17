@@ -78,7 +78,7 @@ class UnbindCommandTest {
     fun `the server starts as a new one, which takes the old one's place, its files kept aside`() {
         val cluster = ClusterHarness(root, 3).also { harness = it }
         cluster.start()
-        cluster.awaitLeader().database().executeTransactionally("CREATE (:Film)")
+        cluster.awaitWrite("MERGE (:Film)")
         val member = cluster.members[2]
         val others = cluster.members.take(2)
         val old = member.serverId

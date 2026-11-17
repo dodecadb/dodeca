@@ -112,8 +112,9 @@ class RecreateDatabaseTest {
     fun `the default database is recreated from a backup as any other`() {
         val cluster = ClusterHarness(root, 3).also { harness = it }
         cluster.start()
+        cluster.awaitWrite("UNWIND range(1, 3) AS i MERGE (:Film {i: i})")
         val leader = cluster.awaitLeader()
-        leader.database().executeTransactionally("UNWIND range(1, 3) AS i CREATE (:Film {i: i})")
+        cluster.awaitFilms(listOf(leader), 3, DEFAULT)
         val seed = cluster.backup(leader, DEFAULT)
         leader.database().executeTransactionally("CREATE (:Film)")
         val old = cluster.members[0].databaseId(DEFAULT)

@@ -338,13 +338,12 @@ class ClusterBackupTest {
         val primaries = cluster.members - secondary
         fun write(from: Int) =
             repeat(10) {
-                cluster
-                    .awaitLeader { primaries }
-                    .database()
-                    .executeTransactionally(
-                        "CREATE (:Written {n: ${'$'}n})",
-                        mapOf("n" to (from + it).toLong()),
-                    )
+                cluster.awaitWrite(
+                    "MERGE (:Written {n: ${'$'}n})",
+                    parameters = mapOf("n" to (from + it).toLong()),
+                ) {
+                    primaries
+                }
             }
         write(0)
         await withPollInterval

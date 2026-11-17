@@ -43,7 +43,7 @@ class ClusterDefaultDatabaseTest {
         val cluster = ClusterHarness(root, 3).also { harness = it }
         cluster.start()
         cluster.administer("CREATE DATABASE films TOPOLOGY 3 PRIMARIES WAIT")
-        cluster.awaitLeader("films").database("films").executeTransactionally("CREATE (:Film)")
+        cluster.awaitWrite("MERGE (:Film)", "films")
         cluster.administer("STOP DATABASE neo4j WAIT")
 
         val follower =

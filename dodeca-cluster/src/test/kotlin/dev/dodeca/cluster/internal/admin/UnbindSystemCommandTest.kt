@@ -34,7 +34,7 @@ class UnbindSystemCommandTest {
     fun `removes the Raft state of system only, archived, and tells its last transaction`() {
         val cluster = ClusterHarness(root, 3).also { harness = it }
         cluster.start()
-        cluster.awaitLeader().database().executeTransactionally("CREATE (:Film)")
+        cluster.awaitWrite("MERGE (:Film)")
         val member = cluster.members[2]
         val neo4j = member.database().databaseId().databaseId().uuid().toString()
         member.database("system").executeTransactionally("CALL db.checkpoint()")

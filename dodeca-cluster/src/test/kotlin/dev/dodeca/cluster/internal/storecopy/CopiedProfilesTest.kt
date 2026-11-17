@@ -60,12 +60,9 @@ class CopiedProfilesTest {
                 )
                 .also { harness = it }
         cluster.start()
-        cluster
-            .awaitLeader()
-            .database()
-            .executeTransactionally(
-                "UNWIND range(1, $PERSONS) AS i CREATE (:Person {id: i, name: 'person ' + i})"
-            )
+        cluster.awaitWrite(
+            "UNWIND range(1, $PERSONS) AS i MERGE (p:Person {id: i}) SET p.name = 'person ' + i"
+        )
         eventually {
             for (member in cluster.members) {
                 assertThat(member.persons()).isEqualTo(PERSONS.toLong())

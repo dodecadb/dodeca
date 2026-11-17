@@ -170,9 +170,9 @@ class ForwardingFailoverTest {
                 )
                 .also { harness = it }
         cluster.start()
+        cluster.awaitWrite("MERGE (:Lock)")
         val leader = cluster.awaitLeader()
         val follower = cluster.members.first { it != leader }
-        leader.database().executeTransactionally("CREATE (:Lock)")
 
         GraphDatabase.driver("neo4j://${follower.boltAddress()}", AuthTokens.none()).use { driver ->
             driver.session(SessionConfig.forDatabase("neo4j")).use { session ->

@@ -166,7 +166,7 @@ class UsersTest {
                 )
                 .also { harness = it }
         cluster.start()
-        cluster.awaitLeader("neo4j").database("neo4j").executeTransactionally("CREATE (:Movie)")
+        cluster.awaitWrite("MERGE (:Movie)")
         cluster.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
         cluster.administer("CREATE ROLE curator AS COPY OF reader")
 
@@ -266,7 +266,7 @@ class UsersTest {
                 .also { harness = it }
         cluster.start()
         cluster.administer("CREATE DATABASE films")
-        cluster.awaitLeader("films").database("films").executeTransactionally("CREATE (:Movie)")
+        cluster.awaitWrite("MERGE (:Movie)", "films")
         cluster.administer("CREATE USER alice SET PASSWORD 'alice-secret-1' CHANGE NOT REQUIRED")
         cluster.administer("CREATE ROLE viewer")
         cluster.administer("GRANT ROLE viewer TO alice")
