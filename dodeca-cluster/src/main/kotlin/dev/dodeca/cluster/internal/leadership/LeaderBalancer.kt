@@ -32,6 +32,11 @@ import org.neo4j.logging.InternalLog
  * (see [LeaderMoves.keepsUp]), and hands the leadership over without failing commits under way (see
  * `ReplicatedDatabase.transferLeadership`). It also ranks the members a leadership is handed over
  * to when this member stops applying a database, by the server tags its last look read.
+ *
+ * When leaders stay uneven although they stayed put for [stabilityDelay], the member that would
+ * give a leadership away logs why, once while the reason holds: a database without a leader or
+ * whose members change, no member leading fewer that could take a database over and why, or one
+ * that does not keep up.
  */
 internal class LeaderBalancer(
     private val consensus: ConsensusLog,
@@ -95,6 +100,9 @@ internal class LeaderBalancer(
     /** The leaders at the last look, and when they last changed; executor only. */
     private var leaders: Map<UUID, MemberId?> = emptyMap()
     private var leadersChanged = nanoTime()
+
+    /** Why leaders stay uneven since they last changed, as logged; executor only. */
+    private var unevenBecause: String? = null
 
     fun start() {
         executor.scheduleWithFixedDelay(
@@ -184,6 +192,7 @@ internal class LeaderBalancer(
             settled = location.settled,
             priorityTag = priorityTag(database.name),
             placed = placed,
+            voters = location.voters.map { it.id }.toSet(),
         )
     }
 
@@ -294,16 +303,120 @@ internal class LeaderBalancer(
         if (current != leaders) {
             leaders = current
             leadersChanged = now
+            unevenBecause = null
             return
         }
         if (strategy() != BalancingStrategy.EQUAL_BALANCING) return
         if (now - leadersChanged < stabilityDelay.toNanos()) return
-        if (seen.databases.any { it.leader == null || !it.settled }) return
-        if (LeaderMoves.balancing(seen)?.from != consensus.self.id) return
+        val waiting = seen.databases.firstOrNull { it.leader == null || !it.settled }
+        if (waiting != null) {
+            val name = waiting.database.name
+            explainUneven(
+                seen,
+                if (waiting.leader == null) "database $name has no leader"
+                else "the voting members of database $name are changing",
+            )
+            return
+        }
+        val planned = LeaderMoves.balancing(seen)
+        if (planned == null) {
+            explainUneven(seen, whyNoMove(seen))
+            return
+        }
+        if (planned.from != consensus.self.id) return
         // What the others report may have changed since they last answered.
         directory.refresh()
-        val move = LeaderMoves.balancing(view()) ?: return
-        if (move.from == consensus.self.id) transfer(move.database, move.to, move.reason)
+        val view = view()
+        val move = LeaderMoves.balancing(view)
+        if (move == null) {
+            explainUneven(view, whyNoMove(view))
+            return
+        }
+        if (move.from != consensus.self.id) return
+        if (!keepsUp(move.database, move.to)) {
+            explainUneven(
+                view,
+                "member ${move.to} does not keep up with this member's log of " +
+                    move.database.name,
+                lag(move.database, move.to),
+            )
+            return
+        }
+        handOver(move.database, move.to, move.reason.text, transferTimeout)
+    }
+
+    /**
+     * Logs that leaders stay uneven for [reason], with [details], unless it did already since they
+     * last changed: if this member is the first giver of [LeaderMoves.balancing], and a member that
+     * votes in the group of a database it leads leads at least two fewer.
+     */
+    private fun explainUneven(view: LeadershipView, reason: String, details: String = "") {
+        val self = consensus.self.id
+        if (LeaderMoves.givers(view).firstOrNull() != self) return
+        val count = view.led(self)
+        val fewest =
+            view.databases
+                .filter { it.leader == self }
+                .flatMap { it.voters }
+                .filter { it != self }
+                .minWithOrNull(compareBy<MemberId> { view.led(it) }.thenBy { it }) ?: return
+        if (view.led(fewest) > count - 2 || reason == unevenBecause) return
+        unevenBecause = reason
+        log.info(
+            "Leaders stay uneven: this member leads %d databases and member %s leads %d, but %s%s",
+            count,
+            fewest,
+            view.led(fewest),
+            reason,
+            details,
+        )
+    }
+
+    /**
+     * Why [LeaderMoves.balancing] moves no database of this member: for the first it could move
+     * that a member leading at least two fewer votes for, why none of those can take it over.
+     */
+    private fun whyNoMove(view: LeadershipView): String {
+        val self = consensus.self.id
+        val count = view.led(self)
+        val databases = LeaderMoves.balanceable(view, self)
+        if (databases.isEmpty()) {
+            return "every database it leads is read-only on it, has a priority tag or moves off it"
+        }
+        for (leadership in databases) {
+            val takers =
+                leadership.voters.filter { it != self && view.led(it) <= count - 2 }.sorted()
+            if (takers.isEmpty()) continue
+            return "none that leads fewer can take ${leadership.database.name} over: " +
+                takers.joinToString { "member $it ${whyNot(it, leadership)}" }
+        }
+        return "no member that leads fewer votes in the groups of the databases it leads"
+    }
+
+    /** Why [member] cannot take [leadership]'s database over, as [canLead] decides. */
+    private fun whyNot(member: MemberId, leadership: Leadership): String {
+        val id = leadership.database.id
+        val state = directory.databaseStates(member).orEmpty().firstOrNull { it.id == id }
+        return when {
+            leadership.placed.isNotEmpty() && member !in leadership.placed -> "is not placed on it"
+            !directory.answering(member) -> "does not answer"
+            state == null -> "does not report it"
+            state.status != DatabaseState.Status.ONLINE -> "reports it ${state.status}"
+            id in directory.readOnlyDatabases(member) -> "has it read-only"
+            else -> "can take it over now"
+        }
+    }
+
+    /**
+     * How far [to] is behind this member's log of [database], as [LeaderMoves.keepsUp] reads it.
+     */
+    private fun lag(database: DatabaseRef, to: MemberId): String {
+        val progress = consensus.progress(database)
+        val contact = progress?.followerContactMillis?.get(to)
+        val match = progress?.followerMatchIndexes?.get(to)
+        val before = committed[database.id]
+        return " (it answered $contact ms ago, at most ${contactLimit.toMillis()} ms; its log " +
+            "reaches $match, the group had committed $before at the previous look)"
     }
 
     /** Notes the commit index of each database this member leads, for the next look. */

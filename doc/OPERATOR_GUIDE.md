@@ -1248,9 +1248,14 @@ Leadership moves:
   where the priority puts them. This is how a member that comes back from a
   restart gets its share again, once it has caught up with the writes it missed,
   and how a new database, which starts led by the member that created it (the
-  leader of `system`), finds its place. `NO_BALANCING` leaves the leaders where
-  elections and handovers put them. The setting is dynamic; give every member
-  the same.
+  leader of `system`), finds its place. While the leaders stay uneven although
+  they stayed put, the member that leads the most databases logs why once in
+  `debug.log`, as `Leaders stay uneven`: a database without a leader or whose
+  voting members are changing, each member that leads fewer with why it cannot
+  take a database over (it does not answer, does not run the database yet, or
+  has it read-only), or a member that does not keep up with the database's log.
+  `NO_BALANCING` leaves the leaders where elections and handovers put them. The
+  setting is dynamic; give every member the same.
 
 A member that hands a leadership over on purpose stops taking new commits of
 the database, lets the commits under way finish, then hands over, which

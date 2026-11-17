@@ -31,6 +31,7 @@ internal data class LeadershipView(
  * @property priorityTag the server tag of the members that should lead [database], if any.
  * @property placed the members [database] is placed on; none if it is not placed, as `system`,
  *   which every member hosts.
+ * @property voters the voting members of its group, [leader] among them.
  */
 internal data class Leadership(
     val database: DatabaseRef,
@@ -40,6 +41,7 @@ internal data class Leadership(
     val settled: Boolean = true,
     val priorityTag: String? = null,
     val placed: Set<MemberId> = emptySet(),
+    val voters: Set<MemberId> = emptySet(),
 ) {
     /** Whether [leader] leads [database] although it is placed on other members. */
     val movesOffLeader: Boolean
@@ -131,24 +133,9 @@ internal object LeaderMoves {
      * which [leaving] moves.
      */
     fun balancing(view: LeadershipView): Move? {
-        val leaders = view.databases.mapNotNull { it.leader }.toSet()
-        val givers =
-            leaders.sortedWith(compareByDescending<MemberId> { view.led(it) }.thenBy { it })
-        for (giver in givers) {
+        for (giver in givers(view)) {
             val count = view.led(giver)
-            val databases =
-                view.databases
-                    .filter {
-                        it.leader == giver &&
-                            it.writableOnLeader &&
-                            !it.movesOffLeader &&
-                            it.priorityTag == null
-                    }
-                    .sortedWith(
-                        compareBy<Leadership> { it.database.name == SYSTEM }
-                            .thenBy { it.database.name }
-                    )
-            for (leadership in databases) {
+            for (leadership in balanceable(view, giver)) {
                 val to =
                     rank(view, leadership.eligible).firstOrNull { view.led(it) <= count - 2 }
                         ?: continue
@@ -157,6 +144,26 @@ internal object LeaderMoves {
         }
         return null
     }
+
+    /** The members that lead a database, in the order [balancing] tries them as givers. */
+    fun givers(view: LeadershipView): List<MemberId> =
+        view.databases
+            .mapNotNull { it.leader }
+            .toSet()
+            .sortedWith(compareByDescending<MemberId> { view.led(it) }.thenBy { it })
+
+    /** The databases that [giver] leads and [balancing] may move, in the order it tries them. */
+    fun balanceable(view: LeadershipView, giver: MemberId): List<Leadership> =
+        view.databases
+            .filter {
+                it.leader == giver &&
+                    it.writableOnLeader &&
+                    !it.movesOffLeader &&
+                    it.priorityTag == null
+            }
+            .sortedWith(
+                compareBy<Leadership> { it.database.name == SYSTEM }.thenBy { it.database.name }
+            )
 
     /**
      * Whether [follower] can take the leadership of a group over from the leader that reports

@@ -9,6 +9,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.core.ConditionTimeoutException
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.untilAsserted
@@ -79,13 +80,32 @@ class LeaderBalancingIT {
     }
 
     private fun awaitLed(vararg counts: Int) {
-        await withPollInterval
-            Duration.ofMillis(500) atMost
-            Duration.ofMinutes(2) untilAsserted
-            {
-                assertThat(led().filterNotNull()).containsExactlyInAnyOrder(*counts.toTypedArray())
-            }
+        try {
+            await withPollInterval
+                Duration.ofMillis(500) atMost
+                Duration.ofMinutes(2) untilAsserted
+                {
+                    assertThat(led().filterNotNull())
+                        .containsExactlyInAnyOrder(*counts.toTypedArray())
+                }
+        } catch (e: ConditionTimeoutException) {
+            // With what the members' logs say about why leaders stay uneven.
+            throw AssertionError(
+                "leaders did not even out; the members' Raft groups:\n${groups()}",
+                e,
+            )
+        }
     }
+
+    /** Each member's Raft groups, as it reports them. */
+    private fun groups(): String =
+        members.joinToString("\n") { member ->
+            if (!member.isRunning) return@joinToString "${member.alias}: down"
+            when (val outcome = member.run("CALL dodeca.cluster.status()", "system")) {
+                is Outcome.Rows -> outcome.rows.joinToString("\n") { "${member.alias}: $it" }
+                is Outcome.Failed -> "${member.alias}: ${outcome.code} ${outcome.message}"
+            }
+        }
 
     @Test
     fun `a rolling restart under write load ends balanced and loses no acknowledged write`() {

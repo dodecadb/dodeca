@@ -14,8 +14,13 @@ import dev.dodeca.core.edition.DatabaseState
 import java.io.ByteArrayOutputStream
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
 import org.assertj.core.api.Assertions.assertThat
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.until
+import org.awaitility.kotlin.untilAsserted
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.InternalLog
@@ -27,20 +32,7 @@ class LeaderBalancerTest {
     private val system = DatabaseRef("system", UUID(0, 1))
     private val groups = DatabaseGroups()
     private val films = DatabaseRef("films", UUID.randomUUID())
-    private val members =
-        List(3) {
-            consensus.newMember(
-                metadata =
-                    mapOf(
-                        MemberMetadata.DATABASES to
-                            DatabaseStatesCodec.encode(
-                                listOf(
-                                    DatabaseState(films.name, films.id, DatabaseState.Status.ONLINE)
-                                )
-                            )
-                    )
-            )
-        }
+    private val members = List(3) { consensus.newMember(metadata = reporting()) }
     private val leader = members[0]
     private val directory =
         MemberDirectory(
@@ -69,20 +61,36 @@ class LeaderBalancerTest {
         directory.stop()
     }
 
-    /** The balancer of the leader, where every database has the priority tag `us`. */
+    /** What a member reports: [films] in [status]. */
+    private fun reporting(status: DatabaseState.Status = DatabaseState.Status.ONLINE) =
+        mapOf(
+            MemberMetadata.DATABASES to
+                DatabaseStatesCodec.encode(listOf(DatabaseState(films.name, films.id, status)))
+        )
+
+    /** The balancer of the leader, where every database has the priority tag `us` by default. */
     private fun balancer(
-        tags: () -> Map<MemberId, Set<String>>,
+        tags: () -> Map<MemberId, Set<String>> = { emptyMap() },
         log: InternalLog = NullLog.getInstance(),
+        strategy: BalancingStrategy = BalancingStrategy.NO_BALANCING,
+        priorityTag: String? = "us",
+        databases: List<DatabaseRef> = listOf(films),
+        handOver: (DatabaseRef, MemberId, String, Duration) -> Boolean = { _, _, _, _ -> false },
+        /** Counts the looks, each of which ends reading the databases created here. */
+        looks: AtomicInteger = AtomicInteger(),
     ) =
         LeaderBalancer(
             leader,
             directory,
             DatabaseLocations(leader, directory),
-            created = { listOf(films) },
-            databases = { mapOf(films to emptySet()) },
-            handOver = { _, _, _, _ -> false },
-            strategy = { BalancingStrategy.NO_BALANCING },
-            priorityTag = { "us" },
+            created = {
+                looks.incrementAndGet()
+                databases
+            },
+            databases = { databases.associateWith { emptySet() } },
+            handOver = handOver,
+            strategy = { strategy },
+            priorityTag = { priorityTag },
             tags = tags,
             stabilityDelay = Duration.ZERO,
             transferTimeout = Duration.ofSeconds(5),
@@ -129,5 +137,61 @@ class LeaderBalancerTest {
         // While the databases stop, system among them.
         assertThat(balancer.rank(films, listOf(first, second))).containsExactly(second, first)
         assertThat(reads).hasValue(1)
+    }
+
+    @Test
+    fun `a member leading more than its share says once why none of the others takes one over`() {
+        val (_, starting, down) = members
+        starting.metadata = reporting(DatabaseState.Status.STARTING)
+        consensus.crash(down.self.id)
+        directory.refresh()
+        val output = ByteArrayOutputStream()
+        val handedOver = CopyOnWriteArrayList<Pair<DatabaseRef, MemberId>>()
+        val looks = AtomicInteger()
+        val balancer =
+            balancer(
+                log = Log4jLogProvider(output).getLog(LeaderBalancer::class.java),
+                strategy = BalancingStrategy.EQUAL_BALANCING,
+                priorityTag = null,
+                // The leader leads both, the others none.
+                databases = listOf(system, films),
+                handOver = { database, to, _, _ ->
+                    handedOver += database to to
+                    false
+                },
+                looks = looks,
+            )
+        balancer.start()
+        try {
+            val reason =
+                "none that leads fewer can take films over: " +
+                    listOf(
+                            starting.self.id to "reports it STARTING",
+                            down.self.id to "does not answer",
+                        )
+                        .sortedBy { it.first }
+                        .joinToString { (member, why) -> "member $member $why" }
+            await atMost
+                Duration.ofSeconds(10) untilAsserted
+                {
+                    assertThat(output.toString()).contains("Leaders stay uneven", reason)
+                }
+            val logged = looks.get()
+            await atMost Duration.ofSeconds(10) until { looks.get() >= logged + 20 }
+            assertThat(output.toString().lines().filter { "Leaders stay uneven" in it })
+                .describedAs("logged once while the reason holds")
+                .hasSize(1)
+
+            starting.metadata = reporting()
+            directory.refresh()
+
+            await atMost
+                Duration.ofSeconds(10) untilAsserted
+                {
+                    assertThat(handedOver).contains(films to starting.self.id)
+                }
+        } finally {
+            balancer.stop()
+        }
     }
 }
