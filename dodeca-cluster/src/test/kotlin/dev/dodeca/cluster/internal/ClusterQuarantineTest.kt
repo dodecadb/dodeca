@@ -5,7 +5,6 @@ import dev.dodeca.consensus.Role
 import dev.dodeca.core.edition.Quarantines
 import java.nio.file.Files
 import java.nio.file.Path
-import java.util.concurrent.CompletableFuture
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.catchThrowable
 import org.awaitility.kotlin.atMost
@@ -246,10 +245,15 @@ class ClusterQuarantineTest {
         member.quarantine("films", true)
         // The leader alone is no majority of the group, which cannot remove the member meanwhile.
         other.stop()
-        val lifting = CompletableFuture.runAsync {
+
+        val failure = catchThrowable {
             leader.unquarantine(member.serverId, "films", "replaceStateReplaceStore")
         }
 
+        assertThat(failure)
+            .hasMessageContaining("did not remove the copy here")
+            .message()
+            .doesNotContain("..")
         await atMost
             AWAIT untilAsserted
             {
@@ -271,8 +275,11 @@ class ClusterQuarantineTest {
                 }
             }
 
+        // Run again once a majority answers, it joins the group as a new member.
         other.start()
-        lifting.join()
+        cluster.awaitLeader("films") { listOf(leader, other) }
+        leader.unquarantine(member.serverId, "films", "replaceStateReplaceStore")
+
         await atMost
             AWAIT untilAsserted
             {

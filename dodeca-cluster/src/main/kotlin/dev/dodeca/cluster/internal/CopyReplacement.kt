@@ -97,9 +97,9 @@ internal class CopyReplacement(
         } catch (e: ConsensusUnavailableException) {
             throw IllegalStateException(
                 "Database '${id.name()}': its Raft group did not remove the copy here, which " +
-                    "joins it as a new member: ${e.message}. The copy here is deleted and stays " +
-                    "in quarantine; run the operation again once a majority of the database's " +
-                    "primaries answers.",
+                    "joins it as a new member: ${e.message?.removeSuffix(".")}. The copy here is " +
+                    "deleted and stays in quarantine; run the operation again once a majority of " +
+                    "the database's primaries answers.",
                 e,
             )
         }
