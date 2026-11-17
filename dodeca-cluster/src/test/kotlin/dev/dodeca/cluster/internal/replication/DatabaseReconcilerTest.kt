@@ -258,11 +258,13 @@ class DatabaseReconcilerTest {
 
         assertThat(local.copies).isEmpty()
         assertThat(local.registered).doesNotContainKey(films)
+        assertThat(reconciler.deletedInQuarantine).describedAs("reported").containsExactly(films)
         local.quarantines.clear()
 
         reconciler.reconcile()
 
         assertThat(local.copies).containsExactly(otherAddress to films)
+        assertThat(reconciler.deletedInQuarantine).isEmpty()
     }
 
     @Test

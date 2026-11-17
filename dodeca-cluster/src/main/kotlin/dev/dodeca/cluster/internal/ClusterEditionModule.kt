@@ -932,7 +932,8 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
      * This member's databases as it reports them to the others, by the ids of their groups (see
      * [DatabaseGroups]): those it copies from another member, new ones or to catch up, as being
      * copied; new ones that run before their group as starting, or as failed if their group could
-     * not start; whether it knows their leaders; and the mode it hosts each in.
+     * not start; whether it knows their leaders; and the mode it hosts each in. Copies it deleted
+     * in quarantine are reported in quarantine.
      */
     private fun reportedStates(): List<DatabaseState> {
         val catchingUp = replication.catchingUp() + secondaries.catchingUp()
@@ -940,8 +941,9 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
         val starting = replication.starting()
         val failedToStart = replication.failedToStart()
         val led = leaderKnownHere()
+        val registered = databaseStates()
         val states =
-            databaseStates()
+            registered
                 .filter { it.name !in copying }
                 .map {
                     when {
@@ -961,6 +963,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
                         paused = secondaries.paused(it.name),
                     )
                 }
+        val reported = registered.mapTo(HashSet()) { it.name } + copying.keys
         return states +
             copying.map { (name, id) ->
                 DatabaseState(
@@ -970,7 +973,29 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
                     leaderKnown = false,
                     mode = clusterHosting.mode(name),
                 )
-            }
+            } +
+            deletedInQuarantine().filter { it.name !in reported }
+    }
+
+    /**
+     * The copies this member deleted in quarantine, to join their databases' groups as a new member
+     * (see [CopyReplacement]), as quarantined, by the ids of their groups: they are in quarantine
+     * until it is lifted.
+     */
+    private fun deletedInQuarantine(): List<DatabaseState> {
+        if (!::reconciler.isInitialized) return emptyList()
+        return reconciler.deletedInQuarantine.mapNotNull { id ->
+            val uuid = id.databaseId().uuid()
+            val quarantine = quarantines.of(uuid) ?: return@mapNotNull null
+            DatabaseState(
+                id.name(),
+                groups.groupOf(uuid),
+                DatabaseState.Status.QUARANTINED,
+                quarantine.message,
+                leaderKnown = false,
+                mode = clusterHosting.mode(id.name()),
+            )
+        }
     }
 
     /** The names of the replicated databases whose leader this member knows. */

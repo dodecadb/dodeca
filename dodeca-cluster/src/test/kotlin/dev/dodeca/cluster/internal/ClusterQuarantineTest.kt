@@ -259,6 +259,17 @@ class ClusterQuarantineTest {
         // the voter it was, which forgot its votes.
         assertThat(member.quarantines().of(films)).isNotNull()
         assertThat(member.runs("films")).isFalse()
+        val message = member.quarantines().of(films)!!.message
+        await atMost
+            AWAIT untilAsserted
+            {
+                for (asked in listOf(leader, member)) {
+                    assertThat(asked.shown("films").getValue(member.serverId))
+                        .describedAs("on $asked")
+                        .containsEntry("currentStatus", "quarantined")
+                        .containsEntry("statusMessage", message)
+                }
+            }
 
         other.start()
         lifting.join()

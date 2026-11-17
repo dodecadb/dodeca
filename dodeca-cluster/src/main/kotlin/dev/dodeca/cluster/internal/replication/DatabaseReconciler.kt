@@ -363,6 +363,15 @@ internal class DatabaseReconciler(
     var seedReports: Map<UUID, Seed?> = emptyMap()
         private set
 
+    /**
+     * The databases whose copies here this member deleted in quarantine, as it does to join a
+     * database's group as a new member (see `CopyReplacement`), as of the last reconciliation: they
+     * are reported in quarantine until it is lifted.
+     */
+    @Volatile
+    var deletedInQuarantine: Set<NamedDatabaseId> = emptySet()
+        private set
+
     // Used on the reconciler thread only.
     /** The states of the seeds reported, read once each. */
     private val seedStates = HashMap<UUID, Seed?>()
@@ -449,6 +458,11 @@ internal class DatabaseReconciler(
             again = !converge(database) || again
         }
         startRequests.keys.retainAll(desired.mapTo(HashSet()) { it.id.uuid })
+        val registered = databases.registered()
+        deletedInQuarantine =
+            desired.mapNotNullTo(HashSet()) { database ->
+                database.id.takeIf { it !in registered && deletedInQuarantine(it) }
+            }
         return again
     }
 
@@ -641,6 +655,13 @@ internal class DatabaseReconciler(
     private fun trusted(id: NamedDatabaseId): Boolean =
         trusted(id, CopyMode.PRIMARY) || trusted(id, CopyMode.SECONDARY)
 
+    /**
+     * Whether the copy of [id] here, which is not registered, is in quarantine with its store and
+     * group or mark deleted.
+     */
+    private fun deletedInQuarantine(id: NamedDatabaseId): Boolean =
+        id.uuid in databases.quarantined() && !trusted(id)
+
     /** Brings [database] in line with the system graph; returns false to be tried again. */
     private fun converge(database: DesiredDatabase): Boolean {
         val id = database.id
@@ -650,7 +671,7 @@ internal class DatabaseReconciler(
         // and group are deleted, as when it joins as a new member: it must not run the group
         // before its quarantine is lifted.
         if (state?.quarantined == true) return true
-        if (state == null && id.uuid in databases.quarantined() && !trusted(id)) return true
+        if (state == null && deletedInQuarantine(id)) return true
         val placed = database.hosts.isNotEmpty()
         val wanted =
             when (self) {
