@@ -279,8 +279,6 @@ internal class ClusterHarness(
                         ClusterSettings.initialMembers,
                         members.take(size).map { SocketAddress("127.0.0.1", it.raftPort) },
                     )
-                    .set(ClusterSettings.electionTimeoutMin, Duration.ofMillis(300))
-                    .set(ClusterSettings.electionTimeoutMax, Duration.ofMillis(600))
                     // Tests about other things keep their leaders; balancing tests turn it on.
                     .set(ClusterSettings.balancingStrategy, BalancingStrategy.NO_BALANCING)
                     // Members that join host the databases at once; tests of Free servers turn
