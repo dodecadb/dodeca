@@ -341,11 +341,6 @@
           <artifactId>kotlin-maven-plugin</artifactId>
           <version>${kotlin.version}</version>
         </plugin>
-        <plugin>
-          <groupId>com.diffplug.spotless</groupId>
-          <artifactId>spotless-maven-plugin</artifactId>
-          <version>${spotless.version}</version>
-        </plugin>
       </plugins>
     </pluginManagement>
 
@@ -408,6 +403,9 @@
       <plugin>
         <groupId>com.diffplug.spotless</groupId>
         <artifactId>spotless-maven-plugin</artifactId>
+        <!-- Here rather than in pluginManagement: GitHub's dependency graph otherwise reads ktfmt's
+             version below as the plugin's and raises the plugin's old advisories. -->
+        <version>${spotless.version}</version>
         <configuration>
           <kotlin>
             <includes>
