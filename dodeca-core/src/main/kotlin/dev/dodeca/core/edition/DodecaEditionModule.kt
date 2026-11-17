@@ -255,6 +255,7 @@ open class DodecaEditionModule(globalModule: GlobalModule) : CommunityEditionMod
                 ),
                 StorePlacement(globalModule.fileSystem, globalModule.neo4jLayout),
                 quarantines,
+                globalModule.fileSystem,
                 globalModule.logService.internalLogProvider,
                 beforeStart = { id -> hosting?.beforeStart(id) },
             )

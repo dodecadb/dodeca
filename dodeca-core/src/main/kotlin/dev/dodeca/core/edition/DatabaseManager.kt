@@ -15,6 +15,8 @@
  * 2026-11-11: no longer starts a database again: Neo4j 2026 cannot, and the file watcher of
  * DodecaDatabaseContextFactory watches again instead. A database whose start failed gets a new
  * database object, which a later start starts afresh.
+ * 2026-11-17: before a database starts, cuts its transaction log where a power loss left a torn
+ * entry after its last checkpoint that Neo4j does not recover.
  *
  * This program is free software: you can redistribute it and/or modify it under the terms of the
  * GNU General Public License as published by the Free Software Foundation, either version 3 of the
@@ -31,17 +33,21 @@ import org.neo4j.dbms.database.DatabaseOperationCounts
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
 import org.neo4j.dbms.database.UnableToStartDatabaseException
+import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.kernel.database.Database
 import org.neo4j.kernel.database.NamedDatabaseId
 import org.neo4j.kernel.lifecycle.Lifecycle
 import org.neo4j.kernel.lifecycle.LifecycleAdapter
+import org.neo4j.kernel.recovery.CorruptedLogsTruncator
 import org.neo4j.logging.InternalLogProvider
 
 /**
  * This server's databases: creates, starts, stops and drops them, and keeps the created ones in
  * [repository]. A database that fails to start or stop is marked failed rather than throwing. A
  * database whose files [placement] left half-moved, as by an interrupted restore, fails to start. A
- * database in [quarantines] is not started at all.
+ * database in [quarantines] is not started at all. Before a database starts, its transaction log,
+ * on [fileSystem], is cut where a power loss left a torn entry that Neo4j does not recover (see
+ * [TornLogTail]).
  *
  * Neo4j cannot start a database object again once its start failed: the object keeps parts of the
  * failed start, so that the next one starts the transaction logs twice, or finds two of a part and
@@ -57,11 +63,13 @@ class DatabaseManager(
     private val counts: DatabaseOperationCounts.Counter,
     private val placement: StorePlacement,
     private val quarantines: Quarantines,
+    fileSystem: FileSystemAbstraction,
     logProvider: InternalLogProvider,
     /** Called before a database starts, each time; an exception fails the start. */
     private val beforeStart: (NamedDatabaseId) -> Unit = {},
 ) {
     private val log = logProvider.getLog(javaClass)
+    private val tornLogTail = TornLogTail(fileSystem)
 
     /** Registers [id]; starting it creates its store if there is none. */
     @Synchronized
@@ -103,6 +111,19 @@ class DatabaseManager(
     private fun start(database: Database): Boolean {
         synchronized(database) {
             if (quarantined(database.namedDatabaseId)) return false
+            if (!database.isStarted) {
+                tornLogTail.cut(database)?.let { position ->
+                    log.warn(
+                        "Cut the transaction log of '%s' at %s, its last checkpoint: a power loss " +
+                            "left only the beginning of the entry after it, which Neo4j would " +
+                            "not recover. The bytes cut are kept in a %s-*.zip file in the " +
+                            "database's directory.",
+                        database.namedDatabaseId,
+                        position,
+                        CorruptedLogsTruncator.CORRUPTED_TX_LOGS_BASE_NAME,
+                    )
+                }
+            }
             database.start()
         }
         return true

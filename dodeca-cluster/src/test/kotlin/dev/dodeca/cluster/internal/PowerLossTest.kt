@@ -24,11 +24,14 @@ import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.pagecache.PageCache
 import org.neo4j.io.pagecache.tracing.DatabaseFlushEvent
 import org.neo4j.kernel.BinarySupportedKernelVersions
+import org.neo4j.kernel.impl.transaction.CompleteBatchRepresentation
 import org.neo4j.memory.EmptyMemoryTracker
 import org.neo4j.storageengine.api.StorageEngineFactory
 import org.neo4j.storageengine.api.TransactionIdStore
 import org.neo4j.wal.LogEntryCursor
 import org.neo4j.wal.LogVersionBridge.NO_MORE_CHANNELS
+import org.neo4j.wal.LogicalTransactionStore
+import org.neo4j.wal.WALService
 import org.neo4j.wal.checkpoint.CheckPointer
 import org.neo4j.wal.checkpoint.SimpleTriggerInfo
 import org.neo4j.wal.entry.VersionAwareLogEntryReader
@@ -208,6 +211,74 @@ class PowerLossTest {
 
         cluster.awaitSameData(acknowledged, "after the hole")
         cluster.assertConsistentStores()
+    }
+
+    @Test
+    fun `a member whose log kept only the start of the entry after its checkpoint truncates it`() {
+        val systems = ConcurrentHashMap<Int, PowerLossFileSystem>()
+        val cluster = powerLossCluster(systems)
+        val leader = cluster.awaitLeader()
+        val victim = cluster.running().first { it != leader }
+        val fs = checkNotNull(systems[victim.index])
+        val acknowledged = mutableSetOf<Long>()
+        fun write(ids: LongRange) {
+            for (id in ids) {
+                leader.database().executeTransactionally("CREATE (:Written {id: $id})")
+                acknowledged += id
+            }
+        }
+        write(1L..5L)
+        cluster.awaitSameData(acknowledged, "before the checkpoint")
+        victim.checkpoint()
+        write(6L..20L)
+        cluster.awaitSameData(acknowledged, "after the checkpoint")
+
+        // The first entry after the checkpoint, a transaction's start, kept up to the time it was
+        // written: the rest of it, its append index among them, reads as zeros.
+        fs.cut()
+        runCatching { victim.stop() }
+        assertThat(fs.keepUnforcedBytes(ClusterHarness.DEFAULT_DATABASE, START_KEPT)).isPositive()
+        victim.start()
+        write(21L..25L)
+        assertThat(Files.readString(victim.home.resolve("logs/debug.log")))
+            .contains("Cut the transaction log of 'DatabaseId{")
+        assertThat(
+                Files.list(victim.home.resolve("data/databases/neo4j")).use { files ->
+                    files.toList()
+                }
+            )
+            .describedAs("the bytes cut, kept")
+            .anyMatch { it.fileName.toString().startsWith("corrupted-neostore.transaction.db") }
+
+        cluster.awaitSameData(acknowledged, "after the torn start")
+        assertThat(victim.loggedTransactions())
+            .describedAs("the transactions in the log of $victim")
+            .isEqualTo(leader.loggedTransactions())
+
+        // Another power loss before the next checkpoint, losing nothing: recovery reads the log
+        // from that checkpoint again.
+        checkNotNull(systems[victim.index]).cut()
+        runCatching { victim.stop() }
+        victim.start()
+        write(26L..30L)
+
+        cluster.awaitSameData(acknowledged, "after the second power loss")
+        cluster.assertConsistentStores()
+    }
+
+    /** The ids of the transactions in this member's log of the default database, in order. */
+    private fun ClusterHarness.Member.loggedTransactions(): List<Long> {
+        val resolver = database().dependencyResolver
+        val logFile = resolver.resolveDependency(WALService::class.java).logFile
+        val store = resolver.resolveDependency(LogicalTransactionStore::class.java)
+        val lowest = logFile.matchedFiles.minOf(logFile::getLogVersion)
+        val ids = mutableListOf<Long>()
+        store.getCommandBatches(logFile.extractHeader(lowest).startPosition).use { cursor ->
+            while (cursor.next()) {
+                ids += (cursor.get() as CompleteBatchRepresentation).commitEntry().txId
+            }
+        }
+        return ids
     }
 
     @Test
@@ -409,6 +480,11 @@ class PowerLossTest {
 
         /** Bytes lost after a checkpoint: less than the 1 KiB Neo4j checks beyond a log's end. */
         const val HOLE = 600L
+        /**
+         * The bytes of a transaction's start entry before its time written ends: its version and
+         * type, and that time.
+         */
+        const val START_KEPT = 10L
 
         /** A log entry's version and type, before its command. */
         const val ENTRY_HEADER = 2

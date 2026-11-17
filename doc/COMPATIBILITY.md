@@ -770,6 +770,16 @@ Dodeca's own are named `*.dodeca.cluster.*`.
   is truncated and logged instead of stopping the start. Set
   `server.dodeca.cluster.single_fsync=false` to force both logs at every
   commit, as Neo4j does on its own.
+- **Torn log entry after a checkpoint.** A power loss can leave only the
+  beginning of the first transaction log entry after a database's last
+  checkpoint, the rest of it zeros, which Neo4j does not recover: it would
+  append after the torn entry, which readers of the log, such as differential
+  backups, then fail on, and once the database stopped without a checkpoint,
+  its recovery too. Dodeca cuts the log there before the database starts, with
+  or without clustering, as recovery cuts a torn tail: the entry belongs to a
+  transaction that did not commit. The debug log says so, and the bytes cut are
+  kept in a `corrupted-neostore.transaction.db-*.zip` file in the database's
+  directory, as recovery keeps those it cuts.
 - **Raft log retention and catch-up.** Raft snapshots follow Neo4j
   checkpoints (`db.checkpoint.interval.*`): each member keeps its Raft log from
   its second-to-last checkpoint on. A member that was down for less than about

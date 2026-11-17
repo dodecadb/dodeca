@@ -118,6 +118,17 @@ internal class PowerLossFileSystem(
             zero(forced, minOf(forced + count, written))
         }
 
+    /**
+     * Keeps the first [count] bytes that each transaction log of [database] wrote after its last
+     * force and loses the rest, as a power loss leaves a log whose first unforced sector reached
+     * the disk and the next did not. Returns how many bytes it zeroed. Call after [cut], once the
+     * DBMS stopped.
+     */
+    fun keepUnforcedBytes(database: String, count: Long): Long =
+        damage({ isTransactionLog(it, database) }) { forced, written, zero ->
+            zero(minOf(forced + count, written), written)
+        }
+
     /** The newest transaction log of [database] this file system wrote, if any. */
     fun newestTransactionLog(database: String): Path? =
         logs.keys
