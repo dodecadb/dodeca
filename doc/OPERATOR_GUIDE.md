@@ -1138,6 +1138,14 @@ on it gets.
   leader loses its majority.
 - **The leader refuses the user**, for example one suspended meanwhile:
   `Neo.ClientError.Security.Forbidden`.
+- **The member stops**, for example in a rolling restart. It forwards no new
+  transactions: they fail with `Neo.TransientError.General.DatabaseUnavailable`,
+  and drivers retry managed transactions through another member. It waits for
+  the transactions it already forwards to end, up to
+  `db.shutdown_transaction_end_timeout` (default 10 seconds), as a database
+  that stops waits for its own, and their clients can still commit them
+  meanwhile. The member's debug log says how many it waits for. It then ends
+  the others.
 
 ### Connections
 

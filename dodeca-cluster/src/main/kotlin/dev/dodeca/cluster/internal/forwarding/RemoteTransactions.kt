@@ -16,8 +16,10 @@ import java.util.concurrent.CompletionException
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.ReentrantLock
 import java.util.function.Consumer
 import javax.net.ssl.SSLContext
+import kotlin.concurrent.withLock
 import org.neo4j.bolt.connection.AuthToken
 import org.neo4j.bolt.connection.AuthTokens
 import org.neo4j.bolt.connection.BoltAgent
@@ -72,6 +74,10 @@ internal class RemoteTransactions(
             )
     private val pools = ConcurrentHashMap<SocketAddress, PooledBoltConnectionSource>()
     private val open = ConcurrentHashMap<RemoteTransaction, Forwarded>()
+    /** Held to wait in [drain] for the transactions of [open] to end. */
+    private val ending = ReentrantLock()
+    private val anEnd = ending.newCondition()
+    private val log = logProvider.getLog(RemoteTransactions::class.java)
     @Volatile private var closed = false
 
     /**
@@ -116,7 +122,7 @@ internal class RemoteTransactions(
                 bookmarkManager,
                 terminationCallback,
                 LeaderFailures(address),
-                { open.remove(it) },
+                ::ended,
             )
         open[transaction] =
             Forwarded(
@@ -219,6 +225,39 @@ internal class RemoteTransactions(
     fun retain(addresses: Set<SocketAddress>) {
         for (address in pools.keys - addresses) {
             pools.remove(address)?.close()
+        }
+    }
+
+    private fun ended(transaction: RemoteTransaction) {
+        open.remove(transaction)
+        ending.withLock { anEnd.signalAll() }
+    }
+
+    /**
+     * Takes no more transactions, and waits for those it runs to end, up to
+     * `db.shutdown_transaction_end_timeout`, as a database that stops waits for its own: Neo4j
+     * keeps the connections of open transactions open meanwhile, so that their clients can still
+     * commit them.
+     */
+    fun drain() {
+        closed = true
+        if (open.isEmpty()) return
+        val timeout = config.get(GraphDatabaseSettings.shutdown_transaction_end_timeout)
+        log.info("Waiting up to %s for %d forwarded transactions to end", timeout, open.size)
+        val deadline = System.nanoTime() + timeout.toNanos()
+        ending.withLock {
+            while (open.isNotEmpty()) {
+                val left = deadline - System.nanoTime()
+                if (left <= 0) {
+                    log.info(
+                        "%d forwarded transactions did not end within %s, ending them",
+                        open.size,
+                        timeout,
+                    )
+                    return
+                }
+                anEnd.awaitNanos(left)
+            }
         }
     }
 

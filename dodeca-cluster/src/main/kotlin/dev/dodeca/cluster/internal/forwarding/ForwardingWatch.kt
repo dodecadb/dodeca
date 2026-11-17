@@ -8,8 +8,8 @@ import org.neo4j.kernel.lifecycle.LifecycleAdapter
 
 /**
  * Gives up on forwarded transactions whose member stopped leading their database, or whose database
- * has had no leader for [leaderlessFor], several times a second; closes the connections of [remote]
- * when this member stops.
+ * has had no leader for [leaderlessFor], several times a second; when this member stops, lets the
+ * transactions of [remote] end, as long as they may, then closes its connections.
  */
 internal class ForwardingWatch(
     private val locations: ForwardingLocations,
@@ -32,6 +32,8 @@ internal class ForwardingWatch(
     }
 
     override fun stop() {
+        // While transactions end, those whose leader goes away are still given up on.
+        remote.drain()
         scheduler?.shutdownNow()
         scheduler = null
         remote.close()

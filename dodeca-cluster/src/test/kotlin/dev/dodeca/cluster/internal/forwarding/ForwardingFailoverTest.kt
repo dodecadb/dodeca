@@ -1,8 +1,10 @@
 package dev.dodeca.cluster.internal.forwarding
 
 import dev.dodeca.cluster.internal.ClusterHarness
+import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -132,10 +134,11 @@ class ForwardingFailoverTest {
             holding.set(follower)
             val stopping = thread { follower.stop() }
             try {
+                // The member waits for the transactions it forwards; once this one ends, it goes on
+                // stopping, and the connection stays open for the next.
+                eventually { assertThat(follower.logged(FORWARDED_WAIT)).isTrue() }
+                busy.close()
                 assertThat(held.await(1, TimeUnit.MINUTES)).isTrue()
-                // The member ended the transaction as it stopped the database; the connection
-                // stays open for the next.
-                runCatching { busy.close() }
                 val failure =
                     catchThrowableOfType(Neo4jException::class.java) {
                         driver.session(SessionConfig.forDatabase("neo4j")).use { session ->
@@ -150,5 +153,77 @@ class ForwardingFailoverTest {
                 stopping.join()
             }
         }
+    }
+
+    @Test
+    fun `a write a member forwards as it begins to stop still commits`() {
+        val cluster =
+            ClusterHarness(
+                    root,
+                    3,
+                    settings =
+                        mapOf(
+                            BoltConnector.enabled to true,
+                            GraphDatabaseSettings.routing_default_router to
+                                GraphDatabaseSettings.RoutingMode.SERVER,
+                        ),
+                )
+                .also { harness = it }
+        cluster.start()
+        val leader = cluster.awaitLeader()
+        val follower = cluster.members.first { it != leader }
+        leader.database().executeTransactionally("CREATE (:Lock)")
+
+        GraphDatabase.driver("neo4j://${follower.boltAddress()}", AuthTokens.none()).use { driver ->
+            driver.session(SessionConfig.forDatabase("neo4j")).use { session ->
+                val transaction = session.beginTransaction()
+                // The leader holds the lock the write waits for, so that the write is still on its
+                // way when the member that forwards it begins to stop.
+                leader.database().beginTx().use { lock ->
+                    lock.execute("MATCH (l:Lock) SET l.holder = 'test'").resultAsString()
+                    val writing = CompletableFuture.runAsync {
+                        transaction
+                            .run("MATCH (l:Lock) SET l.holder = 'client' CREATE (:Order {id: 1})")
+                            .consume()
+                    }
+                    eventually {
+                        assertThat(leader.blockedOnLock()).isEqualTo(1)
+                    }
+                    val stopping = thread { follower.stop() }
+                    try {
+                        // Until the member waits for the writes it forwards or, if it does not,
+                        // has ended this one.
+                        eventually {
+                            assertThat(writing.isDone || follower.logged(FORWARDED_WAIT)).isTrue()
+                        }
+                        lock.commit()
+                        writing.join()
+                        transaction.commit()
+                    } finally {
+                        stopping.join()
+                    }
+                }
+            }
+        }
+        for (member in cluster.running()) eventually { assertThat(member.orders()).isEqualTo(1) }
+    }
+
+    /** Whether this member's debug log says [text], also in a line it is still writing. */
+    private fun ClusterHarness.Member.logged(text: String): Boolean =
+        text in Files.readString(home.resolve("logs/debug.log"))
+
+    /** Transactions on this member's default database that wait for a lock on a `:Lock` node. */
+    private fun ClusterHarness.Member.blockedOnLock(): Long =
+        database("system").executeTransactionally(
+            "SHOW TRANSACTIONS YIELD database, currentQuery, status " +
+                "WHERE database = 'neo4j' AND currentQuery STARTS WITH 'MATCH (l:Lock)' " +
+                "AND status STARTS WITH 'Blocked' RETURN count(*) AS c",
+            emptyMap(),
+        ) {
+            it.next()["c"] as Long
+        }
+
+    private companion object {
+        const val FORWARDED_WAIT = "forwarded transactions to end"
     }
 }
