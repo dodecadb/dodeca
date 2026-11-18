@@ -6,7 +6,8 @@ import dev.dodeca.consensus.DatabaseRef
 import dev.dodeca.consensus.GroupMembership
 import dev.dodeca.consensus.Member
 import dev.dodeca.consensus.MemberId
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * The servers of the cluster: the voting members of the `system` group, and the system secondaries
@@ -15,8 +16,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * A member that runs the `system` group knows its voters from its own view of the group; a system
  * secondary, which does not, from what the voters report ([reportedVoters]). The recorded
  * secondaries are read from this member's system graph ([recorded]), again only once
- * [systemChanged] tells that it changed; while it cannot be read, as while `system` stops, they are
- * as last read.
+ * [systemChanged] tells that it changed: a caller gets them as read after the last change it could
+ * see, never as read before it, also while another caller reads them; while they cannot be read, as
+ * while `system` stops, [secondaries] are as last read.
  *
  * @property pullsSystem whether this member hosts `system` as a secondary, or joins as one.
  * @property reportedVoters the voters of `system` as they report them, or null while none is known.
@@ -34,12 +36,16 @@ class ClusterServers(
     private val systemDatabase: DatabaseRef
         get() = groups.system
 
-    @Volatile private var secondaries: List<Member> = emptyList()
-    private val stale = AtomicBoolean(true)
+    /** The recorded secondaries as read once `system` had changed [changes] times. */
+    private class Read(val changes: Long, val secondaries: List<Member>)
+
+    /** How many times `system` changed, as [systemChanged] counts. */
+    private val changes = AtomicLong()
+    private val last = AtomicReference(Read(-1, emptyList()))
 
     /** Has the recorded secondaries read again when next asked, as `system` changed. */
     fun systemChanged() {
-        stale.set(true)
+        changes.incrementAndGet()
     }
 
     /**
@@ -68,17 +74,32 @@ class ClusterServers(
             }
         }
 
-    /** The system secondaries that the system graph records, as this member last read them. */
-    fun secondaries(): List<Member> {
-        if (stale.compareAndSet(true, false)) {
-            try {
-                secondaries = recorded()
-            } catch (e: Exception) {
-                stale.set(true)
-                if (e is InterruptedException) Thread.currentThread().interrupt()
-            }
+    /**
+     * The system secondaries that the system graph records, as read since `system` last changed;
+     * while they cannot be read, as last read.
+     */
+    fun secondaries(): List<Member> =
+        try {
+            currentSecondaries()
+        } catch (e: Exception) {
+            if (e is InterruptedException) Thread.currentThread().interrupt()
+            last.get().secondaries
         }
-        return secondaries
+
+    /**
+     * The system secondaries that the system graph records, as read since `system` last changed:
+     * read again if it changed since they were last read. A read that began before a later change
+     * does not replace one after it.
+     *
+     * @throws Exception as [recorded] does, while `system` cannot be read here.
+     */
+    fun currentSecondaries(): List<Member> {
+        val changed = changes.get()
+        val known = last.get()
+        if (known.changes >= changed) return known.secondaries
+        val read = Read(changed, recorded())
+        last.accumulateAndGet(read) { kept, new -> if (new.changes > kept.changes) new else kept }
+        return read.secondaries
     }
 
     /**

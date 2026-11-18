@@ -9,7 +9,9 @@ import dev.dodeca.consensus.MemberId
 import dev.dodeca.consensus.fake.InMemoryConsensus
 import dev.dodeca.consensus.fake.RecordingStateMachine
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
@@ -85,6 +87,93 @@ class ClusterServersTest {
 
         assertThat(servers.secondaries()).containsExactly(secondary)
         readable = true
+        assertThat(servers.secondaries()).containsExactly(secondary)
+    }
+
+    @Test
+    fun `a caller does not get the secondaries of before a change while another reads them again`() {
+        val reading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val reads = AtomicInteger()
+        val servers =
+            ClusterServers(
+                logs[0],
+                groups,
+                recorded = {
+                    when (reads.incrementAndGet()) {
+                        1 -> emptyList()
+                        2 -> {
+                            reading.countDown()
+                            release.await()
+                            listOf(secondary)
+                        }
+                        else -> listOf(secondary)
+                    }
+                },
+            )
+        assertThat(servers.secondaries()).isEmpty()
+        servers.systemChanged()
+        var other: List<Member>? = null
+        val reader = thread { other = servers.secondaries() }
+        reading.await()
+
+        assertThat(servers.secondaries()).containsExactly(secondary)
+        release.countDown()
+        reader.join()
+        assertThat(other).containsExactly(secondary)
+    }
+
+    @Test
+    fun `a read under way when system changes does not replace the read after the change`() {
+        val reading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val reads = AtomicInteger()
+        val servers =
+            ClusterServers(
+                logs[0],
+                groups,
+                recorded = {
+                    if (reads.incrementAndGet() == 1) {
+                        reading.countDown()
+                        release.await()
+                        emptyList()
+                    } else {
+                        listOf(secondary)
+                    }
+                },
+            )
+        val reader = thread { servers.secondaries() }
+        reading.await()
+        servers.systemChanged()
+        assertThat(servers.secondaries()).containsExactly(secondary)
+
+        release.countDown()
+        reader.join()
+
+        assertThat(servers.secondaries()).containsExactly(secondary)
+        assertThat(reads.get()).isEqualTo(2)
+    }
+
+    @Test
+    fun `the current secondaries fail while system cannot be read`() {
+        var readable = true
+        val servers =
+            ClusterServers(
+                logs[0],
+                groups,
+                recorded = {
+                    check(readable) { "system is not running" }
+                    listOf(secondary)
+                },
+            )
+        assertThat(servers.currentSecondaries()).containsExactly(secondary)
+        readable = false
+
+        assertThat(servers.currentSecondaries()).containsExactly(secondary)
+        servers.systemChanged()
+        assertThatThrownBy { servers.currentSecondaries() }
+            .isInstanceOf(IllegalStateException::class.java)
+            .hasMessage("system is not running")
         assertThat(servers.secondaries()).containsExactly(secondary)
     }
 

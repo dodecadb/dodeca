@@ -12,9 +12,15 @@ import java.io.IOException
 import java.net.UnknownHostException
 import java.time.Duration
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.awaitility.kotlin.atMost
+import org.awaitility.kotlin.await
+import org.awaitility.kotlin.untilAsserted
+import org.awaitility.kotlin.withPollInterval
 import org.junit.jupiter.api.Test
 import org.neo4j.logging.NullLog
 
@@ -663,6 +669,102 @@ class ClusterServiceTest {
             .isInstanceOf(UpgradeException::class.java)
             .hasMessageContaining("Member ${logs[2].self} did not tell")
         assertThat(clusterLevel.level).isEqualTo(1)
+    }
+
+    /** A system secondary's hosting of `system`: it pulls a store it has, and leads nothing. */
+    private open class PullingHosting : SystemHosting {
+        override val pulls = true
+
+        override fun pulled() = true
+
+        override fun copyPulled(source: HostPort) = error("no copy")
+
+        override fun dropped() = false
+
+        override fun admit(member: Member) = error("not the leader")
+
+        override fun forget(member: MemberId) = error("not the leader")
+
+        override fun promote(member: MemberId) = error("not the leader")
+
+        override fun promoted() = false
+
+        override fun turnSecondary() = error("no turn")
+
+        override fun turnPrimary() = error("no turn")
+    }
+
+    /**
+     * A started system secondary that waits to be admitted, and its servers, which read the
+     * secondaries that its system graph records from [recorded], given the secondary itself.
+     */
+    private fun systemSecondary(
+        hosting: SystemHosting = PullingHosting(),
+        recorded: (Member) -> List<Member>,
+    ): Pair<ClusterService, ClusterServers> {
+        val member = consensus.newMember(metadata = metadata)
+        val servers =
+            ClusterServers(
+                member,
+                groups,
+                recorded = { recorded(member.self) },
+                pullsSystem = { true },
+            )
+        val service =
+            ClusterService(
+                member,
+                groups,
+                ClusterFormation(member, addresses, "5.26.27", log, sleep = {}),
+                FakeStores(existed = true),
+                InMemoryMembershipStore(),
+                log,
+                metadata = { ownMetadata },
+                servers = servers,
+                systemMode = CopyMode.SECONDARY,
+                systemHosting = hosting,
+            )
+        service.start()
+        assertThat(service.state).isEqualTo(MemberState.JOINING)
+        return service to servers
+    }
+
+    private fun eventually(assertion: () -> Unit) {
+        await withPollInterval
+            Duration.ofMillis(10) atMost
+            Duration.ofSeconds(30) untilAsserted
+            {
+                assertion()
+            }
+    }
+
+    @Test
+    fun `a system secondary admitted while another reader reads the secondaries sees that it was`() {
+        val reading = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val admitted = AtomicBoolean(false)
+        val (service, servers) =
+            systemSecondary { self ->
+                if (Thread.currentThread().name == "reader") {
+                    reading.countDown()
+                    release.await()
+                }
+                if (admitted.get()) listOf(self) else emptyList()
+            }
+        try {
+            // The pull that brings the admission: another reader, as the pulls' own, reads first.
+            admitted.set(true)
+            servers.systemChanged()
+            val reader = thread(name = "reader") { servers.secondaries() }
+            reading.await()
+            service.systemChanged()
+
+            eventually { assertThat(service.state).isEqualTo(MemberState.MEMBER) }
+            release.countDown()
+            reader.join()
+        } finally {
+            release.countDown()
+            service.stop()
+        }
     }
 
     @Test
