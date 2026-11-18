@@ -90,9 +90,14 @@ internal class PhasedSource private constructor(val backups: Path) {
             database.executeTransactionally("MATCH (p:Person) WHERE p.id % 11 = 0 DETACH DELETE p")
         }
 
-        /** What [server] holds, as queries that use every index find it. */
-        fun state(server: CommunityServer): Map<String, Any?> =
-            CommunityServer.summary(server) +
+        /**
+         * What [server] holds, as queries that use every index find it, once its indexes are
+         * online: an index created just before, as a phase's, populates in the background, here and
+         * in a database restored from a backup that has it.
+         */
+        fun state(server: CommunityServer): Map<String, Any?> {
+            server.database().executeTransactionally("CALL db.awaitIndexes(60)")
+            return CommunityServer.summary(server) +
                 server
                     .rows(
                         """
@@ -110,5 +115,6 @@ internal class PhasedSource private constructor(val backups: Path) {
                             "RETURN collect(name + ' ' + state) AS phaseIndexes"
                     )
                     .single()
+        }
     }
 }
