@@ -60,8 +60,12 @@ class CopiedProfilesTest {
                 )
                 .also { harness = it }
         cluster.start()
+        // Repeatable, as awaitWrite wants, in time linear in the persons: a MERGE of each, without
+        // an index, finds each by reading all those before it, which took more than the minute
+        // awaitWrite waits on CI's runners.
         cluster.awaitWrite(
-            "UNWIND range(1, $PERSONS) AS i MERGE (p:Person {id: i}) SET p.name = 'person ' + i"
+            "MATCH (p:Person) WITH count(p) AS persons WHERE persons = 0 " +
+                "UNWIND range(1, $PERSONS) AS i CREATE (:Person {id: i, name: 'person ' + i})"
         )
         eventually {
             for (member in cluster.members) {
