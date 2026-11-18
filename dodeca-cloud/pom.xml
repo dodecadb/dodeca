@@ -156,14 +156,22 @@
             <groupId>org.apache.maven.plugins</groupId>
             <artifactId>maven-failsafe-plugin</artifactId>
             <configuration>
+              <!-- Testcontainers logs through slf4j-simple, as in dodeca-it, so that a container
+                   that does not start says why: Neo4j's SLF4J provider, which SLF4J would pick
+                   otherwise, writes nothing in the tests. -->
               <systemPropertyVariables>
                 <s3mock.image>${s3mock.image}</s3mock.image>
                 <fake-gcs.image>${fake-gcs.image}</fake-gcs.image>
                 <azurite.image>${azurite.image}</azurite.image>
+                <slf4j.provider>org.slf4j.simple.SimpleServiceProvider</slf4j.provider>
               </systemPropertyVariables>
+              <!-- As the unit tests: a test that runs for more than 10 minutes fails with a dump
+                   of every thread. -->
               <properties>
                 <configurationParameters>
                   junit.platform.discovery.issue.severity.critical=WARNING
+                  junit.jupiter.execution.timeout.default=10m
+                  junit.jupiter.execution.timeout.threaddump.enabled=true
                 </configurationParameters>
               </properties>
               <trimStackTrace>false</trimStackTrace>
