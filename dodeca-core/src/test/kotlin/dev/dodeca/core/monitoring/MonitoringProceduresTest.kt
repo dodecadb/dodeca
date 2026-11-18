@@ -350,8 +350,12 @@ class MonitoringProceduresTest {
 
             val groups = server.rows("CALL dbms.scheduler.groups()", SYSTEM)
 
-            assertThat(groups)
-                .contains(mapOf("group" to Group.FILE_IO_HELPER.groupName(), "threads" to 1L))
+            // At least the job's thread: the group's pool may hold others, as one that ran a job of
+            // Neo4j's.
+            assertThat(groups).anySatisfy { group ->
+                assertThat(group["group"]).isEqualTo(Group.FILE_IO_HELPER.groupName())
+                assertThat(group["threads"] as Long).isPositive()
+            }
         } finally {
             release.countDown()
             job.waitTermination()
