@@ -84,14 +84,19 @@ abstract class ObjectStoreContract {
 
         val upload = store.upload(container, prefix + "big.bin")
         if (store.uploadConcurrency > 1) {
+            // On the threads that send parts, as uploads do: Azure's SDK, on the JDK's HTTP
+            // client, needs a thread of the common pool to finish a request, which parts that
+            // block all of them, as on a runner with four processors, leave it none of. Waited
+            // for interruptibly, as the tests' timeout wants.
             parts.indices
                 .reversed()
                 .map { index ->
-                    CompletableFuture.runAsync {
-                        upload.part(index, ByteBuffer.wrap(parts[index]))
-                    }
+                    CompletableFuture.runAsync(
+                        { upload.part(index, ByteBuffer.wrap(parts[index])) },
+                        Transfers.executor,
+                    )
                 }
-                .forEach { it.join() }
+                .forEach { it.get() }
         } else {
             parts.forEachIndexed { index, part -> upload.part(index, ByteBuffer.wrap(part)) }
         }
