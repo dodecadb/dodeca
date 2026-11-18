@@ -14,6 +14,7 @@ import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -763,6 +764,71 @@ class ClusterServiceTest {
             reader.join()
         } finally {
             release.countDown()
+            service.stop()
+        }
+    }
+
+    @Test
+    fun `a system secondary that could not read its admission looks again after its next pull`() {
+        val failed = CountDownLatch(1)
+        val failures = AtomicInteger(1)
+        val (service, servers) =
+            systemSecondary { self ->
+                if (failures.getAndDecrement() > 0) {
+                    failed.countDown()
+                    error("the system database cannot be read now")
+                }
+                listOf(self)
+            }
+        try {
+            servers.systemChanged()
+            service.systemChanged()
+            failed.await()
+
+            service.pulledSystem()
+
+            eventually { assertThat(service.state).isEqualTo(MemberState.MEMBER) }
+        } finally {
+            service.stop()
+        }
+    }
+
+    @Test
+    fun `a system secondary that could not read whether it was dropped looks again after its next pull`() {
+        val failed = CountDownLatch(1)
+        val failures = AtomicInteger(1)
+        val dropped = AtomicBoolean(false)
+        val checked = AtomicInteger()
+        val hosting =
+            object : PullingHosting() {
+                override fun dropped(): Boolean {
+                    if (!dropped.get()) {
+                        checked.incrementAndGet()
+                        return false
+                    }
+                    if (failures.getAndDecrement() > 0) {
+                        failed.countDown()
+                        error("the system database cannot be read now")
+                    }
+                    return true
+                }
+            }
+        val (service, servers) = systemSecondary(hosting) { self -> listOf(self) }
+        try {
+            servers.systemChanged()
+            service.systemChanged()
+            eventually { assertThat(service.state).isEqualTo(MemberState.MEMBER) }
+            // Once the look that admitted it is done.
+            eventually { assertThat(checked.get()).isEqualTo(1) }
+            dropped.set(true)
+            servers.systemChanged()
+            service.systemChanged()
+            failed.await()
+
+            service.pulledSystem()
+
+            eventually { assertThat(service.state).isEqualTo(MemberState.REMOVED) }
+        } finally {
             service.stop()
         }
     }

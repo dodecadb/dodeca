@@ -22,7 +22,11 @@ interface SystemHosting {
     /** Copies `system` from the member at [source] as a secondary's store, in place of any here. */
     fun copyPulled(source: HostPort)
 
-    /** Whether the system graph here records this member dropped; false while it cannot tell. */
+    /**
+     * Whether the system graph here records this member dropped.
+     *
+     * @throws Exception while the system graph here cannot be read.
+     */
     fun dropped(): Boolean
 
     /**
@@ -48,7 +52,11 @@ interface SystemHosting {
      */
     fun promote(member: MemberId)
 
-    /** Whether the system graph here asks this member, a system secondary, to turn primary. */
+    /**
+     * Whether the system graph here asks this member, a system secondary, to turn primary.
+     *
+     * @throws Exception while the system graph here cannot be read.
+     */
     fun promoted(): Boolean
 
     /**

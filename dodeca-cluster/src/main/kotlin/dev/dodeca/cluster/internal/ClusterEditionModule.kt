@@ -482,6 +482,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
                 metrics = metrics,
                 logProvider = logService.internalLogProvider,
                 afterApply = { id -> if (id.isSystemDatabase) systemApplied() },
+                afterPull = { id -> if (id.isSystemDatabase) cluster.pulledSystem() },
                 replacing = { id, replace ->
                     if (id.isSystemDatabase) replicationService.replacingSystem(replace)
                     else replace()
@@ -756,13 +757,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
             override fun copyPulled(source: HostPort) =
                 secondaries.copy(source, NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
 
-            override fun dropped(): Boolean =
-                try {
-                    systemGraph.dropped(memberId)
-                } catch (e: Exception) {
-                    if (e is InterruptedException) Thread.currentThread().interrupt()
-                    false
-                }
+            override fun dropped(): Boolean = systemGraph.dropped(memberId)
 
             override fun admit(member: Member) {
                 if (!replication.systemWritable) {
@@ -800,13 +795,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
                 }
             }
 
-            override fun promoted(): Boolean =
-                try {
-                    systemGraph.promoted(memberId)
-                } catch (e: Exception) {
-                    if (e is InterruptedException) Thread.currentThread().interrupt()
-                    false
-                }
+            override fun promoted(): Boolean = systemGraph.promoted(memberId)
 
             override fun turnSecondary() = turnSystemSecondary()
 

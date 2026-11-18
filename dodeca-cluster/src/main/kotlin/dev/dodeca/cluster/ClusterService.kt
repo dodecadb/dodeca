@@ -119,6 +119,14 @@ class ClusterService(
     private val levelRefreshRequested = AtomicBoolean(false)
     private val followRequested = AtomicBoolean(false)
 
+    /**
+     * Whether a system secondary looks again after its next pull of `system` whether it was
+     * admitted, dropped or asked to turn primary: from the start of each look until one completes.
+     * A look that could not read the system graph, as while `system` stops or is replaced by a
+     * copy, would otherwise wait for the next change of `system`.
+     */
+    @Volatile private var lookAgain = true
+
     /** Turns `system` here between primary and secondary, one change at a time. */
     private val modeChanges: ScheduledExecutorService =
         Executors.newSingleThreadScheduledExecutor { runnable ->
@@ -470,6 +478,16 @@ class ClusterService(
     }
 
     /**
+     * Looks again, in the background, after a pull of `system` on a system secondary: while it
+     * waits to be admitted, or when its last look could not read the system graph. It then learns
+     * of a change that a look missed, as one that could not read the system graph as the change was
+     * applied, at its next pull.
+     */
+    fun pulledSystem() {
+        if (state == MemberState.JOINING || lookAgain) systemChanged()
+    }
+
+    /**
      * Tells why this member, which hosts `system` in [mode], does not host it as configured: the
      * mode changes once `addMember` admits it again.
      */
@@ -570,11 +588,28 @@ class ClusterService(
 
     /**
      * A system secondary is a member once the system graph records it, and removed once it records
-     * it dropped. Configured as a primary, it turns primary once the system graph asks it to.
+     * it dropped. Configured as a primary, it turns primary once the system graph asks it to. A
+     * look that fails, as while the system graph cannot be read, is tried again after the next pull
+     * ([pulledSystem]).
      */
     @Synchronized
     private fun followPulled(hosting: SystemHosting) {
-        if (state == MemberState.JOINING && servers.secondaries().any { it.id == self.id }) {
+        lookAgain = true
+        try {
+            lookPulled(hosting)
+            lookAgain = false
+        } catch (e: Exception) {
+            if (e is InterruptedException) Thread.currentThread().interrupt()
+            userLog.debug(
+                "Reading whether this server was admitted, dropped or asked to turn primary " +
+                    "failed; it reads it again after its next pull of the system database: %s",
+                e.toString(),
+            )
+        }
+    }
+
+    private fun lookPulled(hosting: SystemHosting) {
+        if (state == MemberState.JOINING && servers.currentSecondaries().any { it.id == self.id }) {
             remember { it.copy(state = MemberState.MEMBER) }
             userLog.info(
                 "This server is now one of the cluster's servers, a secondary of the system " +

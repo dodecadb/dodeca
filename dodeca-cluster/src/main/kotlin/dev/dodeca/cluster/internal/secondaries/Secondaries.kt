@@ -65,6 +65,8 @@ internal fun interface StagedStore {
  * @property primaries the consensus addresses of the primaries of a database, its leader first.
  * @property afterApply runs after a secondary applied pulled transactions, or was replaced by a
  *   copy, on the thread that did.
+ * @property afterPull runs after each pull of a secondary that pulls on, whatever it brought, on
+ *   the thread that pulled.
  * @property replacing runs the stop, move and start that replace a secondary with a copy, as
  *   `system`'s must run while no reader of it does.
  */
@@ -81,6 +83,7 @@ internal class Secondaries(
     private val logProvider: InternalLogProvider,
     private val retryDelay: Duration = Duration.ofSeconds(2),
     private val afterApply: (NamedDatabaseId) -> Unit = {},
+    private val afterPull: (NamedDatabaseId) -> Unit = {},
     private val replacing: (NamedDatabaseId, () -> Unit) -> Unit = { _, replace -> replace() },
     private val groups: DatabaseGroups = DatabaseGroups(),
 ) : DatabaseEventListenerAdapter() {
@@ -419,6 +422,7 @@ internal class Secondaries(
             var next: Duration? = null
             try {
                 next = pull(this)
+                if (next != null) afterPull(secondary.namedDatabaseId)
             } finally {
                 synchronized(this) {
                     running = false
