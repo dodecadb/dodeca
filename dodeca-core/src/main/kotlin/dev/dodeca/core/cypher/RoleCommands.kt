@@ -13,6 +13,7 @@
  */
 package dev.dodeca.core.cypher
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.security.AuthRule
 import dev.dodeca.core.security.BuiltInRoles
 import dev.dodeca.core.security.PrivilegeRecords
@@ -272,7 +273,11 @@ internal class RoleCommands(engine: ExecutionEngine, dependencies: DependencyRes
             ParameterTransformer.apply { tx, _, _ ->
                 VirtualValues.map(
                     arrayOf(rows),
-                    arrayOf(roleCommands(tx, withUsers, withRules, plan.showAll())),
+                    arrayOf(
+                        SystemGraphReads.again {
+                            roleCommands(tx, withUsers, withRules, plan.showAll())
+                        }
+                    ),
                 )
             },
             SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),

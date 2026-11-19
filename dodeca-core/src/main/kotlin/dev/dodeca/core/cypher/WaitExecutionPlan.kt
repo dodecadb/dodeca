@@ -1,5 +1,6 @@
 package dev.dodeca.core.cypher
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.edition.DatabaseProgress
 import dev.dodeca.core.edition.ServerProgress
 import dev.dodeca.core.edition.WantedDatabase
@@ -103,7 +104,8 @@ internal class WaitExecutionPlan(
             if (version == CypherVersion.Cypher5) previousNotifications
             else {
                 val names =
-                    ServerRecords.records(transaction.transaction()).mapValues { it.value.name }
+                    SystemGraphReads.again { ServerRecords.records(transaction.transaction()) }
+                        .mapValues { it.value.name }
                 notifications(servers, names).fold(previousNotifications) { all, notification ->
                     all.incl(notification)
                 }
@@ -148,51 +150,6 @@ internal class WaitExecutionPlan(
             )
     }
 
-    /** The database of the local alias [name], or [name] itself. */
-    private fun target(transaction: Transaction, name: String): String =
-        transaction
-            .findNodes(
-                TopologyGraphDbmsModel.DATABASE_NAME_LABEL,
-                TopologyGraphDbmsModel.NAME_PROPERTY,
-                name,
-            )
-            .use { nodes ->
-                nodes
-                    .asSequence()
-                    .filter {
-                        it.getProperty(TopologyGraphDbmsModel.NAMESPACE_PROPERTY, null) ==
-                            TopologyGraphDbmsModel.DEFAULT_NAMESPACE &&
-                            it.getProperty(TopologyGraphDbmsModel.PRIMARY_PROPERTY, true) == false
-                    }
-                    .mapNotNull {
-                        it.getSingleRelationship(
-                                TopologyGraphDbmsModel.TARGETS_RELATIONSHIP,
-                                Direction.OUTGOING,
-                            )
-                            ?.endNode
-                            ?.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY) as String?
-                    }
-                    .firstOrNull()
-            } ?: name
-
-    /** What the committed system graph asks of the database [name]. */
-    private fun wanted(transaction: Transaction, name: String): WantedDatabase {
-        val database =
-            transaction.findNode(
-                TopologyGraphDbmsModel.DATABASE_LABEL,
-                TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
-                name,
-            ) ?: return WantedDatabase(name, null, false)
-        return WantedDatabase(
-            name,
-            UUID.fromString(
-                database.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY) as String
-            ),
-            database.getProperty(TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY) ==
-                TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
-        )
-    }
-
     internal companion object {
         /**
          * The notifications of Neo4j Enterprise's Cypher 25 for [servers], each named as [names]
@@ -212,6 +169,67 @@ internal class WaitExecutionPlan(
                     if (server.available) WaitServerCatchingUp(name, server.address)
                     else WaitServerUnavailable(name)
             }
+        }
+
+        /**
+         * The database of the local alias [name], or [name] itself, read again while what it reads
+         * is deleted meanwhile ([SystemGraphReads.again]).
+         */
+        internal fun target(transaction: Transaction, name: String): String =
+            SystemGraphReads.again { aliased(transaction, name) } ?: name
+
+        private fun aliased(transaction: Transaction, name: String): String? =
+            transaction
+                .findNodes(
+                    TopologyGraphDbmsModel.DATABASE_NAME_LABEL,
+                    TopologyGraphDbmsModel.NAME_PROPERTY,
+                    name,
+                )
+                .use { nodes ->
+                    nodes
+                        .asSequence()
+                        .filter {
+                            it.getProperty(TopologyGraphDbmsModel.NAMESPACE_PROPERTY, null) ==
+                                TopologyGraphDbmsModel.DEFAULT_NAMESPACE &&
+                                it.getProperty(TopologyGraphDbmsModel.PRIMARY_PROPERTY, true) ==
+                                    false
+                        }
+                        .mapNotNull {
+                            it.getSingleRelationship(
+                                    TopologyGraphDbmsModel.TARGETS_RELATIONSHIP,
+                                    Direction.OUTGOING,
+                                )
+                                ?.endNode
+                                ?.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY)
+                                as String?
+                        }
+                        .firstOrNull()
+                }
+
+        /**
+         * What the committed system graph asks of the database [name], read again while its node is
+         * deleted meanwhile ([SystemGraphReads.again]): it is then dropped.
+         */
+        internal fun wanted(transaction: Transaction, name: String): WantedDatabase =
+            SystemGraphReads.again {
+                wantedNow(transaction, name)
+            }
+
+        private fun wantedNow(transaction: Transaction, name: String): WantedDatabase {
+            val database =
+                transaction.findNode(
+                    TopologyGraphDbmsModel.DATABASE_LABEL,
+                    TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
+                    name,
+                ) ?: return WantedDatabase(name, null, false)
+            return WantedDatabase(
+                name,
+                UUID.fromString(
+                    database.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY) as String
+                ),
+                database.getProperty(TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY) ==
+                    TopologyGraphDbmsModel.DatabaseStatus.ONLINE.statusName(),
+            )
         }
 
         /** The parameter holding the rows, named so as not to clash with the user's. */

@@ -9,9 +9,10 @@ import org.neo4j.graphdb.ResourceIterator
 import org.neo4j.graphdb.Transaction
 
 /**
- * [graph], where the first [times] scans of the nodes with [label] each meet a node that
- * [vanishing] picks deleted by another transaction just after they found it, as a DROP applied
- * meanwhile does under read committed: reading it then fails as a read of the system graph does.
+ * [graph], where the first [times] scans of the nodes with [label], or lookups of one, each meet a
+ * node that [vanishing] picks deleted by another transaction just after they found it, as a DROP
+ * applied meanwhile does under read committed: reading it then fails as a read of the system graph
+ * does.
  */
 class VanishingGraph(
     private val graph: GraphDatabaseService,
@@ -28,6 +29,15 @@ class VanishingGraph(
         Scanning(graph.beginTx(timeout, unit))
 
     private inner class Scanning(private val tx: Transaction) : Transaction by tx {
+        override fun findNode(label: Label, key: String, value: Any): Node? {
+            val node = tx.findNode(label, key, value) ?: return null
+            if (label == this@VanishingGraph.label && deleted.get() < times && vanishing(node)) {
+                delete(node.elementId)
+                deleted.incrementAndGet()
+            }
+            return node
+        }
+
         override fun findNodes(label: Label): ResourceIterator<Node> {
             val nodes = tx.findNodes(label)
             if (label != this@VanishingGraph.label) return nodes

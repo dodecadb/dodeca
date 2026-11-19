@@ -54,6 +54,17 @@ class SystemGraphReadsTest {
     }
 
     @Test
+    fun `a read that meets a node deleted meanwhile reads again in the same transaction, without it`() {
+        // As commands read, in the transaction Neo4j runs them in, which reads committed data.
+        val graph = VanishingGraph(server.database(), ITEM) { it.getProperty("name") == "b" }
+
+        val names = graph.beginTx().use { tx -> SystemGraphReads.again { names(tx) } }
+
+        assertThat(names).containsExactly("a", "c")
+        assertThat(graph.deleted.get()).isEqualTo(1)
+    }
+
+    @Test
     fun `a read that meets a deleted node each time fails after the last attempt`() {
         val graph =
             VanishingGraph(server.database(), ITEM, times = SystemGraphReads.ATTEMPTS) { true }

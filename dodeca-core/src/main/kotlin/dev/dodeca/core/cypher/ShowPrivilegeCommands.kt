@@ -1,5 +1,6 @@
 package dev.dodeca.core.cypher
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.security.PrivilegeText
 import dev.dodeca.core.security.SecurityGraph
 import dev.dodeca.core.security.SupportedPrivileges
@@ -354,7 +355,7 @@ internal class ShowPrivilegeCommands(
                     tx,
                     securityContext,
                     params ->
-                    val graph = SecurityGraph.read(tx, log)
+                    val graph = SystemGraphReads.again { SecurityGraph.read(tx, log) }
                     val sorted = rows(graph, securityContext, params).sortedWith(ordering(order))
                     VirtualValues.map(
                         arrayOf(ROWS),

@@ -16,6 +16,7 @@
  */
 package dev.dodeca.core.cypher
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.security.BuiltInRoles
 import dev.dodeca.core.security.PrivilegeRecords
 import org.neo4j.common.DependencyResolver
@@ -263,14 +264,15 @@ internal class UserCommands(
             Option.apply(compile(plan.source(), context)),
             SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
             ParameterTransformer.apply { tx, securityContext, _ ->
-                userSecurity
-                    .showUsers(
-                        tx,
-                        plan.withAuth(),
-                        UserTags.visible(securityContext),
-                        plan.asCommands(),
-                        true,
-                    )
+                SystemGraphReads.again {
+                        userSecurity.showUsers(
+                            tx,
+                            plan.withAuth(),
+                            UserTags.visible(securityContext),
+                            plan.asCommands(),
+                            true,
+                        )
+                    }
                     .toMapValue()
             },
             SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),

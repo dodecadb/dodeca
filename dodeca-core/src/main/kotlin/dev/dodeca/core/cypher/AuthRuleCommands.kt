@@ -1,5 +1,6 @@
 package dev.dodeca.core.cypher
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.security.AuthRule
 import dev.dodeca.core.security.PrivilegeRecords
 import org.neo4j.common.DependencyResolver
@@ -159,7 +160,10 @@ internal class AuthRuleCommands(engine: ExecutionEngine, dependencies: Dependenc
             Option.apply(compile(plan.source(), context)),
             SystemCommandExecutionPlan.`$lessinit$greater$default$7`(),
             ParameterTransformer.apply { tx, securityContext, _ ->
-                VirtualValues.map(arrayOf(rows), arrayOf(rules(tx, securityContext)))
+                VirtualValues.map(
+                    arrayOf(rows),
+                    arrayOf(SystemGraphReads.again { rules(tx, securityContext) }),
+                )
             },
             SystemCommandExecutionPlan.`$lessinit$greater$default$9`(),
             context.runtimeContext().cypherVersion(),
