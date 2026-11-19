@@ -59,6 +59,23 @@ jobs:
             echo "prerelease=$prerelease"
             echo "latest=$latest"
           } >> "$GITHUB_OUTPUT"
+      # GitHub shows every line break in a release's notes, so a paragraph or a list item
+      # wrapped over several lines shows broken where it wraps. Checked on the notes as GitHub
+      # renders them.
+      - name: Check the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git for-each-ref --format='%(contents:body)' "refs/tags/$TAG" > "$RUNNER_TEMP/notes.md"
+          gh api markdown -f mode=gfm -f context="$GITHUB_REPOSITORY" \
+            -F text=@"$RUNNER_TEMP/notes.md" > "$RUNNER_TEMP/notes.html"
+          if grep -q '<br>' "$RUNNER_TEMP/notes.html"; then
+            echo "::error::The notes of $TAG break lines that GitHub would show broken: write each paragraph and each list item on one line"
+            echo "GitHub would break the line after each of these:"
+            grep '<br>' "$RUNNER_TEMP/notes.html" | sed 's/<[^>]*>//g'
+            exit 1
+          fi
 
   ci:
     name: CI
@@ -199,8 +216,7 @@ jobs:
             echo "For Neo4j Community $NEO4J, and only that version:"
             echo
             echo "- the jar, \`$jar\`, goes into Neo4j's \`lib/\`;"
-            echo "- the image, \`$IMAGE:$VERSION\`, is Neo4j's official Community image with the jar:"
-            echo "  \`docker pull $IMAGE:$VERSION\`."
+            echo "- the image, \`$IMAGE:$VERSION\`, is Neo4j's official Community image with the jar: \`docker pull $IMAGE:$VERSION\`."
             echo
             echo "To check that a download was built by this repository's release workflow:"
             echo

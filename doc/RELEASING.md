@@ -100,11 +100,13 @@ bundles a new library or a library's license changed.
 
    ## Upgrading
 
-   From which releases a rolling upgrade works, or that every member must be
-   shut down (a new Neo4j version); whether finishUpgrade raises the format
-   level; settings or procedures renamed or removed; anything to do before or
-   after.
+   From which releases a rolling upgrade works, or that every member must be shut down (a new Neo4j version); whether finishUpgrade raises the format level; settings or procedures renamed or removed; anything to do before or after.
    ```
+
+   Write each paragraph and each list item on one line, however long: GitHub
+   shows every line break in a release's notes, so a paragraph wrapped over
+   several lines shows broken where it wraps. The workflow refuses notes that
+   would.
 
    An agent can draft them from `git log v0.1.0..main`; read and correct
    them before tagging.
@@ -119,9 +121,10 @@ bundles a new library or a library's license changed.
    `--cleanup=whitespace` keeps the notes' `##` headings, which git otherwise
    drops as comments.
 4. Follow the Release workflow in the repository's Actions tab. It refuses a
-   tag that is not `v` and a version, or that carries no notes, at once. It
-   then runs CI on the tagged commit, packaging that version (about half an
-   hour), pushes the image, and publishes the GitHub Release.
+   tag that is not `v` and a version, or that carries no notes or notes with
+   wrapped lines, at once. It then runs CI on the tagged commit, packaging
+   that version (about half an hour), pushes the image, and publishes the
+   GitHub Release.
 5. Set `main` to the next version's snapshot, normally the next minor
    version, and commit it as "Start 0.3.0":
 
