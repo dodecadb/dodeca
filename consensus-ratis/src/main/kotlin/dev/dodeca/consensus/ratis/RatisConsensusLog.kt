@@ -585,6 +585,10 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
      * longest election timeout for them: a handover that takes longer saves no time over the
      * election that the other members hold for a group not handed over. [leaderPlacement] ranks
      * them together, so that they spread as they would one after the other.
+     *
+     * Waits as long for the handovers under way of groups it no longer leads too: a leader that
+     * stepped down as asked completes its handover once the new leader's first append reaches it,
+     * which closing would prevent, and the handover would go unrecorded.
      */
     private fun handOverBeforeClosing(raftServer: RaftServer) {
         val leading =
@@ -597,34 +601,38 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
                         ?.takeIf { it.info.leads() }
                         ?.let { database to it }
                 }
-        if (leading.isEmpty()) return
         val pending =
-            try {
-                val answering =
-                    answering(leading.flatMap { (_, division) -> otherVoters(division) })
-                val candidates =
-                    leading
-                        .sortedBy { (database, _) -> database.name }
-                        .associateTo(LinkedHashMap()) { (database, division) ->
-                            database to candidates(division, answering)
-                        }
-                val ranked = runCatching {
-                    leaderPlacement.rankTogether(candidates)
-                }
-                    .getOrDefault(emptyMap())
-                leading.mapNotNull { (database, division) ->
-                    val others = candidates.getValue(database)
-                    runCatching {
-                        database to handOver(division, database, ranked(ranked[database], others))
+            if (leading.isEmpty()) emptyList()
+            else
+                try {
+                    val answering =
+                        answering(leading.flatMap { (_, division) -> otherVoters(division) })
+                    val candidates =
+                        leading
+                            .sortedBy { (database, _) -> database.name }
+                            .associateTo(LinkedHashMap()) { (database, division) ->
+                                database to candidates(division, answering)
+                            }
+                    val ranked = runCatching {
+                        leaderPlacement.rankTogether(candidates)
                     }
-                        .getOrNull()
+                        .getOrDefault(emptyMap())
+                    leading.mapNotNull { (database, division) ->
+                        val others = candidates.getValue(database)
+                        runCatching {
+                            database to
+                                handOver(division, database, ranked(ranked[database], others))
+                        }
+                            .getOrNull()
+                    }
+                } catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                    return
                 }
-            } catch (_: InterruptedException) {
-                Thread.currentThread().interrupt()
-                return
-            }
+        val underWay = pending.map { it.second } + handovers.values
+        if (underWay.isEmpty()) return
         try {
-            CompletableFuture.allOf(*pending.map { it.second }.toTypedArray())
+            CompletableFuture.allOf(*underWay.toTypedArray())
                 .get(config.electionTimeoutMax.toMillis(), TimeUnit.MILLISECONDS)
         } catch (_: TimeoutException) {
             // Logged below.
