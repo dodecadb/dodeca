@@ -1,6 +1,7 @@
 package dev.dodeca.core.edition
 
 import dev.dodeca.core.SystemGraphReads
+import java.io.IOException
 import java.util.UUID
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
@@ -30,7 +31,9 @@ import org.neo4j.logging.InternalLogProvider
  *
  * A database in [quarantines] is left as it is, stopped, until its quarantine is lifted, which
  * follows the system graph again; one that is dropped goes with its quarantine. The quarantines of
- * databases that the system graph no longer names are forgotten.
+ * databases that the system graph no longer names are forgotten, or logged as failing to be.
+ *
+ * Following never fails the commit it follows, which committed: a failure is logged.
  */
 internal class StandaloneDatabases(
     private val manager: DatabaseManager,
@@ -77,7 +80,18 @@ internal class StandaloneDatabases(
         }
 
     override fun afterCommit(data: TransactionData, state: Any?, system: GraphDatabaseService) {
-        if (started && touchesDatabases(data)) follow()
+        if (!started || !touchesDatabases(data)) return
+        // Neo4j hands what a listener throws after the commit to the committer, as if its
+        // transaction had failed.
+        try {
+            follow()
+        } catch (e: Exception) {
+            log.error(
+                "Failed to have the databases follow a change of the system graph; they follow it " +
+                    "at its next change to them, or when the server starts.",
+                e,
+            )
+        }
     }
 
     private fun touchesDatabases(data: TransactionData): Boolean =
@@ -100,11 +114,19 @@ internal class StandaloneDatabases(
             .filter { !it.isSystemDatabase && it != default && it !in desired }
             .forEach { id -> attempt("drop", id) { manager.dropDatabase(id) } }
         requested.keys.retainAll(desired.keys)
-        quarantines.retainOnly(
-            (desired.keys + repository.registeredDatabases().keys).mapTo(HashSet()) {
-                it.databaseId().uuid()
-            }
-        )
+        try {
+            quarantines.retainOnly(
+                (desired.keys + repository.registeredDatabases().keys).mapTo(HashSet()) {
+                    it.databaseId().uuid()
+                }
+            )
+        } catch (e: IOException) {
+            log.error(
+                "Failed to forget the quarantines of the databases that are gone; this is tried " +
+                    "again each time the databases follow the system graph.",
+                e,
+            )
+        }
         desired.forEach { (id, wanted) -> attempt("follow", id) { follow(id, wanted) } }
     }
 

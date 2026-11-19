@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
+import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.io.fs.DefaultFileSystemAbstraction
 import org.neo4j.io.fs.FileSystemAbstraction
 import org.neo4j.io.fs.watcher.FileWatcher
@@ -289,6 +290,47 @@ class StandaloneDatabasesTest {
 
         assertThat(statuses()).containsEntry("films", "online").containsEntry("series", "online")
         assertThat(films()).isZero()
+    }
+
+    @Test
+    fun `commands succeed, and databases follow them, while the quarantines cannot be written`() {
+        server.administer("CREATE DATABASE films")
+        server.rows("CYPHER 5 CALL dbms.quarantineDatabase('films', true)")
+        // As on a full disk: the quarantine file cannot be replaced, so the quarantine of films
+        // cannot be forgotten once it is dropped.
+        val quarantines = server.home.resolve("data").resolve(Quarantines.FILE_NAME)
+        val blocked =
+            Files.createDirectories(quarantines.resolveSibling("${quarantines.fileName}.tmp"))
+
+        server.administer("DROP DATABASE films")
+        server.administer("CREATE DATABASE series")
+
+        assertThat(statuses()).doesNotContainKey("films").containsEntry("series", "online")
+        assertThat(Files.readString(quarantines)).isNotEmpty()
+        assertThat(server.debugEntries()).anyMatch {
+            it.level == "ERROR" && it.message.contains("Failed to forget the quarantines")
+        }
+
+        Files.delete(blocked)
+        server.administer("CREATE DATABASE books")
+
+        assertThat(Files.readString(quarantines)).isEmpty()
+    }
+
+    @Test
+    fun `a command succeeds although following it fails`() {
+        // As a system graph the databases cannot follow: a database whose id is not one.
+        server.database(StandaloneServer.SYSTEM).beginTx().use { tx ->
+            tx.createNode(TopologyGraphDbmsModel.DATABASE_LABEL).apply {
+                setProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, "broken")
+                setProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY, "not an id")
+            }
+            tx.commit()
+        }
+
+        assertThat(server.debugEntries()).anyMatch {
+            it.level == "ERROR" && it.message.contains("Failed to have the databases follow")
+        }
     }
 
     @Test
