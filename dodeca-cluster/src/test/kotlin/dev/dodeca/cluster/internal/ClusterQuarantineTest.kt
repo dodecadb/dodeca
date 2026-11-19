@@ -42,8 +42,11 @@ class ClusterQuarantineTest {
                 write("films")
             }
 
-    private fun ClusterHarness.administer(cypher: String) {
-        awaitLeader("system").database("system").executeTransactionally(cypher)
+    private fun ClusterHarness.administer(
+        cypher: String,
+        among: () -> List<ClusterHarness.Member> = ::running,
+    ) {
+        awaitLeader("system", among).database("system").executeTransactionally(cypher)
     }
 
     private fun ClusterHarness.write(
@@ -368,8 +371,9 @@ class ClusterQuarantineTest {
         val message = member.quarantine("films", true)["result"]
         member.quarantine("system", true)
         assertThat(member.runs("system")).isFalse()
-        // The others administer the cluster.
-        cluster.administer("CREATE DATABASE books")
+        // The others administer the cluster, once one of them took over the leadership of system
+        // if the member led it.
+        cluster.administer("CREATE DATABASE books") { cluster.running().filter { it != member } }
 
         member.stop()
         member.start()
