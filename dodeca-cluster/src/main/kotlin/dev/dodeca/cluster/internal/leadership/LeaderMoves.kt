@@ -70,16 +70,41 @@ internal enum class MoveReason(val text: String) {
 internal object LeaderMoves {
     /**
      * [candidates] in the order they take a leadership over: those that carry [tag] first, then
-     * fewest databases led, then by id.
+     * fewest databases led, counting those [planned] to go to them, then by id.
      */
     fun rank(
         view: LeadershipView,
         candidates: Collection<MemberId>,
         tag: String? = null,
+        planned: Map<MemberId, Int> = emptyMap(),
     ): List<MemberId> =
         candidates.sortedWith(
-            compareBy<MemberId> { !view.carries(it, tag) }.thenBy { view.led(it) }.thenBy { it }
+            compareBy<MemberId> { !view.carries(it, tag) }
+                .thenBy { view.led(it) + (planned[it] ?: 0) }
+                .thenBy { it }
         )
+
+    /**
+     * The candidates of each database of [handOvers] that could lead it, in the order they take its
+     * leadership over ([rank]), for hand-overs that go together: each as if those before it had
+     * gone to their first candidate, so that they spread as they would one after the other.
+     */
+    fun rankTogether(
+        view: LeadershipView,
+        handOvers: Map<DatabaseRef, Collection<MemberId>>,
+    ): Map<DatabaseRef, List<MemberId>> {
+        val planned = HashMap<MemberId, Int>()
+        return handOvers.mapValues { (database, candidates) ->
+            val leadership = view.databases.firstOrNull { it.database == database }
+            rank(
+                    view,
+                    candidates.filter { it in leadership?.eligible.orEmpty() },
+                    leadership?.priorityTag,
+                    planned,
+                )
+                .also { ranked -> ranked.firstOrNull()?.let { planned.merge(it, 1, Int::plus) } }
+        }
+    }
 
     /**
      * The databases that [self] leads although they are read-only on it, each with the eligible

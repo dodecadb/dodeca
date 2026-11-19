@@ -468,7 +468,9 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val database = stateMachine.database
         val handedTo =
             try {
-                handOver(division, database, answering(otherVoters(division))).get()
+                val others = candidates(division, answering(otherVoters(division)))
+                val ranked = runCatching { leaderPlacement.rank(database, others) }.getOrNull()
+                handOver(division, database, ranked(ranked, others)).get()
             } catch (_: InterruptedException) {
                 // Closing, which waits for the handover itself.
                 Thread.currentThread().interrupt()
@@ -488,23 +490,18 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     }
 
     /**
-     * Transfers the leadership of [division]'s group to the first of its other voting members, in
-     * the order [leaderPlacement] ranks them, that is [answering] and takes it, or joins the
-     * handover of the group under way. Completes with that member, or with null if none took it.
+     * Transfers the leadership of [division]'s group to the first of [candidates] that takes it, or
+     * joins the handover of the group under way. Completes with that member, or with null if none
+     * took it.
      */
     private fun handOver(
         division: RaftServer.Division,
         database: DatabaseRef,
-        answering: Set<MemberId>,
+        candidates: List<MemberId>,
     ): CompletableFuture<MemberId?> {
         handovers[database.id]?.let {
             return it
         }
-        val others = otherVoters(division).map { it.id }
-        val candidates =
-            (leaderPlacement.rank(database, others).filter { it in others } + others)
-                .distinct()
-                .filter { it in answering }
         val handover = CompletableFuture<MemberId?>()
         handovers.putIfAbsent(database.id, handover)?.let {
             return it
@@ -530,6 +527,16 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             }
         return handover
     }
+
+    /** The other voting members of [division]'s group that are [answering]. */
+    private fun candidates(
+        division: RaftServer.Division,
+        answering: Set<MemberId>,
+    ): List<MemberId> = otherVoters(division).map { it.id }.filter { it in answering }
+
+    /** [candidates] in the order [ranked] gives, those it left out last. */
+    private fun ranked(ranked: List<MemberId>?, candidates: List<MemberId>): List<MemberId> =
+        (ranked.orEmpty().filter { it in candidates } + candidates).distinct()
 
     /** The voting members of [division]'s group other than this one. */
     private fun otherVoters(division: RaftServer.Division): List<Member> =
@@ -576,7 +583,8 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
      * and their handovers on the maintenance thread, one after the other, may be under way or still
      * waiting their turn. All at once, to the members that answer a probe, waiting up to the
      * longest election timeout for them: a handover that takes longer saves no time over the
-     * election that the other members hold for a group not handed over.
+     * election that the other members hold for a group not handed over. [leaderPlacement] ranks
+     * them together, so that they spread as they would one after the other.
      */
     private fun handOverBeforeClosing(raftServer: RaftServer) {
         val leading =
@@ -594,8 +602,22 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             try {
                 val answering =
                     answering(leading.flatMap { (_, division) -> otherVoters(division) })
+                val candidates =
+                    leading
+                        .sortedBy { (database, _) -> database.name }
+                        .associateTo(LinkedHashMap()) { (database, division) ->
+                            database to candidates(division, answering)
+                        }
+                val ranked = runCatching {
+                    leaderPlacement.rankTogether(candidates)
+                }
+                    .getOrDefault(emptyMap())
                 leading.mapNotNull { (database, division) ->
-                    runCatching { database to handOver(division, database, answering) }.getOrNull()
+                    val others = candidates.getValue(database)
+                    runCatching {
+                        database to handOver(division, database, ranked(ranked[database], others))
+                    }
+                        .getOrNull()
                 }
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()

@@ -143,15 +143,14 @@ internal class LeaderBalancer(
      * system graph. A member with the tag that did not get the leadership gets it at the next look
      * of the new leader.
      */
-    override fun rank(database: DatabaseRef, candidates: List<MemberId>): List<MemberId> {
-        val view = view(created().associateWith { emptySet() }) { lastTags }
-        val leadership = view.databases.firstOrNull { it.database == database }
-        return LeaderMoves.rank(
-            view,
-            candidates.filter { it in leadership?.eligible.orEmpty() },
-            leadership?.priorityTag,
-        )
-    }
+    override fun rank(database: DatabaseRef, candidates: List<MemberId>): List<MemberId> =
+        rankTogether(mapOf(database to candidates)).getValue(database)
+
+    /** As [rank], for hand-overs that go together, so that they spread. */
+    override fun rankTogether(
+        groups: Map<DatabaseRef, List<MemberId>>
+    ): Map<DatabaseRef, List<MemberId>> =
+        LeaderMoves.rankTogether(view(created().associateWith { emptySet() }) { lastTags }, groups)
 
     /**
      * Who leads the cluster's databases and who could, as this member sees it now. Keeps the server

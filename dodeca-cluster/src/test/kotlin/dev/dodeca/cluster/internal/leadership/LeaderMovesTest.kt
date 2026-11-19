@@ -144,6 +144,21 @@ class LeaderMovesTest {
         )
 
     @Test
+    fun `hand-overs that go together spread as they would one after the other`() {
+        // a stops, leading four databases; b leads two, c one.
+        val leaders = databases.zip(listOf(a, a, a, a, b, b, c, null)).toMap()
+        val handedOver = databases.take(4)
+
+        val ranked =
+            LeaderMoves.rankTogether(
+                view(leaders, up = setOf(b, c)),
+                handedOver.associateWithTo(LinkedHashMap()) { listOf(b, c) },
+            )
+
+        assertThat(handedOver.map { ranked.getValue(it).first() }).containsExactly(c, b, c, b)
+    }
+
+    @Test
     fun `a database with a priority tag goes to an eligible member that carries it, fewest led first`() {
         val leaders = databases.associateWith { if (it == databases[4]) b else a }
         val view = prioritized(view(leaders), listOf(databases[1], databases[2]), setOf(b, c))

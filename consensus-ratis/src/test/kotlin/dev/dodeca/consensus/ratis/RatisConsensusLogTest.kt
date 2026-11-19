@@ -1109,48 +1109,52 @@ class RatisConsensusLogTest {
                 .isEqualTo(1)
         }
 
+    /**
+     * The group of the cluster's database and four more, each led by [leader], as a server leads
+     * several databases.
+     */
+    private fun RatisTestCluster.groupsLedBy(leader: RatisTestCluster.Node): List<DatabaseRef> {
+        val members = nodes.map { it.consensus.self }
+        val groups =
+            listOf(database) +
+                (1..4)
+                    .map { DatabaseRef("db$it", UUID.randomUUID()) }
+                    .onEach { group ->
+                        nodes.forEach {
+                            it.consensus.startGroup(group, RecordingStateMachine(), members)
+                        }
+                    }
+        for (group in groups) {
+            await atMost
+                RatisTestCluster.AWAIT untilAsserted
+                {
+                    val current =
+                        nodes.map { it.consensus.status(group).leader }.distinct().singleOrNull()
+                    assertThat(current).isNotNull()
+                    if (current != leader.id) {
+                        runBlocking {
+                            node(current!!)
+                                .consensus
+                                .transferLeadership(
+                                    group,
+                                    leader.id,
+                                    "a test",
+                                    Duration.ofSeconds(5),
+                                )
+                        }
+                    }
+                    assertThat(leader.consensus.role(group)).isEqualTo(Role.Leader)
+                }
+        }
+        return groups
+    }
+
     @Test
     fun `a leader that closes just after its groups detach hands each over before it closes`() =
         runBlocking<Unit> {
             val cluster = formCluster()
             val leader = cluster.awaitLeader()
-            // More groups led by the same member, as a server leads several databases.
-            val members = cluster.nodes.map { it.consensus.self }
-            val groups =
-                listOf(cluster.database) +
-                    (1..4)
-                        .map { DatabaseRef("db$it", UUID.randomUUID()) }
-                        .onEach { group ->
-                            cluster.nodes.forEach {
-                                it.consensus.startGroup(group, RecordingStateMachine(), members)
-                            }
-                        }
-            for (group in groups) {
-                await atMost
-                    RatisTestCluster.AWAIT untilAsserted
-                    {
-                        val current =
-                            cluster.nodes
-                                .map { it.consensus.status(group).leader }
-                                .distinct()
-                                .singleOrNull()
-                        assertThat(current).isNotNull()
-                        if (current != leader.id) {
-                            runBlocking {
-                                cluster
-                                    .node(current!!)
-                                    .consensus
-                                    .transferLeadership(
-                                        group,
-                                        leader.id,
-                                        "a test",
-                                        Duration.ofSeconds(5),
-                                    )
-                            }
-                        }
-                        assertThat(leader.consensus.role(group)).isEqualTo(Role.Leader)
-                    }
-            }
+            val groups = cluster.groupsLedBy(leader)
 
             LogCapture().use { log ->
                 // As a server stops: its databases stop, then its consensus closes.
@@ -1161,6 +1165,52 @@ class RatisConsensusLogTest {
                 assertThat(groups).allSatisfy { group ->
                     assertThat(lines).anySatisfy { line ->
                         assertThat(line).contains("Transferred leadership of $group to ")
+                    }
+                }
+            }
+        }
+
+    @Test
+    fun `a leader that closes with groups led detached ranks their handovers together`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            val groups = cluster.groupsLedBy(leader)
+            val (first, second) = cluster.nodes.filter { it != leader }.map { it.id }
+            val together = CompletableFuture<Map<DatabaseRef, List<MemberId>>>()
+            leader.consensus.leaderPlacement =
+                object : LeaderPlacement {
+                    // A handover on its own waits until those of the closing leader are ranked,
+                    // so that every group is handed over by closing.
+                    override fun rank(database: DatabaseRef, candidates: List<MemberId>) =
+                        candidates.also {
+                            runCatching { together.get(2, TimeUnit.SECONDS) }
+                        }
+
+                    // Alternately to each of the others, as spreading them would.
+                    override fun rankTogether(groups: Map<DatabaseRef, List<MemberId>>) =
+                        groups.keys
+                            .withIndex()
+                            .associate { (i, group) ->
+                                group to
+                                    if (i % 2 == 0) listOf(first, second) else listOf(second, first)
+                            }
+                            .also { together.complete(it) }
+                }
+
+            LogCapture().use { log ->
+                groups.forEach { leader.consensus.detachGroup(it) }
+                leader.stop()
+
+                val ranked = together.getNow(null)
+                assertThat(ranked?.keys).containsExactlyInAnyOrderElementsOf(groups)
+                val lines = log.lines()
+                assertThat(groups).allSatisfy { group ->
+                    assertThat(lines).anySatisfy { line ->
+                        assertThat(line)
+                            .contains(
+                                "Transferred leadership of $group to ${ranked!!.getValue(group).first()}"
+                            )
                     }
                 }
             }
