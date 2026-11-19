@@ -52,9 +52,10 @@ internal fun interface StagedStore {
  * ([SecondaryDatabase]). Each pulls the transactions it lacks from the first of its [upstreams]
  * every [pullInterval], and at once again while an answer brought as much as a pull carries. An
  * upstream that refuses or cannot be reached is warned about once, until it answers again; the next
- * pull may pick another. When its upstream's logs no longer hold the transactions it needs, it is
- * replaced with a copy, fetched next to it from its upstreams while it keeps serving reads, as
- * primaries catch up; meanwhile it pulls nothing.
+ * pull may pick another. A pull that fails otherwise, as one that cannot read its upstreams, is
+ * logged as an error, and the next follows after the interval. When its upstream's logs no longer
+ * hold the transactions it needs, it is replaced with a copy, fetched next to it from its upstreams
+ * while it keeps serving reads, as primaries catch up; meanwhile it pulls nothing.
  *
  * Reads that must see earlier writes do not wait for the interval: a secondary pulls at once, and
  * on until it has what they wait for, from one of its [primaries] that has it ([awaitLatest],
@@ -423,6 +424,16 @@ internal class Secondaries(
             try {
                 next = pull(this)
                 if (next != null) afterPull(secondary.namedDatabaseId)
+            } catch (e: Exception) {
+                // As where reading its upstreams failed: it pulls again later, as nothing else has
+                // it pull while no read waits.
+                if (e is InterruptedException) Thread.currentThread().interrupt()
+                next = if (wanted() == null) pullInterval else WANTED_RETRY
+                log.error(
+                    "Pulling the transactions of secondary ${secondary.namedDatabaseId.name()} " +
+                        "failed; it pulls again in $next",
+                    e,
+                )
             } finally {
                 synchronized(this) {
                     running = false
