@@ -395,12 +395,9 @@ class LeadershipTest {
         val cluster = cluster()
         cluster.createDatabases()
         // Without balancing, the creator of each database leads it.
-        val busiest =
-            await atMost
-                Duration.ofSeconds(30) untilNotNull
-                {
-                    cluster.led()?.maxBy { it.value }?.key
-                }
+        val leaders = await atMost Duration.ofSeconds(30) untilNotNull { cluster.leaders() }
+        val busiest = cluster.members.maxBy { member -> leaders.values.count { it == member.id } }
+        val handed = leaders.filterValues { it == busiest.id }.keys
 
         busiest.stop()
 
@@ -411,8 +408,15 @@ class LeadershipTest {
                 assertThat(led?.values?.sum()).isEqualTo(DATABASES.size)
                 assertThat(led!!.values.max() - led.values.min()).isLessThanOrEqualTo(1)
             }
-        assertThat(Files.readString(root.resolve("raft.log")))
-            .contains("this member stopped applying its entries")
+        // Each handed over, none left to an election: system too, which stops last.
+        val raftLog = Files.readString(root.resolve("raft.log"))
+        assertThat(handed).allSatisfy { name ->
+            assertThat(raftLog)
+                .containsPattern(
+                    "Transferred leadership of $name\\([^)]*\\) to \\S+: this member stopped " +
+                        "applying its entries"
+                )
+        }
     }
 
     @Test

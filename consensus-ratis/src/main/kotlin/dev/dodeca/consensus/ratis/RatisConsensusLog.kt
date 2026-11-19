@@ -28,14 +28,19 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.ExecutionException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.future.await
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import org.apache.ratis.RaftConfigKeys
 import org.apache.ratis.client.RaftClient
@@ -103,6 +108,9 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
     private val callIds = AtomicLong()
     private val appending: MutableSet<Long> = ConcurrentHashMap.newKeySet()
     private val stateMachines = ConcurrentHashMap<UUID, GroupStateMachine>()
+
+    /** The handover of each group under way (see [handOver]): closing waits for them. */
+    private val handovers = ConcurrentHashMap<UUID, CompletableFuture<MemberId?>>()
 
     /**
      * Groups being added to the running server. Ratis serves requests for a group before it has
@@ -458,19 +466,17 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
         val stateMachine = stateMachines[groupId] ?: return
         if (!division.info.leads() || !stateMachine.handsOverLeadership) return
         val database = stateMachine.database
-        val others = division.raftConf.currentPeers.map(::memberId).filter { it != config.memberId }
-        val candidates =
-            (leaderPlacement.rank(database, others).filter { it in others } + others).distinct()
-        for (candidate in candidates) {
-            val failure = runCatching {
-                requestTransfer(database, candidate, config.requestTimeout).get()
-            }
-                .getOrElse { it }
-            if (failure == null) {
-                transferred(database, candidate, HANDOVER_REASON)
+        val handedTo =
+            try {
+                handOver(division, database, answering(otherVoters(division))).get()
+            } catch (_: InterruptedException) {
+                // Closing, which waits for the handover itself.
+                Thread.currentThread().interrupt()
                 return
+            } catch (_: ExecutionException) {
+                null
             }
-        }
+        if (handedTo != null) return
         if (attempt == 1) {
             log.warn(
                 "Could not hand leadership of {} over to another member; trying again every {}",
@@ -479,6 +485,146 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
             )
         }
         handOverLeadership(groupId, HANDOVER_RETRY, attempt + 1)
+    }
+
+    /**
+     * Transfers the leadership of [division]'s group to the first of its other voting members, in
+     * the order [leaderPlacement] ranks them, that is [answering] and takes it, or joins the
+     * handover of the group under way. Completes with that member, or with null if none took it.
+     */
+    private fun handOver(
+        division: RaftServer.Division,
+        database: DatabaseRef,
+        answering: Set<MemberId>,
+    ): CompletableFuture<MemberId?> {
+        handovers[database.id]?.let {
+            return it
+        }
+        val others = otherVoters(division).map { it.id }
+        val candidates =
+            (leaderPlacement.rank(database, others).filter { it in others } + others)
+                .distinct()
+                .filter { it in answering }
+        val handover = CompletableFuture<MemberId?>()
+        handovers.putIfAbsent(database.id, handover)?.let {
+            return it
+        }
+        candidates
+            .fold(CompletableFuture.completedFuture<MemberId?>(null)) { previous, candidate ->
+                previous.thenCompose { handedTo ->
+                    if (handedTo != null) {
+                        CompletableFuture.completedFuture(handedTo)
+                    } else {
+                        requestTransfer(database, candidate, config.requestTimeout).thenApply {
+                            failure ->
+                            candidate.takeIf { failure == null }
+                        }
+                    }
+                }
+            }
+            .whenComplete { handedTo, failure ->
+                handovers.remove(database.id, handover)
+                if (handedTo != null) transferred(database, handedTo, HANDOVER_REASON)
+                if (failure != null) handover.completeExceptionally(failure)
+                else handover.complete(handedTo)
+            }
+        return handover
+    }
+
+    /** The voting members of [division]'s group other than this one. */
+    private fun otherVoters(division: RaftServer.Division): List<Member> =
+        division.raftConf.currentPeers
+            .mapNotNull { runCatching { toMember(it) }.getOrNull() }
+            .filter { it.id != config.memberId }
+
+    /**
+     * Those of [members] that answer a probe within the shortest election timeout, all probed at
+     * once: only they can take a leadership. A member that stopped, as one that stopped just before
+     * this one, refuses a probe at once, where a leadership transfer to it would wait out its
+     * timeout, and the leader still hears from it lately for a while.
+     */
+    private fun answering(members: Collection<Member>): Set<MemberId> {
+        val sender = self
+        return runBlocking(Dispatchers.IO) {
+            members
+                .distinctBy { it.id }
+                .map { member ->
+                    async {
+                        member.id.takeIf {
+                            runCatching {
+                                connections.open(member.raftAddress, PROBE).use {
+                                    ProbeService.probe(
+                                        member.raftAddress,
+                                        sender,
+                                        config.electionTimeoutMin,
+                                        tls?.client,
+                                    )
+                                }
+                            }
+                                .isSuccess
+                        }
+                    }
+                }
+                .awaitAll()
+                .filterNotNullTo(HashSet())
+        }
+    }
+
+    /**
+     * Hands over the leadership of every group this member leads detached, before the server closes
+     * and ends the handovers: once its databases stopped, a member that stops leads them detached,
+     * and their handovers on the maintenance thread, one after the other, may be under way or still
+     * waiting their turn. All at once, to the members that answer a probe, waiting up to the
+     * longest election timeout for them: a handover that takes longer saves no time over the
+     * election that the other members hold for a group not handed over.
+     */
+    private fun handOverBeforeClosing(raftServer: RaftServer) {
+        val leading =
+            stateMachines.values
+                .filter { it.handsOverLeadership }
+                .mapNotNull { stateMachine ->
+                    val database = stateMachine.database
+                    runCatching { raftServer.getDivision(RaftGroupId.valueOf(database.id)) }
+                        .getOrNull()
+                        ?.takeIf { it.info.leads() }
+                        ?.let { database to it }
+                }
+        if (leading.isEmpty()) return
+        val pending =
+            try {
+                val answering =
+                    answering(leading.flatMap { (_, division) -> otherVoters(division) })
+                leading.mapNotNull { (database, division) ->
+                    runCatching { database to handOver(division, database, answering) }.getOrNull()
+                }
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return
+            }
+        try {
+            CompletableFuture.allOf(*pending.map { it.second }.toTypedArray())
+                .get(config.electionTimeoutMax.toMillis(), TimeUnit.MILLISECONDS)
+        } catch (_: TimeoutException) {
+            // Logged below.
+        } catch (_: ExecutionException) {
+            // Logged below.
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
+        val handedOver =
+            pending
+                .filter { (_, handover) ->
+                    runCatching { handover.getNow(null) }.getOrNull() != null
+                }
+                .mapTo(HashSet()) { it.first }
+        val kept = leading.map { it.first }.filter { it !in handedOver }
+        if (kept.isNotEmpty()) {
+            log.warn(
+                "Stopping without having handed the leadership of {} over; the other members elect " +
+                    "a leader",
+                kept.joinToString(),
+            )
+        }
     }
 
     override suspend fun transferLeadership(
@@ -1020,6 +1166,7 @@ class RatisConsensusLog(private val config: RatisConsensusConfig) : ConsensusLog
 
     override fun close() {
         val raftServer = server
+        raftServer?.let(::handOverBeforeClosing)
         server = null
         maintenance.shutdownNow()
         stateMachines.values.forEach(GroupStateMachine::release)

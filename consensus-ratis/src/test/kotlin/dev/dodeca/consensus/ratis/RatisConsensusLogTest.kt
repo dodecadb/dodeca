@@ -1110,6 +1110,63 @@ class RatisConsensusLogTest {
         }
 
     @Test
+    fun `a leader that closes just after its groups detach hands each over before it closes`() =
+        runBlocking<Unit> {
+            val cluster = formCluster()
+            val leader = cluster.awaitLeader()
+            // More groups led by the same member, as a server leads several databases.
+            val members = cluster.nodes.map { it.consensus.self }
+            val groups =
+                listOf(cluster.database) +
+                    (1..4)
+                        .map { DatabaseRef("db$it", UUID.randomUUID()) }
+                        .onEach { group ->
+                            cluster.nodes.forEach {
+                                it.consensus.startGroup(group, RecordingStateMachine(), members)
+                            }
+                        }
+            for (group in groups) {
+                await atMost
+                    RatisTestCluster.AWAIT untilAsserted
+                    {
+                        val current =
+                            cluster.nodes
+                                .map { it.consensus.status(group).leader }
+                                .distinct()
+                                .singleOrNull()
+                        assertThat(current).isNotNull()
+                        if (current != leader.id) {
+                            runBlocking {
+                                cluster
+                                    .node(current!!)
+                                    .consensus
+                                    .transferLeadership(
+                                        group,
+                                        leader.id,
+                                        "a test",
+                                        Duration.ofSeconds(5),
+                                    )
+                            }
+                        }
+                        assertThat(leader.consensus.role(group)).isEqualTo(Role.Leader)
+                    }
+            }
+
+            LogCapture().use { log ->
+                // As a server stops: its databases stop, then its consensus closes.
+                groups.forEach { leader.consensus.detachGroup(it) }
+                leader.stop()
+
+                val lines = log.lines()
+                assertThat(groups).allSatisfy { group ->
+                    assertThat(lines).anySatisfy { line ->
+                        assertThat(line).contains("Transferred leadership of $group to ")
+                    }
+                }
+            }
+        }
+
+    @Test
     fun `leadership transfers to a member that has caught up`() =
         runBlocking<Unit> {
             val cluster = formCluster()
