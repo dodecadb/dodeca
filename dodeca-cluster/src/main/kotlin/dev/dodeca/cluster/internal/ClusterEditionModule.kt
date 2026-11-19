@@ -711,7 +711,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
                 { systemGraph.databases().associate { groups.of(it.id) to it.hosts } },
                 logService.getInternalLog(MembershipReconciler::class.java),
                 systemRunning = ::systemRunsHere,
-                systemSecondaries = clusterServers::secondaries,
+                systemSecondaries = clusterServers::currentSecondaries,
                 lostServers = { systemGraph.lostServers() },
             )
         globalModule.globalLife.add(

@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.runBlocking
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.awaitility.kotlin.atMost
 import org.awaitility.kotlin.await
 import org.awaitility.kotlin.until
@@ -190,6 +191,28 @@ class MembershipReconcilerTest {
             )
 
         assertThat(reconciler.reconcile()).describedAs("nothing to do").isFalse()
+        assertThat(leader.members(films)).containsExactlyElementsOf(initial)
+    }
+
+    @Test
+    fun `a system secondary keeps its place in the groups of the databases placed on it, also while the system secondaries cannot be read`() {
+        formCluster()
+        val secondary = logs[2].self
+        // As a system secondary: it pulls `system` instead of voting in it, and films is placed on
+        // it.
+        changeCluster { leader.removeMember(system, secondary.id, TIMEOUT) }
+        val servers = ClusterServers(leader, groups, recorded = { error("system is not running") })
+        val reconciler =
+            MembershipReconciler(
+                leader,
+                groups,
+                { mapOf(films to initial.map { it.id }.toSet()) },
+                NullLog.getInstance(),
+                changes = { it.run() },
+                systemSecondaries = servers::currentSecondaries,
+            )
+
+        assertThatThrownBy { reconciler.reconcile() }.hasMessage("system is not running")
         assertThat(leader.members(films)).containsExactlyElementsOf(initial)
     }
 

@@ -68,7 +68,10 @@ import org.neo4j.logging.Log
  * @property systemRunning whether the `system` database runs here, so that [databases] can read it:
  *   this member may lead `system` before.
  * @property systemSecondaries the system secondaries, servers of the cluster that pull `system`
- *   instead of voting in it, which databases can be placed on as on any server.
+ *   instead of voting in it, which databases can be placed on as on any server; throws while they
+ *   cannot be read, as [ClusterServers.currentSecondaries] does. A list read before, as the empty
+ *   one before the first read, would have a system secondary missing from it removed from the
+ *   groups of the databases placed on it.
  * @property lostServers the servers that `system` was re-formed without, as the system graph marks
  *   them.
  */
