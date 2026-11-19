@@ -12,6 +12,7 @@
  */
 package dev.dodeca.core.security
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.edition.DefaultDatabase
 import java.util.Optional
 import java.util.concurrent.atomic.AtomicReference
@@ -56,18 +57,19 @@ class DodecaDefaultDatabaseResolver(
 
     private fun dbmsDefault(): String =
         cached.get()
-            ?: systemDatabase
-                .query { tx ->
-                    // An Optional: the provider does not take null for an answer.
-                    Optional.ofNullable(
-                        tx.findNode(
-                                TopologyGraphDbmsModel.DATABASE_LABEL,
-                                DefaultDatabase.PROPERTY,
-                                true,
-                            )
-                            ?.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null)
-                            as String?
-                    )
+            ?: SystemGraphReads.again {
+                    systemDatabase.query { tx ->
+                        // An Optional: the provider does not take null for an answer.
+                        Optional.ofNullable(
+                            tx.findNode(
+                                    TopologyGraphDbmsModel.DATABASE_LABEL,
+                                    DefaultDatabase.PROPERTY,
+                                    true,
+                                )
+                                ?.getProperty(TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY, null)
+                                as String?
+                        )
+                    }
                 }
                 .orElseGet { config.get(GraphDatabaseSettings.initial_default_database) }
                 .also { cached.set(it) }

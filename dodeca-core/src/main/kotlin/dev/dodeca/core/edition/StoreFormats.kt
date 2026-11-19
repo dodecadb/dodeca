@@ -1,5 +1,6 @@
 package dev.dodeca.core.edition
 
+import dev.dodeca.core.SystemGraphReads
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.kernel.database.NamedDatabaseId
@@ -12,7 +13,7 @@ internal object StoreFormats {
      */
     fun requested(system: () -> GraphDatabaseService, database: NamedDatabaseId): String? {
         if (database.isSystemDatabase) return null
-        return system().beginTx().use { tx ->
+        return SystemGraphReads.read(system()) { tx ->
             tx.findNode(
                     TopologyGraphDbmsModel.DATABASE_LABEL,
                     TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY,

@@ -16,6 +16,7 @@
  */
 package dev.dodeca.core.cypher
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.graphtype.ShowGraphTypeCommand
 import dev.dodeca.core.security.BuiltInRoles
 import dev.dodeca.core.security.PrivilegeRecords
@@ -46,7 +47,6 @@ import org.neo4j.dbms.systemgraph.SecurityGraphDbmsModel.USER_SUSPENDED_PROPERTY
 import org.neo4j.exceptions.InternalException
 import org.neo4j.graphdb.Direction
 import org.neo4j.graphdb.Node
-import org.neo4j.graphdb.NotFoundException
 import org.neo4j.kernel.impl.query.TransactionalContext.DatabaseMode
 import org.neo4j.values.AnyValue
 import org.neo4j.values.storable.Values
@@ -153,13 +153,11 @@ private class CurrentUserCommand(
             if (name.isEmpty()) {
                 null
             } else {
-                query.systemGraph().beginTx().use { tx ->
-                    try {
-                        tx.findNode(USER_LABEL, USER_NAME_PROPERTY, name)?.let { user ->
-                            columns.associateWith { column -> value(user, name, column, tags) }
-                        }
-                    } catch (_: NotFoundException) {
-                        null // Dropped while it was read.
+                // Again if what it read, as a role, was dropped meanwhile: a user dropped is not
+                // found.
+                SystemGraphReads.read(query.systemGraph()) { tx ->
+                    tx.findNode(USER_LABEL, USER_NAME_PROPERTY, name)?.let { user ->
+                        columns.associateWith { column -> value(user, name, column, tags) }
                     }
                 }
             }

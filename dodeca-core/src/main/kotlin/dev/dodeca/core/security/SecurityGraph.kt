@@ -1,5 +1,6 @@
 package dev.dodeca.core.security
 
+import dev.dodeca.core.SystemGraphReads
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import org.neo4j.dbms.database.SystemGraphComponent
@@ -202,6 +203,8 @@ class SecurityGraph(
                             try {
                                 AuthRule.read(node)
                             } catch (e: RuntimeException) {
+                                // Read again (see SystemGraphReads).
+                                if (SystemGraphReads.vanished(e)) throw e
                                 log.error(
                                     "An auth rule cannot be read, so gives no roles: " +
                                         "${node.allProperties}.",
@@ -233,6 +236,8 @@ class SecurityGraph(
                         try {
                             listOf(PrivilegeRecords.read(node, access))
                         } catch (e: RuntimeException) {
+                            // Read again (see SystemGraphReads).
+                            if (SystemGraphReads.vanished(e)) throw e
                             val denied = access == Access.DENIED
                             log.error(
                                 "A privilege of the role '$name' cannot be read: " +

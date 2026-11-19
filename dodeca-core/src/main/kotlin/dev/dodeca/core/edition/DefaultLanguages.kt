@@ -1,5 +1,6 @@
 package dev.dodeca.core.edition
 
+import dev.dodeca.core.SystemGraphReads
 import java.util.Optional
 import java.util.UUID
 import org.neo4j.cypher.internal.CypherVersion
@@ -94,7 +95,7 @@ internal class DefaultLanguages(
         var failures = 0
         while (running) {
             try {
-                languages = system.query(::read)
+                languages = SystemGraphReads.again { system.query(::read) }
                 log.debug("Default query language snapshot update")
                 return
             } catch (e: SystemDatabaseProvider.SystemDatabasePanickedException) {

@@ -6,6 +6,7 @@ import dev.dodeca.consensus.ConsensusUnavailableException
 import dev.dodeca.consensus.DatabaseRef
 import dev.dodeca.consensus.HostPort
 import dev.dodeca.consensus.MemberId
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.servers.AllocationException
 import dev.dodeca.core.servers.DroppedServer
 import dev.dodeca.core.servers.Placements
@@ -177,7 +178,7 @@ class ServerReconciler(
         var dropped = emptyMap<UUID, DroppedServer>()
         var members = voters
         reading {
-            system().beginTx().use { tx ->
+            SystemGraphReads.read(system()) { tx ->
                 dropped = ServerRecords.dropped(tx)
                 members = servers(voters, tx)
             }

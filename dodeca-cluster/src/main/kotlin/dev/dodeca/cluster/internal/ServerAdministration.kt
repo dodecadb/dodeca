@@ -1,6 +1,7 @@
 package dev.dodeca.cluster.internal
 
 import dev.dodeca.core.Gql
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.edition.DefaultDatabase
 import dev.dodeca.core.servers.DatabasePlacement
 import dev.dodeca.core.servers.Move
@@ -51,7 +52,7 @@ class ServerAdministration(
     fun topologyGraphConfig(): TopologyGraphConfig {
         var config: TopologyGraphConfig? = null
         reading {
-            system().beginTx().use { tx ->
+            SystemGraphReads.read(system()) { tx ->
                 config =
                     TopologyGraphConfig(
                         Placements.defaults(tx, defaults),
@@ -169,10 +170,11 @@ class ServerAdministration(
             "$failed: this member does not lead the system database; run it on the one that does."
         }
         reading {
-            system().beginTx().use { tx ->
-                if (dryRun) {
-                    change(tx, failed)
-                } else {
+            if (dryRun) {
+                // Never committed: only read.
+                SystemGraphReads.read(system()) { tx -> change(tx, failed) }
+            } else {
+                system().beginTx().use { tx ->
                     ServerRecords.lock(tx)
                     change(tx, failed)
                     tx.commit()

@@ -1,6 +1,7 @@
 package dev.dodeca.core.remote
 
 import dev.dodeca.core.Dodeca
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.security.AliasPasswords
 import java.net.URI
 import java.net.URLEncoder
@@ -143,7 +144,7 @@ class RemoteAliasTransactions(
         connections[reference.id()]
             ?: synchronized(this) {
                 if (closed) throw shuttingDown(reference.alias().name())
-                system().beginTx().use { tx ->
+                SystemGraphReads.read(system()) { tx ->
                     val model = CommunityTopologyGraphDbmsModel(tx)
                     val current =
                         model.getDatabaseRefByAlias(reference.catalogEntry()).orElse(null)
@@ -288,7 +289,7 @@ class RemoteAliasTransactions(
     internal fun sweep() {
         if (connections.isEmpty()) return
         val current =
-            system().beginTx().use { tx ->
+            SystemGraphReads.read(system()) { tx ->
                 // Remote aliases are in the root namespace: Dodeca has no composite databases.
                 CommunityTopologyGraphDbmsModel(tx)
                     .allDatabaseReferences

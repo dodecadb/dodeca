@@ -13,6 +13,7 @@ import dev.dodeca.consensus.DatabaseRef
 import dev.dodeca.consensus.HostPort
 import dev.dodeca.consensus.Member
 import dev.dodeca.consensus.MemberId
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.edition.DatabaseState
 import dev.dodeca.core.servers.CopyMode
 import dev.dodeca.core.servers.DroppedServer
@@ -33,6 +34,7 @@ import org.neo4j.dbms.identity.ServerId
 import org.neo4j.dbms.systemgraph.InstanceModeConstraint
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel
 import org.neo4j.dbms.systemgraph.TopologyGraphDbmsModel.InstanceStatus
+import org.neo4j.graphdb.GraphDatabaseService
 import org.neo4j.graphdb.Transaction
 import org.neo4j.kernel.database.NamedDatabaseId
 
@@ -46,6 +48,8 @@ import org.neo4j.kernel.database.NamedDatabaseId
  * unavailable server.
  *
  * @property report what a member reports about itself, this member included; null while unknown.
+ * @property system the system database, which each command reads in a transaction of its own, read
+ *   again if a DROP deletes what it reads meanwhile (see [SystemGraphReads]).
  */
 internal class ClusterTopologyInfoService(
     private val community: TopologyInfoService,
@@ -54,6 +58,7 @@ internal class ClusterTopologyInfoService(
     private val directory: MemberDirectory,
     private val locations: DatabaseLocations,
     private val report: (MemberId) -> Map<String, String>?,
+    private val system: () -> GraphDatabaseService,
     private val probeDeadline: Duration = Duration.ofSeconds(1),
     private val voters: () -> List<Member> = { consensus.members(groups.system) },
 ) : TopologyInfoService {
@@ -63,16 +68,25 @@ internal class ClusterTopologyInfoService(
 
     /**
      * A server for each server of the cluster, a member of `system`, or a system secondary or lost
-     * server that [transaction] reads: Enabled with its record, Free without one, except that every
-     * member counts as enabled, with the options it reports, until the servers the cluster started
-     * with are recorded (see `ServerReconciler`). It hosts the databases it reports running, and is
-     * to host `system` and the databases placed on it that are requested online. A deallocating
-     * server is Deallocated once no database is placed on it and it votes in no database's group. A
-     * dropped server is Dropped while the cluster still has it, and after that while it answers
-     * where it was.
+     * server that the system graph records: Enabled with its record, Free without one, except that
+     * every member counts as enabled, with the options it reports, until the servers the cluster
+     * started with are recorded (see `ServerReconciler`). It hosts the databases it reports
+     * running, and is to host `system` and the databases placed on it that are requested online. A
+     * deallocating server is Deallocated once no database is placed on it and it votes in no
+     * database's group. A dropped server is Dropped while the cluster still has it, and after that
+     * while it answers where it was.
      */
     override fun servers(transaction: Transaction): Set<ServerDetails> {
         val answering = answering()
+        val (servers, left) = SystemGraphReads.read(system()) { tx -> servers(tx, answering) }
+        return servers.apply { addAll(stillAnswering(left)) }
+    }
+
+    /** The servers of the cluster, and the dropped servers that left it, as [transaction] reads. */
+    private fun servers(
+        transaction: Transaction,
+        answering: Set<MemberId>,
+    ): Pair<MutableSet<ServerDetails>, List<DroppedServer>> {
         val records = ServerRecords.records(transaction)
         val dropped = ServerRecords.dropped(transaction)
         val initialRecorded = ServerRecords.initialServersEnabled(transaction)
@@ -115,7 +129,7 @@ internal class ClusterTopologyInfoService(
                 )
             }
         val left = dropped.values.filter { it.address != null && MemberId(it.id) !in members }
-        return servers.apply { addAll(stillAnswering(left)) }
+        return servers to left
     }
 
     /** Whether the deallocating [member] is placed on no database, and votes in no group. */
@@ -223,6 +237,17 @@ internal class ClusterTopologyInfoService(
         requestedExtras: TopologyInfoService.RequestedExtras,
     ): Set<DatabaseDetails> {
         val answering = answering()
+        return SystemGraphReads.read(system()) { tx ->
+            databases(tx, databaseIds, requestedExtras, answering)
+        }
+    }
+
+    private fun databases(
+        transaction: Transaction,
+        databaseIds: Set<NamedDatabaseId>,
+        requestedExtras: TopologyInfoService.RequestedExtras,
+        answering: Set<MemberId>,
+    ): Set<DatabaseDetails> {
         val hosts = hosting(transaction)
         val servers = { clusterServers(transaction) }
         return community.databases(transaction, databaseIds, requestedExtras).flatMapTo(

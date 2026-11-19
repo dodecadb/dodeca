@@ -3,10 +3,11 @@ package dev.dodeca.cluster.internal
 import dev.dodeca.cluster.FormatLevelStore
 import dev.dodeca.cluster.FormatLevels
 import dev.dodeca.cluster.internal.replication.DesiredDatabase
-import dev.dodeca.cluster.internal.replication.ReplicationService
 import dev.dodeca.cluster.internal.replication.SystemGraph
+import dev.dodeca.cluster.internal.replication.SystemReading
 import dev.dodeca.consensus.Member
 import dev.dodeca.consensus.MemberId
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.edition.DefaultDatabase
 import dev.dodeca.core.edition.UriSeed
 import dev.dodeca.core.servers.CopyMode
@@ -39,16 +40,23 @@ import org.neo4j.kernel.database.NamedDatabaseId
  */
 internal class Neo4jSystemGraph(
     private val system: () -> GraphDatabaseService,
-    private val replication: ReplicationService,
-    private val current: () -> Boolean = replication::awaitSystemCurrent,
+    private val replication: SystemReading,
+    private val current: () -> Boolean,
     private val placement: () -> ClusterPlacement,
 ) : SystemGraph, FormatLevelStore {
-    override fun databases(): List<DesiredDatabase> = replication.readingSystem {
-        system().beginTx().use { tx ->
-            tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
-                nodes.asSequence().mapNotNull(::desired).toList()
-            }
+    override fun databases(): List<DesiredDatabase> = read { tx ->
+        tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
+            nodes.asSequence().mapNotNull(::desired).toList()
         }
+    }
+
+    /**
+     * Runs [read] in a transaction of its own on `system`, while `system` is not being replaced by
+     * a copy, and again if a node or relationship it read was deleted meanwhile, as by a DROP
+     * applied from the Raft log (see [SystemGraphReads]).
+     */
+    private fun <T> read(read: (Transaction) -> T): T = replication.readingSystem {
+        SystemGraphReads.read(system(), read)
     }
 
     private fun desired(node: Node): DesiredDatabase? {
@@ -206,20 +214,18 @@ internal class Neo4jSystemGraph(
         }
 
     /** The servers marked lost, which `system` was re-formed without (see [recordLost]). */
-    fun lostServers(): Set<MemberId> = replication.readingSystem {
-        system().beginTx().use { tx -> ServerRecords.lost(tx).mapTo(HashSet(), ::MemberId) }
+    fun lostServers(): Set<MemberId> = read { tx ->
+        ServerRecords.lost(tx).mapTo(HashSet(), ::MemberId)
     }
 
-    override fun formatLevel(): Int = replication.readingSystem {
-        system().beginTx().use { tx ->
-            tx.findNodes(DODECA_LABEL).use { nodes ->
-                nodes
-                    .asSequence()
-                    .mapNotNull {
-                        (it.getProperty(FORMAT_LEVEL_PROPERTY, null) as? Number)?.toInt()
-                    }
-                    .maxOrNull() ?: FormatLevels.INITIAL
-            }
+    override fun formatLevel(): Int = read { tx ->
+        tx.findNodes(DODECA_LABEL).use { nodes ->
+            nodes
+                .asSequence()
+                .mapNotNull {
+                    (it.getProperty(FORMAT_LEVEL_PROPERTY, null) as? Number)?.toInt()
+                }
+                .maxOrNull() ?: FormatLevels.INITIAL
         }
     }
 
@@ -238,45 +244,35 @@ internal class Neo4jSystemGraph(
      * while the servers the cluster started with are not recorded yet. A Free one hosts only
      * `system`.
      */
-    fun enabled(member: MemberId): Boolean = replication.readingSystem {
-        system().beginTx().use { tx ->
-            !ServerRecords.initialServersEnabled(tx) || member.uuid in ServerRecords.records(tx)
-        }
+    fun enabled(member: MemberId): Boolean = read { tx ->
+        !ServerRecords.initialServersEnabled(tx) || member.uuid in ServerRecords.records(tx)
     }
 
     /**
      * The servers that host a copy of the database [name], a primary or a secondary; none if it is
      * not placed, or does not exist.
      */
-    fun hosts(name: String): Set<MemberId> = replication.readingSystem {
-        system().beginTx().use { tx ->
-            Placements.database(tx, name)
-                ?.let(Placements::copies)
-                ?.keys
-                ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
-        }
+    fun hosts(name: String): Set<MemberId> = read { tx ->
+        Placements.database(tx, name)?.let(Placements::copies)?.keys?.mapTo(HashSet(), ::MemberId)
+            ?: emptySet()
     }
 
     /**
      * The servers that host a secondary of the database [name]: for `system`, the system
      * secondaries; none if it does not exist.
      */
-    fun secondaries(name: String): Set<MemberId> = replication.readingSystem {
-        system().beginTx().use { tx ->
-            if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
-                SystemSecondaryRecords.all(tx).mapTo(HashSet()) { it.id }
-            } else {
-                Placements.database(tx, name)
-                    ?.let { Placements.hosts(it, CopyMode.SECONDARY) }
-                    ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
-            }
+    fun secondaries(name: String): Set<MemberId> = read { tx ->
+        if (name == GraphDatabaseSettings.SYSTEM_DATABASE_NAME) {
+            SystemSecondaryRecords.all(tx).mapTo(HashSet()) { it.id }
+        } else {
+            Placements.database(tx, name)
+                ?.let { Placements.hosts(it, CopyMode.SECONDARY) }
+                ?.mapTo(HashSet(), ::MemberId) ?: emptySet()
         }
     }
 
     /** The system secondaries, servers that pull `system` instead of voting in its group. */
-    fun systemSecondaries(): List<Member> = replication.readingSystem {
-        system().beginTx().use { tx -> SystemSecondaryRecords.all(tx) }
-    }
+    fun systemSecondaries(): List<Member> = read { tx -> SystemSecondaryRecords.all(tx) }
 
     /**
      * Records [member] a system secondary, on the `system` leader, as admitting it does; a record
@@ -310,36 +306,31 @@ internal class Neo4jSystemGraph(
     }
 
     /** Whether the system secondary [member] is asked to turn primary. */
-    fun promoted(member: MemberId): Boolean = replication.readingSystem {
-        system().beginTx().use { tx -> SystemSecondaryRecords.promoted(tx, member) }
+    fun promoted(member: MemberId): Boolean = read { tx ->
+        SystemSecondaryRecords.promoted(tx, member)
     }
 
     /** Whether DROP SERVER dropped [member]. */
-    fun dropped(member: MemberId): Boolean = replication.readingSystem {
-        system().beginTx().use { tx -> member.uuid in ServerRecords.dropped(tx) }
-    }
+    fun dropped(member: MemberId): Boolean = read { tx -> member.uuid in ServerRecords.dropped(tx) }
 
     /** The server tags of each enabled server, from its server record. */
-    fun serverTags(): Map<MemberId, Set<String>> = replication.readingSystem {
-        system().beginTx().use { tx ->
-            ServerRecords.records(tx).entries.associate { (id, record) ->
-                MemberId(id) to record.options.tags.toSet()
-            }
+    fun serverTags(): Map<MemberId, Set<String>> = read { tx ->
+        ServerRecords.records(tx).entries.associate { (id, record) ->
+            MemberId(id) to record.options.tags.toSet()
         }
     }
 
     /** The id of the database [name], or null if the system graph has none of that name. */
-    fun databaseId(name: String): UUID? = replication.readingSystem {
-        system().beginTx().use { tx ->
-            val node =
-                tx.findNode(
-                    TopologyGraphDbmsModel.DATABASE_LABEL,
-                    TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
-                    name,
-                )
-            (node?.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY, null) as? String)
-                ?.let(UUID::fromString)
-        }
+    fun databaseId(name: String): UUID? = read { tx ->
+        val node =
+            tx.findNode(
+                TopologyGraphDbmsModel.DATABASE_LABEL,
+                TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
+                name,
+            )
+        (node?.getProperty(TopologyGraphDbmsModel.DATABASE_UUID_PROPERTY, null) as? String)?.let(
+            UUID::fromString
+        )
     }
 
     /**
@@ -347,24 +338,19 @@ internal class Neo4jSystemGraph(
      * null for none. It never changes, and every copy of the system graph has it: the members of a
      * cluster share it.
      */
-    fun systemId(): Long? = replication.readingSystem {
-        system().beginTx().use { tx ->
-            tx.findNode(
-                    TopologyGraphDbmsModel.DATABASE_LABEL,
-                    TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
-                    GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
-                )
-                ?.getProperty(TopologyGraphDbmsModel.DATABASE_STORE_RANDOM_ID_PROPERTY, null)
-                as? Long
-        }
+    fun systemId(): Long? = read { tx ->
+        tx.findNode(
+                TopologyGraphDbmsModel.DATABASE_LABEL,
+                TopologyGraphDbmsModel.DATABASE_NAME_PROPERTY,
+                GraphDatabaseSettings.SYSTEM_DATABASE_NAME,
+            )
+            ?.getProperty(TopologyGraphDbmsModel.DATABASE_STORE_RANDOM_ID_PROPERTY, null) as? Long
     }
 
     /** The initial members of the group of [database], or null if none are recorded. */
-    fun initialMembers(database: NamedDatabaseId): List<Member>? = replication.readingSystem {
-        system().beginTx().use { tx ->
-            val members = tx.findDatabase(database)?.getProperty(INITIAL_MEMBERS_PROPERTY, null)
-            (members as? Array<*>)?.map { Member.parse(it as String) }
-        }
+    fun initialMembers(database: NamedDatabaseId): List<Member>? = read { tx ->
+        val members = tx.findDatabase(database)?.getProperty(INITIAL_MEMBERS_PROPERTY, null)
+        (members as? Array<*>)?.map { Member.parse(it as String) }
     }
 
     private fun Transaction.findDatabase(database: NamedDatabaseId): Node? =

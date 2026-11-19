@@ -1,5 +1,6 @@
 package dev.dodeca.core.edition
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.servers.ServerLifecycle
 import dev.dodeca.core.servers.Servers
 import java.util.UUID
@@ -40,7 +41,7 @@ class Unquarantines(
     fun lift(server: String, database: String, operation: String, user: String) {
         val asked = UnquarantineOperation.of(operation)
         val id =
-            system().beginTx().use { tx ->
+            SystemGraphReads.read(system()) { tx ->
                 ServerLifecycle.target(tx, server, servers, "Cannot find server '$server'").id
             }
         if (id == self) {

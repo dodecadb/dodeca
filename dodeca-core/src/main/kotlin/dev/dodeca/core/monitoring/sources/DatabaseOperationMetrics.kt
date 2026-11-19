@@ -1,5 +1,6 @@
 package dev.dodeca.core.monitoring.sources
 
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.monitoring.MetricRegistry
 import org.neo4j.dbms.database.DatabaseContextProvider
 import org.neo4j.dbms.database.DatabaseOperationCounts
@@ -49,7 +50,7 @@ internal object DatabaseOperationMetrics {
             databases.getDatabaseContext(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID).orElse(null)
                 ?: return null
         if (!system.database().isStarted) return null
-        return system.databaseFacade().beginTx().use { tx ->
+        return SystemGraphReads.read(system.databaseFacade()) { tx ->
             tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
                 nodes.asSequence().count {
                     it.getProperty(TopologyGraphDbmsModel.DATABASE_STATUS_PROPERTY, null) ==

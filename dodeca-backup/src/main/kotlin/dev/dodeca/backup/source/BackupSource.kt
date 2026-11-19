@@ -6,6 +6,7 @@ import dev.dodeca.backup.BackupProtocol
 import dev.dodeca.backup.BackupProtocol.Request
 import dev.dodeca.backup.BackupProtocol.Status
 import dev.dodeca.consensus.BulkSource
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.edition.BackupSources
 import dev.dodeca.core.edition.LatestWrites
 import dev.dodeca.core.security.MetadataScript
@@ -115,7 +116,7 @@ internal class BackupSource(
         val system =
             databases.getDatabaseContext(SYSTEM).orElse(null)?.databaseFacade()
                 ?: return registered.toSet()
-        return system.beginTx().use { tx ->
+        return SystemGraphReads.read(system) { tx ->
             tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
                 nodes
                     .asSequence()
@@ -257,20 +258,17 @@ internal class BackupSource(
     /** The users, roles and privileges of the database, from [system] once it holds the latest. */
     private fun metadata(system: Database, request: Request.Metadata, out: OutputStream) {
         val script =
-            databases
-                .getDatabaseContext(system.namedDatabaseId)
-                .orElseThrow()
-                .databaseFacade()
-                .beginTx()
-                .use {
-                    MetadataScript.generate(
-                        it,
-                        request.database,
-                        request.include,
-                        log,
-                        request.users?.toSet(),
-                    )
-                }
+            SystemGraphReads.read(
+                databases.getDatabaseContext(system.namedDatabaseId).orElseThrow().databaseFacade()
+            ) {
+                MetadataScript.generate(
+                    it,
+                    request.database,
+                    request.include,
+                    log,
+                    request.users?.toSet(),
+                )
+            }
         BackupProtocol.writeStatus(out, Status.OK)
         BackupProtocol.writeScript(out, script)
     }

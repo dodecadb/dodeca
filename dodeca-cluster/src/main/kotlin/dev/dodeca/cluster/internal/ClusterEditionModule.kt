@@ -75,6 +75,7 @@ import dev.dodeca.consensus.ratis.RatisConsensusConfig
 import dev.dodeca.consensus.ratis.RatisConsensusLog
 import dev.dodeca.consensus.ratis.ReloadableTls
 import dev.dodeca.core.Dodeca
+import dev.dodeca.core.SystemGraphReads
 import dev.dodeca.core.edition.BackupSources
 import dev.dodeca.core.edition.DatabaseHosting
 import dev.dodeca.core.edition.DatabaseQuarantine
@@ -1143,6 +1144,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
             directory,
             locations,
             directory::reported,
+            system = { databaseRepository.getSystemDatabaseContext().databaseFacade() },
             voters = { clusterServers.voters().members },
         )
 
@@ -2008,7 +2010,7 @@ class ClusterEditionModule(globalModule: GlobalModule) : DodecaEditionModule(glo
 
     /** The records of the servers in the system graph, by server id. */
     private fun serverRecords(): Map<UUID, ServerRecord> =
-        databaseRepository.getSystemDatabaseContext().databaseFacade().beginTx().use {
+        SystemGraphReads.read(databaseRepository.getSystemDatabaseContext().databaseFacade()) {
             ServerRecords.records(it)
         }
 

@@ -48,7 +48,7 @@ internal class ReplicationService(
     private val adoptDatabases: () -> Unit,
     private val notLeader: (String, MemberId?) -> String,
     private val metrics: ClusterMetrics? = null,
-) : DatabaseEventListenerAdapter(), DatabaseHosting {
+) : DatabaseEventListenerAdapter(), DatabaseHosting, SystemReading {
     /** The group of `system` (see [DatabaseGroups]). */
     private val systemDatabase: DatabaseRef
         get() = groups.system
@@ -80,11 +80,7 @@ internal class ReplicationService(
      */
     private val systemLock = ReentrantReadWriteLock(true)
 
-    /**
-     * Runs [block], which reads the system database, while `system` is not being replaced by a
-     * copy. [block] must not wait for anything that needs `system` replaced first.
-     */
-    fun <T> readingSystem(block: () -> T): T {
+    override fun <T> readingSystem(block: () -> T): T {
         // Interruptible, so that closing a waiting reader does not wait for the replacement.
         systemLock.readLock().lockInterruptibly()
         try {
@@ -130,8 +126,7 @@ internal class ReplicationService(
      */
     @Volatile var afterGroupChange: () -> Unit = {}
 
-    /** Whether this member is the system leader and can commit system transactions. */
-    val systemWritable: Boolean
+    override val systemWritable: Boolean
         get() = databases[systemDatabase.name]?.writable == true
 
     /**

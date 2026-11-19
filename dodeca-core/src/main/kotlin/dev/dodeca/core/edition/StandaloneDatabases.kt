@@ -1,5 +1,6 @@
 package dev.dodeca.core.edition
 
+import dev.dodeca.core.SystemGraphReads
 import java.util.UUID
 import org.neo4j.dbms.database.DatabaseRepository
 import org.neo4j.dbms.database.StandaloneDatabaseContext
@@ -143,7 +144,7 @@ internal class StandaloneDatabases(
                 .getDatabaseContext(NamedDatabaseId.NAMED_SYSTEM_DATABASE_ID)
                 .orElseThrow()
                 .databaseFacade()
-        return system.beginTx().use { tx ->
+        return SystemGraphReads.read(system) { tx ->
             tx.findNodes(TopologyGraphDbmsModel.DATABASE_LABEL).use { nodes ->
                 nodes
                     .asSequence()

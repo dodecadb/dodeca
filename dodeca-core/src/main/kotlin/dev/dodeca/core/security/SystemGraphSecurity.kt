@@ -1,5 +1,6 @@
 package dev.dodeca.core.security
 
+import dev.dodeca.core.SystemGraphReads
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import org.neo4j.dbms.systemgraph.SystemDatabaseProvider
@@ -36,7 +37,7 @@ class SystemGraphSecurity(
         if (last != null && last.generation == current) return last.graph
         val graph =
             try {
-                systemDatabase.query { SecurityGraph.read(it, log) }
+                SystemGraphReads.again { systemDatabase.query { SecurityGraph.read(it, log) } }
             } catch (e: RuntimeException) {
                 // As while a cluster member replaces system with a copy: keep what was read last.
                 return last?.graph ?: throw e
