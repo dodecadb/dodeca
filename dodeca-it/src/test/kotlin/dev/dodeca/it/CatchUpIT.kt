@@ -100,13 +100,15 @@ class CatchUpIT {
         val others = members - behind
         leader.rows("CREATE (:Marker {at: 'before'})")
         behind.kill()
-        val killedAt = status(leader)?.get("commitIndex") as Long
 
-        // Two log segments of large entries, then small ones until a snapshot covers the first
-        // segment and the leader discards it.
+        // More than two log segments of large entries, then small ones until a snapshot covers all
+        // the large ones. The segment that holds the entries after the member stopped closed
+        // before the last large one, so the snapshot covers it whole, and the leader discards it
+        // as it takes the snapshot: Ratis discards only segments that a snapshot covers whole.
         repeat(70) {
             leader.rows("CREATE (:Blob {i: $it, data: \$data})", parameters = mapOf("data" to blob))
         }
+        val written = status(leader)?.get("commitIndex") as Long
         var small = 0
         val snapshot =
             await withPollInterval
@@ -114,7 +116,7 @@ class CatchUpIT {
                 Duration.ofMinutes(2) untilNotNull
                 {
                     leader.rows("CREATE (:Blob {i: ${-1 - small++}, data: 'small'})")
-                    (status(leader)?.get("snapshotIndex") as Long?)?.takeIf { it > killedAt + 50 }
+                    (status(leader)?.get("snapshotIndex") as Long?)?.takeIf { it >= written }
                 }
 
         behind.restart()
