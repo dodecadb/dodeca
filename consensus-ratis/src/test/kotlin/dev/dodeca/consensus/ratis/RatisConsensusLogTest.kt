@@ -1181,11 +1181,13 @@ class RatisConsensusLogTest {
             leader.consensus.leaderPlacement =
                 object : LeaderPlacement {
                     // A handover on its own waits until those of the closing leader are ranked,
-                    // so that every group is handed over by closing.
+                    // and ranks as they were: it may still start before closing hands its group
+                    // over, which then joins it.
                     override fun rank(database: DatabaseRef, candidates: List<MemberId>) =
-                        candidates.also {
-                            runCatching { together.get(2, TimeUnit.SECONDS) }
+                        runCatching {
+                            together.get(2, TimeUnit.SECONDS).getValue(database)
                         }
+                        .getOrDefault(candidates)
 
                     // Alternately to each of the others, as spreading them would.
                     override fun rankTogether(groups: Map<DatabaseRef, List<MemberId>>) =
